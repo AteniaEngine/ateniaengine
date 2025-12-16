@@ -1,147 +1,183 @@
 Atenia Engine
 
-Hardware-Adaptive Execution Intelligence for Stable and Resilient AI Runtime Systems
+Execution intelligence for AI systems that operate in the real world.
 
-Atenia Engine is an execution-centric AI runtime system that treats execution as a first-class adaptive system, rather than a static consequence of compilation or deployment-time optimization.
+Modern AI runtimes assume stable hardware.
 
-Instead of assuming ideal or stable hardware conditions, Atenia continuously observes runtime behavior, reasons about execution risk, and adapts execution policies to maintain stability, resilience, and execution continuity under dynamic and heterogeneous environments.
+Reality does not.
 
-📌 Key Ideas
+Atenia Engine is an execution-centric runtime system that treats execution as a dynamic, adaptive control problem, not as a static orchestration layer fixed at compile time or deployment.
 
-Atenia Engine is built on the following principles:
+It is built for environments where hardware is shared, memory pressure fluctuates, execution signals are noisy, and failure is often the result of incorrect assumptions, not incorrect computation.
 
-Execution ≠ Plumbing
-Execution is not a passive orchestration layer, but an active decision-making system.
+Execution Is Not Plumbing
 
-Stability First
-Execution stability and continuity are prioritized over short-term performance gains.
+In most AI systems, execution is treated as plumbing:
+launch kernels, move data, hope the hardware behaves.
 
-No Semantic Drift
-Adaptive execution never modifies computational semantics, numerical behavior, or model correctness.
+Atenia Engine starts from a different premise:
 
-Reality over Assumptions
-Hardware is treated as dynamic and uncertain, not idealized or static.
+Execution makes decisions.
+And decisions must adapt to reality.
+
+Execution policies determine where, when, and how computation runs.
+Under dynamic conditions, these decisions must be observed, evaluated, stabilized, and refined over time.
+
+Atenia treats execution as a first-class system component —
+one that reasons, adapts, and learns from experience,
+while preserving deterministic and reproducible computation.
+
+What Atenia Engine Does
+
+Atenia Engine introduces a runtime execution intelligence layer that:
+
+observes execution-relevant runtime signals
+
+reasons about stability, risk, and hardware behavior
+
+selects and stabilizes execution policies
+
+prevents policy oscillation and thrashing
+
+anticipates failure before it occurs
+
+adapts execution without modifying computational semantics
+
+All adaptation happens at the execution level only.
+Model structure, numerical operations, and outputs remain unchanged.
+
+No semantic drift.
+No hidden learning.
+No numerical surprises.
+
+Stability Before Performance
+
+Atenia does not optimize for peak throughput under ideal conditions.
+
+It optimizes for:
+
+stable execution under noise
+
+continuity under memory pressure
+
+predictive resilience instead of reactive failure
+
+confidence over aggressive heuristics
+
+Short-term performance gains mean little if execution collapses under realistic conditions.
+
+Atenia prioritizes execution that survives.
 
 Learning by Execution Experience
-Execution decisions improve over time through persistent execution memory, without explicit machine learning.
 
-🧠 What Atenia Engine Does
+Atenia Engine improves execution behavior over time —
+without machine learning.
 
-Atenia Engine introduces:
+Execution outcomes are distilled into persistent execution memory.
+When similar execution contexts reappear, Atenia leverages prior experience to:
 
-Runtime profiling of execution-relevant signals
+avoid previously unstable strategies
 
-Adaptive execution policies with stability mechanisms
+converge faster to stable execution policies
 
-Memory-based smoothing, hysteresis, and oscillation prevention
+reduce unnecessary fallback and defensive behavior
 
-Predictive fallback to avoid catastrophic execution failures (e.g., OOM)
+This learning is operational, not statistical.
+Execution gets better because it remembers what worked.
 
-Virtual GPU–based policy evaluation for safe autotuning
+Virtual Execution Before Real Risk
 
-Persistent execution memory to improve decisions across runs
+Exploration is dangerous when performed directly on hardware.
 
-All adaptive behavior occurs at the execution level only, preserving deterministic and reproducible computation.
+Atenia introduces a virtual GPU execution model used to evaluate execution policies before committing them to physical devices.
 
-📄 Paper
+This enables:
 
-The full technical description is available in the accompanying paper:
+safe autotuning
+
+risk-aware policy filtering
+
+proactive fallback selection
+
+protection against catastrophic execution failures
+
+Unstable strategies are discarded before they touch real hardware.
+
+Reproducible Research
+
+Execution intelligence must be observable to be credible.
+
+All experiments described in the accompanying paper are implemented as executable tests.
+
+cargo test
+
+
+If the tests pass, the execution engine is alive.
+
+The repository currently includes:
+
+270+ execution and stability tests
+
+paper-specific experimental validations
+
+end-to-end adaptive execution scenarios
+
+full validation up to APX-12
+
+Research Context
+
+The technical foundations of Atenia Engine are described in:
 
 Atenia Engine: Hardware-Adaptive Execution Intelligence for Stable and Resilient AI Runtime Systems
 
 Preprint — Under Review
-Patent Pending (USPTO Provisional Application No. 63/941,875)
+Patent Pending — USPTO Provisional Application No. 63/941,875
+Filed December 16, 2025
 
-📄 Paper PDF / arXiv: (link will be added after submission)
+The project is released under Apache License 2.0 and is compatible with this filing.
 
-🧪 Reproducibility & Experiments
+What Atenia Engine Is Not
 
-Atenia Engine is designed as reproducible research.
+It is not a machine learning framework
 
-All experiments presented in the paper are implemented as executable tests.
+It is not a compiler or graph optimizer
 
-Run all tests
-cargo test
+It does not modify model semantics
 
-Run paper-specific experiments only
-cargo test paper
+It does not require retraining
 
+It does not assume ideal hardware
 
-These tests validate:
+Atenia complements existing frameworks by addressing execution stability — a layer they largely ignore.
 
-Execution stability under noisy runtime conditions
+Implementation
 
-Absence of execution policy thrashing
+Implemented in Rust
 
-Semantic correctness under adaptive execution
+Deterministic execution behavior
 
-Predictive fallback and execution continuity
+Explicit memory and concurrency control
 
-Learning effects across executions (cold vs. warm)
+No garbage collection
 
-If the tests pass, the execution engine is alive.
+No opaque runtime adaptation
 
-🧪 Test Coverage
+Designed to integrate beneath ML frameworks and above raw hardware execution.
 
-The repository currently contains:
+License
 
-270+ execution and stability tests
+Apache License 2.0
+Broad adoption, modification, and commercial use permitted.
 
-6 paper-specific validation tests
+Links
 
-Full APX execution validation up to APX-12
+Website: https://ateniaengine.com
 
-Tests are organized to isolate execution behavior and validate individual adaptive mechanisms as well as end-to-end system coherence.
+Repository: https://github.com/AteniaEngine/ateniaengine
 
-⚙️ Implementation Notes
+Paper: (to be added after arXiv submission)
 
-Implemented in Rust for deterministic behavior, memory safety, and explicit concurrency control
-
-No garbage collection or hidden runtime side effects
-
-Execution intelligence operates independently from model architecture or ML frameworks
-
-Designed to integrate with existing ML stacks, not replace them
-
-Atenia Engine operates below system-level schedulers and above raw hardware execution.
-
-🏗️ Project Status
-
-Core execution intelligence implemented
-
-APX-12 completed and validated
-
-Experimental evaluation completed
-
-Paper submitted
-
-Public release (v0.x)
-
-This repository represents an active research and engineering project.
-
-📜 License
-
-This project is licensed under the Apache License 2.0.
-
-Apache 2.0 allows broad adoption, modification, and commercial use while providing explicit patent protections.
-
-⚠️ Intellectual Property Notice
-
-A provisional patent application covering aspects of the system described in this repository has been filed with the United States Patent and Trademark Office (USPTO).
-
-Application No. 63/941,875 — filed December 16, 2025
-
-The code is released under Apache 2.0 and is compatible with this filing.
-
-🌐 Links
-
-🌍 Website: https://ateniaengine.com
-
-📄 Paper: (to be added)
-
-💾 Repository: https://github.com/AteniaEngine/ateniaengine
-
-👤 Author
+Author
 
 Guillermo Alonso Albella
 Independent Research Initiative — GAAIA Labs
