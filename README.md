@@ -151,8 +151,22 @@ The repository currently includes:
 The technical foundations of Atenia Engine are described in:
 
 **Atenia Engine: Hardware-Adaptive Execution Intelligence for Stable and Resilient AI Runtime Systems**
+## 📄 Research Paper (Preprint)
 
-📘 *Preprint — Under Review*
+The technical foundations of Atenia Engine are described in the following paper:
+
+**Atenia Engine: Hardware-Adaptive Execution Intelligence for Stable and Resilient AI Runtime Systems**
+
+📘 Status: **Preprint (publicly available)**  
+🧾 Patent: **USPTO Provisional Application No. 63/941,875**  
+📅 Filed: December 16, 2025  
+
+The paper is currently hosted in this repository while awaiting arXiv submission approval.
+
+➡️ **Download PDF:**  
+`/paper/Atenia_Engine_Execution_Intelligence.pdf`
+
+All experiments described in the paper are fully reproducible via the test suite included in this repository.
 
 🧾 **Patent Pending** — USPTO Provisional Application No. **63/941,875**
 📅 Filed December 16, 2025
