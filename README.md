@@ -168,9 +168,6 @@ The paper is currently hosted in this repository while awaiting arXiv submission
 
 All experiments described in the paper are fully reproducible via the test suite included in this repository.
 
-🧾 **Patent Pending** — USPTO Provisional Application No. **63/941,875**
-📅 Filed December 16, 2025
-
 The project is released under **Apache License 2.0** and is compatible with this filing.
 
 ---
