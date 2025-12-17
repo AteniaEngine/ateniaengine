@@ -148,11 +148,6 @@ The repository currently includes:
 
 ## 📄 Research Context
 
-The technical foundations of Atenia Engine are described in:
-
-**Atenia Engine: Hardware-Adaptive Execution Intelligence for Stable and Resilient AI Runtime Systems**
-## 📄 Research Paper (Preprint)
-
 The technical foundations of Atenia Engine are described in the following paper:
 
 **Atenia Engine: Hardware-Adaptive Execution Intelligence for Stable and Resilient AI Runtime Systems**
