@@ -32,8 +32,12 @@ matmul_kernel.*
 # =========================
 atenia_cache/
 tmp_offload_mm*/
-data/
-src/data/
+
+/data/
+
+# Atenia Engine source (must be versioned)
+!src/data/
+!src/data/**
 
 # =========================
 # Logs / local traces
