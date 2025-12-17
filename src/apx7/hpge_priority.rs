@@ -1,0 +1,247 @@
+use crate::amg::graph::Graph;
+use crate::amg::nodes::{Node, NodeType};
+use std::sync::{OnceLock, RwLock};
+use crate::apx7::hpfa::FusionAffinity;
+
+/// Información de prioridad por nodo para APX 7.6 HPGE v2.
+#[derive(Clone, Debug, Default)]
+pub struct NodePriorityInfo {
+    pub est_cost: f64,
+    pub subtree_size: usize,
+    pub hist_time_us: f64,
+    pub fusion_bonus: f64,
+}
+
+/// Scheduler de prioridades para un grafo concreto.
+#[derive(Clone, Debug)]
+pub struct PriorityScheduler {
+    pub priorities: Vec<NodePriorityInfo>,
+}
+
+// Históricos globales de tiempo por nodo (en microsegundos).
+// Se indexan por `node_id` dentro del grafo actual. Usamos OnceLock+RwLock
+// para evitar `static mut` y seguir siendo thread-safe.
+static GLOBAL_HIST_TIMES: OnceLock<RwLock<Vec<f64>>> = OnceLock::new();
+
+fn get_global_hist_times(len: usize) -> &'static RwLock<Vec<f64>> {
+    let lock = GLOBAL_HIST_TIMES.get_or_init(|| RwLock::new(vec![0.0; len]));
+    {
+        if let Ok(guard) = lock.read() {
+            if guard.len() != len {
+                drop(guard);
+                if let Ok(mut w) = lock.write() {
+                    *w = vec![0.0; len];
+                }
+            }
+        }
+    }
+    lock
+}
+
+/// Llamado desde `Graph::execute_single` para registrar tiempo histórico
+/// por nodo cuando APX >= 7.6.
+pub fn record_node_time(node_id: usize, dt_us: f64, node_count: usize) {
+    let hist = get_global_hist_times(node_count);
+    if let Ok(mut guard) = hist.write() {
+        if node_id < guard.len() {
+            let prev = guard[node_id];
+            guard[node_id] = 0.8 * prev + 0.2 * dt_us;
+        }
+    }
+}
+
+fn compute_subtree_sizes(children: &Vec<Vec<usize>>) -> Vec<usize> {
+    fn dfs(u: usize, ch: &Vec<Vec<usize>>, memo: &mut Vec<Option<usize>>) -> usize {
+        if let Some(v) = memo[u] {
+            return v;
+        }
+        if ch[u].is_empty() {
+            memo[u] = Some(1);
+            return 1;
+        }
+        let mut s = 1;
+        for &c in &ch[u] {
+            s += dfs(c, ch, memo);
+        }
+        memo[u] = Some(s);
+        s
+    }
+
+    let n = children.len();
+    let mut memo = vec![None; n];
+    let mut out = vec![0; n];
+    for i in 0..n {
+        out[i] = dfs(i, children, &mut memo);
+    }
+    out
+}
+
+fn estimate_cost(node: &Node) -> f64 {
+    match node.node_type {
+        NodeType::MatMul => {
+            // Heurística simple: número de elementos^1.5 aproximado si hay shape.
+            let elems = node
+                .output
+                .as_ref()
+                .map(|t| t.shape.iter().product::<usize>() as f64)
+                .unwrap_or(1.0);
+            elems
+        }
+        NodeType::Linear => {
+            let elems = node
+                .output
+                .as_ref()
+                .map(|t| t.shape.iter().product::<usize>() as f64)
+                .unwrap_or(1.0);
+            elems * 0.5
+        }
+        NodeType::SiLU | NodeType::Activation(_) | NodeType::Softmax | NodeType::LogSoftmax => 1.0,
+        _ => 10.0,
+    }
+}
+
+fn compute_priority(p: &NodePriorityInfo) -> f64 {
+    (p.est_cost * 0.4)
+        + ((p.subtree_size as f64) * 0.3)
+        + (p.hist_time_us * 0.1)
+        + (p.fusion_bonus * 0.2)
+}
+
+/// Versión 7.6 del ejecutor de grafo con prioridades (Critical-Path Optimizer).
+///
+/// Mantiene las mismas garantías que HPGE v1 y nunca altera kernels ni backward.
+pub fn execute_graph_parallel_priority(graph: &mut Graph) {
+    let node_count = graph.nodes.len();
+    if node_count == 0 {
+        return;
+    }
+
+    // Construir hijos y parents_left (mismo que HPGE v1).
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); node_count];
+    let mut parents_left: Vec<usize> = vec![0; node_count];
+
+    for (id, node) in graph.nodes.iter().enumerate() {
+        parents_left[id] = node.inputs.len();
+        for &inp in &node.inputs {
+            if inp < node_count {
+                children[inp].push(id);
+            }
+        }
+    }
+
+    let mut ready: Vec<usize> = Vec::new();
+    for id in 0..node_count {
+        if parents_left[id] == 0 {
+            ready.push(id);
+        }
+    }
+
+    if ready.is_empty() {
+        if crate::apx_debug_enabled() {
+            eprintln!("[APX 7.6 HPGE] no ready nodes found, falling back to run_plan()");
+        }
+        graph.run_plan(true);
+        return;
+    }
+
+    // Preparar scheduler de prioridades.
+    let subtree_sizes = compute_subtree_sizes(&children);
+    let hist = get_global_hist_times(node_count)
+        .read()
+        .ok()
+        .map(|g| g.clone());
+
+    let mut priorities: Vec<NodePriorityInfo> = (0..node_count)
+        .map(|i| NodePriorityInfo {
+            est_cost: estimate_cost(&graph.nodes[i]),
+            subtree_size: subtree_sizes[i],
+            hist_time_us: hist.as_ref().and_then(|v| v.get(i).cloned()).unwrap_or(0.0),
+            fusion_bonus: 0.0,
+        })
+        .collect();
+
+    // APX 7.7: incorporar señales de Hot-Path Fusion Awareness (HPFA).
+    if crate::apx_mode_at_least("7.7") {
+        if let Ok(sel) = crate::apx6_10::global_fusion_selector().lock() {
+            for node_id in 0..node_count {
+                let fa: FusionAffinity = sel.get_fusion_affinity(node_id);
+                priorities[node_id].fusion_bonus = fa.fusion_bonus();
+            }
+        }
+    }
+
+    // APX 7.9: usar HLS para obtener un orden jerárquico de clusters y
+    // derivar un índice de prioridad de cluster por nodo. Esto sigue sin
+    // modificar la matemática ni las dependencias; sólo da hints al
+    // orden dentro de ready.
+    let cluster_order: Vec<usize> = if crate::apx_mode_at_least("7.9") {
+        let mut order = vec![usize::MAX; node_count];
+        let hls = crate::apx7::hls::HLSScheduler::new(graph);
+        let clusters = hls.run();
+        let mut _pos = 0usize;
+        for (cidx, cluster) in clusters.iter().enumerate() {
+            for &nid in &cluster.nodes {
+                if nid < order.len() {
+                    if order[nid] == usize::MAX {
+                        order[nid] = cidx;
+                        _pos += 1;
+                    }
+                }
+            }
+        }
+        order
+    } else {
+        vec![usize::MAX; node_count]
+    };
+
+    let sched = PriorityScheduler { priorities };
+
+    let mut executed = 0usize;
+
+    while !ready.is_empty() {
+        // Ordenar nodos listos por prioridad (mayor primero). En APX 7.9
+        // añadimos primero el orden jerárquico de clusters HLS y luego la
+        // prioridad numérica de HPFA+TLO.
+        ready.sort_by(|&a, &b| {
+            if crate::apx_mode_at_least("7.9") {
+                let ca = cluster_order.get(a).copied().unwrap_or(usize::MAX);
+                let cb = cluster_order.get(b).copied().unwrap_or(usize::MAX);
+                if ca != cb {
+                    return ca.cmp(&cb);
+                }
+            }
+
+            let pa = compute_priority(&sched.priorities[a]);
+            let pb = compute_priority(&sched.priorities[b]);
+            pb.partial_cmp(&pa).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let batch: Vec<usize> = ready.drain(..).collect();
+
+        for node_id in &batch {
+            graph.execute_single(*node_id, true);
+            executed += 1;
+        }
+
+        for node_id in &batch {
+            for &child in &children[*node_id] {
+                if parents_left[child] > 0 {
+                    parents_left[child] -= 1;
+                    if parents_left[child] == 0 {
+                        ready.push(child);
+                    }
+                }
+            }
+        }
+    }
+
+    if executed != node_count {
+        if crate::apx_debug_enabled() {
+            eprintln!(
+                "[APX 7.6 HPGE] executed {} of {} nodes, falling back to run_plan()",
+                executed, node_count
+            );
+        }
+        graph.run_plan(true);
+    }
+}
