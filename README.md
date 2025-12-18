@@ -3,7 +3,7 @@
 
 > **Current Project Status**
 > - ✅ **APX v12 completed** — Adaptive execution intelligence fully validated through reproducible tests.
-> - 🔄 **APX v13 in progress** — Execution stability refinement under sustained and noisy runtime conditions.
+> - 🔄 **APX v13 in progress** — Hybrid Execution Engine (H.E.E.): architectural unification of hybrid execution modes under dynamic runtime constraints.
 > - 📄 **Paper**: Preprint — arXiv submission in progress.
 > - 🧾 **Patent**: USPTO Provisional Application No. 63/941,875 (Filed Dec 16, 2025).
 > - 🌍 **Website**: https://ateniaengine.com
