@@ -1,6 +1,13 @@
 # 🧠 Atenia Engine
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17970198.svg)](https://doi.org/10.5281/zenodo.17970198)
 
+> **Current Status**
+> - ✅ **APX v12.14 completed** — Adaptive execution intelligence finalized
+> - 🔄 **APX v13 in progress** — Stability refinement under sustained load
+> - 📄 **Paper**: Preprint (arXiv submission in progress)
+> - 🌍 **Website**: https://ateniaengine.com
+
+
 ### Execution intelligence for AI systems that operate in the real world
 
 Modern AI runtimes assume stable hardware.
