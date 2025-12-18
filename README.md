@@ -1,5 +1,6 @@
 # 🧠 Atenia Engine
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17970198.svg)](https://doi.org/10.5281/zenodo.17970198)
+
 *Atenia Engine wasn’t born because it was wanted. It was born because it was needed.*
 
 > **Current Project Status**
