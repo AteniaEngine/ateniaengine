@@ -1,10 +1,11 @@
 # 🧠 Atenia Engine
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17970198.svg)](https://doi.org/10.5281/zenodo.17970198)
 
-> **Current Status**
-> - ✅ **APX v12.14 completed** — Adaptive execution intelligence finalized
-> - 🔄 **APX v13 in progress** — Stability refinement under sustained load
-> - 📄 **Paper**: Preprint (arXiv submission in progress)
+> **Current Project Status**
+> - ✅ **APX v12 completed** — Adaptive execution intelligence fully validated through reproducible tests.
+> - 🔄 **APX v13 in progress** — Execution stability refinement under sustained and noisy runtime conditions.
+> - 📄 **Paper**: Preprint — arXiv submission in progress.
+> - 🧾 **Patent**: USPTO Provisional Application No. 63/941,875 (Filed Dec 16, 2025).
 > - 🌍 **Website**: https://ateniaengine.com
 
 
