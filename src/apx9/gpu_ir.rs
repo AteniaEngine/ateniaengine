@@ -1,5 +1,5 @@
 // APX 9.1 — GPU IR v1
-// IR minimalista y seguro para kernels GPU, 100% CPU-only y sin dependencias de CUDA/HIP.
+// Minimal and safe IR for GPU kernels, 100% CPU-only and without CUDA/HIP dependencies.
 
 #[derive(Debug, Clone)]
 pub struct GpuIrKernel {
@@ -30,12 +30,12 @@ pub enum GpuIrStmt {
     MulF32 { dst: String, a: String, b: String },
     LocalVar { name: String, ty: GpuIrType },
 
-    // Control de hilo (abstracto)
+    // Thread control (abstract)
     ThreadIdxX(String),
     BlockIdxX(String),
     BlockDimX(String),
 
-    // Bucles simples
+    // Simple loops
     For {
         var: String,
         start: i32,
@@ -50,8 +50,8 @@ impl GpuIrKernel {
     }
 }
 
-// APX 9.1 / 9.2 — Kernel IR simplificado para el PTX emitter v0.
-// Totalmente independiente de CUDA real; sólo describe ops de alto nivel.
+// APX 9.1 / 9.2 — Simplified kernel IR for PTX emitter v0.
+// Fully independent of real CUDA; only describes high-level ops.
 
 #[derive(Debug, Clone)]
 pub struct GpuKernelIR {
@@ -65,10 +65,10 @@ pub enum GpuOp {
     Load { dst: String, src: String },
     Add { dst: String, a: String, b: String },
     Store { dst: String, src: String },
-    // APX 9.16 — barrera de sincronización simbólica entre threads de un bloque.
-    // En la simulación actual se interpreta como no-op secuencial, pero preserva el orden.
+    // APX 9.16 — symbolic synchronization barrier between threads in a block.
+    // In the current simulation it is treated as a sequential no-op, but preserves ordering.
     Sync,
-    // APX 9.17 — predicación SIMT simbólica para divergencia de warps.
-    // En esta fase se trata de un marcador lógico, sin efecto en la matemática.
+    // APX 9.17 — symbolic SIMT predication for warp divergence.
+    // At this stage it is a logical marker, with no effect on math.
     Predicate { lane_mod: usize, value: usize },
 }

@@ -56,15 +56,15 @@ pub struct Tensor {
     pub layout: Layout,
     pub strides: Vec<usize>,
     pub grad: Option<Vec<f32>>,
-    /// APX 8.4: mirror opcional en GPU. No afecta a la semántica numérica.
+    /// APX 8.4: optional GPU mirror. Does not affect numeric semantics.
     pub gpu: Option<GPUMirror>,
-    /// APX 8.5: metadatos opcionales de persistencia en GPU.
+    /// APX 8.5: optional GPU persistence metadata.
     pub persistence: Option<GPUPersistenceInfo>,
-    /// APX 11.1: referencia opcional a la operación que generó este tensor.
+    /// APX 11.1: optional reference to the operation that produced this tensor.
     pub op: Option<crate::ops::op_ref::OpRef>,
 }
 
-/// Lightweight alias used en capas de IR/APX para referenciar tensores.
+/// Lightweight alias used in IR/APX layers to reference tensors.
 pub type TensorRef = Tensor;
 
 impl fmt::Debug for Tensor {
@@ -351,7 +351,7 @@ impl Tensor {
 
     // === APX 8.4: GPU mirroring helpers ===
 
-    /// Asegura que exista un mirror GPU para este tensor. No mueve datos reales en 8.4.
+    /// Ensure a GPU mirror exists for this tensor. Does not move real data in 8.4.
     pub fn ensure_gpu_mirror(&mut self) {
         if self.gpu.is_none() {
             let mut m = GPUMirror::new_empty();
@@ -373,7 +373,7 @@ impl Tensor {
         }
     }
 
-    /// Sincroniza desde GPU hacia CPU a nivel de estado; en 8.4 no toca los datos reales.
+    /// Synchronize from GPU to CPU at state level; in 8.4 does not touch real data.
     pub fn sync_cpu(&mut self) {
         let bytes = self.estimated_bytes();
         if let Some(ref mut m) = self.gpu {
@@ -382,7 +382,7 @@ impl Tensor {
         }
     }
 
-    /// Sincroniza desde CPU hacia GPU a nivel de estado; en 8.4 no toca los datos reales.
+    /// Synchronize from CPU to GPU at state level; in 8.4 does not touch real data.
     pub fn sync_gpu(&mut self) {
         let bytes = self.estimated_bytes();
         if let Some(ref mut m) = self.gpu {
@@ -393,7 +393,7 @@ impl Tensor {
 
     // === APX 8.5: GPU persistence helpers ===
 
-    /// Habilita la persistencia GPU para este tensor (sólo metadatos, sin mover datos).
+    /// Enable GPU persistence for this tensor (metadata only; does not move data).
     pub fn enable_gpu_persistence(&mut self) {
         if self.persistence.is_none() {
             let bytes = self.estimated_bytes();
@@ -406,7 +406,7 @@ impl Tensor {
         }
     }
 
-    /// Registra un uso GPU del tensor para la heurística de persistencia.
+    /// Record a GPU use of the tensor for the persistence heuristic.
     pub fn note_gpu_use(&mut self) {
         if let Some(ref mut p) = self.persistence {
             p.reuse_score = p.reuse_score.saturating_add(1);
@@ -414,8 +414,8 @@ impl Tensor {
         }
     }
 
-    /// Heurística naïve de limpieza de mirror GPU: si el reuse_score es bajo y
-    /// el tensor no se ha usado en muchos pasos, se suelta el mirror.
+    /// Naive heuristic for cleaning the GPU mirror: if reuse_score is low and
+    /// the tensor has not been used for many steps, drop the mirror.
     pub fn maybe_drop_gpu(&mut self, current_step: u64, max_age: u64) {
         if let (Some(p), Some(_)) = (&self.persistence, &self.gpu) {
             if !p.pinned && p.reuse_score < 2 {

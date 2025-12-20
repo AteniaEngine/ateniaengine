@@ -5,8 +5,8 @@ use atenia_engine::apx5::apx_5_3_planner::{
 };
 
 fn make_info(num_elems: usize, dtype: &str, contiguous: bool) -> NodeExecInfo {
-    // Para este test sintético asumimos un MatMul 2D con shape [m, n]
-    // tal que m*n = num_elems. Tomamos m=num_elems, n=1 por simplicidad.
+    // For this synthetic test we assume a 2D MatMul with shape [m, n]
+    // such that m*n = num_elems. We use m=num_elems, n=1 for simplicity.
     NodeExecInfo {
         node_id: 0,
         op_name: "MatMul".to_string(),
@@ -31,7 +31,7 @@ fn make_info(num_elems: usize, dtype: &str, contiguous: bool) -> NodeExecInfo {
 #[test]
 fn small_matmul_prefers_cpu() {
     let planner = Planner5_3::new();
-    // num_elems por debajo del umbral pequeño (4_096)
+    // num_elems below the small threshold (4_096)
     let info = make_info(1024, "F32", true);
 
     let plan = planner.select_plan(&info);
@@ -43,7 +43,7 @@ fn small_matmul_prefers_cpu() {
 #[test]
 fn medium_matmul_cpu_medium() {
     let planner = Planner5_3::new();
-    // Entre small_threshold y large_threshold
+    // Between small_threshold and large_threshold
     let info = make_info(100_000, "F32", true);
 
     let plan = planner.select_plan(&info);
@@ -55,7 +55,7 @@ fn medium_matmul_cpu_medium() {
 #[test]
 fn large_contiguous_f32_marked_gpu_candidate() {
     let planner = Planner5_3::new();
-    // Grande, contiguo y F32: debería marcarse como candidato a GPU
+    // Large, contiguous, and F32: should be marked as a GPU candidate
     let info = make_info(2_000_000, "F32", true);
 
     let plan = planner.select_plan(&info);
@@ -67,7 +67,7 @@ fn large_contiguous_f32_marked_gpu_candidate() {
 #[test]
 fn large_non_contiguous_suggests_force_contiguous() {
     let planner = Planner5_3::new();
-    // Grande y no contiguo: sugiere ForceContiguous en el plan
+    // Large and non-contiguous: suggests ForceContiguous in the plan
     let info = make_info(2_000_000, "F32", false);
 
     let plan = planner.select_plan(&info);

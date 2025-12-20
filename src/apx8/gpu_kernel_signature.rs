@@ -1,6 +1,6 @@
 // APX 8.8 — GPU Kernel Signatures v0
-// Infraestructura de firmas para kernels GPU reales.
-// No ejecuta GPU, no modifica backward ni resultados numéricos.
+// Signature infrastructure for real GPU kernels.
+// Does not execute GPU, does not modify backward nor numeric results.
 
 use std::collections::HashMap;
 use std::sync::RwLock;
@@ -38,7 +38,7 @@ pub fn get_signature(key: &GpuKernelType) -> Option<GpuKernelSignature> {
     map.get(key).cloned()
 }
 
-/// Stub de debug para integración con dispatcher; no hace nada en 8.8.
+/// Debug stub for integration with dispatcher; does nothing in 8.8.
 pub fn record_kernel_signature(_sig: &GpuKernelSignature) {
-    // En futuras versiones se podría loguear o acumular estadísticas.
+    // In future versions it could log or accumulate statistics.
 }

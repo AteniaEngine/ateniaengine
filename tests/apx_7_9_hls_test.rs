@@ -34,9 +34,9 @@ fn apx_7_9_hls_structural_clusters() {
     let hls = atenia_engine::apx7::hls::HLSScheduler::new(&g);
     let clusters = hls.run();
 
-    // Esperamos ver una estructura coherente: A y B (0,1) deben aparecer
-    // juntos en algún cluster, y D/E (4,2) deben estar presentes en
-    // clusters separados.
+    // Expect a coherent structure: A and B (0,1) should appear
+    // together in some cluster, and D/E (4,2) should be present in
+    // separate clusters.
     let mut has_ab_together = false;
     let mut has_d = false;
     let mut has_e = false;
@@ -63,7 +63,7 @@ fn apx_7_9_hls_structural_clusters() {
 }
 
 fn make_two_layer_graph() -> Graph {
-    // Pequeña red de 2 capas: X -> SiLU -> SiLU -> Output
+    // Small 2-layer network: X -> SiLU -> SiLU -> Output
     let mut nodes = Vec::new();
     nodes.push(Node::new(0, NodeType::Input, vec![]));
     nodes.push(Node::new(1, NodeType::SiLU, vec![0]));
@@ -95,7 +95,7 @@ fn apx_7_9_hls_equivalence_vs_7_8() {
 
 #[test]
 fn apx_7_9_hls_performance_sanity() {
-    // Grafo con varias ramas paralelas similar al de TLO.
+    // Graph with several parallel branches similar to TLO.
     fn make_wide_graph(width: usize) -> Graph {
         let mut nodes = Vec::new();
         nodes.push(Node::new(0, NodeType::Input, vec![]));
@@ -139,11 +139,11 @@ fn apx_7_9_hls_performance_sanity() {
     let mut g_hls = make_wide_graph(width);
     let t_hls = now_ms(|| g_hls.execute(inputs));
 
-    // Margen de rendimiento con tolerancia configurable según build.
+    // Performance margin with build-configurable tolerance.
     #[cfg(debug_assertions)]
-    let tolerance: f64 = 1.4; // En debug permitimos más jitter
+    let tolerance: f64 = 1.4; // In debug allow more jitter
     #[cfg(not(debug_assertions))]
-    let tolerance: f64 = 1.3; // En release, umbral más estricto
+    let tolerance: f64 = 1.3; // In release, stricter threshold
 
     assert!(
         t_hls <= t_tlo * tolerance,

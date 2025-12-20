@@ -1,8 +1,8 @@
 #[derive(Debug, Clone)]
 pub struct KernelPerf {
-    pub size: usize,          // tamaño típico, ej. 128, 256, 512, 1024
-    pub baseline_us: u128,    // tiempo baseline APX 3.8
-    pub micro64_us: u128,     // tiempo microkernel 6.4
+    pub size: usize,          // typical size, e.g. 128, 256, 512, 1024
+    pub baseline_us: u128,    // APX 3.8 baseline time
+    pub micro64_us: u128,     // 6.4 microkernel time
     pub selected: String,     // "baseline" | "micro64"
 }
 
@@ -24,7 +24,7 @@ impl RuntimeProfile {
         if self.entries.is_empty() {
             return None;
         }
-        // Elegir la entrada con tamaño más cercano.
+        // Choose the entry with the closest size.
         let mut best = None;
         let mut best_diff = usize::MAX;
         for e in &self.entries {
@@ -38,7 +38,7 @@ impl RuntimeProfile {
     }
 
     pub fn record(&mut self, perf: KernelPerf) {
-        // Reemplazar si ya había una entrada para ese tamaño.
+        // Replace if there was already an entry for that size.
         if let Some(existing) = self.entries.iter_mut().find(|e| e.size == perf.size) {
             *existing = perf;
         } else {

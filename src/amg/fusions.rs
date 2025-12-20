@@ -2,8 +2,8 @@ use crate::tensor::{Tensor, Layout};
 use crate::nn::linear as nn_linear;
 use crate::nn::softmax as nn_softmax;
 
-/// APX 6.10: ruta auxiliar de forward para atención completa.
-/// NO registra BackOps, NO toca tensores del grafo.
+/// APX 6.10: auxiliary forward path for full attention.
+/// Does NOT record BackOps and does NOT touch graph tensors.
 pub fn execute_fused_attention_full(
     x: &Tensor,
     wq: &Tensor,
@@ -15,22 +15,22 @@ pub fn execute_fused_attention_full(
     wproj: &Tensor,
     bias: Option<&Tensor>,
 ) -> Tensor {
-    // 1) Q, K, V = X·W (+ bias opcional)
+    // 1) Q, K, V = X·W (+ optional bias)
     let q = nn_linear::linear(x, wq, bq);
     let k = nn_linear::linear(x, wk, bk);
     let v = nn_linear::linear(x, wv, bv);
 
-    // 2) scores = Q·K^T, igual que el grafo naive de atención.
+    // 2) scores = Q·K^T, same as the naive attention graph.
     let k_t = transpose_2d(&k);
     let scores = nn_linear::matmul(&q, &k_t);
 
-    // 3) probs = softmax(scores) sobre última dimensión
+    // 3) probs = softmax(scores) over the last dimension
     let probs = nn_softmax::softmax_last_dim(&scores);
 
     // 4) out = probs·V
     let out = nn_linear::matmul(&probs, &v);
 
-    // 5) proj = out·Wproj (+ bias opcional)
+    // 5) proj = out·Wproj (+ optional bias)
     nn_linear::linear(&out, wproj, bias)
 }
 

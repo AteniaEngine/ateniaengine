@@ -9,11 +9,11 @@ pub fn gpu_matmul(
     n: usize,
     out: &mut [f32],
 ) {
-    // Construir tensores temporales sobre CPU para reutilizar la ruta
-    // cuda_matmul existente. Esto no cambia la matemática de MatMul,
-    // sólo delega el cálculo en el kernel CUDA cuando está disponible.
+    // Build temporary CPU tensors to reuse the existing cuda_matmul path.
+    // This does not change MatMul math; it only delegates computation to the
+    // CUDA kernel when available.
 
-    // Tensor A con shape [m, k]
+    // Tensor A with shape [m, k]
     let shape_a = vec![m, k];
     let strides_a = Tensor::compute_strides(&shape_a, &Layout::Contiguous);
     let ta = Tensor {
@@ -29,7 +29,7 @@ pub fn gpu_matmul(
         op: None,
     };
 
-    // Tensor B con shape [k, n]
+    // Tensor B with shape [k, n]
     let shape_b = vec![k, n];
     let strides_b = Tensor::compute_strides(&shape_b, &Layout::Contiguous);
     let tb = Tensor {
@@ -47,8 +47,8 @@ pub fn gpu_matmul(
 
     let tc = cuda_matmul(&ta, &tb, m, k, n);
 
-    // Copiar el resultado al buffer de salida plano.
-    assert_eq!(tc.data.len(), out.len(), "gpu_matmul: tamaño de salida inesperado");
+    // Copy the result into the flat output buffer.
+    assert_eq!(tc.data.len(), out.len(), "gpu_matmul: unexpected output size");
     out.copy_from_slice(&tc.data);
 }
 

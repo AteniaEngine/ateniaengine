@@ -1,5 +1,5 @@
-// APX 9.20 — Instrucciones virtuales SIMT para el pipeline VGPU.
-// Totalmente simbólicas, no tocan memoria real ni GPU.
+// APX 9.20 — SIMT virtual instructions for the VGPU pipeline.
+// Fully symbolic; do not touch real memory nor GPU.
 
 #[derive(Debug, Clone)]
 pub enum VGPUInstr {
@@ -12,7 +12,7 @@ pub enum VGPUInstr {
         join_pc: usize,
     },
     Reconverge,
-    // APX 9.24 — operación HMMA/MMA simbólica sobre tiles pequeños en memoria global.
+    // APX 9.24 — symbolic HMMA/MMA op over small tiles in global memory.
     HMMA {
         a_ptr: usize,
         b_ptr: usize,
@@ -24,18 +24,18 @@ pub enum VGPUInstr {
 }
 
 impl VGPUInstr {
-    /// Registros fuente que esta instrucción lee (para RAW/WAR hazards simbólicos).
+    /// Source registers read by this instruction (for symbolic RAW/WAR hazards).
     pub fn read_regs(&self) -> Vec<usize> {
         match self {
             VGPUInstr::Noop => Vec::new(),
             VGPUInstr::Add { a, b, .. } => vec![*a, *b],
             VGPUInstr::If { .. } => Vec::new(),
             VGPUInstr::Reconverge => Vec::new(),
-            VGPUInstr::HMMA { .. } => Vec::new(), // usa memoria, no registros
+            VGPUInstr::HMMA { .. } => Vec::new(), // uses memory, not registers
         }
     }
 
-    /// Registros destino que esta instrucción escribe (para WAW hazards simbólicos).
+    /// Destination registers written by this instruction (for symbolic WAW hazards).
     pub fn write_regs(&self) -> Vec<usize> {
         match self {
             VGPUInstr::Noop => Vec::new(),

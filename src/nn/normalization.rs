@@ -70,7 +70,7 @@ pub fn rmsnorm_backward_parallel(x: &Tensor, grad_out: &Tensor) -> Tensor {
             let mean_sq = xrow.iter().map(|v| v * v).sum::<f32>() / cols as f32;
             let denom = (mean_sq + 1e-5).sqrt();
             for i in 0..cols {
-                // derivada simplificada (solo para APX 1.5)
+                // simplified derivative (APX 1.5 only)
                 dst[i] = grow[i] * (1.0 / denom);
             }
         });

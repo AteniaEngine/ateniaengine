@@ -66,7 +66,7 @@ pub fn matmul_tiled_6_5(
     let bm = 64usize;
     let bn = 64usize;
 
-    // Inicializar salida a cero (forward puro).
+    // Initialize output to zero (pure forward).
     for v in out.iter_mut() {
         *v = 0.0;
     }
@@ -76,13 +76,13 @@ pub fn matmul_tiled_6_5(
         for j0 in (0..n).step_by(bn) {
             let j_max = (j0 + bn).min(n);
 
-            // Bloques internos 8x8 dentro del tile 64x64.
+            // Inner 8x8 blocks within the 64x64 tile.
             for ib in (i0..i_max).step_by(8) {
                 let i_block_max = (ib + 8).min(i_max);
                 for jb in (j0..j_max).step_by(8) {
                     let j_block_max = (jb + 8).min(j_max);
 
-                    // Si no es un bloque completo 8x8, usar fallback escalar seguro.
+                    // If it is not a full 8x8 block, use safe scalar fallback.
                     if i_block_max - ib < 8 || j_block_max - jb < 8 {
                         for i in ib..i_block_max {
                             for j in jb..j_block_max {
@@ -98,7 +98,7 @@ pub fn matmul_tiled_6_5(
 
                     let k_local = k;
 
-                    // Packing de A: 8 filas x k_local, row-major contiguo.
+                    // Packing A: 8 rows x k_local, contiguous row-major.
                     let mut a_panel = vec![0f32; 8 * k_local];
                     for r in 0..8 {
                         let src_row = ib + r;
@@ -107,7 +107,7 @@ pub fn matmul_tiled_6_5(
                         }
                     }
 
-                    // Packing de B: k_local x 8, col-major respecto a N, K contigua.
+                    // Packing B: k_local x 8, col-major with respect to N, contiguous in K.
                     let mut b_panel = vec![0f32; k_local * 8];
                     for p in 0..k_local {
                         for c in 0..8 {

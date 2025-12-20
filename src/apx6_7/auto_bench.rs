@@ -31,7 +31,7 @@ pub fn run_initial_bench(profile: &mut RuntimeProfile) {
         matmul_4x8_avx2(a.as_ptr(), b.as_ptr(), out_micro.as_mut_ptr(), m, k, n);
         let micro64_us = t1.elapsed().as_micros();
 
-        // Regla de decisión: 5% más rápido que baseline para elegir micro64.
+        // Decision rule: 5% faster than baseline to choose micro64.
         let threshold = baseline_us * 95 / 100;
         let selected = if micro64_us < threshold {
             "micro64".to_string()
@@ -53,7 +53,7 @@ pub fn run_initial_bench(profile: &mut RuntimeProfile) {
 pub fn estimate_best_kernel(size: usize, profile: &RuntimeProfile) -> Option<KernelTarget> {
     let selected = profile.best_for(size)?;
     let target = if selected == "micro64" {
-        // Usar target optimizado CPU (AVX2) ya existente.
+        // Use the existing optimized CPU (AVX2) target.
         KernelTarget::CpuFastAvx2
     } else {
         KernelTarget::Cpu

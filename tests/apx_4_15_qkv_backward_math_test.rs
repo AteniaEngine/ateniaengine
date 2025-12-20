@@ -59,10 +59,10 @@ fn transpose_2d_2d(t: &Tensor) -> Tensor {
 #[test]
 #[ignore]
 fn test_qkv_backward_math_matches_naive() {
-    // Grafo sintético Q,K,V con suma: out = q + k + v
+    // Synthetic Q,K,V graph with sum: out = q + k + v
     let (mut graph, x_id, wq_id, wk_id, wv_id, q_id, k_id, v_id) = build_qkv_sum_graph();
 
-    // Entradas determinísticas pequeñas
+    // Small deterministic inputs
     let m = 2usize;
     let k = 4usize;
     let n = 3usize;
@@ -74,8 +74,8 @@ fn test_qkv_backward_math_matches_naive() {
 
     let inputs = vec![x.clone(), wq.clone(), wk.clone(), wv.clone()];
 
-    // Forward + backward naive usando el engine.
-    // Usamos execute() para forward y luego backward() con el último Output.
+    // Forward + naive backward using the engine.
+    // Use execute() for forward and then backward() with the last Output.
     let out_id = graph.last_output_id();
     let _outs = graph.execute(inputs);
     graph.backward(out_id);
@@ -117,7 +117,7 @@ fn test_qkv_backward_math_matches_naive() {
         } else {
             let g = graph.grad_store.get(node_id);
             if g.is_empty() {
-                // 3) Como último recurso, devolver gradiente cero del mismo tamaño.
+                // 3) As a last resort, return a zero gradient of the same size.
                 vec![0.0; proto.data.len()]
             } else {
                 g
@@ -138,13 +138,13 @@ fn test_qkv_backward_math_matches_naive() {
         }
     };
 
-    // Gradientes naive obtenidos vía helper (equivalente lógico al caso 4.16).
+    // Naive gradients obtained via helper (logical equivalent to case 4.16).
     let dx_naive  = make_grad(x_id,  &x_t);
     let dwq_naive = make_grad(wq_id, &wq_t);
     let dwk_naive = make_grad(wk_id, &wk_t);
     let dwv_naive = make_grad(wv_id, &wv_t);
 
-    // gQ, gK, gV analíticos: out = q + k + v, dL/dout = 1 => gq = gk = gv = 1
+    // Analytical gQ, gK, gV: out = q + k + v, dL/dout = 1 => gq = gk = gv = 1
     let q_out = graph.nodes[q_id].output.as_ref().expect("q output missing");
     let gq = Tensor::with_layout(
         q_out.shape.clone(),
@@ -172,7 +172,7 @@ fn test_qkv_backward_math_matches_naive() {
         v_out.dtype,
     );
 
-    // --- backward QKV fusionado (matemático) ---
+    // --- fused QKV backward (mathematical) ---
     let wq_t_t = transpose_2d_2d(&wq_t);
     let wk_t_t = transpose_2d_2d(&wk_t);
     let wv_t_t = transpose_2d_2d(&wv_t);

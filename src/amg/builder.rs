@@ -126,7 +126,7 @@ impl GraphBuilder {
     pub fn build(self) -> super::graph::Graph {
         let mut graph = super::graph::Graph::new(self.nodes);
 
-        // Aplicar fusiones estructurales APX 4.8 y 4.9 sobre el grafo ya construido.
+        // Apply APX 4.8 and 4.9 structural fusions on the already-built graph.
         let _ = detect_and_fuse_linear_activation(&mut graph);
         let _ = fuse_linear_activation_linear(&mut graph);
 

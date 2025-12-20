@@ -1,6 +1,6 @@
 // APX 12.12 — GPU Consistency Scanner
-// Nota: en este repo no existe run_small_matmul_for_benchmark() expuesta,
-// así que usamos un stub mínimo que devuelve una latencia sintética fija.
+// Note: in this repo there is no exposed run_small_matmul_for_benchmark(),
+// so we use a minimal stub that returns a fixed synthetic latency.
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum GpuConsistency {
@@ -55,7 +55,7 @@ impl ConsistencyScanner {
     }
 }
 
-// Stub mínimo: en una integración completa esto llamaría a
+// Minimal stub: in a full integration this would call
 // gpu::ops::matmul::run_small_matmul_for_benchmark().
 fn run_small_matmul_for_benchmark_stub() -> f32 {
     1.0

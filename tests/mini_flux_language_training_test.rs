@@ -38,9 +38,9 @@ fn language_loss_reduces_over_time() {
     let mut initial_loss = None;
     let mut best_loss = f32::MAX;
 
-    // Hacemos este test razonablemente rápido y menos estricto para CI:
-    // - 200 pasos de entrenamiento.
-    // - Solo requerimos una mejora moderada en la loss.
+    // Keep this test reasonably fast and less strict for CI:
+    // - 200 training steps.
+    // - Only require a moderate improvement in loss.
     for step in 0..200 {
         let outputs = trainer.train_step(vec![tokens.clone(), targets.clone()]);
         let loss = outputs[0].data[0];
@@ -56,7 +56,7 @@ fn language_loss_reduces_over_time() {
     }
 
     let start_loss = initial_loss.expect("training steps produced no loss");
-    // Requerimos que la mejor loss mejore al menos ~10% respecto del inicio.
+    // Require that best loss improves by at least ~10% relative to the start.
     let target = start_loss * 0.9;
     assert!(
         best_loss <= target,

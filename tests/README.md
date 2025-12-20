@@ -94,16 +94,16 @@ They intentionally live **alongside the full test suite**, not in isolation, to 
 
 ---
 
-## ▶️ How to Run the Tests
+## How to Run the Tests
 
 ### Standard execution
 ```bash
 cargo test
 Show test output (println!)
 bash
-Copiar código
+Copy code
 cargo test -- --nocapture
-🛠 Debug / Introspection Mode
+ Debug / Introspection Mode
 Atenia Engine supports a debug introspection mode enabled via an environment variable.
 
 When enabled, the engine emits detailed internal logs including:
@@ -118,17 +118,17 @@ profiling and stability signals
 
 Windows (PowerShell)
 powershell
-Copiar código
+Copy code
 $env:ATENIA_DEBUG="1"
 cargo test -- --nocapture
 Linux / macOS
 bash
-Copiar código
+Copy code
 ATENIA_DEBUG=1 cargo test -- --nocapture
 This mode does not change execution semantics.
 It only increases observability and is intended for research and debugging.
 
-⚠️ Notes
+ Notes
 This directory contains hundreds of tests accumulated across the engine’s evolution.
 
 Not all tests are expected to be lightweight or fast.

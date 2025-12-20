@@ -1,13 +1,13 @@
 // APX 9.8 — GPU Executor Mock (GXE v0)
-// Ejecuta un GPUExecutionPlan de forma 100% simulada: no ejecuta kernels reales
-// ni usa VRAM; sólo acumula tiempos y métricas simbólicas.
+// Executes a GPUExecutionPlan in a 100% simulated way: does not execute real
+// kernels nor use VRAM; it only accumulates symbolic times and metrics.
 
 use crate::apx9::gpu_execution_planner::{GPUExecutionPlan, GPUPlanStep};
 use crate::apx9::gpu_autotuner::GpuAutoTuner;
 use std::sync::RwLock;
 use once_cell::sync::Lazy;
 
-// APX 9.9: auto-tuner global basado exclusivamente en tiempos simulados del GXE.
+// APX 9.9: global auto-tuner based exclusively on GXE simulated times.
 static AUTOTUNER: Lazy<RwLock<GpuAutoTuner>> = Lazy::new(|| RwLock::new(GpuAutoTuner::new()));
 
 #[derive(Debug)]
@@ -53,7 +53,7 @@ pub fn execute_plan_mock(plan: &GPUExecutionPlan) -> GPUExecutionResult {
         total_time_ms += t;
         per_step.push(t);
 
-        // APX 9.9: registrar muestras CPU/GPU simuladas para el auto-tuner.
+        // APX 9.9: record simulated CPU/GPU samples for the auto-tuner.
         if crate::apx_mode_at_least("9.9") {
             let tensor_size: usize = step
                 .partitions
@@ -79,11 +79,11 @@ pub fn execute_plan_mock(plan: &GPUExecutionPlan) -> GPUExecutionResult {
     }
 }
 
-/// Simulación determinista del tiempo por step.
+/// Deterministic simulation of per-step time.
 fn simulate_step_time(step: &GPUPlanStep, seed: u32) -> f32 {
     let mut base = step.estimated_time_ms.max(0.0);
 
-    // Pequeña variación determinista ±5% basada en un hash simple.
+    // Small deterministic variation ±5% based on a simple hash.
     let mut h: u64 = seed as u64;
     for b in step.kernel_name.as_bytes() {
         h = h.wrapping_mul(31).wrapping_add(*b as u64);
@@ -92,7 +92,7 @@ fn simulate_step_time(step: &GPUPlanStep, seed: u32) -> f32 {
     let factor = 0.95 + frac * 0.10;       // [0.95,1.05]
     base *= factor;
 
-    // Overhead por particiones múltiples.
+    // Overhead for multiple partitions.
     if step.partitions.len() > 1 {
         let overhead = step.estimated_time_ms * 0.05 * (step.partitions.len() as f32);
         base += overhead;

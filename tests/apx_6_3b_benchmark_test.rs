@@ -53,10 +53,10 @@ fn bench_size(m: usize, k: usize, n: usize) {
         t_63b,
         speedup_63b,
     );
-    // En este entorno concreto, el baseline APX 3.8 ya está muy optimizado
-    // y puede superar al kernel 6.3B. Este benchmark se mantiene como
-    // herramienta de diagnóstico y comparación, sin forzar un speedup
-    // mínimo mediante aserciones.
+    // In this specific environment, the APX 3.8 baseline is already highly optimized
+    // and may outperform the 6.3B kernel. This benchmark is kept as a
+    // diagnostics and comparison tool, without forcing a minimum speedup
+    // via assertions.
 }
 
 #[test]

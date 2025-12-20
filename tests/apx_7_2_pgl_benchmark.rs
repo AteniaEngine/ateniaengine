@@ -16,13 +16,13 @@ fn apx_7_2_pgl_benchmark() {
     let a = Tensor::randn(&[1024, 1024], Device::CPU);
     let b = Tensor::randn(&[1024, 1024], Device::CPU);
 
-    // Secuencial pura
+    // Pure sequential
     let seq = now(|| {
         let mut flags = get_runtime_flags();
         flags.enable_pex = false;
         flags.enable_workstealing = false;
         drop(flags);
-        // Matmul secuencial usando la ruta estándar del engine
+        // Sequential matmul using the engine's standard path
         a.matmul(&b)
     });
 

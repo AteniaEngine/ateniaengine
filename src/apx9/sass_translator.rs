@@ -1,5 +1,5 @@
 // APX 9.4 — SASS Translator Mock v0
-// Traducción PTX -> SASS sintética, sin ensamblado ni ejecución real.
+// Synthetic PTX -> SASS translation, without assembly nor real execution.
 
 use crate::apx9::ptx_validator::PtxValidator;
 
@@ -11,7 +11,7 @@ pub struct SassTranslator;
 
 impl SassTranslator {
     pub fn translate(ptx: &str) -> SassOutput {
-        // Seguridad: validar primero el PTX simulado.
+        // Safety: validate the simulated PTX first.
         let validation = PtxValidator::validate(ptx);
         if !validation.ok {
             return SassOutput { sass: "// invalid PTX".into() };

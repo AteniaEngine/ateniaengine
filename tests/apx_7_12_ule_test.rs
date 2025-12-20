@@ -44,7 +44,7 @@ fn apx_7_12_ule_equivalence_with_7_11() {
 
 #[test]
 fn apx_7_12_unifies_choice() {
-    // Backend decision lógica pura (no necesitamos instanciar Graph aquí).
+    // Pure logical backend decision (we do not need to instantiate Graph here).
     let small = vec![0usize];
     let mid = vec![0usize, 1, 2];
     let big: Vec<usize> = (0..16).collect();
@@ -55,12 +55,12 @@ fn apx_7_12_unifies_choice() {
 
     assert_eq!(s_small, ULEStrategy::Seq);
     assert_eq!(s_mid, ULEStrategy::Pex);
-    // En máquinas con muchos hilos, los SL grandes deberían usar WS; en otras
-    // al menos no deben caer en Seq.
+    // On machines with many threads, large SL should use WS; on others
+    // they should at least not fall back to Seq.
     assert!(s_big == ULEStrategy::Pex || s_big == ULEStrategy::WorkStealing);
 
-    // Prueba estructural de la heurística de prioridad: nodos con más hijos y
-    // mayor profundidad se ordenan primero.
+    // Structural test of the priority heuristic: nodes with more children and
+    // greater depth are ordered first.
     let children: Vec<Vec<usize>> = vec![
         vec![1, 2], // nodo 0: 2 hijos
         vec![],     // nodo 1
@@ -75,7 +75,7 @@ fn apx_7_12_unifies_choice() {
         -(out_degree + depth)
     });
 
-    // Nodo 2 (score 2) debe quedar al final.
+    // Node 2 (score 2) must end up at the end.
     assert_eq!(ready[2], 2);
 }
 
@@ -128,10 +128,10 @@ fn apx_7_12_ule_performance_sanity() {
     let mut g_ule = make_wide_graph(3, 4);
     let t_ule = now_ms(|| g_ule.execute(inputs));
 
-    // APX 7.12: este test es un sanity check de rendimiento, no un contrato estricto.
-    // ULE debería estar en la misma banda que PFLS/HPGE, pero permitimos un margen
-    // amplio para absorber variaciones entre máquinas/entornos. El objetivo es
-    // detectar sólo regresiones catastróficas (órdenes de magnitud), no micro
+    // APX 7.12: this test is a performance sanity check, not a strict contract.
+    // ULE should be in the same band as PFLS/HPGE, but we allow a wide margin
+    // to absorb variations between machines/environments. The goal is to
+    // detect only catastrophic regressions (orders of magnitude), not micro
     // diferencias.
     let max_factor = 5.0;
     assert!(t_ule <= t_pfls * max_factor);

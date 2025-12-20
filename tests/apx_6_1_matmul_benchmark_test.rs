@@ -42,8 +42,8 @@ fn benchmark_size(m: usize, k: usize, n: usize) {
 
 #[test]
 fn apx_6_1_matmul_benchmark() {
-    // Este benchmark no modifica el runtime ni las rutas de ejecución; solo
-    // mide los kernels existentes para distintos tamaños.
+    // This benchmark does not modify the runtime or execution paths; it only
+    // measures existing kernels for different sizes.
     benchmark_size(64, 64, 64);
     benchmark_size(128, 128, 128);
     benchmark_size(256, 256, 256);

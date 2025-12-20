@@ -2,7 +2,7 @@ use atenia_engine::gpu::runtime::GpuRuntime;
 
 #[test]
 fn test_runtime_initialization() {
-    // Si no hay driver CUDA, no fallamos el test.
+    // If no CUDA driver is available, we do not fail the test.
     let rt = match GpuRuntime::new() {
         Ok(r) => r,
         Err(_) => return,

@@ -5,11 +5,11 @@ use libloading::{Library, Symbol};
 use super::{NvrtcError, cache::KernelCache};
 use crate::gpu::arch::CudaArchDetector;
 
-// Tipo opaco para nvrtcProgram.
+// Opaque type for nvrtcProgram.
 #[allow(non_camel_case_types)]
 type NvrtcProgramT = *mut std::os::raw::c_void;
 
-// Códigos de retorno NVRTC mínimos (0 = SUCCESS).
+// Minimal NVRTC return codes (0 = SUCCESS).
 const NVRTC_SUCCESS: i32 = 0;
 
 pub struct NvrtcProgram {
@@ -23,7 +23,7 @@ pub struct NvrtcCompiler {
 
 impl NvrtcCompiler {
     pub fn new() -> Result<Self, NvrtcError> {
-        // Intentar cargar NVRTC en Windows y Linux.
+        // Try to load NVRTC on Windows and Linux.
         let lib = unsafe {
             Library::new("nvrtc64_120_0.dll")
                 .or_else(|_| Library::new("nvrtc64_112_0.dll"))
@@ -40,11 +40,11 @@ impl NvrtcCompiler {
     pub fn compile(&self, source: &str, kernel_name: &str, arch: &str)
         -> Result<NvrtcProgram, NvrtcError>
     {
-        // Importante: no leemos desde el cache aquí para evitar reutilizar PTX
-        // generado con firmas antiguas del kernel. Compilamos siempre.
+        // Important: do not read from the cache here to avoid reusing PTX
+        // generated with old kernel signatures. Always compile.
 
         unsafe {
-            // Firmas mínimas de NVRTC que necesitamos.
+            // Minimal NVRTC signatures we need.
             type CreateFn = unsafe extern "C" fn(
                 *mut NvrtcProgramT,
                 *const i8,
@@ -109,8 +109,8 @@ impl NvrtcCompiler {
                 return Err(NvrtcError::CompilationError("Failed to create NVRTC program".into()));
             }
 
-            // Options: permitir arch="auto" para detección dinámica.
-            // IMPORTANTE: forzar siempre compute_XX (PTX genérico), nunca sm_XX.
+            // Options: allow arch="auto" for dynamic detection.
+            // IMPORTANT: always force compute_XX (generic PTX), never sm_XX.
             let mut arch_to_use = if arch == "auto" {
                 match CudaArchDetector::new().and_then(|d| d.arch_flag()) {
                     Ok(a) => a,
@@ -120,22 +120,22 @@ impl NvrtcCompiler {
                 arch.to_string()
             };
 
-            // Normalizar a compute_XX si vino como sm_XX o similar.
+            // Normalize to compute_XX if it came as sm_XX or similar.
             if let Some(sm_suffix) = arch_to_use.strip_prefix("sm_") {
                 arch_to_use = format!("compute_{}", sm_suffix);
             }
 
-            // Construimos un vector de CStrings para que las referencias vivan
-            // durante toda la llamada a nvrtcCompileProgram.
+            // Build a vector of CStrings so references live
+            // during the entire nvrtcCompileProgram call.
             let mut opt_cstrings: Vec<CString> = Vec::new();
 
-            // Flags usadas (según pipeline NVRTC -> nvJitLink):
+            // Flags used (per NVRTC -> nvJitLink pipeline):
             //   --gpu-architecture=compute_XX
             //   --std=c++17
             //   --device-c
             //   --relocatable-device-code=true
             //   --fmad=false
-            // (Sin --gpu-code=sm_XX ni variantes.)
+            // (No --gpu-code=sm_XX nor variants.)
             opt_cstrings.push(
                 CString::new(format!("--gpu-architecture={}", arch_to_use)).unwrap(),
             );
@@ -151,7 +151,7 @@ impl NvrtcCompiler {
 
             let res = compile(prog, opt_ptrs.len() as i32, opt_ptrs.as_ptr());
             if res != NVRTC_SUCCESS {
-                // Obtener log detallado de compilación.
+                // Get detailed compilation log.
                 let mut log_size: usize = 0;
                 let mut log_msg = String::new();
                 if get_log_size(prog, &mut log_size) == NVRTC_SUCCESS && log_size > 1 {
@@ -195,16 +195,16 @@ impl NvrtcCompiler {
         }
     }
 
-    /// Variante explícita: compila `source` con un conjunto exacto de flags NVRTC
-    /// proporcionadas por el caller. No aplica lógica adicional de arquitectura.
+    /// Explicit variant: compile `source` with an exact set of NVRTC flags
+    /// provided by the caller. Does not apply additional architecture logic.
     pub fn compile_with_flags(&self, source: &str, kernel_name: &str, flags: &[&str])
         -> Result<NvrtcProgram, NvrtcError>
     {
-        // Importante: NO usamos el cache de entrada aquí para evitar reutilizar PTX
-        // generado con una firma distinta del kernel. Compilamos siempre.
+        // Important: do NOT use the input cache here to avoid reusing PTX
+        // generated with a different kernel signature. Always compile.
 
         unsafe {
-            // Firmas mínimas de NVRTC que necesitamos.
+            // Minimal NVRTC signatures we need.
             type CreateFn = unsafe extern "C" fn(
                 *mut NvrtcProgramT,
                 *const i8,
@@ -269,7 +269,7 @@ impl NvrtcCompiler {
                 return Err(NvrtcError::CompilationError("Failed to create NVRTC program".into()));
             }
 
-            // Construimos CStrings a partir de las flags proporcionadas.
+            // Build CStrings from the provided flags.
             let mut opt_cstrings: Vec<CString> = Vec::new();
             for f in flags {
                 opt_cstrings.push(CString::new(*f).unwrap());
@@ -281,7 +281,7 @@ impl NvrtcCompiler {
 
             let res = compile(prog, opt_ptrs.len() as i32, opt_ptrs.as_ptr());
             if res != NVRTC_SUCCESS {
-                // Obtener log detallado de compilación.
+                // Get detailed compilation log.
                 let mut log_size: usize = 0;
                 let mut log_msg = String::new();
                 if get_log_size(prog, &mut log_size) == NVRTC_SUCCESS && log_size > 1 {

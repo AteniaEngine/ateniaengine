@@ -33,8 +33,8 @@ void matmul_backward(
     float* dB,
     int M, int K, int N
 ) {
-    // APX 11.2 — IR GPU (no implementado aún)
-    // Real kernels llegan en APX 11.3
+    // APX 11.2 — GPU IR (not implemented yet)
+    // Real kernels arrive in APX 11.3
 }
 "#;
 

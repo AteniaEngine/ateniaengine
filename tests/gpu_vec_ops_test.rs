@@ -17,12 +17,12 @@ fn cpu_scalar_add(a: &[f32], v: f32) -> Vec<f32> {
 
 #[test]
 fn test_vec_ops_gpu() {
-    // APX 12.x: smoke test de vec ops en GPU.
-    // Si el loader/runtime entra en fallback, el test no debe fallar.
+    // APX 12.x: vec ops GPU smoke test.
+    // If the loader/runtime enters fallback, the test must not fail.
     let a = vec![1.0f32, 2.0, 3.0, 4.0];
     let b = vec![5.0f32, 6.0, 7.0, 8.0];
 
-    // Referencias CPU locales (sólo para forma, no igualdad estricta)
+    // Local CPU references (shape only, not strict equality)
     let cpu_add = cpu_vec_add(&a, &b);
     let cpu_mul = cpu_vec_mul(&a, &b);
     let cpu_scalar = cpu_scalar_add(&a, 2.0);
@@ -35,7 +35,7 @@ fn test_vec_ops_gpu() {
         }
     };
 
-    // Intento de ruta GPU envuelto en Result para tratar cualquier error como fallback.
+    // Attempt GPU path wrapped in Result to treat any error as fallback.
     let attempt: Result<(Vec<f32>, Vec<f32>, Vec<f32>), ()> = (|| {
         let ptr_a = mem.alloc(a.len() * 4).map_err(|_| ())?;
         let ptr_b = mem.alloc(b.len() * 4).map_err(|_| ())?;
@@ -97,8 +97,8 @@ fn test_vec_ops_gpu() {
             assert!(scalar_gpu.iter().all(|v| v.is_finite()));
         }
         Err(_) => {
-            // GPU fallback → el test NO falla.
-            println!("[TEST] GPU fallback en vec ops -> OK");
+            // GPU fallback → the test does NOT fail.
+            println!("[TEST] GPU fallback in vec ops -> OK");
         }
     }
 }

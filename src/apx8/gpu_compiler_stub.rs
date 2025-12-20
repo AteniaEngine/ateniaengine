@@ -1,5 +1,5 @@
 // APX 8.11 — GPU Compiler Stub
-// Simula compilación de kernels GPU sin tocar GPU real ni ejecutar nada.
+// Simulates GPU kernel compilation without touching real GPU nor executing anything.
 
 use std::collections::HashMap;
 

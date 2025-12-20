@@ -5,7 +5,7 @@ use atenia_engine::apx6_14::{
 
 #[test]
 fn apx_6_14_temperature_decays() {
-    // Forzar un estado inicial conocido.
+    // Force a known initial state.
     set_current_temperature(1.2);
     let t0 = get_current_temperature();
 
@@ -15,7 +15,7 @@ fn apx_6_14_temperature_decays() {
     update_temperature(10_000);
     let t_late = get_current_temperature();
 
-    // Misma temperatura al inicio, menor o igual en pasos tardíos.
+    // Same temperature at the start, lower or equal at later steps.
     assert!((t_start - t0).abs() < 1e-6);
     assert!(t_start >= t_late);
     assert!(t_late >= 0.25);

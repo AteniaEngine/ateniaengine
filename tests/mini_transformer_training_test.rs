@@ -101,7 +101,7 @@ fn mini_transformer_learns_identity() {
     }
 
     let first = first_loss.expect("loss should be recorded at step 0");
-    // Requerimos una caída fuerte pero menos extrema (~20x en lugar de 50x).
+    // Require a strong drop, but less extreme (~20x instead of 50x).
     let target = first * 0.05;
     assert!(
         best_loss <= target,

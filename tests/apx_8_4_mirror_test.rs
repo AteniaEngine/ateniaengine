@@ -52,14 +52,14 @@ fn apx_8_4_mirror_dispatcher_simulation() {
         t.ensure_gpu_mirror();
         assert!(t.gpu.is_some());
         let mirror = t.gpu.as_ref().unwrap();
-        // Después de una "op" GPU simulada, marcamos la CPU como sincronizada.
+        // After a simulated GPU "op", we mark the CPU as synchronized.
         assert!(matches!(mirror.state, MirrorState::CleanCPU | MirrorState::Synced));
     } else {
-        // Si por heurística se mantiene en CPU, no debe crearse mirror automáticamente.
+        // If heuristics keep it on CPU, a mirror should not be created automatically.
         assert!(t.gpu.is_none());
     }
 
-    // En todos los casos, la data CPU sigue siendo la verdad.
+    // In all cases, CPU data remains the source of truth.
     let sum: f32 = t.data.iter().sum();
-    assert!(sum >= 0.0 || sum <= 0.0); // sólo para usar `sum` y evitar warnings.
+    assert!(sum >= 0.0 || sum <= 0.0); // only to use `sum` and avoid warnings.
 }

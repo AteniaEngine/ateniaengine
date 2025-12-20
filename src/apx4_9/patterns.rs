@@ -89,7 +89,7 @@ pub fn fuse_linear_activation_linear(graph: &mut Graph) -> usize {
                     graph.nodes[lin2_idx].inputs = fused_inputs;
 
                     graph.nodes[lin1_idx].node_type = NodeType::NoOp;
-                    // Linear1 pasa a NoOp: conservar solo su primer input como fuente.
+                    // Linear1 becomes NoOp: keep only its first input as source.
                     let old_inputs = graph.nodes[lin1_idx].inputs.clone();
                     if let Some(source) = old_inputs.get(0).cloned() {
                         graph.nodes[lin1_idx].inputs.clear();
@@ -103,8 +103,8 @@ pub fn fuse_linear_activation_linear(graph: &mut Graph) -> usize {
                     break;
                 }
                 NodeType::FusedLinearActivation(act1) => {
-                    // Caso APX 4.8 ya aplicado: FusedLinearActivation -> [Activation*] -> Linear.
-                    // Lo tratamos como Linear+Activation inicial más la cadena de activaciones restante.
+                    // APX 4.8 case already applied: FusedLinearActivation -> [Activation*] -> Linear.
+                    // Treat it as initial Linear+Activation plus the remaining activation chain.
                     let fused_idx = cur_id;
                     let f_inputs = graph.nodes[fused_idx].inputs.clone();
                     if f_inputs.len() < 2 {
@@ -160,8 +160,8 @@ pub fn fuse_linear_activation_linear(graph: &mut Graph) -> usize {
                     graph.nodes[lin2_idx].inputs = fused_inputs;
 
                     graph.nodes[fused_idx].node_type = NodeType::NoOp;
-                    // El FusedLinearActivation inicial pasa a NoOp: conservar solo su
-                    // primer input como fuente.
+                    // The initial FusedLinearActivation becomes NoOp: keep only its
+                    // first input as source.
                     let old_inputs = graph.nodes[fused_idx].inputs.clone();
                     if let Some(source) = old_inputs.get(0).cloned() {
                         graph.nodes[fused_idx].inputs.clear();

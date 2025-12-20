@@ -18,7 +18,7 @@ fn apx_8_1_dualgraph_basic_structure() {
     unsafe { std::env::set_var("ATENIA_APX_MODE", "8.1"); }
     let mut g = small_test_graph();
 
-    // Forzar build_plan explícito para APX 8.1.
+    // Force an explicit build_plan for APX 8.1.
     g.build_plan();
 
     let dg = g.dual_graph.as_ref().expect("dual_graph must be built in 8.1 mode");
@@ -39,7 +39,7 @@ fn apx_8_1_dualgraph_basic_structure() {
                 assert_eq!(c.shape, gpu.shape);
                 assert_eq!(c.dtype, gpu.dtype);
                 assert_eq!(c.layout, gpu.layout);
-                // GPU mirror debe estar marcado como Device::GPU.
+                // GPU mirror must be marked as Device::GPU.
                 assert_eq!(gpu.device, Device::GPU);
             }
             (None, None) => {}

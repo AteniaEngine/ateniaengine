@@ -1,5 +1,5 @@
 // APX 9.22 — Out-of-Order Warp Scheduler (OOWS)
-// Scheduler totalmente simulado y seguro, sin GPU real ni PTX/SASS.
+// Fully simulated and safe scheduler, without real GPU nor PTX/SASS.
 
 use crate::apx9::vgpu_warp::VGPUWarp;
 use crate::apx9::vgpu_pipeline::PipelineStage;
@@ -8,7 +8,7 @@ use crate::apx9::vgpu_pipeline::PipelineStage;
 pub struct VGPUOOWarpScheduler;
 
 impl VGPUOOWarpScheduler {
-    /// Selecciona el índice de un warp listo para ejecutar, o None si no hay.
+    /// Select the index of a warp ready to execute, or None if there is none.
     pub fn select_warp(warps: &Vec<VGPUWarp>) -> Option<usize> {
         let mut best: Option<usize> = None;
 
@@ -17,17 +17,17 @@ impl VGPUOOWarpScheduler {
                 continue;
             }
 
-            // Debe estar en un estado donde tenga trabajo pendiente
+            // Must be in a state where it has pending work
             if w.fetched_instr.is_none() && w.stage != PipelineStage::Fetch {
                 continue;
             }
 
-            // Si tiene hazards, lo saltamos
+            // If it has hazards, skip it
             if w.has_hazard() {
                 continue;
             }
 
-            // Selección simple: first-ready
+            // Simple selection: first-ready
             best = Some(i);
             break;
         }

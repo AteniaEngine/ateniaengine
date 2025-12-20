@@ -3,7 +3,7 @@ use std::time::Instant;
 use crate::gpu::tensor::{GpuTensorManager, TensorGPU};
 use crate::gpu::ops::matmul::MatMulOp;
 
-/// Registro simple de latencia por tamaño de matmul cuadrado.
+/// Simple latency record per square matmul size.
 pub struct LatencyRecord {
     pub size: usize,
     pub ms: f32,
@@ -12,10 +12,10 @@ pub struct LatencyRecord {
 pub struct GpuProfiler;
 
 impl GpuProfiler {
-    /// Perfila matmuls cuadradas N x N para una lista de tamaños.
+    /// Profile square matmuls N x N for a list of sizes.
     ///
-    /// Si no hay GPU disponible (GpuTensorManager::new() falla), devuelve vec![]
-    /// para permitir early-return en tests sin CUDA.
+    /// If no GPU is available (GpuTensorManager::new() fails), returns vec![]
+    /// to allow early-return in tests without CUDA.
     pub fn profile_matmul_sizes(sizes: &[usize]) -> Vec<LatencyRecord> {
         let mgr = match GpuTensorManager::new() {
             Ok(m) => m,
@@ -28,7 +28,7 @@ impl GpuProfiler {
         let mut results = Vec::new();
 
         for &n in sizes {
-            // Crear matrices A, B, C en GPU.
+            // Create matrices A, B, C on GPU.
             let elems = n * n;
             let a_host: Vec<f32> = (0..elems).map(|i| (i % 13) as f32).collect();
             let b_host: Vec<f32> = (0..elems).map(|i| (i % 7) as f32).collect();
@@ -46,7 +46,7 @@ impl GpuProfiler {
                 Err(_) => continue,
             };
 
-            // Medir 5 lanzamientos y promediar.
+            // Measure 5 launches and average.
             let runs = 5;
             let mut acc_ms = 0.0f32;
 

@@ -10,7 +10,7 @@ use std::ffi::c_void;
 
 #[test]
 fn test_launch_add_one() {
-    // Si cualquiera de los componentes GPU no está disponible, no fallamos el test.
+    // If any GPU component is not available, we do not fail the test.
     let compiler = match NvrtcCompiler::new() {
         Ok(c) => c,
         Err(_) => return,

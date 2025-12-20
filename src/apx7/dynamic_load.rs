@@ -3,7 +3,7 @@ use sysinfo::System;
 
 #[derive(Debug, Clone, Copy)]
 pub struct LoadSnapshot {
-    pub cpu_load: f32,       // porcentaje
+    pub cpu_load: f32,       // percentage
     pub threads_available: usize,
 }
 
@@ -45,8 +45,8 @@ pub fn get_last_snapshot() -> LoadSnapshot {
     *LAST_SNAPSHOT.read().unwrap()
 }
 
-/// Estrategia de scheduling sugerida según el snapshot actual.
-/// Devuelve "seq", "pex", "ws" o "pgl" (fallback heurístico).
+/// Suggested scheduling strategy according to the current snapshot.
+/// Returns "seq", "pex", "ws" or "pgl" (heuristic fallback).
 pub fn choose_strategy(snap: &LoadSnapshot) -> &'static str {
     if snap.cpu_load > 85.0 {
         return "seq";

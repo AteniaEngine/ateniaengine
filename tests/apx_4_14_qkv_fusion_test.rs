@@ -7,7 +7,7 @@ fn test_qkv_fusion_detects() {
         std::env::set_var("ATENIA_APX_MODE", "4.14");
     }
 
-    // Construimos un grafo simple con 3 lineales que comparten X.
+    // Build a simple graph with 3 linear layers that share X.
     let mut gb = GraphBuilder::new();
     let x = gb.input();
     let wq = gb.input();
@@ -23,7 +23,7 @@ fn test_qkv_fusion_detects() {
 
     let g: Graph = gb.build();
 
-    // Verificamos que se haya registrado al menos un FusedQKV en fused_ops.
+    // Verify that at least one FusedQKV was registered in fused_ops.
     let has_qkv = g
         .fused_ops
         .values()

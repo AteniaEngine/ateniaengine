@@ -10,7 +10,7 @@ fn apx_9_25_sm_structure() {
     assert_eq!(sm.warps.len(), 2);
     assert_eq!(sm.pc, 0);
 
-    // Campos estructurales básicos
+    // Basic structural fields
     assert_eq!(sm.memory.global.data.len(), 256);
 }
 
@@ -37,7 +37,7 @@ fn apx_9_25_no_numeric_change() {
 
 #[test]
 fn apx_9_25_pipeline_integration() {
-    // Programa simbólico con unas pocas instrucciones.
+    // Symbolic program with a few instructions.
     let program = vec![
         VGPUInstr::Noop,
         VGPUInstr::Noop,
@@ -47,8 +47,8 @@ fn apx_9_25_pipeline_integration() {
     let mut sm = VirtualSM::new(program, 1, 32, 64);
     let initial_pc = sm.pc;
 
-    // Ejecutar varios pasos del SM y verificar que el PC del warp avanza
-    // y que el dual-issue ha poblado la cola de pipeline simbólica.
+    // Run several SM steps and verify that the warp PC advances
+    // and that dual-issue populated the symbolic pipeline queue.
     sm.run_steps(10);
 
     let final_pc = sm.pc;

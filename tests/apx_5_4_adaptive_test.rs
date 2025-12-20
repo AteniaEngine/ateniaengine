@@ -124,6 +124,6 @@ fn adaptive_penalizes_gpu_when_fallbacks() {
     let info = make_info(vec![256, 256], DType::F32, DeviceTarget::CPU);
 
     let decision = selector.decide(&info);
-    // Debido a los fallbacks en GPU, no deberíamos preferir explícitamente GPU.
+    // Due to GPU fallbacks, we should not explicitly prefer GPU.
     assert!(!matches!(decision.prefer_device, Some(DeviceTarget::GPU)));
 }

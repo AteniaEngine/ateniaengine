@@ -11,7 +11,7 @@ fn max_abs_diff(a: &Tensor, b: &Tensor) -> f32 {
 }
 
 fn make_deep_graph() -> Graph {
-    // Grafo con ramas y cadena profunda para ejercitar HLS Deep.
+    // Graph with branches and a deep chain to exercise HLS Deep.
     // 0: Input
     // 1: SiLU(0)
     // 2: SiLU(1)
@@ -41,8 +41,8 @@ fn apx_7_10_hls_deep_superlevels_nontrivial() {
     let depths = atenia_engine::apx7::hls_deep::compute_depth(&g);
     let superlevels = atenia_engine::apx7::hls_deep::build_superlevels(&depths);
 
-    // Debe haber al menos 2 superniveles y alguno con más de un nivel de
-    // profundidad implicado.
+    // There must be at least 2 superlevels and at least one involving
+    // more than one depth level.
     assert!(superlevels.len() >= 2);
 }
 
@@ -65,7 +65,7 @@ fn apx_7_10_hls_deep_equivalence_vs_7_9() {
 #[test]
 fn apx_7_10_hls_deep_performance_sanity() {
     fn make_wider_deep_graph(width: usize, depth: usize) -> Graph {
-        // Múltiples cadenas profundas colgando del mismo input.
+        // Multiple deep chains hanging from the same input.
         let mut nodes = Vec::new();
         nodes.push(Node::new(0, NodeType::Input, vec![]));
         let mut last_ids = Vec::new();
@@ -108,10 +108,10 @@ fn apx_7_10_hls_deep_performance_sanity() {
     let mut g_hlsd = make_wider_deep_graph(3, 4);
     let t_hlsd = now_ms(|| g_hlsd.execute(inputs));
 
-    // APX 7.10: este test es un sanity check de rendimiento, no un contrato estricto.
-    // Permitimos que HLS-Deep sea hasta varias veces más lento que la ruta base
-    // antes de considerarlo una regresión catastrófica. El objetivo es detectar
-    // órdenes de magnitud, no micro-variaciones entre máquinas/entornos.
+    // APX 7.10: this test is a performance sanity check, not a strict contract.
+    // Allow HLS-Deep to be up to several times slower than the baseline path
+    // before considering it a catastrophic regression. The goal is to detect
+    // orders of magnitude, not micro-variations between machines/environments.
     let max_factor = 5.0;
     assert!(t_hlsd <= t_seq * max_factor);
 }

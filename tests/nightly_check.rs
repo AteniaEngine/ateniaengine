@@ -1,7 +1,7 @@
 #[allow(unexpected_cfgs)]
 #[test]
 fn nightly_active_for_bench() {
-    // En modo normal (sin bench_nightly) no fallamos, solo informamos opcionalmente.
+    // In normal mode (without bench_nightly) we do not fail, we only optionally report.
     #[cfg(not(bench_nightly))]
     {
         if atenia_engine::apx_debug_enabled() {

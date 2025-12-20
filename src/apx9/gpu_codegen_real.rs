@@ -1,5 +1,5 @@
-// APX 9.10 — Real GPU Codegen v0 (estructura únicamente)
-// Genera firmas y código PTX/OpenCL como strings inertes.
+// APX 9.10 — Real GPU Codegen v0 (structure only)
+// Generates PTX/OpenCL signatures and code as inert strings.
 
 #[derive(Debug, Clone)]
 pub struct RealKernelSignature {

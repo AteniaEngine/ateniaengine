@@ -1,5 +1,5 @@
 // APX 8.18 — GPU Device Planner v0
-// Planificador de dispositivo GPU simulado, sin tocar hardware real ni ejecución.
+// Simulated GPU device planner, without touching real hardware nor execution.
 
 #[derive(Debug, Clone)]
 pub struct SimulatedGPU {
@@ -29,8 +29,8 @@ pub fn detect_simulated_gpus() -> Vec<SimulatedGPU> {
     ]
 }
 
-/// Dado un nombre de IR, sugiere a qué GPU enviarlo y cómo dividir el trabajo.
-/// 100% simulado.
+/// Given an IR name, suggest which GPU to send it to and how to split the work.
+/// 100% simulated.
 pub fn plan_for_ir(ir_name: &str) -> DevicePlan {
     let gpus = detect_simulated_gpus();
 

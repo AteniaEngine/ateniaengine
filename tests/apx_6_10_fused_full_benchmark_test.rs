@@ -44,7 +44,7 @@ fn apx_6_10_fused_full_benchmark() {
     let size_list = [128, 256, 512];
 
     for dim in size_list {
-        let m = dim; // filas
+        let m = dim; // rows
 
         let x = Tensor::randn(&[m, dim], Device::CPU);
         let wq = Tensor::randn(&[dim, dim], Device::CPU);
@@ -65,7 +65,7 @@ fn apx_6_10_fused_full_benchmark() {
         let expected = nn_linear::linear(&out, &wproj, Some(&bias));
         let baseline_us = t0.elapsed().as_micros();
 
-        // Fused 6.10 (solo benchmarking auxiliar)
+        // Fused 6.10 (benchmarking helper only)
         let t1 = Instant::now();
         let fused = fusions::execute_fused_attention_full(
             &x,
@@ -90,8 +90,8 @@ fn apx_6_10_fused_full_benchmark() {
             );
         }
 
-        // Validez matemática (benchmark): solo registramos el error, la
-        // corrección estricta se cubre en apx_6_10_fused_full_correctness_test.
+        // Mathematical validity (benchmark): we only record the error; strict
+        // correctness is covered in apx_6_10_fused_full_correctness_test.
         let err = max_abs_diff(&expected, &fused);
         if std::env::var("ATENIA_DEBUG").ok().as_deref() == Some("1") {
             println!("[APX 6.10 FUSED FULL] dim={} max_abs_diff={}", dim, err);

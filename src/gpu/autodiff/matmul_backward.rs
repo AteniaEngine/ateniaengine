@@ -77,7 +77,7 @@ impl MatMulBackwardGPU {
         let grid_xy = (max_dim + block.0 - 1) / block.0;
         let grid = (grid_xy, grid_xy, 1u32);
 
-        // build args as *mut c_void (8 parámetros)
+        // build args as *mut c_void (8 parameters)
         let mut args: [*mut core::ffi::c_void; 8] = [
             a.ptr.ptr as *mut core::ffi::c_void,
             b.ptr.ptr as *mut core::ffi::c_void,

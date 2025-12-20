@@ -7,7 +7,7 @@ use crate::ops::matmul::MatMulOp;
 /// 2D matrix multiplication wrapper.
 pub fn matmul(a: &Tensor, b: &Tensor) -> Tensor {
     let mut out = a.matmul(b);
-    // Registrar MatMulOp como origen de este tensor para APX 11.2 (IR backward GPU).
+    // Register MatMulOp as the origin of this tensor for APX 11.2 (GPU backward IR).
     out.op = Some(MatMulOp::new());
     out
 }
@@ -79,7 +79,7 @@ pub fn linear(x: &Tensor, weight: &Tensor, bias: Option<&Tensor>) -> Tensor {
             }
         });
 
-    // Registrar la op de Linear para APX 11.1 (sólo IR backward GPU, sin ejecución todavía).
+    // Register the Linear op for APX 11.1 (GPU backward IR only, no execution yet).
     out.op = Some(LinearOp::new(weight.clone(), bias.cloned()));
 
     out

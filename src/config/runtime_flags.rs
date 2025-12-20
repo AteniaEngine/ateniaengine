@@ -3,13 +3,13 @@ pub struct RuntimeFlags {
     pub enable_pex: bool,
     pub enable_workstealing: bool,
     pub enable_adaptive_pgl: bool,
-    /// APX 8.6: habilita el uso de mini-kernels GPU v0 (VecAdd) cuando true.
+    /// APX 8.6: enables the use of GPU mini-kernels v0 (VecAdd) when true.
     pub enable_gpu_kernels: bool,
-    /// APX 9.6: habilita el planificador de memoria GPU simulado.
+    /// APX 9.6: enables the simulated GPU memory planner.
     pub enable_gpu_memory_planner: bool,
-    /// APX 9.7: habilita el planificador de ejecución GPU simulado.
+    /// APX 9.7: enables the simulated GPU execution planner.
     pub enable_gpu_execution_planner: bool,
-    /// APX 9.8: habilita el ejecutor GPU simulado.
+    /// APX 9.8: enables the simulated GPU executor.
     pub enable_gpu_executor_mock: bool,
 }
 

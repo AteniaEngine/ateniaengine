@@ -1,6 +1,6 @@
 // APX 8.16 — Multi-Arch Kernel Routing v0
-// Ruta simbólica de kernels a arquitecturas (CPU / CUDA / HIP / Metal / Vulkan).
-// No compila ni ejecuta nada real.
+// Symbolic kernel routing to architectures (CPU / CUDA / HIP / Metal / Vulkan).
+// Does not compile nor execute anything real.
 
 use crate::apx8::kernel_generator::KernelIR;
 

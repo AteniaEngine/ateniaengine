@@ -41,7 +41,7 @@ impl ScalarAddOp {
         let func = match loader.get_function(&module, "scalar_add") {
             Ok(f) => f,
             Err(_) => {
-                // Evitar panic si no podemos resolver el símbolo.
+                // Avoid panic if we cannot resolve the symbol.
                 return;
             }
         };

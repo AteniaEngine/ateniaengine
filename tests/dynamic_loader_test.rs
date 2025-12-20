@@ -5,7 +5,7 @@ use atenia_engine::gpu::{
 
 #[test]
 fn test_dynamic_load_add_one() {
-    // Si NVRTC o el driver CUDA no están disponibles, dejamos pasar el test.
+    // If NVRTC or the CUDA driver is not available, let the test pass.
     let comp = match NvrtcCompiler::new() {
         Ok(c) => c,
         Err(_) => return,

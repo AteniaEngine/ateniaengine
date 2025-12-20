@@ -14,7 +14,7 @@ fn apx_8_5_persistence_reuse_score() {
     let mut t = Tensor::randn(&[4, 4], Device::CPU);
     t.enable_gpu_persistence();
 
-    // Simular múltiples usos GPU sin mover datos reales.
+    // Simulate multiple GPU uses without moving real data.
     t.note_gpu_use();
     t.note_gpu_use();
 
@@ -31,7 +31,7 @@ fn apx_8_5_persistence_mirror_survives_op() {
     t.enable_gpu_persistence();
     t.note_gpu_use();
 
-    // Simular una "op" GPU vía HybridDispatcher
+    // Simulate a GPU "op" via HybridDispatcher
     let choice = HybridDispatcher::choose_device_for(&t);
     if choice == ExecDevice::GPU {
         assert!(t.gpu.is_some());
@@ -58,7 +58,7 @@ fn apx_8_5_persistence_maybe_drop_gpu() {
     t.ensure_gpu_mirror();
     t.enable_gpu_persistence();
 
-    // Simular que el tensor casi no se reutilizó y que pasó mucho tiempo.
+    // Simulate that the tensor was barely reused and that a lot of time passed.
     if let Some(ref mut p) = t.persistence {
         p.reuse_score = 0;
         p.last_used_step = 0;

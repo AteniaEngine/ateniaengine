@@ -2,7 +2,7 @@ use atenia_engine::gpu::nvrtc::NvrtcCompiler;
 
 #[test]
 fn test_nvrtc_compilation() {
-    // Si NVRTC no está disponible en la máquina de test, simplemente salimos.
+    // If NVRTC is not available on the test machine, just exit.
     let compiler = match NvrtcCompiler::new() {
         Ok(c) => c,
         Err(_) => return,

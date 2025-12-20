@@ -96,7 +96,7 @@ pub use crate::apx8::gpu_finalizer::*;
 pub use crate::apx8::device_planner::*;
 pub use crate::apx8::gpu_partition::*;
 pub use crate::apx8::hxo::*;
-// APX 9.1: exponer sólo el IR de alto nivel; GpuKernelIR/GpuOp se usan vía apx9::gpu_ir.
+// APX 9.1: expose only the high-level IR; GpuKernelIR/GpuOp are used via apx9::gpu_ir.
 pub use crate::apx9::gpu_ir::{GpuIrKernel, GpuIrParam, GpuIrType, GpuIrStmt};
 pub use crate::apx9::ptx_emitter::*;
 pub use crate::apx9::ptx_validator::*;
@@ -147,10 +147,10 @@ pub fn global_block_predictor() -> &'static Mutex<BlockSizePredictor> {
 }
 
 /// Global debug flag controlled by ATENIA_DEBUG o APX_DEBUG.
-/// Cuando es true, se habilitan trazas APX verbosas y logs de planner.
+/// When true, enables verbose APX traces and planner logs.
 pub fn apx_debug_enabled() -> bool {
-    // Primero intentamos ATENIA_DEBUG (nombre "oficial"), y como
-    // alternativa aceptamos también APX_DEBUG para conveniencia.
+    // First try ATENIA_DEBUG ("official" name), and as
+    // an alternative also accept APX_DEBUG for convenience.
     let raw = std::env::var("ATENIA_DEBUG")
         .or_else(|_| std::env::var("APX_DEBUG"))
         .unwrap_or_else(|_| "0".to_string());
@@ -160,7 +160,7 @@ pub fn apx_debug_enabled() -> bool {
 
 /// Initialize global APX-related facilities (e.g. GPU memory pool).
 pub fn init_apx() {
-    // APX 4.12: pool de 64MB con 8 bloques.
+    // APX 4.12: 64MB pool with 8 blocks.
     crate::apx4_12::init_pool(64 * 1024 * 1024, 8);
 }
 
@@ -186,23 +186,23 @@ fn init_parallel_runtime_entrypoint() {
         );
     }
 
-    // Loguear el modo APX actual cuando el debug está activo.
+    // Log current APX mode when debug is active.
     if crate::apx_debug_enabled() {
         eprintln!("[APX] Using mode {}", crate::apx_mode());
     }
 
-    // APX 8.6: habilitar mini-kernels GPU v0 (VecAdd) cuando el modo lo permite.
+    // APX 8.6: enable GPU mini-kernels v0 (VecAdd) when the mode allows it.
     if crate::apx_mode_at_least("8.6") {
         let mut flags = crate::config::get_runtime_flags();
         flags.enable_gpu_kernels = true;
     }
 
-    // APX 9.2/9.3: habilitar mini-kernels GPU v0 cuando se utiliza la toolchain PTX simulada.
+    // APX 9.2/9.3: enable GPU mini-kernels v0 when using the simulated PTX toolchain.
     if crate::apx_mode_at_least("9.2") {
         let mut flags = crate::config::get_runtime_flags();
         flags.enable_gpu_kernels = true;
 
-        // Ejemplo mínimo de generación de PTX para depuración simbólica.
+        // Minimal PTX generation example for symbolic debugging.
         if crate::apx_debug_enabled() {
             use crate::apx9::gpu_ir::{GpuKernelIR, GpuOp};
             use crate::apx9::ptx_emitter::PtxEmitter;
@@ -246,19 +246,19 @@ fn init_parallel_runtime_entrypoint() {
         }
     }
 
-    // APX 9.6: habilitar el planificador de memoria GPU simulado.
+    // APX 9.6: enable the simulated GPU memory planner.
     if crate::apx_mode_at_least("9.6") {
         let mut flags = crate::config::get_runtime_flags();
         flags.enable_gpu_memory_planner = true;
     }
 
-    // APX 9.7: habilitar el planificador de ejecución GPU simulado.
+    // APX 9.7: enable the simulated GPU execution planner.
     if crate::apx_mode_at_least("9.7") {
         let mut flags = crate::config::get_runtime_flags();
         flags.enable_gpu_execution_planner = true;
     }
 
-    // APX 9.8: habilitar el ejecutor GPU simulado.
+    // APX 9.8: enable the simulated GPU executor.
     if crate::apx_mode_at_least("9.8") {
         let mut flags = crate::config::get_runtime_flags();
         flags.enable_gpu_executor_mock = true;
@@ -299,7 +299,7 @@ pub fn init_kernels() {
         }),
     );
 
-    // APX 8.7: registrar mini-kernels GPU v0 en el registry de kernels GPU.
+    // APX 8.7: register GPU mini-kernels v0 in the GPU kernel registry.
     {
         use crate::apx8::gpu_kernels::gpu_vec_add;
         use crate::apx8::kernel_registry::{KERNEL_REGISTRY as APX8_KERNEL_REGISTRY, KernelKey as APX8KernelKey};
@@ -307,7 +307,7 @@ pub fn init_kernels() {
         APX8_KERNEL_REGISTRY.register(APX8KernelKey::VecAdd, gpu_vec_add);
     }
 
-    // APX 8.8: registrar firmas de kernels GPU sin ejecutar nada.
+    // APX 8.8: register GPU kernel signatures without executing anything.
     {
         use crate::apx8::gpu_kernel_signature::{register_signature, GpuKernelSignature, GpuKernelType};
 

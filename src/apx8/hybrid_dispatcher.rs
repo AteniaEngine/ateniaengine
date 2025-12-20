@@ -1,6 +1,6 @@
 // APX 8.2 — Hybrid Dispatcher
-// NO ejecuta GPU real. Usa la estructura DualGraph construida en 8.1.
-// CPU siempre es fallback. GPU ejecuta stub equivalente.
+// Does NOT execute real GPU. Uses the DualGraph structure built in 8.1.
+// CPU is always the fallback. GPU runs an equivalent stub.
 
 use crate::amg::graph::Graph;
 use crate::tensor::{Tensor, Device};
@@ -18,7 +18,7 @@ pub struct HybridDispatcher;
 
 impl HybridDispatcher {
     pub fn select_device(op: &str) -> ExecDevice {
-        // Por ahora, reglas fijas (APX 8.3 empieza a mejorarla)
+        // For now, fixed rules (APX 8.3 starts improving this)
         match op {
             "MatMul" => ExecDevice::GPU,
             "Linear" => ExecDevice::GPU,
@@ -26,15 +26,15 @@ impl HybridDispatcher {
         }
     }
 
-    /// APX 8.3: estimador cuantitativo de dispositivo para un tensor concreto.
-    /// No mueve datos ni ejecuta kernels reales; sólo usa GPUTransferEstimator.
+    /// APX 8.3: quantitative device estimator for a specific tensor.
+    /// Does not move data nor execute real kernels; it only uses GPUTransferEstimator.
     pub fn choose_device_for(t: &Tensor) -> ExecDevice {
-        // Fallback obligatorio a CPU cuando el modo aún no es 8.3.
+        // Mandatory fallback to CPU when mode is not yet 8.3.
         if !crate::apx_mode_at_least("8.3") {
             return ExecDevice::CPU;
         }
 
-        // Si el tensor ya está en GPU o el entorno no es adecuado, mantenemos CPU.
+        // If the tensor is already on GPU or the environment is not suitable, keep CPU.
         if matches!(t.device, Device::GPU) {
             return ExecDevice::CPU;
         }
@@ -42,9 +42,9 @@ impl HybridDispatcher {
         let placement = DevicePlacement::CPU;
         let _est: TransferEstimate = GPUTransferEstimator::estimate(t, placement);
 
-        // Heurística 8.3: usar un umbral simple en número de elementos.
-        //  - Tensores pequeños: coste de copia domina ⇒ CPU.
-        //  - Tensores grandes: se prepara para GPU ⇒ GPU.
+        // 8.3 heuristic: use a simple threshold on number of elements.
+        //  - Small tensors: copy cost dominates => CPU.
+        //  - Large tensors: prepare for GPU => GPU.
         let elems = t.num_elements();
         let threshold: usize = 256 * 256; // 65_536 elementos
 
@@ -60,7 +60,7 @@ impl HybridDispatcher {
     }
 
     pub fn exec_gpu_stub(graph: &mut Graph, node_id: usize, record_tape: bool) {
-        // Stub GPU (APX 8.2 NO ejecuta kernels)
+        // GPU stub (APX 8.2 does NOT execute kernels)
         graph.execute_single_inner(node_id, record_tape);
     }
 
@@ -77,8 +77,8 @@ impl HybridDispatcher {
         }
     }
 
-    /// APX 8.19: estrategia GPU simulada basada en la forma de un IR/tensor.
-    /// No toca ejecución real; sólo devuelve una descripción textual.
+    /// APX 8.19: simulated GPU strategy based on an IR/tensor shape.
+    /// Does not touch real execution; only returns a textual description.
     pub fn choose_gpu_strategy(shape: &[usize]) -> String {
         let plan = suggest_partition(shape);
         format!("GPU_STRATEGY({:?})", plan.policy)

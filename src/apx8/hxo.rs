@@ -1,7 +1,7 @@
 // APX 8.20 — Hybrid Execution Orchestrator (HXO)
-// Coordinador simbólico que unifica planner de dispositivo, partición,
-// router multi-arch, cache de precompilación y codegen mock.
-// No ejecuta GPU real ni modifica ningún cálculo numérico.
+// Symbolic coordinator that unifies device planner, partitioning,
+// multi-arch router, precompilation cache, and mock codegen.
+// Does not execute real GPU nor modify any numeric computation.
 
 use crate::apx8::device_planner::plan_for_ir;
 use crate::apx8::gpu_partition::suggest_partition;
@@ -19,8 +19,8 @@ pub struct HybridOpPlan {
     pub precompiled: bool,
 }
 
-/// Construye un plan híbrido simbólico para un IR y una forma lógica de tensor.
-/// No ejecuta nada real; sólo combina heurísticas existentes.
+/// Build a symbolic hybrid plan for an IR and a logical tensor shape.
+/// Does not execute anything real; it only combines existing heuristics.
 pub fn build_hxo_plan(ir: &KernelIR, shape: &[usize]) -> HybridOpPlan {
     // 1. Device planner (8.18)
     let dev_plan = plan_for_ir(&ir.name);
@@ -44,7 +44,7 @@ pub fn build_hxo_plan(ir: &KernelIR, shape: &[usize]) -> HybridOpPlan {
         TargetArch::VULKAN => "VULKAN".to_string(),
     };
 
-    // 4. Pre-compilation cache (8.15) — simulación local y determinista
+    // 4. Pre-compilation cache (8.15) — local and deterministic simulation
     let mut cache = PrecompileCache::new();
     let was_precompiled = cache.contains(ir);
     let _compiled = cache.compile_if_missing(ir);
@@ -61,7 +61,7 @@ pub fn build_hxo_plan(ir: &KernelIR, shape: &[usize]) -> HybridOpPlan {
     }
 }
 
-/// Resultado simbólico de un dispatch híbrido controlado por HXO.
+/// Symbolic result of a hybrid dispatch controlled by HXO.
 #[derive(Debug, Clone)]
 pub enum HybridDispatchResult {
     Pseudo {
@@ -72,8 +72,8 @@ pub enum HybridDispatchResult {
     },
 }
 
-/// Versión puramente simbólica de un "hybrid dispatch" basado en HXO.
-/// No toca Graph ni Tensor; sólo devuelve metadatos.
+/// Purely symbolic version of a "hybrid dispatch" based on HXO.
+/// Does not touch Graph nor Tensor; only returns metadata.
 pub fn hybrid_dispatch(ir: &KernelIR, shape: &[usize]) -> HybridDispatchResult {
     let plan = build_hxo_plan(ir, shape);
     HybridDispatchResult::Pseudo {

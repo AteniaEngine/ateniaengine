@@ -1,18 +1,18 @@
 // APX 9.24 — VGPU Tensor Core (HMMA)
-// Emulación simbólica de un "tensor core" sobre VGpuMemory, 100% CPU-only.
+// Symbolic emulation of a "tensor core" over VGpuMemory, 100% CPU-only.
 
 use crate::apx9::vgpu_instr::VGPUInstr;
 use crate::apx9::vgpu_memory::VGpuMemory;
 
-/// Tamaño pequeño de bloque, para no complicar (tile cuadrado m,k,n <= 4).
+/// Small block size to keep things simple (square tile m,k,n <= 4).
 pub const TENSOR_CORE_TILE: usize = 4;
 
 #[derive(Debug)]
 pub struct VGPUTensorCore;
 
 impl VGPUTensorCore {
-    /// Emula una operación HMMA/MMA sobre un tile pequeño.
-    /// No usa GPU real: sólo opera sobre buffers f32 en CPU.
+    /// Emulate an HMMA/MMA operation over a small tile.
+    /// Does not use real GPU: only operates on CPU f32 buffers.
     pub fn execute_hmma(
         mem: &mut VGpuMemory,
         a_ptr: usize,
@@ -22,7 +22,7 @@ impl VGPUTensorCore {
         k: usize,
         n: usize,
     ) {
-        // Por ahora asumimos m,k,n <= TENSOR_CORE_TILE y datos en memoria global plana.
+        // For now assume m,k,n <= TENSOR_CORE_TILE and data in flat global memory.
         for i in 0..m {
             for j in 0..n {
                 let mut acc = 0.0f32;
@@ -36,8 +36,8 @@ impl VGPUTensorCore {
         }
     }
 
-    /// Hook de integración con el IR: si la instrucción es HMMA, la resolvemos aquí.
-    /// Devuelve true si la instrucción fue manejada por el tensor core virtual.
+    /// Integration hook with the IR: if the instruction is HMMA, handle it here.
+    /// Returns true if the instruction was handled by the virtual tensor core.
     pub fn try_execute_ir(mem: &mut VGpuMemory, instr: &VGPUInstr) -> bool {
         match instr {
             VGPUInstr::HMMA { a_ptr, b_ptr, c_ptr, m, k, n } => {

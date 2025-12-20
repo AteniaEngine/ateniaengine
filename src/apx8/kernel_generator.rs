@@ -1,5 +1,5 @@
 // APX 8.9 — GPU Kernel Generators v0
-// Plantillas abstractas de kernels GPU. No ejecutan nada ni producen código real.
+// Abstract GPU kernel templates. They do not execute anything nor produce real code.
 
 use std::collections::HashMap;
 
@@ -43,7 +43,7 @@ impl GpuKernelTemplate {
     }
 }
 
-// === APX 8.12: IR basado en lista de operaciones para el MetaLayer ===
+// === APX 8.12: operation-list-based IR for the MetaLayer ===
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum KernelOp {
@@ -61,7 +61,7 @@ pub struct KernelIR {
 }
 
 impl KernelIR {
-    /// Construye un IR de prueba para una suma vectorial.
+    /// Build a test IR for a vector addition.
     pub fn mock_add() -> Self {
         KernelIR {
             ops: vec![
@@ -74,7 +74,7 @@ impl KernelIR {
         }
     }
 
-    /// Construye un IR mínimo para pruebas de codegen con un nombre dado.
+    /// Build a minimal IR for codegen tests with a given name.
     pub fn new_mock(name: &str) -> Self {
         KernelIR {
             ops: Vec::new(),
@@ -83,7 +83,7 @@ impl KernelIR {
         }
     }
 
-    /// Hash estable simple basado en las operaciones y el nombre.
+    /// Simple stable hash based on ops and name.
     pub fn hash(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut s = std::collections::hash_map::DefaultHasher::new();
@@ -94,7 +94,7 @@ impl KernelIR {
         s.finish()
     }
 
-    /// Firma textual estable del IR para usar como clave de cache.
+    /// Stable textual IR signature to use as cache key.
     pub fn signature(&self) -> String {
         format!("{}::{}", self.name, self.hash())
     }

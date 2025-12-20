@@ -16,8 +16,8 @@ fn apx_7_3_adaptive_learns_best_strategy() {
         }
     }
 
-    // No validamos rendimiento exacto, pero sí que aprendió algo en el
-    // bucket de tamaños pequeños.
+    // We do not validate exact performance, but we do verify that it learned
+    // something in the small-size bucket.
     let buckets = atenia_engine::apx7::adaptive_pgl::ADAPTIVE_BUCKETS.read().unwrap();
     assert!(buckets[0].count >= 5);
 }

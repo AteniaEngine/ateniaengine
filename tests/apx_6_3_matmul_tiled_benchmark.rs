@@ -56,8 +56,8 @@ fn bench_size(m: usize, k: usize, n: usize) {
         speedup_63,
     );
 
-    // En algunos entornos el baseline AVX2 ya está muy optimizado; el objetivo
-    // de este benchmark es observacional, no forzar un speedup mínimo.
+    // In some environments the AVX2 baseline is already highly optimized; the goal
+    // of this benchmark is observational, not to enforce a minimum speedup.
 }
 
 #[test]

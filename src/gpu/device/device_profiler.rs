@@ -14,8 +14,8 @@ static PROFILE: OnceLock<DeviceProfile> = OnceLock::new();
 
 pub fn device_profile() -> &'static DeviceProfile {
     PROFILE.get_or_init(|| {
-        // Implementación mínima sin dependencias externas.
-        // En entornos sin GPU, devolvemos defaults "seguros".
+        // Minimal implementation without external dependencies.
+        // In environments without a GPU, return "safe" defaults.
         DeviceProfile {
             sm_count: 0,
             max_threads_per_sm: 2048,

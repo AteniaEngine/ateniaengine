@@ -36,8 +36,8 @@ fn apx_9_18_skip_blocked() {
 
 #[test]
 fn apx_9_18_integration_no_numeric_change() {
-    // Placeholder seguro: sólo verificamos que podemos construir tensores
-    // y que el scheduler puede iterar warps Ready sin panics.
+    // Safe placeholder: we only verify that we can build tensors
+    // and that the scheduler can iterate Ready warps without panics.
     let _a = Tensor::ones(vec![4], Device::CPU, DType::F32);
     let _b = Tensor::ones(vec![4], Device::CPU, DType::F32);
 
@@ -46,10 +46,10 @@ fn apx_9_18_integration_no_numeric_change() {
 
     let mut sch = VGPUWarpScheduler::new(vec![w1, w2]);
 
-    // Consumimos todos los warps Ready sin cambiar la matemática (no tocamos los tensores).
+    // Consume all Ready warps without changing the math (we do not touch the tensors).
     while let Some(w) = sch.next_warp() {
         assert!(w.state == WarpState::Ready || w.state == WarpState::Running || w.state == WarpState::Finished);
-        // No hacemos nada más aquí: la integración real con VGpuRunner llegará en APX 10.x.
+        // We do nothing else here: real integration with VGpuRunner will come in APX 10.x.
         w.state = WarpState::Finished;
     }
 

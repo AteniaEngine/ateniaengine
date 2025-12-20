@@ -17,16 +17,16 @@ pub fn matmul_dispatch(
 ) {
     let mode = crate::apx_mode();
 
-    // APX 7.x: leer flags de runtime para habilitar rutas PEX.
+    // APX 7.x: read runtime flags to enable PEX paths.
     let (enable_pex, _enable_workstealing) = {
         let flags = crate::config::get_runtime_flags();
         (flags.enable_pex, flags.enable_workstealing)
     };
 
-    // APX 6.8: selector de block-size basado en BlockSizePredictor. Si hay
-    // un bloque óptimo conocido para este proceso, lo usamos con el kernel
-    // tiled flexible, sólo en modo >= 6.8. Si no hay predicción, se sigue
-    // el flujo normal (6.7 ABL, 6.5, 6.4, etc.).
+    // APX 6.8: block-size selector based on BlockSizePredictor. If there is
+    // a known optimal block for this process, use it with the flexible tiled
+    // kernel, only in mode >= 6.8. If there is no prediction, follow the
+    // normal flow (6.7 ABL, 6.5, 6.4, etc.).
     if crate::apx_mode_at_least("6.8") {
         if let Ok(pred) = crate::global_block_predictor().lock() {
             if let Some((bm, bn, bk)) = pred.best_block() {
@@ -36,10 +36,10 @@ pub fn matmul_dispatch(
         }
     }
 
-    // APX 6.7: Auto-Bench Learning (ABL). En modo >= 6.7, se realiza un
-    // micro-benchmark inicial (una sola vez) para decidir si en esta
-    // máquina conviene más el baseline 3.8 o el microkernel 6.4 para
-    // tamaños típicos, y se usa ese perfil para seleccionar el kernel.
+    // APX 6.7: Auto-Bench Learning (ABL). In mode >= 6.7, run an
+    // initial micro-benchmark (only once) to decide whether on this
+    // machine it is better to use baseline 3.8 or the 6.4 microkernel for
+    // typical sizes, and use that profile to select the kernel.
     if crate::apx_mode_at_least("6.7") {
         let profile_mutex = crate::global_runtime_profile();
         if let Ok(mut guard) = profile_mutex.lock() {
@@ -61,19 +61,18 @@ pub fn matmul_dispatch(
                         return;
                     }
                     _ => {
-                        // Otros targets no se tocan aquí; dejamos que el
-                        // flujo normal decida.
+                        // Other targets are not handled here; let the
+                        // normal flow decide.
                     }
                 }
             }
         }
     }
 
-    // APX 7.3: si el modo adaptive PGL está habilitado vía flags de
-    // runtime (por ejemplo usando `matmul_adaptive`), realizar un
-    // micro-benchmark interno que mida seq/PEX/WS en buffers
-    // temporales y alimente el runtime adaptativo. Esto no modifica
-    // `out` ni la matemática del resultado.
+    // APX 7.3: if adaptive PGL mode is enabled via runtime flags
+    // (e.g. using `matmul_adaptive`), run an internal micro-benchmark that
+    // measures seq/PEX/WS on temporary buffers and feeds the adaptive runtime.
+    // This does not modify `out` nor the math of the result.
     {
         let flags = crate::config::get_runtime_flags();
         if flags.enable_adaptive_pgl {
@@ -93,8 +92,8 @@ pub fn matmul_dispatch(
                 t0.elapsed().as_secs_f64() * 1000.0
             }
 
-            // Medidas internas usando los kernels 6.3b (seq/PEX/WS) sin
-            // afectar al resultado real.
+            // Internal measurements using 6.3b kernels (seq/PEX/WS) without
+            // affecting the real result.
             let t_seq = quick_time(|| {
                 matmul_tiled_6_3b(a, b, &mut tmp_seq, m, k, n);
             });
@@ -115,10 +114,10 @@ pub fn matmul_dispatch(
         }
     }
 
-    // APX 6.5: kernel tiled AVX2 8x8 con doble packing, sólo cuando
+    // APX 6.5: tiled AVX2 8x8 kernel with double packing, only when
     // - modo == "6.5",
     // - hay AVX2 disponible,
-    // - tamaño suficientemente grande (>=128x128x128).
+    // - sufficiently large size (>=128x128x128).
     if mode == "6.5"
         && std::is_x86_feature_detected!("avx2")
         && m >= 128
@@ -129,10 +128,10 @@ pub fn matmul_dispatch(
         return;
     }
 
-    // APX 6.4: microkernel AVX2 4x8 estilo BLIS, sólo cuando
+    // APX 6.4: BLIS-style AVX2 4x8 microkernel, only when
     // - modo >= 6.4,
     // - hay AVX2 disponible,
-    // - tamaño suficientemente grande (>=256x256),
+    // - sufficiently large size (>=256x256),
     // - y estamos en CPU FP32 contiguo (garantizado por las slices &[f32]).
     if crate::apx_mode_at_least("6.4")
         && std::is_x86_feature_detected!("avx2")
@@ -145,9 +144,9 @@ pub fn matmul_dispatch(
 
     // APX 6.3B / 7.x: kernel tiled AVX2/FMA (32x32, unrolling en K).
     if crate::apx_mode_at_least("6.3") && std::is_x86_feature_detected!("avx2") {
-        // APX 7.4: adaptación dinámica al load del sistema. Si el modo es
-        // >= 7.4, se consulta un snapshot de carga y, en función de él,
-        // se puede forzar seq/PEX/WS antes de delegar en el PGL 7.2.
+        // APX 7.4: dynamic adaptation to system load. If mode is
+        // >= 7.4, query a load snapshot and, based on it,
+        // potentially force seq/PEX/WS before delegating to PGL 7.2.
         if crate::apx_mode_at_least("7.4") {
             let snap = crate::apx7::dynamic_load::sample_system_load();
             let strategy = crate::apx7::dynamic_load::choose_strategy(&snap);
@@ -162,20 +161,20 @@ pub fn matmul_dispatch(
                     return;
                 }
                 "ws" => {
-                    // En esta implementación, la ruta PEX ya incorpora un
-                    // planificador con work-stealing interno, por lo que la
-                    // estrategia WS comparte kernel con PEX.
+                    // In this implementation, the PEX path already includes an
+                    // internal work-stealing scheduler, so the WS strategy
+                    // shares the kernel with PEX.
                     crate::apx6::matmul_tiled_6_3b::matmul_tiled_6_3b_pex(a, b, out, m, k, n);
                     return;
                 }
                 _ => {
-                    // "pgl" u otra: dejamos que el PGL 7.2 decida.
+                    // "pgl" or other: let PGL 7.2 decide.
                 }
             }
         }
 
-        // APX 7.2+: dejar que el Parallel GEMM Layer (PGL) decida la
-        // estrategia concreta (seq / PEX / WS) sobre el mismo kernel base.
+        // APX 7.2+: let the Parallel GEMM Layer (PGL) decide the
+        // concrete strategy (seq / PEX / WS) over the same base kernel.
         if crate::apx_mode_at_least("7.2") {
             use crate::apx7_2::pgl::{decide_pgl, PGLStrategy};
 
@@ -189,13 +188,13 @@ pub fn matmul_dispatch(
                 PGLStrategy::Pex | PGLStrategy::WorkStealing => {
                     // Actualmente PEX v2 (7.1) ya implementa WS interno
                     // sobre tiles, por lo que ambas estrategias comparten
-                    // la misma implementación numérica.
+                    // the same numeric implementation.
                     crate::apx6::matmul_tiled_6_3b::matmul_tiled_6_3b_pex(a, b, out, m, k, n);
                 }
             }
             return;
         } else {
-            // Comportamiento previo para APX < 7.2.
+            // Previous behavior for APX < 7.2.
             if enable_pex {
                 crate::apx6::matmul_tiled_6_3b::matmul_tiled_6_3b_pex(a, b, out, m, k, n);
             } else {
@@ -205,16 +204,16 @@ pub fn matmul_dispatch(
         }
     }
 
-    // APX 6.1: kernel tiled CPU determinista (sin hilos, sin SIMD) cuando el
-    // modo es >= 6.1.
+    // APX 6.1: deterministic tiled CPU kernel (no threads, no SIMD) when
+    // mode is >= 6.1.
     if mode.starts_with("6.1") || mode > "6.1".to_string() {
         matmul_tiled_cpu(a, b, out, m, k, n);
         return;
     }
 
-    // APX < 6.1 o sin AVX2 suficiente para 6.3: usar el dispatcher de
-    // kernels registrado (AVX512/AVX2/scalar) sobre un contexto CPU. La ruta
-    // GPU de MatMul sigue gestionada por apx4::gpu_dispatch y gpu_hooks.
+    // APX < 6.1 or without enough AVX2 for 6.3: use the registered kernel
+    // dispatcher (AVX512/AVX2/scalar) over a CPU context. The MatMul GPU path
+    // is still handled by apx4::gpu_dispatch and gpu_hooks.
     let ctx = DeviceContext::new(Device::CPU);
     dispatch_matmul_apx3_8(a, b, out, m, k, n, &ctx);
 }
@@ -239,7 +238,7 @@ pub fn batch_matmul_dispatch(
         let b_b = &b[b_i * batch_stride_b..][..batch_stride_b];
         let out_b = &mut out[b_i * batch_stride_out..][..batch_stride_out];
 
-        // Reutilizar el dispatcher APX 3.8 para cada slice de batch.
+        // Reuse the APX 3.8 dispatcher for each batch slice.
         dispatch_matmul_apx3_8(a_b, b_b, out_b, m, k, n, &ctx);
     }
 }

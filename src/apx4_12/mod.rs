@@ -6,7 +6,7 @@ use self::gpu_memory_pool::GpuMemoryPool;
 
 pub static GPU_MEMORY_POOL: OnceLock<Mutex<GpuMemoryPool>> = OnceLock::new();
 
-// Configuración por defecto usada para inicialización perezosa.
+// Default configuration used for lazy initialization.
 const DEFAULT_BLOCK_SIZE: usize = 64 * 1024 * 1024; // 64 MB
 const DEFAULT_BLOCKS: usize = 8;
 
@@ -17,8 +17,8 @@ fn get_pool() -> &'static Mutex<GpuMemoryPool> {
 }
 
 pub fn init_pool(block_size: usize, blocks: usize) {
-    // Inicialización explícita: si alguien ya lo inicializó perezosamente,
-    // este set fallará en silencio y conservaremos la instancia existente.
+    // Explicit initialization: if someone already initialized it lazily, this
+    // set will fail silently and we will keep the existing instance.
     let _ = GPU_MEMORY_POOL.set(Mutex::new(GpuMemoryPool::new(block_size, blocks)));
 }
 
@@ -27,18 +27,18 @@ pub fn pool_alloc() -> *mut std::ffi::c_void {
 }
 
 pub fn pool_free(ptr: *mut std::ffi::c_void) {
-    // Incluso si no estaba inicializado, get_pool() lo creará con la
-    // configuración por defecto antes de liberar el puntero.
+    // Even if it was not initialized, get_pool() will create it with the
+    // default configuration before freeing the pointer.
     get_pool().lock().unwrap().free(ptr);
 }
 
-/// Consulta si el pool puede servir al menos `bytes` en una asignación
-/// individual (heurística basada en el tamaño de bloque).
+/// Check whether the pool can serve at least `bytes` in a single allocation
+/// (heuristic based on block size).
 pub fn pool_can_alloc(bytes: usize) -> bool {
     get_pool().lock().unwrap().can_alloc(bytes)
 }
 
-/// API C global para que los kernels CUDA pidan memoria al pool.
+/// Global C API so CUDA kernels can request memory from the pool.
 #[unsafe(no_mangle)]
 pub extern "C" fn atenia_pool_alloc(bytes: usize) -> *mut u8 {
     let pool = get_pool();

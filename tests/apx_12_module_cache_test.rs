@@ -2,7 +2,7 @@ use atenia_engine::gpu::loader::{CudaLoader, CudaLoaderError};
 use atenia_engine::gpu::nvrtc::NvrtcCompiler;
 use atenia_engine::gpu::loader::compat_layer::CompatLoader;
 
-/// APX 12.x: smoke test del cache de módulos PTX usando un kernel "real".
+/// APX 12.x: smoke test of the PTX module cache using a "real" kernel.
 #[test]
 fn apx_12_module_cache_smoke() {
     let loader = match CudaLoader::new() {
@@ -31,11 +31,11 @@ fn apx_12_module_cache_smoke() {
 
     let ptx = &ptx_out.ptx;
 
-    // First load: si estamos en fallback CPU, saltar el test.
+    // First load: if we are in CPU fallback, skip the test.
     let m1 = loader.load_module_from_ptx(ptx);
 
     if matches!(m1, Err(CudaLoaderError::CpuFallback)) || CompatLoader::is_forced_fallback() {
-        println!("[TEST] CPU fallback detected  skipping module cache test");
+        println!("[TEST] CPU fallback detected - skipping module cache test");
         return;
     }
 

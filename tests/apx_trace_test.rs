@@ -38,10 +38,10 @@ fn apx_25_traces_show_parallelism() {
             }
         }
 
-        // Verificar que el grafo MiniFlux resultante es estructuralmente válido
-        // antes de ejecutar y trazar.
+        // Verify that the resulting MiniFlux graph is structurally valid
+        // before executing and tracing.
         g.validate()
-            .expect("El grafo MiniFlux debe ser válido después de build()");
+            .expect("The MiniFlux graph must be valid after build()");
 
         g
     };

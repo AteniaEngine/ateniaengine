@@ -17,10 +17,10 @@ fn apx_8_11_compiler_cache() {
     let c1 = comp.compile(&ir, GpuTarget::NvidiaPTX);
     let c2 = comp.compile(&ir, GpuTarget::NvidiaPTX);
 
-    // Son valores clonados pero deben salir del mismo cache lógico.
+    // They are cloned values, but they must come from the same logical cache.
     assert_eq!(c1.ir_hash, c2.ir_hash);
     assert!(comp.has_cache(&ir, GpuTarget::NvidiaPTX));
 }
 
-// Dispatcher/logging se valida de forma indirecta: no toca rutas de ejecución,
-// así que no añadimos aserciones numéricas aquí.
+// Dispatcher/logging is validated indirectly: it does not touch execution paths,
+// so we do not add numerical assertions here.

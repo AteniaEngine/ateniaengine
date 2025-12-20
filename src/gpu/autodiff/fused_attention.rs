@@ -7,7 +7,7 @@ use crate::gpu::runtime::GpuRuntime;
 pub struct FusedAttentionGPU;
 
 impl FusedAttentionGPU {
-    /// APX 11.10 — Full fused attention kernel (versión mínima):
+    /// APX 11.10 — Full fused attention kernel (minimal version):
     /// out = softmax(Q*K^T / sqrt(d)) * V
     pub fn run(
         mgr: &GpuTensorManager,

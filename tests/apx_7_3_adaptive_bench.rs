@@ -30,7 +30,7 @@ fn apx_7_3_adaptive_before_after_benchmark() {
 
     let sizes = [256_usize, 512, 1024];
 
-    // Fase 1: medir "antes" (PGL 7.2 heurístico, sin adaptive flag).
+    // Phase 1: measure "before" (heuristic PGL 7.2, without adaptive flag).
     let debug = std::env::var("ATENIA_DEBUG").ok().as_deref() == Some("1");
     if debug {
         println!("[APX 7.3] BEFORE adaptive training:");
@@ -42,7 +42,7 @@ fn apx_7_3_adaptive_before_after_benchmark() {
         }
     }
 
-    // Fase 2: entrenamiento adaptativo usando matmul_adaptive.
+    // Phase 2: adaptive training using matmul_adaptive.
     if debug {
         println!("[APX 7.3] Training adaptive PGL...");
     }
@@ -52,7 +52,7 @@ fn apx_7_3_adaptive_before_after_benchmark() {
         }
     }
 
-    // Leer estadísticas aprendidas.
+    // Read learned statistics.
     let buckets = ADAPTIVE_BUCKETS.read().unwrap();
     for &n in &sizes {
         let b = bucket_for(n);
@@ -68,7 +68,7 @@ fn apx_7_3_adaptive_before_after_benchmark() {
         }
     }
 
-    // Fase 3: medir "después" con adaptive activo.
+    // Phase 3: measure "after" with adaptive enabled.
     if debug {
         println!("[APX 7.3] AFTER adaptive training:");
     }

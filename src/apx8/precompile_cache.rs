@@ -1,5 +1,5 @@
 // APX 8.15 — GPU Pre-Compilation Cache v0
-// Cache sintético de kernels "precompilados" basado en KernelIR.
+// Synthetic cache of "precompiled" kernels based on KernelIR.
 
 use std::collections::HashMap;
 use crate::apx8::kernel_generator::KernelIR;
@@ -20,7 +20,7 @@ impl PrecompileCache {
             return k.clone();
         }
 
-        // Simulación determinística
+        // Deterministic simulation
         let compiled = format!("compiled::<{}>", key);
         self.store.insert(key.clone(), compiled.clone());
         compiled

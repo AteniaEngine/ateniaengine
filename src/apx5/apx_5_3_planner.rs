@@ -1,4 +1,4 @@
-// APX 5.3 — Prototipo genérico para adaptar al engine real
+// APX 5.3 — Generic prototype to adapt to the real engine
 
 #[derive(Clone, Debug)]
 pub struct ExecutionPlan5_3 {
@@ -27,7 +27,7 @@ pub struct NodeExecInfo {
     pub shape: Vec<usize>,
     pub dtype: String,
     pub contiguous: bool,
-    pub device_52: String,   // "CPU" o "GPU" según decisión de APX 5.2
+    pub device_52: String,   // "CPU" or "GPU" according to APX 5.2 decision
     pub estimated_bytes: usize,
     pub estimated_flops: usize,
     pub vram_free: usize,
@@ -55,7 +55,7 @@ impl NodeExecInfo {
         self.attention_bias = Some(true);
     }
 
-    // APX 6.12: hints de scheduling puro (no tocan la matemática de la op).
+    // APX 6.12: pure scheduling hints (they do not touch the op's math).
     pub fn bias_qkv_schedule(&mut self) {
         self.exec_priority = Some(250);
         self.prefetch_hint = Some("prefetch_qkv_weights");
@@ -75,7 +75,7 @@ impl Planner5_3 {
     }
 
     pub fn select_plan(&self, info: &NodeExecInfo) -> ExecutionPlan5_3 {
-        // 1) Por defecto, no cambiar nada
+        // 1) By default, do not change anything
         let mut plan = ExecutionPlan5_3 {
             kernel_name: "default",
             layout: LayoutDecision::Original,
@@ -83,46 +83,46 @@ impl Planner5_3 {
             use_fp8: false,
         };
 
-        // 2) Heurísticas específicas para MatMul. Estas decisiones sólo
-        // afectan al plan (logs, diagnóstico); la ejecución real de MatMul
-        // sigue controlada por APX 5.2 y el dispatcher actual.
+        // 2) MatMul-specific heuristics. These decisions only affect the plan
+        // (logs, diagnostics); real MatMul execution remains controlled by
+        // APX 5.2 and the current dispatcher.
         if info.op_name == "MatMul" {
             let num_elems: usize = info.shape.iter().product();
 
-            // Umbrales simples iniciales.
+            // Simple initial thresholds.
             let small_threshold: usize = 4_096;
             let large_threshold: usize = 1_000_000;
 
             if num_elems <= small_threshold {
-                // MatMul pequeño: mejor mantener CPU.
+                // Small MatMul: better keep CPU.
                 plan.kernel_name = "matmul_cpu_small";
                 plan.layout = LayoutDecision::Original;
             } else {
-                // MatMul mediano/grande.
+                // Medium/large MatMul.
                 if num_elems >= large_threshold
                     && info.dtype == "F32"
                     && info.contiguous
                 {
-                    // Buen candidato a GPU en un futuro: lo marcamos en el
-                    // plan, aunque hoy la decisión real de CPU/GPU la toma
+                    // Good future GPU candidate: we mark it in the plan,
+                    // although today the real CPU/GPU decision is made by
                     // APX 5.2.
                     plan.kernel_name = "matmul_gpu_candidate";
                 } else {
                     plan.kernel_name = "matmul_cpu_medium";
                 }
 
-                // Si el tensor no es contiguo y es grande, sugerimos
-                // contiguidad en el plan (sin aplicar aún realineado).
+                // If the tensor is non-contiguous and large, suggest
+                // contiguity in the plan (without yet applying realignment).
                 if !info.contiguous && num_elems >= large_threshold {
                     plan.layout = LayoutDecision::ForceContiguous;
                 }
             }
         } else if info.op_name == "BatchMatMul" {
-            // 2b) Heurísticas análogas para BatchMatMul. Usamos el producto
-            // total de la shape (batch * m * k * n) como proxy de tamaño.
+            // 2b) Similar heuristics for BatchMatMul. Use the total shape
+            // product (batch * m * k * n) as a size proxy.
             let num_elems: usize = info.shape.iter().product();
 
-            // Umbrales específicos para BatchMatMul.
+            // BatchMatMul-specific thresholds.
             let small_threshold: usize = 4_096;
             let medium_threshold: usize = 200_000;
 
@@ -135,15 +135,15 @@ impl Planner5_3 {
             } else {
                 plan.kernel_name = "batch_matmul_gpu_candidate";
 
-                // Si el tensor no es contiguo y es grande, sugerimos
-                // contigüidad en el plan.
+                // If the tensor is non-contiguous and large, suggest
+                // contiguity in the plan.
                 if !info.contiguous {
                     plan.layout = LayoutDecision::ForceContiguous;
                 }
             }
         } else if info.op_name == "Linear" {
-            // 2c) Heurísticas similares para Linear (FFN). Usamos el número
-            // total de elementos del tensor de salida estimado como proxy.
+            // 2c) Similar heuristics for Linear (FFN). Use the total number
+            // of elements of the estimated output tensor as proxy.
             let num_elems: usize = info.shape.iter().product();
 
             let small_threshold: usize = 4_096;
@@ -165,7 +165,7 @@ impl Planner5_3 {
             }
         }
 
-        // 3) Fallback absoluto: si el plan no es seguro, restaurar plan original.
+        // 3) Absolute fallback: if the plan is not safe, restore the original plan.
         if !self.plan_es_seguro(&plan) {
             return ExecutionPlan5_3 {
                 kernel_name: "default",
@@ -179,10 +179,10 @@ impl Planner5_3 {
     }
 
     fn plan_es_seguro(&self, _plan: &ExecutionPlan5_3) -> bool {
-        // Aquí, cuando lo adaptes al engine real, puedes validar:
-        // - que kernel_name corresponde a un kernel existente
-        // - que layout es soportado por esa op
-        // - que chunking/FP8 son realmente soportados por el nodo
+        // Here, when adapting this to the real engine, you can validate:
+        // - that kernel_name corresponds to an existing kernel
+        // - that layout is supported by that op
+        // - that chunking/FP8 are actually supported by the node
         true
     }
 }

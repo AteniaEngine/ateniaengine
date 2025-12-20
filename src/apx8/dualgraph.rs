@@ -1,6 +1,6 @@
 // APX 8.1 — DualGraph Builder
-// No ejecuta GPU. No toca backward.
-// Solo crea el grafo duplicado CPU+GPU para uso posterior.
+// Does not execute GPU. Does not touch backward.
+// Only builds the duplicated CPU+GPU graph for later use.
 
 use crate::amg::graph::Graph;
 use crate::amg::nodes::Node;
@@ -49,8 +49,8 @@ impl DualGraphBuilder {
             // CPU copy
             dg.cpu_nodes.push(n.clone());
 
-            // GPU mirror: clonamos el nodo y, si tiene tensor de salida,
-            // clonamos ese tensor y lo marcamos como GPU para usos futuros.
+            // GPU mirror: clone the node and, if it has an output tensor,
+            // clone that tensor and mark it as GPU for future use.
             let mut gpu_clone = n.clone();
             if let Some(ref out) = n.output {
                 let mut t = out.clone();

@@ -41,7 +41,7 @@ impl CudaLoader {
     }
 
     pub fn load_module_from_ptx(&self, ptx: &str) -> Result<CudaModule, CudaLoaderError> {
-        // Conservamos el cache por hash de PTX en la entrada.
+        // Keep the PTX-hash cache at the entry.
         let hash = hash_ptx(ptx);
 
         if let Some(handle) = get_cached_module(hash) {
@@ -51,12 +51,12 @@ impl CudaLoader {
 
         let module = CompatLoader::try_all_paths(self, ptx)?;
 
-        // Guardar en cache el handle resultante, independientemente del camino tomado.
+        // Store the resulting handle in the cache, regardless of the chosen path.
         insert_cached_module(hash, module.handle as u64);
         Ok(module)
     }
 
-    /// Ruta directa de carga de PTX usando cuModuleLoadData (sin cache interno).
+    /// Direct PTX load path using cuModuleLoadData (no internal cache).
     pub fn load_module_from_ptx_direct(&self, ptx: &str) -> Result<CudaModule, CudaLoaderError> {
         unsafe {
             let cu_init: Symbol<unsafe extern "C" fn(u32) -> i32> =
@@ -78,7 +78,7 @@ impl CudaLoader {
         }
     }
 
-    /// Carga un módulo CUDA desde un buffer CUBIN en memoria.
+    /// Load a CUDA module from an in-memory CUBIN buffer.
     pub fn load_module_from_cubin(&self, cubin: &[u8]) -> Result<CudaModule, CudaLoaderError> {
         unsafe {
             let cu_init: Symbol<unsafe extern "C" fn(u32) -> i32> =
@@ -100,10 +100,10 @@ impl CudaLoader {
         }
     }
 
-    /// Versión extendida usando cuModuleLoadDataEx con opciones JIT.
+    /// Extended version using cuModuleLoadDataEx with JIT options.
     pub fn load_module_from_ptx_ex(&self, ptx: &[u8]) -> Result<CudaModule, CudaLoaderError> {
         unsafe {
-            // Inicializar driver
+            // Initialize driver
             let cu_init: Symbol<unsafe extern "C" fn(u32) -> i32> =
                 self.get_symbol(b"cuInit\0")?;
 
@@ -120,7 +120,7 @@ impl CudaLoader {
 
             let _ = cu_init(0);
 
-            // Constantes JIT mínimas (valores según enum CUjit_option)
+            // Minimal JIT constants (values per CUjit_option enum)
             const CU_JIT_OPTIMIZATION_LEVEL: u32 = 7;
             const CU_JIT_TARGET_FROM_CUCONTEXT: u32 = 8;
 
@@ -145,9 +145,9 @@ impl CudaLoader {
             );
 
             if res != 0 || module.is_null() {
-                // Debug básico para entender fallos de carga de PTX.
+                // Basic debug to understand PTX load failures.
                 println!(
-                    "[GPU LOADER] cuModuleLoadDataEx failed: res={} | module_null={}",
+                    "[GPU LOADER] cuModuleLoadDataEx failed: res={} | module_null={} ",
                     res,
                     module.is_null()
                 );

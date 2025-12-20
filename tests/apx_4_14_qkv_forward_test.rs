@@ -21,13 +21,13 @@ fn build_qkv_graph() -> Graph {
 
 #[test]
 fn test_qkv_fusion_forward_matches_naive() {
-    // Construimos el grafo "naive" sin fusión (modo por defecto 2.5).
+    // Build the "naive" graph without fusion (default mode 2.5).
     unsafe {
         std::env::set_var("ATENIA_APX_MODE", "2.5");
     }
     let mut g_naive = build_qkv_graph();
 
-    // Entradas determinísticas
+    // Deterministic inputs
     let m = 2usize;
     let k = 4usize;
     let n = 3usize;
@@ -40,14 +40,14 @@ fn test_qkv_fusion_forward_matches_naive() {
     let out_naive = g_naive.execute(vec![x.clone(), wq.clone(), wk.clone(), wv.clone()]);
     assert_eq!(out_naive.len(), 3);
 
-    // Ahora mismo grafo pero con APX 4.14 activado (fusión QKV).
+    // Same graph but with APX 4.14 enabled (QKV fusion).
     unsafe {
         std::env::set_var("ATENIA_APX_MODE", "4.14");
     }
     let mut g_fused = build_qkv_graph();
     let _ = g_fused.execute(vec![x, wq, wk, wv]);
 
-    // Tomamos la salida fusionada QKV registrada en fused_outputs.
+    // Take the fused QKV output registered in fused_outputs.
     let fused_entry = g_fused
         .fused_outputs
         .values()

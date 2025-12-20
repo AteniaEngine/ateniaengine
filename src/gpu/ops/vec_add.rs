@@ -45,7 +45,7 @@ impl VecAddOp {
         let func = match loader.get_function(&module, "vec_add") {
             Ok(f) => f,
             Err(_) => {
-                // Si no podemos resolver el símbolo, evitamos panic.
+                // If we cannot resolve the symbol, avoid panic.
                 return;
             }
         };

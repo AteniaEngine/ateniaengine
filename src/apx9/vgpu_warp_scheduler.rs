@@ -1,5 +1,5 @@
 // APX 9.18 — Warp Scheduler (WSIMT)
-// Scheduler SIMT simulado, 100% CPU-only, sin GPU real ni paralelismo.
+// Simulated SIMT scheduler, 100% CPU-only, without real GPU nor parallelism.
 
 use crate::apx9::vgpu_warp::VGPUWarp;
 
@@ -28,7 +28,7 @@ impl VGPUWarpScheduler {
         Self { warps, next: 0 }
     }
 
-    /// Selección round-robin de warps en estado Ready.
+    /// Round-robin selection of warps in Ready state.
     pub fn next_warp(&mut self) -> Option<&mut VGPUWarpCtx> {
         let n = self.warps.len();
         for _ in 0..n {

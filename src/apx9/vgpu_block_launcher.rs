@@ -3,13 +3,13 @@ use crate::apx9::vgpu_memory::VGpuMemory;
 use crate::apx9::gpu_ir::GpuKernelIR;
 
 // APX 9.15 — Virtual GPU Block Launcher
-// Coordina grid, bloques y threads, ejecutando IR usando el runner.
-// DISCLAIMER: ejecución totalmente virtual y CPU-only, sin GPU real ni VRAM.
+// Coordinates grid, blocks, and threads, running IR using the runner.
+// DISCLAIMER: fully virtual and CPU-only execution, without real GPU nor VRAM.
 
 pub struct VGpuBlockLauncher;
 
 impl VGpuBlockLauncher {
-    /// Ejecuta un kernel IR en el grid virtual especificado.
+    /// Execute a kernel IR in the specified virtual grid.
     pub fn launch(
         ir: &GpuKernelIR,
         mem: &mut VGpuMemory,

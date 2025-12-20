@@ -31,7 +31,7 @@ impl VecMulOp {
         let module = match loader.load_module_from_ptx(&ptx.ptx) {
             Ok(m) => m,
             Err(CudaLoaderError::CpuFallback) => {
-                // APX 12.x: compat layer fuerza fallback CPU -> no paniqueamos.
+                // APX 12.x: compat layer forces CPU fallback -> do not panic.
                 return;
             }
             Err(e) => {
@@ -41,7 +41,7 @@ impl VecMulOp {
         let func = match loader.get_function(&module, "vec_mul") {
             Ok(f) => f,
             Err(_) => {
-                // Evitar panic si no podemos resolver el símbolo.
+                // Avoid panic if we cannot resolve the symbol.
                 return;
             }
         };

@@ -1,5 +1,5 @@
 // APX 9.14 — Virtual GPU Kernel Runner
-// Ejecutor seguro de IR sobre VGpuMemory. No usa GPU real.
+// Safe IR executor over VGpuMemory. Does not use real GPU.
 
 use crate::apx9::gpu_ir::*;
 use crate::apx9::vgpu_memory::VGpuMemory;
@@ -7,7 +7,7 @@ use crate::apx9::vgpu_memory::VGpuMemory;
 pub struct VGpuRunner;
 
 impl VGpuRunner {
-    /// Ejecuta un kernel IR sobre memoria virtual.
+    /// Execute a kernel IR over virtual memory.
     pub fn run_kernel(
         ir: &GpuKernelIR,
         mem: &mut VGpuMemory,
@@ -43,23 +43,23 @@ impl VGpuRunner {
                     mem.store_global(dst_idx, v);
                 }
 
-                // APX 9.16 — Sync: en la simulación secuencial actual no hace nada,
-                // pero preserva el punto de sincronización en el IR.
+                // APX 9.16 — Sync: in the current sequential simulation it does nothing,
+                // but preserves the synchronization point in the IR.
                 GpuOp::Sync => {
-                    // no-op simbólico
+                    // symbolic no-op
                 }
 
-                // APX 9.17 — Predicate: marca un punto de divergencia SIMT.
-                // En esta fase seguimos ejecutando un único thread, así que
-                // lo interpretamos como no-op para mantener la matemática.
+                // APX 9.17 — Predicate: marks a SIMT divergence point.
+                // At this stage we still execute a single thread, so we
+                // interpret it as a no-op to preserve math.
                 GpuOp::Predicate { .. } => {
-                    // no-op simbólico
+                    // symbolic no-op
                 }
             }
         }
     }
 
-    /// Mapear nombres simbólicos a slots de local/global de forma determinista.
+    /// Map symbolic names to local/global slots deterministically.
     pub fn hash_slot(name: &str) -> usize {
         let mut h: u64 = 0;
         for b in name.as_bytes() {

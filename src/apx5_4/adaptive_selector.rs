@@ -33,7 +33,7 @@ impl AdaptiveSelector {
     }
 
     pub fn decide(&self, info: &NodeExecInfo) -> AdaptiveDecision {
-        // Heurística mínima basada en historial para la misma op/shape/dtype.
+        // Minimal heuristic based on history for the same op/shape/dtype.
         let relevant: Vec<&Sample> = self
             .history
             .iter()
@@ -70,10 +70,10 @@ impl AdaptiveSelector {
             let cpu_avg = avg(&cpu_durs);
             let gpu_avg = avg(&gpu_durs);
 
-            // 1) Penalizar GPU si hubo muchos fallbacks.
+            // 1) Penalize GPU if there were many fallbacks.
             let gpu_reliable = gpu_fallbacks == 0;
 
-            // 2) Elegir dispositivo más rápido cuando haya datos.
+            // 2) Choose the faster device when data is available.
             match (cpu_avg, gpu_avg) {
                 (Some(c), Some(g)) if c < g && g > 0.0 => {
                     prefer_device = Some(DeviceTarget::CPU);
@@ -84,13 +84,13 @@ impl AdaptiveSelector {
                 _ => {}
             }
 
-            // 3) Layout: si históricamente nunca marcamos beneficio de contiguidad,
-            // podemos dejar prefer_layout en None. Para esta versión mínima, sólo
-            // sugerimos ForceContiguous si ya lo indicó el plan 5.3.
+            // 3) Layout: if historically we never marked a contiguity benefit,
+            // we can leave prefer_layout as None. For this minimal version, we
+            // only suggest ForceContiguous if plan 5.3 already indicated it.
             if !info.contiguous {
-                // Si el plan 5.3 ya sugería contiguidad (por heurística estática),
-                // respetamos esa sugerencia.
-                // Decisión real sobre layout se hará en merge_into_plan.
+                // If plan 5.3 already suggested contiguity (via static heuristic),
+                // we respect that suggestion.
+                // Real layout decision will be taken in merge_into_plan.
             }
         }
 
@@ -100,10 +100,9 @@ impl AdaptiveSelector {
         }
     }
 
-    /// Devuelve una preferencia de dispositivo (CPU/GPU) basada en
-    /// estadísticas agregadas. Si ambas medias están disponibles,
-    /// elegimos la de menor duración. Si no hay datos suficientes,
-    /// devolvemos None.
+    /// Return a device preference (CPU/GPU) based on aggregated statistics.
+    /// If both averages are available, choose the one with lower duration.
+    /// If there is not enough data, return None.
     pub fn device_preference_for(&self, _info: &NodeExecInfo) -> Option<DeviceTarget> {
         match (self.cpu_stats.avg(), self.gpu_stats.avg()) {
             (Some(cpu_avg), Some(gpu_avg)) => {
@@ -124,8 +123,8 @@ impl AdaptiveSelector {
             plan.layout = layout;
         }
 
-        // Nota: prefer_device todavía no se aplica a la ejecución real; se
-        // mantiene sólo como información de diagnóstico hasta que el engine
-        // conecte explícitamente esta preferencia con APX 5.2.
+        // Note: prefer_device is still not applied to real execution; it is
+        // kept only as diagnostic information until the engine explicitly
+        // connects this preference with APX 5.2.
     }
 }

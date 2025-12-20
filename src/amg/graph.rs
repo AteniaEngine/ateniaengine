@@ -30,7 +30,7 @@ use std::collections::HashSet;
 #[derive(Clone, Debug)]
 pub enum FusedOutput {
     QKV { q: Tensor, k: Tensor, v: Tensor },
-    /// APX 4.17: salida de Self-Attention fusionado (forward-only).
+    /// APX 4.17: output of fused Self-Attention (forward-only).
     SelfAttention {
         q: Tensor,
         k: Tensor,
@@ -51,29 +51,29 @@ pub struct Graph {
     pub fusions_applied: usize,
     pub fused_ops: std::collections::HashMap<usize, FusedOp>,
     pub fused_outputs: std::collections::HashMap<usize, FusedOutput>,
-    /// APX 8.1: grafo dual CPU+GPU opcional. No se usa todavía para ejecutar
-    /// nada; sólo se construye como metadato estructural.
+    /// APX 8.1: optional CPU+GPU dual graph. It is not used for execution yet;
+    /// it is only built as structural metadata.
     pub dual_graph: Option<crate::apx8::dualgraph::DualGraph>,
 }
 
 impl Graph {
-    /// Devuelve true si el nodo dado es el Linear secundario (K o V) de
-    /// algún patrón FusedQKV detectado en el grafo.
+    /// Returns true if the given node is the secondary Linear (K or V) of
+    /// some FusedQKV pattern detected in the graph.
     pub fn is_qkv_secondary(&self, id: usize) -> bool {
         for fused in self.fused_ops.values() {
             if let FusedOp::FusedQKV { q_id, k_id, v_id, .. } = fused {
                 if id == *k_id || id == *v_id {
                     return true;
                 }
-                // El nodo representativo (q_id) se maneja vía exec_fused.
-                let _ = q_id; // evitar warning en builds sin uso directo
+                // The representative node (q_id) is handled via exec_fused.
+                let _ = q_id; // avoid warnings in builds without direct usage
             }
         }
         false
     }
 
-    /// Devuelve true si el nodo dado es alguno de los lineales Q/K/V
-    /// involucrados en un patrón FusedSelfAttention.
+    /// Returns true if the given node is one of the Q/K/V linear nodes
+    /// involved in a FusedSelfAttention pattern.
     pub fn is_sa_linear(&self, id: usize) -> bool {
         for fused in self.fused_ops.values() {
             if let FusedOp::FusedSelfAttention { q, k, v, .. } = fused {
@@ -208,9 +208,9 @@ impl Graph {
         graph.persistent_plan = Some(PersistentPlan::analyze(&graph));
         graph.fusion_plan = Some(FusionPlan::analyze(&graph));
 
-        // APX 7.8: generar hints de localidad temporal por nodo. Esto no
-        // modifica el grafo ni su matemática; sólo proporciona metadatos
-        // para que TLO pueda reordenar nodos independientes en HPGE.
+        // APX 7.8: generate temporal-locality hints per node. This does not
+        // modify the graph nor its math; it only provides metadata so that
+        // TLO can reorder independent nodes in HPGE.
         if !graph.nodes.is_empty() {
             use crate::apx7::tlo::{LocalityHint, set_locality_hints};
 
@@ -233,8 +233,8 @@ impl Graph {
             set_locality_hints(hints);
         }
 
-        // APX 8.1: si el modo activo lo requiere, construir también el
-        // DualGraph estructural. Esto no toca backward ni ejecuta GPU.
+        // APX 8.1: if the active mode requires it, also build the structural
+        // DualGraph. This does not touch backward nor execute GPU.
         if crate::apx_mode_at_least("8.1") {
             graph.build_plan();
         }
@@ -242,8 +242,8 @@ impl Graph {
         graph
     }
 
-    /// Rebuild the execution plan from the current nodes. APX 8.1: cuando el
-    /// modo lo permita, también construye el DualGraph estructural CPU+GPU.
+    /// Rebuild the execution plan from the current nodes. APX 8.1: when the
+    /// mode allows it, also builds the structural CPU+GPU DualGraph.
     pub fn build_plan(&mut self) {
         let (plan, fused_ops) = build_execution_plan(&self.nodes);
         self.plan = plan;
@@ -257,17 +257,17 @@ impl Graph {
     /// Validate structural consistency of the graph.
     ///
     /// Checks:
-    /// - Inputs por nodo coinciden con lo esperado según NodeType.
-    /// - Todos los índices de entrada referencian nodos existentes.
-    /// - No hay ciclos en el grafo dirigido (de entradas a consumidores).
-    /// - Todos los nodos son alcanzables desde al menos un nodo Input.
+    /// - Per-node inputs match what is expected for the NodeType.
+    /// - All input indices reference existing nodes.
+    /// - There are no cycles in the directed graph (from inputs to consumers).
+    /// - All nodes are reachable from at least one Input node.
     pub fn validate(&self) -> Result<(), String> {
-        // 1) Rango de índices y número esperado de inputs.
+        // 1) Index range and expected number of inputs.
         for (id, node) in self.nodes.iter().enumerate() {
             for &inp in &node.inputs {
                 if inp >= self.nodes.len() {
                     return Err(format!(
-                        "Nodo {id} ({:?}) referencia input inexistente: {inp}",
+                        "Node {id} ({:?}) references a non-existent input: {inp}",
                         node.node_type
                     ));
                 }
@@ -302,13 +302,13 @@ impl Graph {
 
             if !ok {
                 return Err(format!(
-                    "Nodo {id} ({:?}) tiene {} entradas, pero se esperaba un número distinto",
+                    "Node {id} ({:?}) has {} inputs, but a different number was expected",
                     node.node_type, in_len
                 ));
             }
         }
 
-        // 2) Construir lista de hijos para análisis de ciclos y alcanzabilidad.
+        // 2) Build children list for cycle and reachability analysis.
         let mut children: Vec<Vec<usize>> = vec![Vec::new(); self.nodes.len()];
         for (id, node) in self.nodes.iter().enumerate() {
             for &inp in &node.inputs {
@@ -316,7 +316,7 @@ impl Graph {
             }
         }
 
-        // 3) Detección de ciclos con DFS (colores: 0=blanco, 1=gris, 2=negro).
+        // 3) Cycle detection with DFS (colors: 0=white, 1=gray, 2=black).
         let mut color = vec![0u8; self.nodes.len()];
         fn dfs_cycle(
             u: usize,
@@ -345,13 +345,13 @@ impl Graph {
             if color[start] == 0 {
                 if let Some((u, v)) = dfs_cycle(start, &children, &mut color) {
                     return Err(format!(
-                        "Se detectó un ciclo en el grafo entre los nodos {u} y {v}",
+                        "A cycle was detected in the graph between nodes {u} and {v}",
                     ));
                 }
             }
         }
 
-        // 4) Alcanzabilidad desde nodos Input.
+        // 4) Reachability from Input nodes.
         let mut reachable = vec![false; self.nodes.len()];
         let mut stack = Vec::new();
         for (id, node) in self.nodes.iter().enumerate() {
@@ -375,7 +375,7 @@ impl Graph {
                 && !matches!(node.node_type, NodeType::Parameter)
             {
                 return Err(format!(
-                    "Nodo {id} ({:?}) no es alcanzable desde ningún nodo Input",
+                    "Node {id} ({:?}) is not reachable from any Input node",
                     node.node_type
                 ));
             }
@@ -419,16 +419,16 @@ impl Graph {
             self.run_plan(true);
         }
 
-        // APX 6.11 / 6.12 / 6.13: actualizar políticas globales de ejecución en
-        // función de las mediciones acumuladas por el FusionSelector 6.10.
+        // APX 6.11 / 6.12 / 6.13: update global execution policies based on
+        // measurements accumulated by the FusionSelector 6.10.
         if crate::apx_mode_at_least("6.11") {
             if let Ok(sel) = crate::apx6_10::global_fusion_selector().lock() {
                 if let Some(global_decision) = sel.best_decision() {
                     use crate::apx6_10::GlobalDecision;
                     use crate::apx6_11::runtime_policy::{set_runtime_policy, FusionRuntimePolicy};
 
-                    // Política determinista de 6.11, usada también como base
-                    // para los hints de scheduling de 6.12.
+                    // Deterministic 6.11 policy, also used as the base for 6.12
+                    // scheduling hints.
                     match global_decision {
                         GlobalDecision::PreferFull => {
                             set_runtime_policy(FusionRuntimePolicy::PreferFull);
@@ -441,7 +441,7 @@ impl Graph {
                         }
                     }
 
-                    // APX 6.12: derivar también el sesgo de scheduling puro.
+                    // APX 6.12: also derive the pure scheduling bias.
                     if crate::apx_mode_at_least("6.12") {
                         use crate::apx6_12::adaptive_scheduler::{
                             AdaptiveScheduleBias,
@@ -458,17 +458,16 @@ impl Graph {
                         }
                     }
 
-                    // APX 6.13: política "templada" probabilística que
-                    // reemplaza la política global de 6.11, pero sigue
-                    // afectando sólo hints de planificación.
+                    // APX 6.13: probabilistic "tempered" policy that replaces
+                    // the 6.11 global policy, but still only affects planning hints.
                     if crate::apx_mode_at_least("6.13") {
                         use crate::apx6_11::runtime_policy::{set_runtime_policy, FusionRuntimePolicy};
 
-                        // APX 6.14: actualizar temperatura adaptativa antes
-                        // de calcular el tempered softmax. Por ahora usamos
-                        // un step sintético (0) a nivel de integración; los
-                        // tests de 6.14 ejercitan el decaimiento real
-                        // llamando explícitamente a update_temperature.
+                        // APX 6.14: update the adaptive temperature before
+                        // computing the tempered softmax. For now we use a
+                        // synthetic integration-level step (0); the 6.14 tests
+                        // exercise the real decay by explicitly calling
+                        // update_temperature.
                         if crate::apx_mode_at_least("6.14") {
                             crate::apx6_14::temperature_manager::update_temperature(0);
                         }
@@ -477,7 +476,7 @@ impl Graph {
                         let t = if crate::apx_mode_at_least("6.14") {
                             crate::apx6_14::temperature_schedule::get_current_temperature()
                         } else {
-                            0.8 // valor fijo de APX 6.13
+                            0.8 // fixed value in APX 6.13
                         };
 
                         let td = crate::softmax3(full_s, qkv_s, base_s, t);
@@ -490,9 +489,9 @@ impl Graph {
                         }
                     }
 
-                    // APX 6.15: estabilizar la decisión global usando la
-                    // temperatura actual como control de exploración, sin
-                    // tocar el forward/backward ni los tensores reales.
+                    // APX 6.15: stabilize the global decision using the
+                    // current temperature as an exploration control, without
+                    // touching forward/backward nor real tensors.
                     if crate::apx_mode_at_least("6.15") {
                         use crate::apx6_15::stabilizer::ApxTemperature;
 
@@ -516,9 +515,9 @@ impl Graph {
         self.collect_outputs()
     }
 
-    /// APX 7.5: ejecución opt-in usando el Hierarchical Parallel Graph
-    /// Executor (HPGE). Esta API no reemplaza la ruta estándar; sólo
-    /// fuerza el modo 7.5 antes de delegar en `execute`.
+    /// APX 7.5: opt-in execution using the Hierarchical Parallel Graph
+    /// Executor (HPGE). This API does not replace the standard path; it only
+    /// forces mode 7.5 before delegating to `execute`.
     pub fn execute_hpge(&mut self, inputs: Vec<Tensor>) -> Vec<Tensor> {
         unsafe {
             std::env::set_var("ATENIA_APX_MODE", "7.5");
@@ -668,7 +667,7 @@ impl Graph {
             FusedOp::FusedQKV { x, wq, wk, wv, bq, bk, bv, q_id, k_id, v_id } => {
                 use std::time::Instant;
 
-                // Forward real (prototipo) para Q/K/V compartiendo la misma X.
+                // Real forward (prototype) for Q/K/V sharing the same X.
                 if crate::apx_debug_enabled() {
                     eprintln!("[APX 4.14] executing fused QKV at node {}", id);
                 }
@@ -698,18 +697,18 @@ impl Graph {
                 let bk_t = bk.and_then(|i| self.nodes[i].output.as_ref()).cloned();
                 let bv_t = bv.and_then(|i| self.nodes[i].output.as_ref()).cloned();
 
-                // En modo 6.9+, opcionalmente medimos tiempos naive vs fused.
+                // In 6.9+ mode, we optionally measure naive vs fused timings.
                 let mut use_fused = true;
 
                 if is_69_or_higher {
-                    // Medición naive (no fusionada): ejecutar Q,K,V por separado.
+                    // Naive (non-fused) measurement: execute Q, K, V separately.
                     let t0 = Instant::now();
                     let q_naive = nn_linear::linear(&x_t, &wq_t, bq_t.as_ref());
                     let k_naive = nn_linear::linear(&x_t, &wk_t, bk_t.as_ref());
                     let v_naive = nn_linear::linear(&x_t, &wv_t, bv_t.as_ref());
                     let unfused_time_us = t0.elapsed().as_micros() as u64;
 
-                    // Medición fused: reutilizamos la implementación actual.
+                    // Fused measurement: reuse the current implementation.
                     let t1 = Instant::now();
                     let q_fused = q_naive.clone();
                     let k_fused = k_naive.clone();
@@ -723,10 +722,10 @@ impl Graph {
                         }
                     }
 
-                    // Según la decisión, usamos los tensores ya calculados
-                    // naive o dejamos que la ruta fused los genere. Para no
-                    // duplicar cálculo, si se decide no usar fused, usamos
-                    // directamente q_naive/k_naive/v_naive.
+                    // Depending on the decision, we use the already-computed
+                    // naive tensors or let the fused path generate them. To avoid
+                    // duplicate computation, if we decide not to use fused, we
+                    // directly reuse q_naive/k_naive/v_naive.
                     if !use_fused {
                         self.nodes[q_id].set_output(q_naive.clone());
                         self.nodes[k_id].set_output(k_naive.clone());
@@ -745,7 +744,7 @@ impl Graph {
                         );
                     }
                 } else {
-                    // Comportamiento original 4.14 cuando APX < 6.9.
+                    // Original 4.14 behavior when APX < 6.9.
                     let q = nn_linear::linear(&x_t, &wq_t, bq_t.as_ref());
                     let k = nn_linear::linear(&x_t, &wk_t, bk_t.as_ref());
                     let v = nn_linear::linear(&x_t, &wv_t, bv_t.as_ref());
@@ -756,8 +755,8 @@ impl Graph {
                     self.fused_outputs.insert(id, FusedOutput::QKV { q, k, v });
                 }
 
-                // APX 4.16: registrar único BackOp fusionado para QKV cuando
-                // se esté grabando la cinta de backward.
+                // APX 4.16: record a single fused BackOp for QKV when
+                // recording the backward tape.
                 if crate::apx_mode() == "4.16" && record_tape {
                     let has_bq = bq.is_some();
                     let has_bk = bk.is_some();
@@ -776,7 +775,7 @@ impl Graph {
                             let wk_f = forward_inputs[2];
                             let wv_f = forward_inputs[3];
 
-                            // gQ, gK, gV acumulados en GradStore para los nodos Q,K,V.
+                            // gQ, gK, gV accumulated in GradStore for Q, K, V nodes.
                             let mut gq_data = store.get(q_id);
                             let mut gk_data = store.get(k_id);
                             let mut gv_data = store.get(v_id);
@@ -785,13 +784,13 @@ impl Graph {
                                 return;
                             }
 
-                            // Shapes deducidas de X y pesos: Q,K,V tienen forma [m, n].
+                            // Shapes derived from X and weights: Q, K, V have shape [m, n].
                             let m = x_f.shape[0];
                             let n = wq_f.shape[1];
 
-                            // Asegurarnos de que los buffers de grad no estén vacíos para
-                            // evitar accesos fuera de rango en matmul. Si algún grad se
-                            // quedó vacío, lo interpretamos como todo ceros.
+                            // Ensure grad buffers are not empty to avoid out-of-bounds
+                            // accesses in matmul. If any grad is empty, interpret it
+                            // as all zeros.
                             let expected_len = m * n;
                             if gq_data.is_empty() {
                                 gq_data = vec![0.0; expected_len];
@@ -877,7 +876,7 @@ impl Graph {
                     eprintln!("[APX 4.17] executing fused SelfAttention at node {}", id);
                 }
 
-                // Recuperar tensores Q, K, V ya materializados por los lineales previos.
+                // Retrieve Q, K, V tensors already materialized by the previous linear nodes.
                 let q_t = self.nodes[q]
                     .output
                     .as_ref()
@@ -894,8 +893,8 @@ impl Graph {
                     .expect("FusedSelfAttention: missing v output")
                     .clone();
 
-                // MatMul(Q, K^T) seguido de Softmax sobre la última dimensión,
-                // exactamente igual que el grafo naive (sin factor de escala).
+                // MatMul(Q, K^T) followed by Softmax over the last dimension,
+                // exactly the same as the naive graph (without scaling factor).
                 let k_t_t = transpose_2d(&k_t);
                 let scores = nn_linear::matmul(&q_t, &k_t_t);
                 let att = nn_softmax::softmax_last_dim(&scores);
@@ -905,8 +904,8 @@ impl Graph {
                 let out = nn_linear::matmul(&att, &v_t);
                 let baseline_us = t0.elapsed().as_micros() as u64;
 
-                // Materializar salida en el nodo MatMul A·V (id) para que el resto
-                // del grafo y el backward naive funcionen sin cambios.
+                // Materialize output in the MatMul A·V node (id) so that the rest
+                // of the graph and the naive backward work unchanged.
                 self.nodes[id].set_output(out.clone());
 
                 self.fused_outputs.insert(
@@ -920,9 +919,9 @@ impl Graph {
                     },
                 );
 
-                // APX 6.10: medición auxiliar de atención completa sin cambiar forward/backward reales.
+                // APX 6.10: auxiliary full-attention measurement without changing real forward/backward.
                 if is_610_or_higher {
-                    // Recuperar X, pesos y bias tal como los ve el grafo.
+                    // Retrieve X, weights, and bias as seen by the graph.
                     let x_t = self.nodes[x]
                         .output
                         .as_ref()
@@ -948,7 +947,7 @@ impl Graph {
                     let bk_t = bk.and_then(|i| self.nodes[i].output.as_ref()).cloned();
                     let bv_t = bv.and_then(|i| self.nodes[i].output.as_ref()).cloned();
 
-                    // Buscar un posible Linear de proyección que consuma out (baseline), si existe.
+                    // Look for a projection Linear that consumes out (baseline), if it exists.
                     let mut wproj_t: Option<crate::tensor::Tensor> = None;
                     let mut bias_proj_t: Option<crate::tensor::Tensor> = None;
 
@@ -985,7 +984,7 @@ impl Graph {
                         );
                         let fused_full_us = t_full.elapsed().as_micros() as u64;
 
-                        // De momento no tenemos un tiempo separado para FusedQKV aquí, usamos 0.
+                        // For now we do not have a separate time for FusedQKV here; use 0.
                         let fused_qkv_us = 0u64;
 
                         if let Ok(mut sel) = global_fusion_selector().lock() {
@@ -999,14 +998,14 @@ impl Graph {
                     }
                 }
 
-                // APX 4.18: el backward fusionado de Self-Attention queda
-                // desactivado por ahora. Forward sigue fusionado, pero el
-                // backward usa la cadena naive de BackOps individuales.
+                // APX 4.18: fused Self-Attention backward is disabled for now.
+                // Forward remains fused, but backward uses the naive chain of
+                // individual BackOps.
             }
         }
     }
 
-    /// CPU forward para nodos Linear, reutilizando nn::linear sin GPU.
+    /// CPU forward for Linear nodes, reusing nn::linear without GPU.
     pub fn exec_cpu_linear_fallback(&mut self, id: usize) {
         let inputs = self.nodes[id].inputs.clone();
         assert!(
@@ -1017,7 +1016,7 @@ impl Graph {
         let x_id = inputs[0];
         let w_id = inputs[1];
 
-        // Asegurar que las entradas tengan salida materializada antes de leerlas.
+        // Ensure inputs have their outputs materialized before reading them.
         if self.nodes[x_id].output.is_none() {
             self.execute_single(x_id, false);
         }
@@ -1071,9 +1070,9 @@ impl Graph {
         let use_timing = crate::apx_mode_at_least("7.6");
         let t0 = if use_timing { Some(Instant::now()) } else { None };
 
-        // APX 4.13: si existe una op fusionada asociada a este nodo, delegar
-        // en el ejecutor fusionado y salir. Clonamos la FusedOp para no
-        // mantener un préstamo inmutable de self mientras la usamos.
+        // APX 4.13: if there is a fused op associated with this node, delegate
+        // to the fused executor and return. We clone the FusedOp to avoid
+        // holding an immutable borrow of self while using it.
         if let Some(fused) = self.fused_ops.get(&node_id).cloned() {
             if use_timing {
                 if let Some(start) = t0 {
@@ -1084,8 +1083,8 @@ impl Graph {
             return self.exec_fused(node_id, fused, record_tape);
         }
 
-        // APX 4.9: ejecutar directamente cadenas fusionadas Linear→[Act...]→Linear,
-        // sin pasar por hooks de APX 4.7 ni GPU para este nodo.
+        // APX 4.9: directly execute fused Linear→[Act...]→Linear chains,
+        // without going through APX 4.7 hooks nor GPU for this node.
         if let super::nodes::NodeType::FusedLinearActivationChain(acts) =
             self.nodes[node_id].node_type.clone()
         {
@@ -1181,7 +1180,7 @@ impl Graph {
             return;
         }
 
-        // APX 4.7: si este nodo es el segundo de un par fusionado Linear→Linear, ejecutar fusión.
+        // APX 4.7: if this node is the second of a fused Linear→Linear pair, execute the fusion.
         if let Some(fplan) = &self.fusion_plan {
             if let Some((a, b)) = fplan
                 .fused_pairs
@@ -1194,7 +1193,7 @@ impl Graph {
             }
         }
 
-        // APX 4.3: si este nodo es inicio de un segmento GPU, ejecuta todo el segmento.
+        // APX 4.3: if this node is the start of a GPU segment, execute the whole segment.
         if let Some(plan) = &self.gpu_plan {
             if let Some(seg) = plan.segments.iter().find(|s| s.start == node_id).cloned() {
                 self.exec_gpu_segment(&seg);
@@ -1208,7 +1207,7 @@ impl Graph {
             }
         }
 
-        // APX 4.11: detectar si este nodo pertenece a algún segmento GPU ya planificado.
+        // APX 4.11: detect whether this node belongs to any already-planned GPU segment.
         let in_gpu_segment = self
             .gpu_plan
             .as_ref()
@@ -1222,14 +1221,14 @@ impl Graph {
 
         let node_type = self.nodes[node_id].node_type.clone();
 
-        // APX 5.x: variables auxiliares para planeación avanzada.
+        // APX 5.x: auxiliary variables for advanced planning.
         let apx_mode = crate::apx_mode();
         let is_5x = apx_mode.starts_with("5.");
         let is_54 = apx_mode.starts_with("5.4");
         let mut node_exec_info_5x: Option<NodeExecInfo> = None;
 
-        // APX 5.1 / 5.2: planner de kernels (por ahora logs + decisión de CPU/GPU
-        // usada para MatMul en APX 5.2).
+        // APX 5.1 / 5.2: kernel planner (for now, logs + CPU/GPU decision
+        // used for MatMul in APX 5.2).
         let shape_hint: Vec<usize> = self
             .nodes[node_id]
             .inputs
@@ -1240,8 +1239,8 @@ impl Graph {
 
         let planner = KernelPlanner::new();
 
-        // APX 5.4: obtener preferencia adaptativa de dispositivo para este
-        // nodo (por ahora se usa información genérica, no específica de op).
+        // APX 5.4: obtain adaptive device preference for this node (for now we
+        // use generic information, not op-specific).
         let mut adaptive_pref = None;
         if is_54 {
             if let Some(ref info) = node_exec_info_5x {
@@ -1274,13 +1273,12 @@ impl Graph {
             );
         }
 
-        // APX 5.3: capa adicional de planificación avanzada. Aquí sólo
-        // construimos un plan de ejecución y, opcionalmente, lo logueamos,
-        // sin modificar todavía la ruta real de ejecución ni la matemática
-        // del nodo.
+        // APX 5.3: additional advanced planning layer. Here we only build an
+        // execution plan and optionally log it, without modifying the real
+        // execution path nor the node's math yet.
         if is_5x {
-            // APX 5.3: intentar usar información real de Tensor cuando
-            // esté disponible para enriquecer NodeExecInfo.
+            // APX 5.3: try to use real Tensor information when available to
+            // enrich NodeExecInfo.
             let tensor_opt = self.nodes[node_id]
                 .output
                 .as_ref()
@@ -1298,7 +1296,7 @@ impl Graph {
                     t.estimated_bytes(),
                 )
             } else {
-                // Fallback aproximado si no hay tensor disponible todavía.
+                // Approximate fallback if no tensor is available yet.
                 let num_elems: usize = shape_hint.iter().product();
                 (
                     "f32".to_string(),
@@ -1308,7 +1306,7 @@ impl Graph {
             };
 
             let num_elems: usize = shape_hint.iter().product();
-            let estimated_flops = num_elems; // placeholder simbólico
+            let estimated_flops = num_elems; // symbolic placeholder
 
             let device_52_str = match plan.target {
                 KernelTarget::Cpu => "CPU".to_string(),
@@ -1336,8 +1334,8 @@ impl Graph {
                 prefetch_hint: None,
             };
 
-            // APX 6.11: aplicar la política global de fusión sólo como bias de
-            // planificación (no altera el forward real ni el backward).
+            // APX 6.11: apply the global fusion policy only as a planning bias
+            // (does not alter real forward nor backward).
             if crate::apx_mode_at_least("6.11") {
                 use crate::apx6_11::runtime_policy::{get_runtime_policy, FusionRuntimePolicy};
 
@@ -1348,9 +1346,9 @@ impl Graph {
                 }
             }
 
-            // APX 6.12: hints adicionales de scheduling (orden/prioridad,
-            // prefetch) basados en AdaptiveScheduleBias. No toca la
-            // matemática ni la cinta de backward.
+            // APX 6.12: additional scheduling hints (ordering/priority,
+            // prefetch) based on AdaptiveScheduleBias. Does not touch the
+            // math nor the backward tape.
             if crate::apx_mode_at_least("6.12") {
                 use crate::apx6_12::adaptive_scheduler::{
                     AdaptiveScheduleBias,
@@ -1369,9 +1367,9 @@ impl Graph {
             let planner_5_3 = Planner5_3::new();
             let mut plan_5_3 = planner_5_3.select_plan(&node_info);
 
-            // APX 5.4: selector adaptativo opcional. Sólo modifica el plan
-            // a nivel de preferencias, no la ejecución real, y sólo en modo
-            // 5.4 o superior.
+            // APX 5.4: optional adaptive selector. It only modifies the plan
+            // at the preference level, not the real execution, and only in
+            // 5.4 or higher.
             if is_54 {
                 let sel_mutex = crate::global_adaptive_selector();
                 if let Ok(sel) = sel_mutex.lock() {
@@ -1406,7 +1404,7 @@ impl Graph {
             NodeType::Add => {
                 let inputs = self.nodes[node_id].inputs.clone();
                 if inputs.len() < 2 {
-                    // Grafo inconsistente (p.ej. tests artificiales de trazas): no ejecutamos Add.
+                    // Inconsistent graph (e.g., artificial trace tests): do not execute Add.
                     return;
                 }
 
@@ -1431,8 +1429,8 @@ impl Graph {
                 }
             }
             NodeType::NoOp => {
-                // Nodo eliminado lógicamente: garantiza que su único input
-                // haya sido ejecutado y reenvía su resultado.
+                // Logically removed node: ensures its single input has been
+                // executed and forwards its result.
                 if let Some(&inp) = self.nodes[node_id].inputs.get(0) {
                     if crate::apx_debug_enabled() && !crate::apx_is_silent() {
                         eprintln!(
@@ -1443,7 +1441,7 @@ impl Graph {
                             self.nodes[inp].output.is_some(),
                         );
                     }
-                    // Si el nodo de entrada aún no produjo salida, ejecutarlo ahora.
+                    // If the input node has not produced output yet, execute it now.
                     if self.nodes[inp].output.is_none() {
                         self.execute_single(inp, record_tape);
                     }
@@ -1488,7 +1486,7 @@ impl Graph {
             NodeType::Mul => {
                 let inputs = self.nodes[node_id].inputs.clone();
                 if inputs.len() < 2 {
-                    // Grafo inconsistente (p.ej. tests artificiales de trazas): no ejecutamos Mul.
+                    // Inconsistent graph (e.g., artificial trace tests): do not execute Mul.
                     return;
                 }
 
@@ -1553,16 +1551,16 @@ impl Graph {
                     a.dtype,
                 );
 
-                // APX 5.4: medición de tiempo para MatMul (CPU/GPU) a
-                // efectos de recolección de estadísticas adaptativas.
+                // APX 5.4: timing measurement for MatMul (CPU/GPU) for
+                // collecting adaptive statistics.
                 let start_time = Instant::now();
                 let mut device_chosen = DeviceTarget::CPU;
 
                 let apx_mode = crate::apx_mode();
 
-                // APX 6.6: Auto-Tiling Optimizer (ATO) sólo para forward CPU
-                // con tensores FP32 contiguos. No modifica backward ni
-                // fusiones, sólo decide qué kernel existente usar.
+                // APX 6.6: Auto-Tiling Optimizer (ATO) only for CPU forward
+                // with contiguous FP32 tensors. Does not modify backward nor
+                // fusions; it only decides which existing kernel to use.
                 let is_66_or_higher = crate::apx_mode_at_least("6.6");
                 if is_66_or_higher
                     && a.device == crate::tensor::Device::CPU
@@ -1594,8 +1592,8 @@ impl Graph {
                             dispatch_matmul_apx3_8(&a.data, &b.data, &mut out.data, m, k, n, &ctx);
                         }
                         KernelKind::Tiled63B | KernelKind::Micro64 => {
-                            // Reutilizar el dispatcher CPU que ya integra 6.3B,
-                            // 6.4 y fallback seguro a 3.8/6.1.
+                            // Reuse the CPU dispatcher that already integrates 6.3B,
+                            // 6.4, and a safe fallback to 3.8/6.1.
                             crate::matmul_dispatcher::matmul_dispatch(
                                 &a.data,
                                 &b.data,
@@ -1607,8 +1605,8 @@ impl Graph {
                         }
                     }
 
-                    // En modo 6.6 no registramos muestras 5.4 explícitas aquí
-                    // para no acoplar ATO con el sistema de estadísticas.
+                    // In 6.6 mode we do not register explicit 5.4 samples here
+                    // to avoid coupling ATO with the statistics system.
                     self.nodes[node_id].set_output(out);
                     if record_tape {
                         let op_inputs = self.nodes[node_id].inputs.clone();
@@ -1633,17 +1631,17 @@ impl Graph {
                     return;
                 }
 
-                // APX 4.11: intento de ejecución directa en GPU por operador
-                // sólo para nodos fuera de segmentos GPU planificados. Esta
-                // ruta se mantiene como antes para garantizar compatibilidad.
+                // APX 4.11: per-operator direct GPU execution attempt only for
+                // nodes outside planned GPU segments. This path is kept as-is
+                // to guarantee compatibility.
                 if !in_gpu_segment
                     && gpu_hooks::gpu_can_run_matmul(m, k, n)
                     && gpu_hooks::try_gpu_matmul(&a, &b, &mut out)
                 {
                     device_chosen = DeviceTarget::GPU;
 
-                    // Registrar muestra sólo en modo 5.4, sin cambiar
-                    // semántica ni ruta de ejecución.
+                    // Register a sample only in 5.4 mode, without changing
+                    // semantics nor execution path.
                     if is_54 {
                         let duration_us = start_time.elapsed().as_micros() as u64;
                         if let Some(ref info) = node_exec_info_5x {
@@ -1674,16 +1672,15 @@ impl Graph {
                     return;
                 }
 
-                // APX 5.2 / 6.2: usar el KernelPlanner para decidir el target de
-                // matmul. En modos >= 6.2 podemos forzar la ruta AVX2 CPU
-                // (CpuFastAvx2); en otros casos usamos el dispatcher APX 4
-                // habitual con target CPU/GPU/Auto.
+                // APX 5.2 / 6.2: use KernelPlanner to decide the matmul target.
+                // In modes >= 6.2 we can force the CPU AVX2 path (CpuFastAvx2);
+                // otherwise we use the usual APX 4 dispatcher with CPU/GPU/Auto.
                 let is_62_or_higher = apx_mode.starts_with("6.2") || apx_mode > "6.2".to_string();
 
                 let target = if is_62_or_higher && matches!(plan.target, KernelTarget::CpuFastAvx2) {
-                    // Ruta AVX2 opcional. El dispatcher de APX 6.2 se encarga
-                    // de hacer fallback seguro al dispatcher APX 3.8 cuando
-                    // AVX2 no está disponible.
+                    // Optional AVX2 path. The APX 6.2 dispatcher is responsible
+                    // for safely falling back to the APX 3.8 dispatcher when
+                    // AVX2 is not available.
                     crate::apx6_2::dispatch::dispatch_matmul_avx2(
                         &a.data,
                         &b.data,
@@ -1694,8 +1691,8 @@ impl Graph {
                     );
                     Apx4ExecTarget::CPU
                 } else {
-                    // APX 5.2: en modos 5.x usamos el plan para decidir entre
-                    // CPU/GPU/Auto. En otros modos, conservamos Auto.
+                    // APX 5.2: in 5.x modes we use the plan to decide between
+                    // CPU/GPU/Auto. In other modes, we keep Auto.
                     let mapped = if apx_mode.starts_with("5.") {
                         match plan.target {
                             KernelTarget::Cpu => Apx4ExecTarget::CPU,
@@ -1719,16 +1716,14 @@ impl Graph {
                     mapped
                 };
 
-                // Determinar heurísticamente el dispositivo usado: si el
-                // target fue GPU, asumimos ruta GPU; en cualquier otro caso,
-                // CPU. Esta inferencia es aproximada pero suficiente para
-                // estadísticas iniciales.
+                // Heuristically infer the device used: if the target was GPU,
+                // assume GPU path; otherwise CPU. This inference is approximate
+                // but sufficient for initial statistics.
                 if matches!(target, Apx4ExecTarget::GPU) {
                     device_chosen = DeviceTarget::GPU;
                 }
 
-                // Registrar muestra sólo en modo 5.4, tras la ejecución
-                // completa de MatMul.
+                // Register a sample only in 5.4 mode, after MatMul completes.
                 if is_54 {
                     let duration_us = start_time.elapsed().as_micros() as u64;
                     if let Some(ref info) = node_exec_info_5x {
@@ -1841,7 +1836,7 @@ impl Graph {
             NodeType::Reshape { target } => {
                 let inputs = self.nodes[node_id].inputs.clone();
                 if inputs.is_empty() {
-                    // Grafo inconsistente (p.ej. tests artificiales de trazas): no ejecutamos Reshape.
+                    // Inconsistent graph (e.g., artificial trace tests): do not execute Reshape.
                     return;
                 }
 
@@ -1921,14 +1916,13 @@ impl Graph {
                     a.dtype,
                 );
 
-                // APX 5.4: medición de tiempo para BatchMatMul (CPU/GPU) a
-                // efectos de recolección de estadísticas adaptativas.
+                // APX 5.4: timing measurement for BatchMatMul (CPU/GPU) for
+                // collecting adaptive statistics.
                 let start_time = Instant::now();
                 let device_chosen;
 
-                // Selección de target mediante APX 5.2 (KernelPlanner) ya
-                // calculada en 'plan'. Usamos la misma lógica de mapeo que
-                // en MatMul.
+                // Target selection via APX 5.2 (KernelPlanner) already computed
+                // in 'plan'. We use the same mapping logic as in MatMul.
                 let apx_mode = crate::apx_mode();
                 let target = if apx_mode.starts_with("5.") {
                     match plan.target {
@@ -1943,9 +1937,9 @@ impl Graph {
 
                 match target {
                     Apx4ExecTarget::GPU => {
-                        // Intento de ejecución en GPU vía APX 4.5. Si por
-                        // alguna razón falla o CUDA no está disponible, se
-                        // mantiene la ruta CPU previa como fallback.
+                        // GPU execution attempt via APX 4.5. If for any reason
+                        // it fails or CUDA is not available, keep the previous
+                        // CPU path as fallback.
                         if crate::cuda::cuda_available() {
                             dispatch_batch_matmul_cuda(
                                 &a.data,
@@ -1970,8 +1964,7 @@ impl Graph {
                     }
                 }
 
-                // Registrar muestra sólo en modo 5.4, tras la ejecución
-                // completa de BatchMatMul.
+                // Register a sample only in 5.4 mode, after BatchMatMul completes.
                 if is_54 {
                     let duration_us = start_time.elapsed().as_micros() as u64;
                     if let Some(ref info) = node_exec_info_5x {
@@ -2232,8 +2225,8 @@ impl Graph {
                     .as_ref()
                     .expect("Linear missing weight")
                     .clone();
-                // APX 4.11: intento de ejecución directa en GPU por operador
-                // sólo para nodos fuera de segmentos GPU planificados.
+                // APX 4.11: per-operator direct GPU execution attempt only for
+                // nodes outside planned GPU segments.
                 let use_bias = inputs.len() == 3;
                 let b_opt = if use_bias {
                     Some(
@@ -2247,8 +2240,7 @@ impl Graph {
                     None
                 };
 
-                // APX 5.4: medición de tiempo opcional para estadísticas
-                // adaptativas de Linear.
+                // APX 5.4: optional timing measurement for adaptive Linear statistics.
                 let apx_mode_local = crate::apx_mode();
                 let is_54_local = apx_mode_local.starts_with("5.4");
                 let start_time = if is_54_local {
@@ -2257,8 +2249,8 @@ impl Graph {
                     None
                 };
 
-                // APX 5.2 + 5.4: sólo en modos 5.x usamos el planner para
-                // decidir si intentar GPU vía gpu_hooks::try_gpu_linear.
+                // APX 5.2 + 5.4: only in 5.x modes we use the planner to decide
+                // whether to attempt GPU via gpu_hooks::try_gpu_linear.
                 if x.shape.len() == 2 && w.shape.len() == 2 {
                     let m = x.shape[0];
                     let k = x.shape[1];
@@ -2266,9 +2258,9 @@ impl Graph {
                         let n = w.shape[1];
 
                         if apx_mode_local.starts_with("5.") && !in_gpu_segment {
-                            // Usamos el plan calculado previamente para este
-                            // nodo. Si el planner sugiere GPU, intentamos la
-                            // ruta GPU; en caso contrario, dejamos CPU.
+                            // We use the previously computed plan for this node.
+                            // If the planner suggests GPU, we try the GPU path;
+                            // otherwise we keep CPU.
                             if let KernelTarget::Gpu = plan.target {
                                 let mut tmp = Tensor::zeros_new(&[m, n], x.device);
 
@@ -2278,8 +2270,7 @@ impl Graph {
                                     b_opt.as_ref(),
                                     &mut tmp,
                                 ) {
-                                    // Registrar muestra de Linear solo si el
-                                    // modo 5.4 está activo.
+                                    // Register a Linear sample only if 5.4 mode is active.
                                     if let (true, Some(t0)) = (is_54_local, start_time) {
                                         let duration_us = t0.elapsed().as_micros() as u64;
                                         if let Some(ref info) = node_exec_info_5x {
@@ -2324,9 +2315,8 @@ impl Graph {
                                 &mut Tensor::zeros_new(&[m, n], x.device),
                             )
                         {
-                            // Modo pre-5.x: comportamiento original. No
-                            // registramos muestras aquí para no mezclar
-                            // estadísticas entre modos.
+                            // Pre-5.x mode: original behavior. We do not register
+                            // samples here to avoid mixing statistics between modes.
                             let mut tmp = Tensor::zeros_new(&[m, n], x.device);
                             gpu_hooks::try_gpu_linear(&x, &w, b_opt.as_ref(), &mut tmp);
                             self.nodes[node_id].set_output(tmp);
@@ -2348,8 +2338,8 @@ impl Graph {
                     nn_linear::linear(&x, &w, None)
                 };
 
-                // Registrar muestra CPU de Linear sólo en modo 5.4 y si no
-                // retornamos por la ruta GPU.
+                // Register a CPU Linear sample only in 5.4 mode and only if we
+                // did not return via the GPU path.
                 if let (true, Some(t0)) = (is_54_local, start_time) {
                     let duration_us = t0.elapsed().as_micros() as u64;
                     if let Some(ref info) = node_exec_info_5x {
@@ -2379,9 +2369,9 @@ impl Graph {
                 self.nodes[node_id].set_output(out);
 
                 if record_tape {
-                    // APX 4.16: si este Linear forma parte de un patrón QKV
-                    // fusionado, delegar el backward al BackOp fusionado y
-                    // no registrar el BackOp normal de Linear.
+                    // APX 4.16: if this Linear is part of a fused QKV pattern,
+                    // delegate backward to the fused BackOp and do not record
+                    // the normal Linear BackOp.
                     let mode = crate::apx_mode();
                     if mode == "4.16" {
                         if self.fused_ops.contains_key(&node_id) || self.is_qkv_secondary(node_id) {
@@ -2389,9 +2379,9 @@ impl Graph {
                         }
                     }
 
-                    // APX 4.18: si este Linear es uno de los Q/K/V de un
-                    // patrón Self-Attention fusionado, también delegamos
-                    // el backward al BackOp fusionado.
+                    // APX 4.18: if this Linear is one of the Q/K/V of a fused
+                    // Self-Attention pattern, also delegate backward to the
+                    // fused BackOp.
                     if mode == "4.18" {
                         if self.is_sa_linear(node_id) {
                             return;
@@ -2457,8 +2447,8 @@ impl Graph {
 
                 self.nodes[node_id].set_output(out);
 
-                // Nota: por ahora no registramos backward específico para ActType;
-                // la ruta de entrenamiento sobre estos nodos no está soportada en APX 4.8.
+                // Note: for now we do not record ActType-specific backward;
+                // the training path for these nodes is not supported in APX 4.8.
             }
             NodeType::FusedLinearActivation(act) => {
                 let inputs = self.nodes[node_id].inputs.clone();
@@ -2494,7 +2484,7 @@ impl Graph {
                 let out = match act {
                     crate::amg::nodes::ActType::ReLU => nn_act::relu(&lin),
                     crate::amg::nodes::ActType::SiLU => {
-                        // Usa implementación fusionada específica para SiLU.
+                        // Use the SiLU-specific fused implementation.
                         crate::apx4_8::fused_linear_activation::exec_fused_linear_silu(
                             &x, &w, b_opt,
                         )
@@ -2504,7 +2494,7 @@ impl Graph {
 
                 self.nodes[node_id].set_output(out);
 
-                // Backward específico para el nodo fusionado no implementado en APX 4.8.
+                // Fused-node-specific backward is not implemented in APX 4.8.
             }
             NodeType::FusedLinearActivationChain(acts) => {
                 let inputs = self.nodes[node_id].inputs.clone();
@@ -2578,7 +2568,7 @@ impl Graph {
             NodeType::RmsNorm => {
                 let inputs = self.nodes[node_id].inputs.clone();
                 if inputs.len() != 1 {
-                    // Grafo inconsistente (p.ej. tests artificiales de trazas): no ejecutamos RmsNorm.
+                    // Inconsistent graph (e.g., artificial trace tests): do not execute RmsNorm.
                     return;
                 }
 
@@ -2591,7 +2581,7 @@ impl Graph {
             NodeType::SiLU => {
                 let inputs = self.nodes[node_id].inputs.clone();
                 if inputs.len() != 1 {
-                    // Grafo inconsistente (p.ej. tests artificiales de trazas): no ejecutamos SiLU.
+                    // Inconsistent graph (e.g., artificial trace tests): do not execute SiLU.
                     return;
                 }
 
@@ -2624,7 +2614,7 @@ impl Graph {
             NodeType::Softmax => {
                 let inputs = self.nodes[node_id].inputs.clone();
                 if inputs.len() != 1 {
-                    // Grafo inconsistente (p.ej. tests artificiales de trazas): no ejecutamos Softmax.
+                    // Inconsistent graph (e.g., artificial trace tests): do not execute Softmax.
                     return;
                 }
 

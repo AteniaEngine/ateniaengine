@@ -11,7 +11,7 @@ pub struct KernelCache {
 impl KernelCache {
     pub fn new() -> Self {
         let root = PathBuf::from("atenia_cache/kernels/");
-        // Best-effort: si falla la creación, lo veremos al guardar.
+        // Best-effort: if directory creation fails, we will see it on save.
         let _ = fs::create_dir_all(&root);
         KernelCache { root }
     }

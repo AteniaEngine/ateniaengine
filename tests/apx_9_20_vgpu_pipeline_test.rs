@@ -50,12 +50,12 @@ fn apx_9_20_pipeline_with_predication() {
         VGPUInstr::Reconverge,
     ];
 
-    // Ejecutar un ciclo completo F→D→E
+    // Run a full F→D→E cycle
     for _ in 0..3 {
         VGPUPipeline::step(&mut warp, &program);
     }
 
-    // Se debe haber cambiado la máscara según el predicado.
+    // The mask should have changed according to the predicate.
     assert_eq!(warp.mask.lanes[0], true);
     assert_eq!(warp.mask.lanes[1], false);
 }

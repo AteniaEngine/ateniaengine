@@ -92,9 +92,9 @@ fn test_batch_matmul_gpu() {
     let _ = mem.free(&gb);
     let _ = mem.free(&gout);
 
-    // APX 12.x infra: este test actúa como smoke test de la ruta GPU.
-    // No exigimos igualdad exacta con la referencia CPU, sólo que
-    // la forma y los valores sean razonables.
+    // APX 12.x infra: this test acts as a smoke test for the GPU path.
+    // We do not require exact equality with the CPU reference, only that
+    // shape and values are reasonable.
     assert_eq!(out.len(), cpu.len());
     assert!(out.iter().all(|v| v.is_finite()));
 }

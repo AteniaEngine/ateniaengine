@@ -11,7 +11,7 @@ impl CPUToPTX {
     pub fn translate(ir: &KernelIR) -> PTXTranslationResult {
         let mut code = String::new();
 
-        // Header realista
+        // Realistic header
         code.push_str(".version 7.0\n");
         code.push_str(".target sm_75\n");
         code.push_str(".address_size 64\n\n");
@@ -22,12 +22,12 @@ impl CPUToPTX {
         }
         code.push_str(") {\n");
 
-        // Registers típicos
+        // Typical registers
         code.push_str("    .reg .u32 %r<16>;\n");
         code.push_str("    .reg .u64 %rd<16>;\n");
         code.push_str("    .reg .f32 %f<32>;\n\n");
 
-        // Cargar parámetros
+        // Load parameters
         for (i, _) in ir.params.iter().enumerate() {
             code.push_str(&format!(
                 "    ld.param.u64 %rd{}, [param{}{}];\n",

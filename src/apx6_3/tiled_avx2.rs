@@ -24,7 +24,7 @@ pub fn matmul_tiled_avx2(
     let tile_n = 64;
     let unroll_k = 4;
 
-    // Inicializar salida a cero
+    // Initialize output to zero
     for v in out.iter_mut() {
         *v = 0.0;
     }
@@ -40,17 +40,17 @@ pub fn matmul_tiled_avx2(
                         let mut acc = _mm_setzero_ps();
                         let mut p = 0;
 
-                        // Punteros base para esta fila/columna
+                        // Base pointers for this row/column
                         let a_row_ptr = a.as_ptr().add(i * k);
 
                         while p + 4 <= k {
-                            // Prefetch A y B un poco adelantados
+                            // Prefetch A and B slightly ahead
                             _mm_prefetch(a_row_ptr.add(p) as *const i8, _MM_HINT_T0);
                             _mm_prefetch(b.as_ptr().add(p * n + j) as *const i8, _MM_HINT_T0);
 
                             let a_vec = _mm_loadu_ps(a_row_ptr.add(p));
 
-                            // B está en [k x n], columna fija j: elementos b[(p+t)*n + j]
+                            // B is in [k x n], fixed column j: elements b[(p+t)*n + j]
                             let mut b_tmp = [0.0f32; 4];
                             b_tmp[0] = *b.as_ptr().add((p + 0) * n + j);
                             b_tmp[1] = *b.as_ptr().add((p + 1) * n + j);

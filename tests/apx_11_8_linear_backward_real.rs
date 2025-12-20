@@ -53,7 +53,7 @@ fn test_linear_backward_real_gpu() {
         Err(_) => return,
     };
 
-    // Referencia CPU
+    // CPU reference
     let m = 2;
     let k = 2;
     let n = 2;
@@ -92,7 +92,7 @@ fn test_linear_backward_real_gpu() {
         d_b_ref[j] = acc;
     }
 
-    // Comparar con tolerancia pequeña por FP
+    // Compare with a small FP tolerance
     for i in 0..d_x.len() {
         assert!((d_x[i] - d_x_ref[i]).abs() < 1e-4, "dX mismatch at {}: {} vs {}", i, d_x[i], d_x_ref[i]);
     }

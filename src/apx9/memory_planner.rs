@@ -1,5 +1,5 @@
 // APX 9.6 — GPU Memory Planner v0 (GMPv0)
-// Simulador de planificación de memoria GPU. No usa VRAM real ni ejecuta kernels.
+// GPU memory planning simulator. Does not use real VRAM nor execute kernels.
 
 use crate::amg::graph::Graph;
 use crate::tensor::Tensor;
@@ -16,7 +16,7 @@ pub struct MemoryPlan {
     pub total_required: usize,
     pub temp_peak: usize,
     pub assignments: Vec<MemAssign>,
-    pub spills: Vec<usize>, // ids de nodo que deberían caer a CPU
+    pub spills: Vec<usize>, // node ids that should spill to CPU
 }
 
 pub struct GPUMemoryPlanner {
@@ -26,18 +26,18 @@ pub struct GPUMemoryPlanner {
 
 impl GPUMemoryPlanner {
     pub fn new(total_vram_sim: usize) -> Self {
-        // Heap simulado: vector vacío con capacidad opcional.
+        // Simulated heap: empty vector with optional capacity.
         let heap = Vec::with_capacity(total_vram_sim);
         Self { total_vram_sim, heap }
     }
 
-    /// Estima los bytes requeridos por un tensor (incluyendo dtype).
+    /// Estimate bytes required by a tensor (including dtype).
     pub fn estimate_tensor_size(t: &Tensor) -> usize {
         t.estimated_bytes()
     }
 
-    /// Genera un plan de memoria simbólico para un grafo.
-    /// No modifica el grafo ni toca datos reales.
+    /// Generate a symbolic memory plan for a graph.
+    /// Does not modify the graph nor touch real data.
     pub fn plan_for_graph(&mut self, graph: &Graph) -> MemoryPlan {
         let mut plan = MemoryPlan {
             total_required: 0,
@@ -51,7 +51,7 @@ impl GPUMemoryPlanner {
         let mut next_offset: usize = 0;
         let mut current_usage: usize = 0;
 
-        // Guardar tamaños previos para simular reutilización en cadena A->B->C.
+        // Store previous sizes to simulate reuse in an A->B->C chain.
         let mut sizes: Vec<usize> = vec![0; graph.nodes.len()];
         let mut offsets: Vec<Option<usize>> = vec![None; graph.nodes.len()];
 
@@ -59,24 +59,24 @@ impl GPUMemoryPlanner {
         const LARGE_BLOCK_THRESHOLD_BYTES: usize = 50 * 1024 * 1024; // 50MB
 
         for (idx, node) in graph.nodes.iter().enumerate() {
-            // Sólo consideramos nodos con salida (Parameter/Input/Output o intermedios).
+            // Only consider nodes with outputs (Parameter/Input/Output or intermediates).
             let t_opt: Option<&Tensor> = node.output.as_ref();
             if t_opt.is_none() {
                 continue;
             }
             let t = t_opt.unwrap();
 
-            // Política básica por tamaño.
+            // Basic size-based policy.
             let sz = Self::estimate_tensor_size(t);
             sizes[idx] = sz;
 
             if sz > SPILL_THRESHOLD_BYTES {
-                // Demasiado grande: marcar spill a CPU.
+                // Too large: mark spill to CPU.
                 plan.spills.push(idx);
                 continue;
             }
 
-            // Asignación de bloque (normal o "grande" simbólico).
+            // Block assignment (normal or symbolic "large").
             let alloc_size = if sz >= LARGE_BLOCK_THRESHOLD_BYTES { sz } else { sz };
 
             let (offset, assigned) = allocate_from_free_list(&mut free_list, &mut next_offset, alloc_size);
@@ -92,9 +92,9 @@ impl GPUMemoryPlanner {
             plan.assignments.push(MemAssign { node_id: idx, offset, size: assigned });
             offsets[idx] = Some(offset);
 
-            // Heurística de reutilización muy simple: en una cadena A->B->C,
-            // liberamos el nodo anterior al actual para permitir que el
-            // siguiente reutilice su región. No modifica datos reales.
+            // Very simple reuse heuristic: in an A->B->C chain, free the
+            // previous node before the current one so the next can reuse its
+            // region. Does not modify real data.
             if idx > 0 {
                 let prev_id = idx - 1;
                 if !plan.spills.contains(&prev_id) {
@@ -113,14 +113,14 @@ impl GPUMemoryPlanner {
     }
 }
 
-/// Asignación muy sencilla: primero intenta reutilizar un hueco de la free list,
-/// si no, reserva al final del heap simulado.
+/// Very simple allocation: first try to reuse a hole from the free list;
+/// otherwise, allocate at the end of the simulated heap.
 fn allocate_from_free_list(
     free_list: &mut Vec<(usize, usize)>,
     next_offset: &mut usize,
     size: usize,
 ) -> (usize, usize) {
-    // Primer ajuste: buscar hueco suficientemente grande.
+    // First-fit: find a hole large enough.
     if let Some((idx, (off, _sz))) = free_list
         .iter()
         .enumerate()

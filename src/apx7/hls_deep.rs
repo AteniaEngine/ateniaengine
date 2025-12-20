@@ -10,7 +10,7 @@ pub struct HLSDPLevel {
 const W_THRESHOLD: usize = 6;
 const D_THRESHOLD: usize = 3;
 
-/// Calcular la profundidad topológica de cada nodo (distancia desde inputs).
+/// Compute the topological depth of each node (distance from inputs).
 pub fn compute_depth(graph: &Graph) -> Vec<usize> {
     let n = graph.nodes.len();
     if n == 0 {
@@ -52,15 +52,15 @@ pub fn compute_depth(graph: &Graph) -> Vec<usize> {
     depth
 }
 
-/// Construir superniveles agrupando niveles consecutivos según anchura y
-/// profundidad acumulada.
+/// Build superlevels by grouping consecutive levels based on width and
+/// accumulated depth.
 pub fn build_superlevels(depths: &[usize]) -> Vec<HLSDPLevel> {
     if depths.is_empty() {
         return Vec::new();
     }
     let max_depth = *depths.iter().max().unwrap_or(&0);
 
-    // nodos por nivel
+    // Nodes per level.
     let mut levels: Vec<Vec<usize>> = vec![Vec::new(); max_depth + 1];
     for (id, &d) in depths.iter().enumerate() {
         if d < levels.len() {
@@ -113,16 +113,16 @@ pub fn build_superlevels(depths: &[usize]) -> Vec<HLSDPLevel> {
     superlevels
 }
 
-/// APX 7.10: ejecución por superniveles profundos. No modifica kernels ni
-/// backward, sólo el orden en que se llaman a execute_single respetando
-/// dependencias.
+/// APX 7.10: execution via deep superlevels. Does not modify kernels nor
+/// backward, only the order in which execute_single is called while respecting
+/// dependencies.
 pub fn execute_graph_hls_deep(graph: &mut Graph) {
     let n = graph.nodes.len();
     if n == 0 {
         return;
     }
 
-    // Construir hijos y parents_left igual que HPGE.
+    // Build children and parents_left the same way as HPGE.
     let mut children: Vec<Vec<usize>> = vec![Vec::new(); n];
     let mut parents_left: Vec<usize> = vec![0; n];
 
@@ -138,7 +138,7 @@ pub fn execute_graph_hls_deep(graph: &mut Graph) {
     let depths = compute_depth(graph);
     let superlevels = build_superlevels(&depths);
     if superlevels.is_empty() {
-        // Fallback seguro.
+        // Safe fallback.
         graph.run_plan(true);
         return;
     }
@@ -151,7 +151,7 @@ pub fn execute_graph_hls_deep(graph: &mut Graph) {
         let mut remaining: Vec<usize> = level.nodes.iter().copied().collect();
 
         while !remaining.is_empty() {
-            // Nodos de este supernivel que ya están listos.
+            // Nodes in this superlevel that are already ready.
             let mut ready: Vec<usize> = remaining
                 .iter()
                 .copied()
@@ -159,8 +159,8 @@ pub fn execute_graph_hls_deep(graph: &mut Graph) {
                 .collect();
 
             if ready.is_empty() {
-                // Si aún quedan nodos de este supernivel sin ejecutar,
-                // pero ninguno está ready, algo está inconsistente.
+                // If there are still nodes in this superlevel not executed,
+                // but none is ready, something is inconsistent.
                 if remaining.iter().any(|&id| !executed[id]) {
                     graph.run_plan(true);
                     return;
@@ -169,21 +169,21 @@ pub fn execute_graph_hls_deep(graph: &mut Graph) {
                 }
             }
 
-            // Estrategia según ancho del supernivel actual.
+            // Strategy depending on the width of the current superlevel.
             let width = ready.len();
             if width > 4 {
-                // Usar TLO (localidad temporal) como heurística de orden.
+                // Use TLO (temporal locality) as an ordering heuristic.
                 crate::apx7::tlo::reorder_ready_by_locality(&mut ready);
             }
 
-            // APX 7.11: reordenamiento predictivo basado en PFLS si se ha
-            // observado un hotspot futuro (SuperLevel "caliente").
+            // APX 7.11: predictive reordering based on PFLS if a future hotspot
+            // has been observed ("hot" SuperLevel).
             if crate::apx_mode_at_least("7.11") {
                 if let Ok(hist) = crate::apx7::pfls::global_pfls().lock() {
                     if let Some(hot) = hist.predict_next_hotspot() {
-                        // Si este SL es inmediatamente previo al hotspot
-                        // predicho (X-1 o X-2), priorizar nodos que liberen
-                        // muchos hijos y estén en caminos profundos.
+                        // If this SL is immediately before the predicted hotspot
+                        // (X-1 or X-2), prioritize nodes that release many
+                        // children and are on deep paths.
                         if hot == sl_index + 1 || hot == sl_index + 2 {
                             let children_ref = &children;
                             let depths_ref = &depths;
@@ -205,7 +205,7 @@ pub fn execute_graph_hls_deep(graph: &mut Graph) {
                 executed[node_id] = true;
                 executed_count += 1;
 
-                // Actualizar padres restantes de los hijos.
+                // Update remaining parents for children.
                 for &child in &children[node_id] {
                     if parents_left[child] > 0 {
                         parents_left[child] -= 1;
@@ -216,7 +216,7 @@ pub fn execute_graph_hls_deep(graph: &mut Graph) {
             remaining.retain(|&id| !executed[id]);
         }
 
-        // Medición PFLS para este SuperLevel (tiempo + congestión).
+        // PFLS measurement for this SuperLevel (time + congestion).
         if crate::apx_mode_at_least("7.11") {
             let dt = t0.elapsed().as_secs_f64();
             let cong = level.nodes.len();
@@ -227,7 +227,7 @@ pub fn execute_graph_hls_deep(graph: &mut Graph) {
     }
 
     if executed_count != n {
-        // Fallback para proteger correctitud.
+        // Fallback to protect correctness.
         graph.run_plan(true);
     }
 }

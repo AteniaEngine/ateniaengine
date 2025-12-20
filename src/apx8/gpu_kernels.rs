@@ -1,26 +1,26 @@
 // APX 8.6 — GPU Kernels v0
-// Mini-kernels GPU simulados (VecAdd) totalmente encapsulados y seguros.
-// No tocan backward ni kernels CPU ni matemática crítica.
+// Fully encapsulated and safe simulated GPU mini-kernels (VecAdd).
+// Do not touch backward, CPU kernels, nor critical math.
 
 use crate::tensor::Tensor;
 
-/// Simulación segura de un kernel GPU de suma vectorial.
-/// Opera sobre los datos CPU pero marca el mirror GPU como "dirty" para
-/// integrarse con la capa de mirroring/persistencia.
+/// Safe simulation of a GPU vector-add kernel.
+/// Operates on CPU data but marks the GPU mirror as "dirty" to integrate
+/// with the mirroring/persistence layer.
 pub fn gpu_vec_add(a: &mut Tensor, b: &Tensor) {
     assert_eq!(a.shape, b.shape, "gpu_vec_add: shape mismatch");
 
-    // Simular que ambos viven en GPU creando mirrors si es necesario.
+    // Simulate that both live on GPU by creating mirrors if needed.
     a.ensure_gpu_mirror();
-    // b es sólo lectura; un mirror opcional no altera su semántica.
+    // b is read-only; an optional mirror does not alter its semantics.
     let mut b_clone = b.clone();
     b_clone.ensure_gpu_mirror();
 
-    // Kernel simulado: suma sobre los buffers CPU.
+    // Simulated kernel: sum over CPU buffers.
     for (va, vb) in a.data.iter_mut().zip(b.data.iter()) {
         *va += *vb;
     }
 
-    // Marcar GPU como "dirty" para indicar que el último escritor es GPU.
+    // Mark GPU as "dirty" to indicate the last writer is GPU.
     a.mark_gpu_dirty();
 }

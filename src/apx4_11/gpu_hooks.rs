@@ -7,15 +7,15 @@ fn apx_trace_enabled() -> bool {
     matches!(std::env::var("APX_TRACE").as_deref(), Ok("1")) && !crate::apx_is_silent()
 }
 
-/// Heurística simple para decidir si merece la pena usar el kernel CUDA de MatMul.
+/// Simple heuristic to decide whether it is worth using the CUDA MatMul kernel.
 pub fn gpu_can_run_matmul(m: usize, k: usize, n: usize) -> bool {
-    // Requerir un mínimo de trabajo para compensar el overhead host<->device.
+    // Require a minimum amount of work to amortize host<->device overhead.
     let ops = m.saturating_mul(k).saturating_mul(n);
     if ops <= 256 {
         return false;
     }
 
-    // El resto de validaciones (device, dtype, shapes) se harán en `try_gpu_matmul`.
+    // The remaining validations (device, dtype, shapes) are performed in `try_gpu_matmul`.
     if !cuda::cuda_available() {
         return false;
     }
@@ -23,10 +23,10 @@ pub fn gpu_can_run_matmul(m: usize, k: usize, n: usize) -> bool {
     true
 }
 
-/// Intenta ejecutar MatMul en GPU.
-/// Devuelve `true` si se ejecutó en GPU y `out` contiene el resultado.
+/// Attempt to execute MatMul on GPU.
+/// Returns `true` if it ran on GPU and `out` contains the result.
 pub fn try_gpu_matmul(a: &Tensor, b: &Tensor, out: &mut Tensor) -> bool {
-    // Sólo soportamos tensores 2D f32 en CPU lógico.
+    // Only supports 2D f32 tensors on logical CPU.
     if a.device != Device::CPU || b.device != Device::CPU {
         return false;
     }
@@ -56,8 +56,8 @@ pub fn try_gpu_matmul(a: &Tensor, b: &Tensor, out: &mut Tensor) -> bool {
         return false;
     }
 
-    // APX 4.12: usar el dispatcher con MemoryPool para decidir si ejecutar
-    // en GPU o dejar que el caller caiga a la ruta CPU.
+    // APX 4.12: use the MemoryPool dispatcher to decide whether to execute
+    // on GPU or let the caller fall back to the CPU path.
     let mut ran_gpu = false;
     let bytes_needed = m
         .saturating_mul(n)
@@ -76,30 +76,29 @@ pub fn try_gpu_matmul(a: &Tensor, b: &Tensor, out: &mut Tensor) -> bool {
             }
         },
         || {
-            // CPU fallback: no hacemos nada aquí; el caller verá `false`
-            // y ejecutará la ruta CPU estándar.
+            // CPU fallback: do nothing here; the caller will see `false`
+            // and execute the standard CPU path.
         },
     );
 
     ran_gpu
 }
 
-/// Intenta ejecutar Linear en GPU: y = x·w + b (opcional).
-/// Devuelve `true` si se ejecutó en GPU y `out` contiene el resultado.
+/// Attempt to execute Linear on GPU: y = x·w + b (optional).
+/// Returns `true` if it ran on GPU and `out` contains the result.
 pub fn try_gpu_linear(x: &Tensor, w: &Tensor, b: Option<&Tensor>, out: &mut Tensor) -> bool {
-    // APX 4.11 MiniFlux: deshabilitar completamente la ruta GPU para Linear
-    // (tanto con bias como sin bias). Ejecutamos siempre en CPU para
-    // registrar correctamente el backward y evitar divergencias entre
-    // kernels.
-    let _ = (x, w, b, out); // evitar warnings por parámetros no usados
+    // APX 4.11 MiniFlux: fully disable the GPU path for Linear (with or without
+    // bias). Always execute on CPU to correctly record backward and avoid
+    // divergences between kernels.
+    let _ = (x, w, b, out); // avoid warnings for unused parameters
     return false;
 
-    // Código original desactivado intencionalmente.
+    // Original code intentionally disabled.
 }
 
-/// APX 4.13: hook de ejecución fusionada Linear+SiLU a partir de IDs de nodos
-/// en el grafo. Para simplificar, sólo soportamos el caso con bias presente;
-/// si no hay bias, caemos a la ruta CPU estándar (Linear + SiLU).
+/// APX 4.13: fused Linear+SiLU execution hook from node IDs in the graph.
+/// For simplicity, we only support the case where bias is present; if there is
+/// no bias, we fall back to the standard CPU path (Linear + SiLU).
 pub unsafe fn fused_linear_silu_gpu(
     x_id: usize,
     w_id: usize,
@@ -148,7 +147,7 @@ pub unsafe fn fused_linear_silu_gpu(
         );
         graph.nodes[out_id].set_output(out);
     } else {
-        // Sin bias: usar la ruta CPU Linear + SiLU estándar.
+        // No bias: use the standard CPU Linear + SiLU path.
         let mut tmp = crate::nn::linear::linear(&x, &w, None);
         tmp = crate::nn::activations::silu(&tmp);
         graph.nodes[out_id].set_output(tmp);

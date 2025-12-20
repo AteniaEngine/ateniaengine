@@ -1,5 +1,5 @@
 // APX 8.19 — GPU Partitioning Simulator (GPS)
-// Planificador de partición simulado, sin particionar datos reales ni tocar ejecución.
+// Simulated partition planner, without partitioning real data nor touching execution.
 
 #[derive(Debug, Clone)]
 pub enum PartitionPolicy {

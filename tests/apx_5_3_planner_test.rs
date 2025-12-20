@@ -30,13 +30,13 @@ fn test_5_3_produces_coherent_plan() {
 
     let plan = planner.select_plan(&info);
 
-    // Layout debe ser una de las decisiones válidas
+    // Layout must be one of the valid decisions
     match plan.layout {
         LayoutDecision::Original
         | LayoutDecision::ForceContiguous
         | LayoutDecision::ForceChannelsFirst => {}
     }
 
-    // Kernel name no vacío
+    // Kernel name must be non-empty
     assert!(!plan.kernel_name.is_empty());
 }

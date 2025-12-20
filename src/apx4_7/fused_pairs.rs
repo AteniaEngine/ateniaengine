@@ -10,23 +10,23 @@ fn node_in_gpu_segment(graph: &Graph, id: usize) -> bool {
     }
 }
 
-/// Ejecuta una pareja Linear→Linear (A → B) usando los ejecutores existentes
-/// de Linear (GPU si aplica, CPU en fallback), sin tocar métodos privados.
+/// Execute a Linear->Linear pair (A -> B) using existing Linear executors
+/// (GPU if applicable, CPU as fallback), without touching private methods.
 pub fn exec_fused_linear_linear(
     graph: &mut Graph,
     id_a: usize,
     id_b: usize,
     _record_tape: bool,
 ) {
-    // 1) Ejecutar Linear A
+    // 1) Execute Linear A
     if node_in_gpu_segment(graph, id_a) {
         graph.exec_gpu_linear(id_a);
     } else {
         graph.exec_cpu_linear_fallback(id_a);
     }
 
-    // 2) Ejecutar Linear B: sus inputs ya apuntan al output de A vía GraphBuilder,
-    // así que basta con ejecutar B usando el mismo criterio GPU/CPU.
+    // 2) Execute Linear B: its inputs already point to A's output via GraphBuilder,
+    // so it is enough to execute B using the same GPU/CPU criterion.
     if node_in_gpu_segment(graph, id_b) {
         graph.exec_gpu_linear(id_b);
     } else {

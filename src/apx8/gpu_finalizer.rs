@@ -1,5 +1,5 @@
 // APX 8.17 — GPU Finalizer Stub
-// Última etapa simbólica: IR -> string final, sin compilación ni ejecución real.
+// Final symbolic stage: IR -> final string, no compilation nor real execution.
 
 use crate::apx8::kernel_generator::KernelIR;
 use crate::apx8::multiarch_router::{route_kernel, TargetArch};

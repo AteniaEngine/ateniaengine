@@ -1,28 +1,28 @@
 // APX 8.12 — GPU MetaLayer (GPU IR Optimizer v0)
-// Opera sólo sobre IR sintético; no ejecuta kernels reales ni cambia la matemática.
+// Operates only on synthetic IR; does not execute real kernels nor change math.
 
 use crate::apx8::kernel_generator::{KernelIR, KernelOp};
 use std::collections::HashMap;
 
-/// Resultado optimizado del metalayer.
+/// Optimized metalayer result.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OptimizedIR {
     pub ops: Vec<KernelOp>,
-    pub meta: HashMap<String, String>, // info extra (tiling, fusion, vector width)
+    pub meta: HashMap<String, String>, // extra info (tiling, fusion, vector width)
 }
 
-/// MetaLayer v0 — puramente sintético.
-/// - Elimina NOPs
-/// - Mantiene Load/Compute/Store triviales
-/// - Añade metadatos de tiling/vectorización (texto)
-/// No cambia la matemática.
+/// MetaLayer v0 — purely synthetic.
+/// - Removes NOPs
+/// - Keeps trivial Load/Compute/Store
+/// - Adds tiling/vectorization metadata (text)
+/// Does not change math.
 pub fn optimize_ir(ir: &KernelIR) -> OptimizedIR {
     let mut ops = Vec::new();
 
     for op in &ir.ops {
         match op {
             KernelOp::Nop => {
-                // eliminar operación inútil
+                // remove useless op
             }
             KernelOp::LoadTensor(_) | KernelOp::StoreTensor(_) | KernelOp::Compute(_) => {
                 ops.push(op.clone());
@@ -30,7 +30,7 @@ pub fn optimize_ir(ir: &KernelIR) -> OptimizedIR {
         }
     }
 
-    // “Simulación” de reglas de optimización
+    // "Simulation" of optimization rules
     let mut meta = HashMap::new();
     meta.insert("fusion".into(), "trivial-load-compute-store".into());
     meta.insert("tiling".into(), "8x8".into());

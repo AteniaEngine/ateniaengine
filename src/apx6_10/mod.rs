@@ -22,9 +22,9 @@ pub enum GlobalDecision {
 
 pub struct FusionSelector {
     pub history: Vec<FusionProfile>,
-    // APX 7.7: información auxiliar de afinidad de fusión. En esta
-    // implementación inicial se mantiene vacía salvo que los tests la
-    // pueblen explícitamente; no afecta a 6.9/6.10.
+    // APX 7.7: auxiliary fusion affinity information. In this initial
+    // implementation it stays empty unless tests explicitly populate it;
+    // it does not affect 6.9/6.10.
     pub qkv_candidates: HashSet<usize>,
     pub attn_candidates: HashSet<usize>,
     pub proj_candidates: HashSet<usize>,
@@ -46,9 +46,9 @@ impl FusionSelector {
         self.history.push(profile);
     }
 
-    /// APX 7.7: obtener afinidad de fusión para un nodo concreto. En esta
-    /// versión inicial, la información proviene de estructuras auxiliares
-    /// que pueden poblarse desde tests o futuras extensiones del profiler.
+    /// APX 7.7: get fusion affinity for a specific node. In this initial
+    /// version, the information comes from auxiliary structures that can be
+    /// populated from tests or future profiler extensions.
     pub fn get_fusion_affinity(&self, node_id: usize) -> FusionAffinity {
         FusionAffinity {
             qkv_chain: self.qkv_candidates.contains(&node_id),
@@ -99,8 +99,8 @@ impl FusionSelector {
         Some(gd)
     }
 
-    /// APX 6.13: obtener scores normalizados para full / qkv / baseline
-    /// a partir de tiempos medios. Menor tiempo => mayor score.
+    /// APX 6.13: get normalized scores for full / qkv / baseline from mean
+    /// times. Lower time => higher score.
     pub fn normalized_scores(&self) -> (f32, f32, f32) {
         assert!(
             !self.history.is_empty(),

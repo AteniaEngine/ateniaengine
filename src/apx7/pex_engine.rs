@@ -1,5 +1,5 @@
 //! APX 7.x — Parallel Execution Engine (PEX)
-//! Scheduler paralelo para tiles y kernels de MatMul.
+//! Parallel scheduler for MatMul tiles and kernels.
 
 use std::sync::Arc;
 use std::thread;
@@ -7,7 +7,7 @@ use std::thread;
 use crossbeam_deque::{Injector, Steal};
 use crate::apx7::dynamic_load::get_last_snapshot;
 
-/// Ejecutor simple de tareas en paralelo (PEX v1).
+/// Simple parallel task executor (PEX v1).
 pub struct PEXExecutor {
     _threads: usize,
 }
@@ -31,12 +31,12 @@ impl PEXExecutor {
     }
 }
 
-/// Tarea ejecutable por el scheduler PEX.
+/// Executable task for the PEX scheduler.
 pub enum PEXTask {
     Tile(Box<dyn FnOnce() + Send>),
 }
 
-/// Work-stealing sencillo basado en una cola global compartida.
+/// Simple work-stealing based on a shared global queue.
 pub struct PEXWorkStealing {
     global: Arc<Injector<PEXTask>>,
     threads: usize,
@@ -49,16 +49,16 @@ impl PEXWorkStealing {
     }
 
     pub fn execute_parallel_ws(&self, tasks: Vec<PEXTask>) {
-        // Sembrar las tareas iniciales en la cola global.
+        // Seed initial tasks into the global queue.
         for t in tasks {
             self.global.push(t);
         }
 
         let global = self.global.clone();
 
-        // APX 7.4: adaptar el número de hilos usados según la carga
-        // observada del sistema para no saturar la máquina cuando hay
-        // carga externa significativa.
+        // APX 7.4: adapt the number of threads used based on observed system
+        // load to avoid saturating the machine when there is significant
+        // external load.
         let snap = get_last_snapshot();
         let threads_to_use = snap.threads_available.min(self.threads).max(1);
 

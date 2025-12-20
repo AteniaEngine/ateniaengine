@@ -36,7 +36,7 @@ void linear_backward(
     float* dB,
     int M, int K, int N
 ) {
-    // APX 11.1 — IR GPU real (no-numérico en esta versión)
+    // APX 11.1 — real GPU IR (non-numeric in this version)
 }
 "#;
 

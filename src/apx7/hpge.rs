@@ -2,16 +2,16 @@ use crate::amg::graph::Graph;
 
 /// APX 7.5 - Hierarchical Parallel Graph Executor (HPGE)
 ///
-/// Scheduler jerárquico por nodos que se sitúa por encima de `execute_single`
-/// y respeta estrictamente las dependencias del grafo. Si detecta cualquier
-/// inconsistencia, hace fallback a `run_plan(true)`.
+/// Node-level hierarchical scheduler that sits above `execute_single` and
+/// strictly respects graph dependencies. If it detects any inconsistency, it
+/// falls back to `run_plan(true)`.
 pub fn execute_graph_parallel(graph: &mut Graph) {
     let node_count = graph.nodes.len();
     if node_count == 0 {
         return;
     }
 
-    // Construir lista de hijos y contador de padres restantes por nodo.
+    // Build children list and remaining-parent counter per node.
     let mut children: Vec<Vec<usize>> = vec![Vec::new(); node_count];
     let mut parents_left: Vec<usize> = vec![0; node_count];
 
@@ -24,7 +24,7 @@ pub fn execute_graph_parallel(graph: &mut Graph) {
         }
     }
 
-    // Inicializar cola de nodos listos (sin padres pendientes).
+    // Initialize ready queue (no pending parents).
     let mut ready: Vec<usize> = Vec::new();
     for id in 0..node_count {
         if parents_left[id] == 0 {
@@ -32,8 +32,8 @@ pub fn execute_graph_parallel(graph: &mut Graph) {
         }
     }
 
-    // Si por alguna razón no hay ningún nodo listo pero el grafo no está vacío,
-    // hacemos fallback inmediato a la ejecución secuencial.
+    // If for some reason there is no ready node but the graph is not empty,
+    // immediately fall back to sequential execution.
     if ready.is_empty() {
         if crate::apx_debug_enabled() {
             eprintln!("[APX 7.5 HPGE] no ready nodes found, falling back to run_plan()");
@@ -44,27 +44,26 @@ pub fn execute_graph_parallel(graph: &mut Graph) {
 
     let mut executed = 0usize;
 
-    // Bucle topológico sencillo: siempre tomamos todos los nodos ready en un
-    // batch y los ejecutamos de forma segura llamando a `execute_single`.
+    // Simple topological loop: always take all ready nodes in a batch and
+    // execute them safely by calling `execute_single`.
     while !ready.is_empty() {
-        // APX 7.8: ordenar nodos ready según localidad temporal (TLO). Esto
-        // sólo afecta al orden dentro del conjunto de nodos independientes;
-        // no modifica matemática ni dependencias.
+        // APX 7.8: reorder ready nodes by temporal locality (TLO). This only
+        // affects ordering within the set of independent nodes; it does not
+        // change math nor dependencies.
         if crate::apx_mode_at_least("7.8") {
             crate::apx7::tlo::reorder_ready_by_locality(&mut ready);
         }
 
         let batch: Vec<usize> = ready.drain(..).collect();
 
-        // Ejecutar el batch. Implementación conservadora: secuencial, pero
-        // preparada para futuras extensiones paralelas.
+        // Execute the batch. Conservative implementation: sequential, but
+        // ready for future parallel extensions.
         for node_id in &batch {
             graph.execute_single(*node_id, true);
             executed += 1;
         }
 
-        // Actualizar contadores de padres y poblar la siguiente wave de nodos
-        // listos para ejecutar.
+        // Update parent counters and populate the next wave of ready nodes.
         for node_id in &batch {
             for &child in &children[*node_id] {
                 if parents_left[child] > 0 {
@@ -77,8 +76,8 @@ pub fn execute_graph_parallel(graph: &mut Graph) {
         }
     }
 
-    // Si por algún motivo no ejecutamos todos los nodos, protegemos la
-    // correctitud haciendo fallback a la ruta secuencial clásica.
+    // If for any reason we did not execute all nodes, protect correctness by
+    // falling back to the classic sequential path.
     if executed != node_count {
         if crate::apx_debug_enabled() {
             eprintln!(

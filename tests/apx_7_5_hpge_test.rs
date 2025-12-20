@@ -11,7 +11,7 @@ fn max_abs_diff(a: &Tensor, b: &Tensor) -> f32 {
 }
 
 fn make_simple_graph() -> Graph {
-    // Grafo:
+    // Graph:
     // 0: Input A
     // 1: Input B
     // 2: Add(A, B) -> C
@@ -37,14 +37,14 @@ fn make_inputs() -> Vec<Tensor> {
 fn apx_7_5_hpge_equivalence_with_sequential() {
     let inputs = make_inputs();
 
-    // Ejecutar en modo secuencial (7.4)
+    // Run in sequential mode (7.4)
     unsafe {
         std::env::set_var("ATENIA_APX_MODE", "7.4");
     }
     let mut g_seq = make_simple_graph();
     let out_seq = g_seq.execute(inputs.clone());
 
-    // Ejecutar con HPGE (7.5)
+    // Run with HPGE (7.5)
     unsafe {
         std::env::set_var("ATENIA_APX_MODE", "7.5");
     }
@@ -69,7 +69,7 @@ fn apx_7_5_hpge_sanity_performance() {
         t0.elapsed().as_secs_f64() * 1000.0
     }
 
-    // Secuencial (7.4)
+    // Sequential (7.4)
     unsafe {
         std::env::set_var("ATENIA_APX_MODE", "7.4");
     }
@@ -83,7 +83,7 @@ fn apx_7_5_hpge_sanity_performance() {
     let mut g_par = make_simple_graph();
     let t_par = now_ms(|| g_par.execute(inputs));
 
-    // Sanity: HPGE no debe ser mucho peor que secuencial. En debug usamos
-    // un margen amplio.
+    // Sanity: HPGE should not be much worse than sequential. In debug we use
+    // a wide margin.
     assert!(t_par <= t_seq * 1.5);
 }

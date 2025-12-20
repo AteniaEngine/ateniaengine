@@ -2,7 +2,7 @@ use atenia_engine::gpu::memory::GpuMemoryEngine;
 
 #[test]
 fn test_gpu_memory_basic() {
-    // Si no hay driver CUDA disponible, no fallamos el test.
+    // If no CUDA driver is available, we do not fail the test.
     let mem = match GpuMemoryEngine::new() {
         Ok(m) => m,
         Err(_) => return,

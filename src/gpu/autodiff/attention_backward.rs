@@ -7,21 +7,21 @@ use crate::gpu::runtime::GpuRuntime;
 pub struct AttentionBackwardGPU;
 
 impl AttentionBackwardGPU {
-    /// APX 11.9 — backward real de atención (versión mínima estructural).
-    /// No implementa aún toda la cadena softmax, pero ejecuta un kernel GPU real
-    /// que produce gradientes no triviales en dQ, dK y dV.
+    /// APX 11.9 — real attention backward pass (minimal structural version).
+    /// Does not yet implement the full softmax chain, but executes a real GPU kernel
+    /// that produces non-trivial gradients in dQ, dK and dV.
     pub fn run(
         mgr: &GpuTensorManager,
-        q: &TensorGPU,       // [M, D] (ignoramos batch por ahora)
+        q: &TensorGPU,       // [M, D] (ignore batch for now)
         k: &TensorGPU,       // [M, D]
         v: &TensorGPU,       // [M, D]
-        _att: &TensorGPU,    // [M, M] (no usado todavía)
+        _att: &TensorGPU,    // [M, M] (not used yet)
         dout: &TensorGPU,    // [M, D]
     ) -> Result<(TensorGPU, TensorGPU, TensorGPU), ()> {
         let m = q.rows as i32;
         let d = q.cols as i32;
 
-        // allocate outputs: mismas shapes que Q, K, V
+        // allocate outputs: same shapes as Q, K, V
         let d_q = TensorGPU::empty(&mgr.mem, q.rows, q.cols)?;
         let d_k = TensorGPU::empty(&mgr.mem, k.rows, k.cols)?;
         let d_v = TensorGPU::empty(&mgr.mem, v.rows, v.cols)?;
@@ -44,7 +44,7 @@ impl AttentionBackwardGPU {
             if (row < M && col < D) {
                 int idx = row * D + col;
                 float g = dOut[idx];
-                // Versión mínima: distribuir dOut en Q,K,V de forma distinta
+                // Minimal version: distribute dOut into Q,K,V in different ways
                 dQ[idx] = g * 0.5f + Q[idx] * 0.1f;
                 dK[idx] = g * 0.3f + K[idx] * 0.1f;
                 dV[idx] = g * 0.2f + V[idx] * 0.1f;
@@ -83,7 +83,7 @@ impl AttentionBackwardGPU {
             d_q.ptr.ptr as *mut core::ffi::c_void,
             d_k.ptr.ptr as *mut core::ffi::c_void,
             d_v.ptr.ptr as *mut core::ffi::c_void,
-            &m as *const _ as *mut core::ffi::c_void, // M; D se calcula en kernel a partir de idx
+            &m as *const _ as *mut core::ffi::c_void, // M; D is computed in-kernel from idx
         ];
 
         launcher

@@ -1,6 +1,6 @@
 // APX 8.7 — GPU Kernel Registry v1
-// Registry seguro y extensible para mini-kernels GPU (simulados o reales).
-// No ejecuta GPU real en 8.7; sólo registra funciones y permite consultarlas.
+// Safe and extensible registry for GPU mini-kernels (simulated or real).
+// Does not execute real GPU in 8.7; it only registers functions and allows querying.
 
 use std::collections::HashMap;
 use std::sync::RwLock;
@@ -19,7 +19,7 @@ pub enum KernelKey {
     Custom(&'static str),
 }
 
-/// Firma uniforme de los kernels GPU v0.
+/// Uniform signature for GPU kernels v0.
 pub type KernelFn = fn(&mut Tensor, &Tensor);
 
 #[derive(Clone)]
@@ -51,7 +51,7 @@ impl KernelRegistry {
         map.get(key).cloned()
     }
 
-    // APX 8.9: soporte opcional para registrar plantillas de kernels GPU.
+    // APX 8.9: optional support for registering GPU kernel templates.
     pub fn register_template(&self, op: GpuKernelOp, tpl: GpuKernelTemplate) {
         let mut tpls = self.templates.write().unwrap();
         tpls.insert(op, tpl);
@@ -62,7 +62,7 @@ impl KernelRegistry {
         tpls.get(op).cloned()
     }
 
-    /// APX 8.11: registrar/metaconsultar un stub de kernel GPU compilado.
+    /// APX 8.11: register/meta-query a compiled GPU kernel stub.
     pub fn set_gpu_stub(&self, key: KernelKey, stub: String) {
         let mut map = self.compiled.write().unwrap();
         let entry = map.entry(key).or_insert(RegisteredKernel {
@@ -78,12 +78,12 @@ impl KernelRegistry {
     }
 }
 
-/// APX 9.10: registrar un kernel "real" (PTX/OpenCL) como stub GPU en el registry.
-/// Esto sólo almacena el string de código; no ejecuta ni compila nada.
+/// APX 9.10: register a "real" (PTX/OpenCL) kernel as a GPU stub in the registry.
+/// This only stores the code string; it does not execute nor compile anything.
 pub fn register_real_kernel(kernel: RealKernel) {
-    // Usamos una clave Custom basada en el nombre del kernel. Como requiere
-    // &'static str, fugamos el String de forma controlada. Es aceptable para
-    // un registro global de larga vida.
+    // Use a Custom key based on the kernel name. Because it requires
+    // &'static str, we leak the String in a controlled way. This is acceptable
+    // for a long-lived global registry.
     let name_static: &'static str = Box::leak(kernel.signature.name.clone().into_boxed_str());
     let key = KernelKey::Custom(name_static);
 

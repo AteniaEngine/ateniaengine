@@ -1,6 +1,6 @@
 // APX 9.16 — VGPU Synchronization Layer (Sync & Barriers)
-// DISCLAIMER: sólo modela semántica de sincronización GPU de forma simulada.
-// No ejecuta hilos reales, no usa GPU ni VRAM, no modifica backward ni kernels CPU.
+// DISCLAIMER: only models GPU synchronization semantics in a simulated way.
+// Does not run real threads, does not use GPU nor VRAM, does not modify backward nor CPU kernels.
 
 #[derive(Debug, Clone)]
 pub struct VGPUBarrier {
@@ -16,7 +16,7 @@ impl VGPUBarrier {
     pub fn arrive(&mut self) {
         self.arrived += 1;
         if self.arrived == self.threads {
-            self.arrived = 0; // reset cuando todos "llegan"
+            self.arrived = 0; // reset when all "arrive"
         }
     }
 
@@ -37,7 +37,7 @@ pub struct VGPUBlockContext {
 }
 
 impl VGPUBlockContext {
-    /// Sincroniza todos los threads simulados del bloque.
+    /// Synchronize all simulated threads in the block.
     pub fn sync(&mut self) {
         for _t in 0..self.threads.len() {
             self.barrier.arrive();

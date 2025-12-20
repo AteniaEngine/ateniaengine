@@ -15,10 +15,10 @@ fn test_apx_4_8_fusion_crea_nodo_fusionado() {
     gb.output(act_id);
     let mut g = gb.build();
 
-    // Ejecutar la detección/fusión APX 4.8. En versiones recientes, el
-    // grafo puede transformarse adicionalmente por APX 3.9/4.9, por lo que
-    // ya no exigimos un patrón estructural específico; basta con que la
-    // detección se ejecute sin panics.
+    // Run APX 4.8 detection/fusion. In recent versions, the
+    // graph can be additionally transformed by APX 3.9/4.9, so
+    // we no longer require a specific structural pattern; it is enough that
+    // detection runs without panics.
     let _ = detect_and_fuse_linear_activation(&mut g);
 }
 
@@ -32,11 +32,11 @@ fn test_apx_4_8_exec_fused_linear_activation_equivalente() {
     let w = Tensor::randn(&[32, 64], Device::CPU);
     let b = Tensor::randn(&[64], Device::CPU);
 
-    // Ruta normal: linear + SiLU.
+    // Normal path: linear + SiLU.
     let lin = linear_op(&x, &w, Some(&b));
     let ref_out = silu(&lin);
 
-    // Ruta fusionada: exec_fused_linear_silu.
+    // Fused path: exec_fused_linear_silu.
     let fused_out = exec_fused_linear_silu(&x, &w, Some(&b));
 
     assert_eq!(ref_out.shape, fused_out.shape);

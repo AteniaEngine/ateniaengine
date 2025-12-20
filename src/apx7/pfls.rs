@@ -2,8 +2,8 @@ use std::sync::{Mutex, OnceLock};
 
 #[derive(Clone, Default)]
 pub struct PFLSHistory {
-    pub sl_durations: Vec<f64>,     // tiempo acumulado por SuperLevel
-    pub sl_congestion: Vec<usize>,  // nodos activos por SuperLevel
+    pub sl_durations: Vec<f64>,     // accumulated time per SuperLevel
+    pub sl_congestion: Vec<usize>,  // active nodes per SuperLevel
     pub samples: usize,
 }
 

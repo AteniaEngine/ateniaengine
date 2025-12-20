@@ -9,7 +9,7 @@ fn gpu_linear_matches_cpu() {
 
     let x = Tensor::randn(&[m, k], Device::CPU);
     let w = Tensor::randn(&[k, n], Device::CPU);
-    // Bias debe ser 1D [n]
+    // Bias must be 1D [n]
     let b = Tensor::randn(&[n], Device::CPU);
 
     let cpu = linear(&x, &w, Some(&b));

@@ -16,9 +16,9 @@ pub enum FusedOp {
         k_id: usize,
         v_id: usize,
     },
-    /// APX 4.17 / 4.18: fusión del núcleo de Self-Attention.
-    /// Incluye referencias a X, pesos y biases de Q/K/V para
-    /// poder realizar backward fusionado en APX 4.18.
+    /// APX 4.17 / 4.18: fusion of the Self-Attention core.
+    /// Includes references to X, weights and biases for Q/K/V so
+    /// we can perform fused backward in APX 4.18.
     FusedSelfAttention {
         x: usize,
         wq: usize,
@@ -30,7 +30,7 @@ pub enum FusedOp {
         q: usize,
         k: usize,
         v: usize,
-        /// Nodo representante del patrón (normalmente el MatMul A·V).
+        /// Representative node of the pattern (typically the MatMul A·V).
         out_id: usize,
     },
 }
@@ -38,15 +38,15 @@ pub enum FusedOp {
 pub struct FusionEngine;
 
 impl FusionEngine {
-    /// Detecta patrones fusionables sobre la lista de nodos estática
-    /// y devuelve un vector de (node_id, FusedOp) donde node_id es el
-    /// nodo “representante” del patrón (p.ej. el Linear inicial).
+    /// Detect fusible patterns over the static node list and return a vector
+    /// of (node_id, FusedOp) where node_id is the pattern “representative”
+    /// node (e.g., the initial Linear).
     pub fn detect_patterns(nodes: &[Node]) -> Vec<(usize, FusedOp)> {
         let mut fused: Vec<(usize, FusedOp)> = Vec::new();
         let mode = crate::apx_mode();
-        // En 4.17 y 4.18 desactivamos FusedQKV clásico para no interferir
-        // con el flujo experimental de Self-Attention; en 4.19 queremos
-        // ambas cosas activas.
+        // In 4.17 and 4.18 we disable classic FusedQKV to avoid interfering
+        // with the experimental Self-Attention flow; in 4.19 we want both
+        // features enabled.
         let disable_qkv = mode.starts_with("4.17") || mode.starts_with("4.18");
         let enable_sa = mode.starts_with("4.17") || mode.starts_with("4.18") || mode.starts_with("4.19");
 
@@ -79,7 +79,7 @@ impl FusionEngine {
             }
         }
 
-        // --- APX 4.14 / 4.17: QKV fusion (3 Linear que comparten X) ---
+        // --- APX 4.14 / 4.17: QKV fusion (3 Linear that share X) ---
         let mut by_input: HashMap<usize, Vec<(usize, &Node)>> = HashMap::new();
 
         for (id, node) in nodes.iter().enumerate() {
@@ -96,7 +96,7 @@ impl FusionEngine {
                 continue;
             }
 
-            // Por ahora, usamos el orden de aparición como (Q, K, V).
+            // For now, use appearance order as (Q, K, V).
             let mut g = group.clone();
             g.sort_by_key(|(id, _)| *id);
 
@@ -116,8 +116,8 @@ impl FusionEngine {
             let bk = if k_.inputs.len() == 3 { Some(k_.inputs[2]) } else { None };
             let bv = if v_.inputs.len() == 3 { Some(v_.inputs[2]) } else { None };
 
-            // Fusión QKV estándar (4.14 / 4.16 / 4.19) sigue activa cuando
-            // no estamos en los modos experimentales 4.17/4.18.
+            // Standard QKV fusion (4.14 / 4.16 / 4.19) remains active when we
+            // are not in the experimental 4.17/4.18 modes.
             if !disable_qkv {
                 fused.push((
                     id_q,
@@ -143,9 +143,9 @@ impl FusionEngine {
                 }
             }
 
-            // APX 4.17 / 4.18 / 4.19: detectar núcleo Self-Attention
+            // APX 4.17 / 4.18 / 4.19: detect Self-Attention core
             if enable_sa {
-                // 1) MatMul(Q, K^T) donde el RHS es un Transpose(K).
+                // 1) MatMul(Q, K^T) where RHS is a Transpose(K).
                 let mut qk_matmul: Option<usize> = None;
                 for n in nodes {
                     if let NodeType::MatMul = n.node_type {

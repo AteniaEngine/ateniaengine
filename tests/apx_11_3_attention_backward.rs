@@ -1,12 +1,12 @@
 // APX 11.3 - AttentionBackward GPU (IR Generator)
-// Test mínimo que valida que el operador de atención genera un IR de backward GPU bien formado.
+// Minimal test validating that the attention operator generates a well-formed GPU backward IR.
 
 use atenia_engine::tensor::{Tensor, Device, DType};
 use atenia_engine::ops::attention::AttentionOp;
 
 #[test]
 fn apx_11_3_attention_backward_ir() {
-    // Fake tensors en CPU (el backward sigue siendo IR-only en esta fase).
+    // Fake CPU tensors (backward is still IR-only at this stage).
     let q = Tensor::new(vec![2, 2], 1.0f32, Device::CPU, DType::F32);
     let k = Tensor::new(vec![2, 2], 1.0f32, Device::CPU, DType::F32);
     let v = Tensor::new(vec![2, 2], 1.0f32, Device::CPU, DType::F32);
@@ -15,7 +15,7 @@ fn apx_11_3_attention_backward_ir() {
 
     let grad_output = Tensor::new(vec![2, 2], 1.0f32, Device::CPU, DType::F32);
 
-    // Usar el operador directamente (APX 11.3 sigue siendo sólo IR, sin ejecución GPU real).
+    // Use the operator directly (APX 11.3 is still IR-only, with no real GPU execution).
     let op = AttentionOp::new();
     let spec = op.inner.backward_gpu(&[q, k, v, p, out], &grad_output);
 

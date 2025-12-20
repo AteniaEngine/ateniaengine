@@ -3,7 +3,7 @@ use atenia_engine::cuda::matmul::cuda_matmul;
 
 #[test]
 fn gpu_matmul_matches_cpu_small() {
-    // Caso determinista 2x2 para depurar índice y datos.
+    // Deterministic 2x2 case to debug indexing and data.
     let m = 2; let k = 2; let n = 2;
 
     let mut a = Tensor::zeros_new(&[m, k], Device::CPU);
@@ -14,10 +14,10 @@ fn gpu_matmul_matches_cpu_small() {
     b.data.copy_from_slice(&[5.0, 6.0,
                              7.0, 8.0]);
 
-    // Referencia CPU usando Tensor::matmul (que pasa por matmul_dispatch escalar).
+    // CPU reference using Tensor::matmul (which goes through the scalar matmul_dispatch).
     let cpu = a.matmul(&b);
 
-    // Camino CUDA con los mismos buffers host.
+    // CUDA path with the same host buffers.
     let gpu = cuda_matmul(&a, &b, m, k, n);
 
     for i in 0..cpu.data.len() {

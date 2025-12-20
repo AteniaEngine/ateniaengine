@@ -31,9 +31,9 @@ pub fn choose_backend(sl_nodes: &[usize]) -> ULEStrategy {
 
 /// APX 7.12: Unified Level Executor.
 ///
-/// Unifica las heurísticas 7.5–7.11 sin tocar kernels ni backward. Sólo
-/// reorganiza el orden en que se llama a `execute_single` respetando siempre
-/// las dependencias. Si detecta inconsistencia, hace fallback a
+/// Unifies heuristics 7.5–7.11 without touching kernels or backward. It only
+/// reorganizes the order in which `execute_single` is called, always respecting
+/// dependencies. If it detects an inconsistency, it falls back to
 /// `graph.run_plan(true)`.
 pub fn ule_execute_graph(graph: &mut Graph) {
     let n = graph.nodes.len();
@@ -41,7 +41,7 @@ pub fn ule_execute_graph(graph: &mut Graph) {
         return;
     }
 
-    // Construir hijos y parents_left igual que HPGE.
+    // Build children and parents_left just like HPGE.
     let mut children: Vec<Vec<usize>> = vec![Vec::new(); n];
     let mut parents_left: Vec<usize> = vec![0; n];
 
@@ -84,13 +84,13 @@ pub fn ule_execute_graph(graph: &mut Graph) {
                 }
             }
 
-            // APX 7.8: hints de localidad temporal (TLO).
+            // APX 7.8: temporal locality hints (TLO).
             if crate::apx_mode_at_least("7.8") {
                 crate::apx7::tlo::reorder_ready_by_locality(&mut ready);
             }
 
-            // Prioridad estructural: nodos que liberan más hijos y están más
-            // profundos en el grafo primero.
+            // Structural priority: nodes that release more children and are
+            // deeper in the graph first.
             let children_ref = &children;
             let depths_ref = &depths;
             ready.sort_by_key(|&nid| {
@@ -99,8 +99,8 @@ pub fn ule_execute_graph(graph: &mut Graph) {
                 -(out_degree + depth)
             });
 
-            // APX 7.11 PFLS: si hay hotspot futuro, reforzar esta prioridad en
-            // SL inmediatamente previos.
+            // APX 7.11 PFLS: if there is a future hotspot, reinforce this
+            // priority in the immediately previous SLs.
             if crate::apx_mode_at_least("7.11") {
                 if let Ok(hist) = crate::apx7::pfls::global_pfls().lock() {
                     if let Some(hot) = hist.predict_next_hotspot() {
@@ -120,11 +120,10 @@ pub fn ule_execute_graph(graph: &mut Graph) {
             let backend = choose_backend(&ready);
             let batch: Vec<usize> = ready;
 
-            // En esta implementación de referencia, todos los backends
-            // ejecutan de forma secuencial en el hilo actual. La elección
-            // de backend sigue existiendo para tests y para futuras
-            // extensiones paralelas seguras, pero no pasamos `Graph` entre
-            // hilos.
+            // In this reference implementation, all backends execute
+            // sequentially on the current thread. Backend selection still
+            // exists for tests and for future safe parallel extensions, but
+            // we do not pass `Graph` across threads.
             match backend {
                 ULEStrategy::Seq | ULEStrategy::Pex | ULEStrategy::WorkStealing => {
                     for node_id in &batch {
@@ -135,7 +134,7 @@ pub fn ule_execute_graph(graph: &mut Graph) {
                 }
             }
 
-            // Actualizar padres restantes tras ejecutar el batch.
+            // Update remaining parents after executing the batch.
             for node_id in &batch {
                 for &child in &children[*node_id] {
                     if parents_left[child] > 0 {
@@ -147,7 +146,7 @@ pub fn ule_execute_graph(graph: &mut Graph) {
             remaining.retain(|&id| !executed[id]);
         }
 
-        // Registrar tiempo y congestión del SuperLevel en PFLS.
+        // Record SuperLevel time and congestion in PFLS.
         if crate::apx_mode_at_least("7.11") {
             let dt = t0.elapsed().as_secs_f64();
             let cong = level.nodes.len();

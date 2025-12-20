@@ -17,7 +17,7 @@ fn apx_9_16_sync_basic() {
 
 #[test]
 fn apx_9_16_sync_ir_integration() {
-    // IR: out = in1 + in2, con un Sync en medio para verificar que no rompe la ejecución.
+    // IR: out = in1 + in2, with a Sync in the middle to verify it does not break execution.
     let ir = GpuKernelIR {
         name: "vk_sync_add".into(),
         threads: 4,
@@ -41,6 +41,6 @@ fn apx_9_16_sync_ir_integration() {
 
     VGpuRunner::run_kernel(&ir, &mut mem, 0, 0);
 
-    // La barrera no cambia la matemática: 1.5 + 2.5 = 4.0
+    // The barrier does not change the math: 1.5 + 2.5 = 4.0
     assert_eq!(mem.load_global(out_idx), 4.0);
 }

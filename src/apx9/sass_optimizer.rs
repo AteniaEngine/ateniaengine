@@ -1,5 +1,5 @@
 // APX 9.5 — SASS Optimizer Mock v0
-// Optimización sintética de SASS basada únicamente en manipulación de texto.
+// Synthetic SASS optimization based only on text manipulation.
 
 pub struct SassOptimizer;
 
@@ -14,10 +14,10 @@ impl SassOptimizer {
 
         let mut lines: Vec<_> = sass.lines().collect();
 
-        // 1. Eliminar NOPs sintéticos
+        // 1. Remove synthetic NOPs
         lines.retain(|l| !l.trim().starts_with("NOP"));
 
-        // 2. Reordenar: LDG primero, luego FADD, luego STG
+        // 2. Reorder: LDG first, then FADD, then STG
         lines.sort_by_key(|l| {
             let l = l.trim();
             if l.starts_with("LDG") { 0 }
@@ -26,7 +26,7 @@ impl SassOptimizer {
             else { 3 }
         });
 
-        // 3. Normalizar espacios
+        // 3. Normalize whitespace
         for l in lines {
             let trimmed = l.trim();
             if trimmed.is_empty() { continue; }

@@ -23,6 +23,6 @@ fn apx_6_13_sampling_varies() {
         }
     }
 
-    // full debe ser mayor porque tiene el score más alto
+    // full should be larger because it has the highest score
     assert!(full > qkv && full > base);
 }

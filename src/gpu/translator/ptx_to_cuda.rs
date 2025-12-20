@@ -23,7 +23,7 @@ impl PtxToCuda {
         }
 
         // v1: extremely minimal transformation — wrap the content inside a kernel template.
-        // No sintactic validation real, sólo reemplazos de texto simples.
+        // No real syntactic validation; only simple text replacements.
         let body = ptx
             .replace(".reg .f32", "float")
             .replace(";", ";\n");

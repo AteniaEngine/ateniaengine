@@ -1,7 +1,7 @@
 // APX 9.13 — Virtual GPU Memory Model
-// Simulación segura: sin acceso real a VRAM ni CUDA.
+// Safe simulation: no real VRAM access nor CUDA.
 
-/// Memoria global simulada: arreglo continuo de f32.
+/// Simulated global memory: contiguous f32 array.
 #[derive(Debug)]
 pub struct VGlobalMemory {
     pub data: Vec<f32>,
@@ -13,7 +13,7 @@ impl VGlobalMemory {
     }
 }
 
-/// Shared memory por bloque.
+/// Shared memory per block.
 #[derive(Debug, Clone)]
 pub struct VSharedMemory {
     pub data: Vec<f32>,
@@ -25,7 +25,7 @@ impl VSharedMemory {
     }
 }
 
-/// Local memory por thread (como registers extendidos).
+/// Local memory per thread (like extended registers).
 #[derive(Debug, Clone)]
 pub struct VLocalMemory {
     pub data: Vec<f32>,
@@ -37,7 +37,7 @@ impl VLocalMemory {
     }
 }
 
-/// Estado completo de memoria para un kernel.
+/// Full memory state for a kernel.
 pub struct VGpuMemory {
     pub global: VGlobalMemory,
     pub shared_per_block: Vec<VSharedMemory>,
@@ -55,7 +55,7 @@ impl VGpuMemory {
         }
     }
 
-    /// Acceso seguro a memoria global.
+    /// Safe access to global memory.
     pub fn load_global(&self, idx: usize) -> f32 {
         self.global.data[idx]
     }
@@ -64,7 +64,7 @@ impl VGpuMemory {
         self.global.data[idx] = val;
     }
 
-    /// Alias de conveniencia para operaciones tipo HMMA en memoria global plana.
+    /// Convenience alias for HMMA-like operations in flat global memory.
     pub fn load_f32(&self, idx: usize) -> f32 {
         self.load_global(idx)
     }
@@ -73,7 +73,7 @@ impl VGpuMemory {
         self.store_global(idx, val);
     }
 
-    /// Shared memory por bloque.
+    /// Shared memory per block.
     pub fn load_shared(&self, block: usize, idx: usize) -> f32 {
         self.shared_per_block[block].data[idx]
     }
@@ -82,7 +82,7 @@ impl VGpuMemory {
         self.shared_per_block[block].data[idx] = val;
     }
 
-    /// Local memory por thread.
+    /// Local memory per thread.
     pub fn load_local(&self, thread: usize, idx: usize) -> f32 {
         self.locals_per_thread[thread].data[idx]
     }

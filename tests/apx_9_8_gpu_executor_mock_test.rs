@@ -43,12 +43,12 @@ fn apx_9_8_spills_propagate() {
 fn apx_9_8_partition_overhead() {
     let mut nodes = Vec::new();
 
-    // Nodo pequeño (1 partición)
+    // Small node (1 partition)
     let mut n0 = Node::new(0, NodeType::MatMul, vec![]);
     n0.set_output(Tensor::ones(vec![16, 16], Device::CPU, DType::F32));
     nodes.push(n0);
 
-    // Nodo grande (múltiples particiones simbólicas)
+    // Large node (multiple symbolic partitions)
     let mut n1 = Node::new(1, NodeType::MatMul, vec![]);
     n1.set_output(Tensor::ones(vec![512 * 1024], Device::CPU, DType::F32));
     nodes.push(n1);
@@ -59,7 +59,7 @@ fn apx_9_8_partition_overhead() {
     let result = execute_plan_mock(&plan);
 
     assert_eq!(result.per_step.len(), 2);
-    // El step con más particiones debería ser más costoso simbólicamente.
+    // The step with more partitions should be symbolically more expensive.
     assert!(result.per_step[1] >= result.per_step[0]);
 }
 

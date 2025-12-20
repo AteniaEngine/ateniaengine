@@ -74,7 +74,7 @@ impl<'a> HLSScheduler<'a> {
             });
 
             clusters[*idx].nodes.push(node_id);
-            clusters[*idx].score += 1.0; // cohesión base por tamaño
+            clusters[*idx].score += 1.0; // base cohesion by size
         }
 
         clusters
@@ -90,16 +90,16 @@ impl<'a> HLSScheduler<'a> {
                     let na = &self.graph.nodes[a];
                     let nb = &self.graph.nodes[b];
 
-                    // Compartir padre inmediato
+                    // Share immediate parent
                     let same_parent = na.inputs.get(0) == nb.inputs.get(0);
 
-                    // Compartir algún input
+                    // Share any input
                     let shares_input = na
                         .inputs
                         .iter()
                         .any(|pa| nb.inputs.iter().any(|pb| pa == pb));
 
-                    // Mismo tipo de op también sugiere cierta localidad
+                    // Same op type also suggests some locality
                     let same_op = std::mem::discriminant(&na.node_type)
                         == std::mem::discriminant(&nb.node_type);
 

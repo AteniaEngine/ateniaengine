@@ -24,7 +24,7 @@ fn apx_9_7_structure() {
 #[test]
 fn apx_9_7_spill_policy() {
     let mut nodes = Vec::new();
-    // Tensor enorme para forzar spill (depende del umbral simbólico de 9.6).
+    // Huge tensor to force spill (depends on the symbolic threshold in 9.6).
     let mut n0 = Node::new(0, NodeType::MatMul, vec![]);
     n0.set_output(Tensor::ones(vec![10_000_000], Device::CPU, DType::F32));
     nodes.push(n0);
@@ -33,7 +33,7 @@ fn apx_9_7_spill_policy() {
     let planner = GPUExecutionPlanner::new(1024 * 1024 * 1024);
     let plan = planner.build_plan(&g);
 
-    // Permitimos que no haya spill si el umbral no se supera, pero si hay, debe marcar spill_to_cpu.
+    // Allow no spill if the threshold is not exceeded; but if there is a spill, it must mark spill_to_cpu.
     if let Some(step) = plan.steps.first() {
         if step.spill_to_cpu {
             assert_eq!(step.device, "cpu");
@@ -44,7 +44,7 @@ fn apx_9_7_spill_policy() {
 #[test]
 fn apx_9_7_partitions_logic() {
     let mut nodes = Vec::new();
-    // Tensor grande para triggers de múltiples particiones.
+    // Large tensor to trigger multiple partitions.
     let mut n0 = Node::new(0, NodeType::MatMul, vec![]);
     n0.set_output(Tensor::ones(vec![512 * 1024], Device::CPU, DType::F32));
     nodes.push(n0);

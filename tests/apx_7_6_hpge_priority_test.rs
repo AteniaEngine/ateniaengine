@@ -3,12 +3,12 @@ use atenia_engine::amg::nodes::{Node, NodeType};
 use atenia_engine::tensor::{Tensor, Device, Layout};
 
 fn make_branch_graph() -> Graph {
-    // Grafo con dos ramas que se juntan en un Output.
+    // Graph with two branches that merge into an Output.
     // 0: Input X
-    // 1: Pesos A (rama barata)
-    // 2: Pesos B (rama cara)
-    // 3: Linear(X, A)   -- barato
-    // 4: Linear(X, B)   -- caro
+    // 1: Weights A (cheap branch)
+    // 2: Weights B (expensive branch)
+    // 3: Linear(X, A)   -- cheap
+    // 4: Linear(X, B)   -- expensive
     // 5: Add(3, 4)
     // 6: Output(5)
     let mut nodes = Vec::new();
@@ -47,7 +47,7 @@ fn apx_7_6_hpge_equivalence_with_sequential() {
 
     unsafe { std::env::set_var("ATENIA_APX_MODE", "7.4"); }
     let mut g_seq = make_branch_graph();
-    // 1 y 2 son parámetros en make_branch_graph.
+    // 1 and 2 are parameters in make_branch_graph.
     g_seq.nodes[1].set_output(wa.clone());
     g_seq.nodes[2].set_output(wb.clone());
     let out_seq = g_seq.execute(vec![x.clone()]);
@@ -90,6 +90,6 @@ fn apx_7_6_hpge_performance_sanity() {
     g_prio.nodes[2].set_output(wb);
     let t_prio = now_ms(|| g_prio.execute(vec![x]));
 
-    // En debug dejamos margen amplio: no debe ser mucho peor.
+    // In debug we allow a wide margin: it should not be much worse.
     assert!(t_prio <= t_seq * 1.2);
 }

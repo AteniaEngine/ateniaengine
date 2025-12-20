@@ -131,5 +131,5 @@ impl GpuMemoryEngine {
     }
 }
 
-/// Alias de conveniencia para el futuro: un handle lógico de memoria GPU.
+/// Convenience alias for the future: a logical GPU memory handle.
 pub type GpuMemory = GpuPtr;

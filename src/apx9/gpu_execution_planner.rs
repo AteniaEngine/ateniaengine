@@ -1,5 +1,5 @@
 // APX 9.7 — GPU Execution Planner v0 (GXP)
-// Planificador de ejecución GPU completamente simulado. No ejecuta kernels ni usa VRAM real.
+// Fully simulated GPU execution planner. Does not execute kernels nor use real VRAM.
 
 use crate::amg::graph::Graph;
 use crate::amg::nodes::NodeType;
@@ -34,23 +34,23 @@ impl GPUExecutionPlanner {
         Self { total_vram_sim }
     }
 
-    /// Construye un plan simbólico de ejecución GPU para un grafo dado.
-    /// No modifica el grafo ni toca tensores reales.
+    /// Build a symbolic GPU execution plan for a given graph.
+    /// Does not modify the graph nor touch real tensors.
     pub fn build_plan(&self, graph: &Graph) -> GPUExecutionPlan {
         if graph.nodes.is_empty() {
             return GPUExecutionPlan { steps: Vec::new(), total_vram_needed: 0, spills: Vec::new() };
         }
 
-        // 1) Plan de memoria simbólico (GMPv0)
+        // 1) Symbolic memory plan (GMPv0)
         let mut mem_planner = GPUMemoryPlanner::new(self.total_vram_sim);
         let mem_plan: MemoryPlan = mem_planner.plan_for_graph(graph);
 
         let mut steps = Vec::new();
         let mut spills_all = mem_plan.spills.clone();
 
-        // 2) Recorrer nodos y decidir device/particiones/kernel/tiempo
+        // 2) Walk nodes and decide device/partitions/kernel/time
         for (idx, node) in graph.nodes.iter().enumerate() {
-            // Sólo algunos tipos son candidatos a GPU; el resto se marcan CPU-only.
+            // Only some types are GPU candidates; the rest are marked CPU-only.
             let eligible = matches!(
                 node.node_type,
                 NodeType::Add
@@ -63,11 +63,11 @@ impl GPUExecutionPlanner {
                     | NodeType::Softmax
             );
 
-            // Determinar tamaño (si hay tensor de salida).
+            // Determine size (if there is an output tensor).
             let tensor_opt: Option<&Tensor> = node.output.as_ref();
             let tensor_size_bytes: usize = tensor_opt.map(|t| t.estimated_bytes()).unwrap_or(0);
 
-            // Device planner 8.18 (usado sólo para seleccionar string de device mock).
+            // Device planner 8.18 (used only to select a mock device string).
             let dp = plan_for_ir(&format!("{:?}", node.node_type));
             let mut device = if dp.target_gpu.is_some() && eligible {
                 "cuda0".to_string()
@@ -77,7 +77,7 @@ impl GPUExecutionPlanner {
 
             let mut spill_to_cpu = false;
 
-            // Si el MemoryPlanner marcó spill, forzamos CPU-only.
+            // If MemoryPlanner marked spill, force CPU-only.
             if mem_plan.spills.contains(&idx) {
                 device = "cpu".to_string();
                 spill_to_cpu = true;
@@ -86,9 +86,9 @@ impl GPUExecutionPlanner {
                 }
             }
 
-            // Particiones (usando heurística de tamaño + planner de 8.19 de forma simbólica).
+            // Partitions (using size heuristic + 8.19 planner symbolically).
             let partitions = if tensor_size_bytes > 256 * 1024 * 1024 {
-                // Tensor gigante: dividir en 4 particiones uniformes (simbólicas).
+                // Huge tensor: split into 4 uniform (symbolic) partitions.
                 let chunk = tensor_size_bytes / 4;
                 vec![
                     (0, chunk),
@@ -135,7 +135,7 @@ impl GPUExecutionPlanner {
                 vec![(0, tensor_size_bytes)]
             };
 
-            // Nombre de kernel sintético según el tipo de nodo.
+            // Synthetic kernel name based on node type.
             let kernel_name = match node.node_type {
                 NodeType::MatMul | NodeType::BatchMatMul | NodeType::Linear => "kernel_matmul_v0".to_string(),
                 NodeType::Add | NodeType::BroadcastAdd => "kernel_add_v0".to_string(),
@@ -145,7 +145,7 @@ impl GPUExecutionPlanner {
                 _ => "kernel_cpu_fallback_v0".to_string(),
             };
 
-            // Tiempo estimado simbólico.
+            // Symbolic estimated time.
             let estimated_time_ms = (tensor_size_bytes as f32) / 50_000_000.0;
 
             steps.push(GPUPlanStep {

@@ -1,5 +1,5 @@
 // src/engine/timeline/buffer.rs
-// Buffer circular para timeline
+// Circular buffer for timeline
 
 use super::TimelineEvent;
 

@@ -29,14 +29,14 @@ impl TimingStats {
 
     pub fn avg(&self) -> Option<(f64, f64, f64)> {
         if self.count < 5 {
-            return None; // estabilidad mínima
+            return None; // minimal stability
         }
         let c = self.count as f64;
         Some((self.sum_seq / c, self.sum_pex / c, self.sum_ws / c))
     }
 }
 
-// buckets por tamaño aproximado
+// Buckets by approximate size
 pub static ADAPTIVE_BUCKETS: RwLock<[TimingStats; 3]> =
     RwLock::new([TimingStats::new(), TimingStats::new(), TimingStats::new()]);
 

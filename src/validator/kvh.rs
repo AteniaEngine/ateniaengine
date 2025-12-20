@@ -58,7 +58,7 @@ impl KernelValidationHarness {
 
         let avg_diff = if cpu.is_empty() { 0.0 } else { sum_diff / cpu.len() as f32 };
 
-        // Para esta primera versión, consideramos ok si max_diff y avg_diff son pequeños.
+        // For this first version, consider ok if max_diff and avg_diff are small.
         let ok = max_diff <= self.atol * 10.0 && avg_diff <= self.atol * 10.0;
 
         ValidationResult { ok, max_diff, avg_diff }

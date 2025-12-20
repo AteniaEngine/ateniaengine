@@ -73,8 +73,8 @@ fn test_linear_gpu() {
         return;
     }
 
-    // Si el compat layer ha forzado fallback CPU (nvJitLink/PTX fallan),
-    // saltamos el test para no provocar un panic dentro de MatMulOp.
+    // If the compat layer forced CPU fallback (nvJitLink/PTX fail),
+    // skip the test to avoid triggering a panic inside MatMulOp.
     if CompatLoader::is_forced_fallback() {
         let _ = mem.free(&gx);
         let _ = mem.free(&gw);
@@ -99,9 +99,9 @@ fn test_linear_gpu() {
     let _ = mem.free(&gb);
     let _ = mem.free(&gout);
 
-    // APX 12.x infra: este test actúa como smoke test de la ruta GPU para Linear.
-    // No exigimos igualdad exacta con la referencia CPU, sólo que
-    // la forma y los valores sean razonables.
+    // APX 12.x infra: this test acts as a smoke test for the GPU path for Linear.
+    // We do not require exact equality with the CPU reference, only that
+    // shape and values are reasonable.
     assert_eq!(out.len(), cpu.len());
     assert!(out.iter().all(|v| v.is_finite()));
 }

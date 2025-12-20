@@ -9,7 +9,7 @@ fn apx_7_0_parallel_matmul_matches_sequential() {
     let seq = a.matmul(&b);
     let par = a.matmul_parallel(&b);
 
-    // Comparar máximo error absoluto.
+    // Compare maximum absolute error.
     let mut max_diff = 0.0f32;
     for (x, y) in seq.data.iter().zip(par.data.iter()) {
         let d = (x - y).abs();

@@ -3,7 +3,7 @@ use crate::amg::nodes::{Node, NodeType};
 use std::sync::{OnceLock, RwLock};
 use crate::apx7::hpfa::FusionAffinity;
 
-/// Información de prioridad por nodo para APX 7.6 HPGE v2.
+/// Per-node priority information for APX 7.6 HPGE v2.
 #[derive(Clone, Debug, Default)]
 pub struct NodePriorityInfo {
     pub est_cost: f64,
@@ -12,15 +12,15 @@ pub struct NodePriorityInfo {
     pub fusion_bonus: f64,
 }
 
-/// Scheduler de prioridades para un grafo concreto.
+/// Priority scheduler for a specific graph.
 #[derive(Clone, Debug)]
 pub struct PriorityScheduler {
     pub priorities: Vec<NodePriorityInfo>,
 }
 
-// Históricos globales de tiempo por nodo (en microsegundos).
-// Se indexan por `node_id` dentro del grafo actual. Usamos OnceLock+RwLock
-// para evitar `static mut` y seguir siendo thread-safe.
+// Global per-node time history (in microseconds).
+// Indexed by `node_id` within the current graph. We use OnceLock+RwLock
+// to avoid `static mut` while remaining thread-safe.
 static GLOBAL_HIST_TIMES: OnceLock<RwLock<Vec<f64>>> = OnceLock::new();
 
 fn get_global_hist_times(len: usize) -> &'static RwLock<Vec<f64>> {
@@ -38,8 +38,8 @@ fn get_global_hist_times(len: usize) -> &'static RwLock<Vec<f64>> {
     lock
 }
 
-/// Llamado desde `Graph::execute_single` para registrar tiempo histórico
-/// por nodo cuando APX >= 7.6.
+/// Called from `Graph::execute_single` to record historical time per node
+/// when APX >= 7.6.
 pub fn record_node_time(node_id: usize, dt_us: f64, node_count: usize) {
     let hist = get_global_hist_times(node_count);
     if let Ok(mut guard) = hist.write() {
@@ -79,7 +79,7 @@ fn compute_subtree_sizes(children: &Vec<Vec<usize>>) -> Vec<usize> {
 fn estimate_cost(node: &Node) -> f64 {
     match node.node_type {
         NodeType::MatMul => {
-            // Heurística simple: número de elementos^1.5 aproximado si hay shape.
+            // Simple heuristic: approximate element count (if shape exists).
             let elems = node
                 .output
                 .as_ref()
@@ -107,16 +107,16 @@ fn compute_priority(p: &NodePriorityInfo) -> f64 {
         + (p.fusion_bonus * 0.2)
 }
 
-/// Versión 7.6 del ejecutor de grafo con prioridades (Critical-Path Optimizer).
+/// Version 7.6 of the priority graph executor (Critical-Path Optimizer).
 ///
-/// Mantiene las mismas garantías que HPGE v1 y nunca altera kernels ni backward.
+/// Keeps the same guarantees as HPGE v1 and never alters kernels nor backward.
 pub fn execute_graph_parallel_priority(graph: &mut Graph) {
     let node_count = graph.nodes.len();
     if node_count == 0 {
         return;
     }
 
-    // Construir hijos y parents_left (mismo que HPGE v1).
+    // Build children and parents_left (same as HPGE v1).
     let mut children: Vec<Vec<usize>> = vec![Vec::new(); node_count];
     let mut parents_left: Vec<usize> = vec![0; node_count];
 
@@ -144,7 +144,7 @@ pub fn execute_graph_parallel_priority(graph: &mut Graph) {
         return;
     }
 
-    // Preparar scheduler de prioridades.
+    // Prepare priority scheduler.
     let subtree_sizes = compute_subtree_sizes(&children);
     let hist = get_global_hist_times(node_count)
         .read()
@@ -160,7 +160,7 @@ pub fn execute_graph_parallel_priority(graph: &mut Graph) {
         })
         .collect();
 
-    // APX 7.7: incorporar señales de Hot-Path Fusion Awareness (HPFA).
+    // APX 7.7: incorporate Hot-Path Fusion Awareness (HPFA) signals.
     if crate::apx_mode_at_least("7.7") {
         if let Ok(sel) = crate::apx6_10::global_fusion_selector().lock() {
             for node_id in 0..node_count {
@@ -170,10 +170,9 @@ pub fn execute_graph_parallel_priority(graph: &mut Graph) {
         }
     }
 
-    // APX 7.9: usar HLS para obtener un orden jerárquico de clusters y
-    // derivar un índice de prioridad de cluster por nodo. Esto sigue sin
-    // modificar la matemática ni las dependencias; sólo da hints al
-    // orden dentro de ready.
+    // APX 7.9: use HLS to obtain a hierarchical cluster order and derive a
+    // per-node cluster priority index. This still does not modify math nor
+    // dependencies; it only provides hints for ordering within ready.
     let cluster_order: Vec<usize> = if crate::apx_mode_at_least("7.9") {
         let mut order = vec![usize::MAX; node_count];
         let hls = crate::apx7::hls::HLSScheduler::new(graph);
@@ -199,9 +198,9 @@ pub fn execute_graph_parallel_priority(graph: &mut Graph) {
     let mut executed = 0usize;
 
     while !ready.is_empty() {
-        // Ordenar nodos listos por prioridad (mayor primero). En APX 7.9
-        // añadimos primero el orden jerárquico de clusters HLS y luego la
-        // prioridad numérica de HPFA+TLO.
+        // Sort ready nodes by priority (highest first). In APX 7.9 we apply
+        // HLS cluster hierarchical order first and then HPFA+TLO numeric
+        // priority.
         ready.sort_by(|&a, &b| {
             if crate::apx_mode_at_least("7.9") {
                 let ca = cluster_order.get(a).copied().unwrap_or(usize::MAX);

@@ -26,7 +26,7 @@ fn apx_9_17_reconverge() {
 
 #[test]
 fn apx_9_17_ir_integration_predicate_noop() {
-    // IR: out = in1 + in2, con un Predicate simbólico en medio.
+    // IR: out = in1 + in2, with a symbolic Predicate in the middle.
     let ir = GpuKernelIR {
         name: "vk_predicate_add".into(),
         threads: 4,
@@ -48,7 +48,7 @@ fn apx_9_17_ir_integration_predicate_noop() {
     mem.store_global(in_idx, 3.0);
     mem.store_global(in2_idx, 4.0);
 
-    // En esta fase, Predicate es un no-op simbólico: la matemática debe mantenerse.
+    // At this stage, Predicate is a symbolic no-op: the math must remain the same.
     VGpuRunner::run_kernel(&ir, &mut mem, 0, 0);
 
     assert_eq!(mem.load_global(out_idx), 7.0);

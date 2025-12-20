@@ -6,10 +6,10 @@ use atenia_engine::profiler::exec_record::ExecutionRecord;
 fn apx_12_8_kvh_basic() {
     let kvh = KernelValidationHarness::new(true);
 
-    // FAKE referencia CPU
+    // FAKE CPU reference
     let cpu = vec![1.0f32, 2.0, 3.0];
 
-    // FAKE salida GPU idéntica
+    // FAKE identical GPU output
     let gpu = vec![1.0f32, 2.0, 3.0];
 
     // FAKE execution record

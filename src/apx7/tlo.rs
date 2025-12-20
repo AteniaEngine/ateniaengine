@@ -1,27 +1,27 @@
 use std::sync::RwLock;
 
-/// Hint de localidad temporal para un nodo del grafo.
+/// Temporal locality hint for a graph node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct LocalityHint {
     pub branch_id: usize,
     pub depth: usize,
 }
 
-// Mapa global de hints indexado por node_id. No modifica matemática ni
-// estructura del grafo; sólo guía el orden de scheduling en HPGE.
+// Global hint map indexed by node_id. Does not modify math nor graph
+// structure; it only guides scheduling order in HPGE.
 static LOCALITY_HINTS: RwLock<Vec<LocalityHint>> = RwLock::new(Vec::new());
 
-/// Registrar los hints de localidad para el grafo actual.
+/// Register locality hints for the current graph.
 pub fn set_locality_hints(hints: Vec<LocalityHint>) {
     if let Ok(mut h) = LOCALITY_HINTS.write() {
         *h = hints;
     }
 }
 
-/// Reordenar la cola de nodos listos priorizando localidad temporal.
+/// Reorder the ready queue prioritizing temporal locality.
 ///
-/// - Nodos del mismo `branch_id` se agrupan.
-/// - Dentro de cada rama se ordena por `depth`.
+/// - Nodes with the same `branch_id` are grouped.
+/// - Within each branch, ordering is by `depth`.
 pub fn reorder_ready_by_locality(ready: &mut Vec<usize>) {
     let hints_guard = match LOCALITY_HINTS.read() {
         Ok(h) => h,

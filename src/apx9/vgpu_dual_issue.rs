@@ -1,6 +1,6 @@
-// APX 9.23 — Dual-Issue SM (SIMT, totalmente simulado)
-// Implementa un scheduler dual-issue simbólico que opera sobre VGPUWarp y VGPUScoreboard.
-// No toca kernels reales ni backward, sólo estructuras internas de simulación.
+// APX 9.23 — Dual-Issue SM (SIMT, fully simulated)
+// Implements a symbolic dual-issue scheduler operating on VGPUWarp and VGPUScoreboard.
+// Does not touch real kernels nor backward; only internal simulation structures.
 
 use crate::apx9::vgpu_warp::VGPUWarp;
 use crate::apx9::vgpu_scoreboard::VGPUScoreboard;
@@ -21,14 +21,14 @@ impl VGPUDualIssue {
         // Issue slot #1
         if let Some(i1) = instr1.clone() {
             if !Self::has_hazard(&i1, &warp.scoreboard) {
-                // Reservamos en el scoreboard del warp.
+                // Reserve in the warp scoreboard.
                 warp.scoreboard.reserve(&i1);
                 warp.pipeline.push(i1);
                 ok1 = true;
             }
         }
 
-        // Issue slot #2 (evitar conflictos RAW/WAW con i1)
+        // Issue slot #2 (avoid RAW/WAW conflicts with i1)
         if let Some(i2) = instr2.clone() {
             if !Self::has_hazard(&i2, &warp.scoreboard)
                 && !Self::conflicts(instr1.as_ref(), &i2)

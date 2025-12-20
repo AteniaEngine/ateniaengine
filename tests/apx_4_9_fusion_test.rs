@@ -20,12 +20,12 @@ fn test_apx_4_9_detecta_y_fusiona_cadena() {
     gb.output(l2);
     let g = gb.build();
 
-    // Debe haber exactamente un nodo FusedLinearActivationChain.
+    // There must be exactly one FusedLinearActivationChain node.
     let mut chain_node_id = None;
     for (i, n) in g.nodes.iter().enumerate() {
         if let NodeType::FusedLinearActivationChain(acts) = &n.node_type {
             chain_node_id = Some(i);
-            // Debe capturar exactamente dos activaciones SiLU.
+            // It must capture exactly two SiLU activations.
             assert_eq!(acts.len(), 2);
             assert!(acts.iter().all(|a| *a == ActType::SiLU));
         }
@@ -33,12 +33,12 @@ fn test_apx_4_9_detecta_y_fusiona_cadena() {
 
     let chain_id = chain_node_id.expect("no FusedLinearActivationChain node found");
 
-    // Los nodos intermedios deben ser NoOp.
+    // Intermediate nodes must be NoOp.
     assert!(matches!(g.nodes[l1].node_type, NodeType::NoOp));
     assert!(matches!(g.nodes[a1].node_type, NodeType::NoOp));
     assert!(matches!(g.nodes[a2].node_type, NodeType::NoOp));
 
-    // El nodo fusionado debe tener los inputs esperados: [x, w1, b1, w2, b2].
+    // The fused node must have the expected inputs: [x, w1, b1, w2, b2].
     let chain_inputs = &g.nodes[chain_id].inputs;
 
     assert_eq!(chain_inputs.len(), 5);
@@ -66,7 +66,7 @@ fn test_apx_4_9_equivalencia_numerica() {
     let h3 = silu(&h2);
     let ref_out = linear_op(&h3, &w2, Some(&b2));
 
-    // Ruta con grafo y fusión APX 4.9.
+    // Graph path with APX 4.9 fusion.
     let mut gb = GraphBuilder::new();
     let x_id = gb.input();
     let w1_id = gb.parameter(w1.clone());

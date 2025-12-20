@@ -13,9 +13,9 @@ pub fn dispatch_matmul(
 ) {
     let registry = KernelRegistry::global();
 
-    // APX 6.5: ruta experimental sólo para forward CPU cuando el modo es
-    // exactamente "6.5" y hay AVX2. Si algo falla, el resto del dispatcher
-    // conserva el comportamiento de APX 3.8.
+    // APX 6.5: experimental path only for CPU forward when the mode is
+    // exactly "6.5" and AVX2 is available. If anything fails, the rest of the
+    // dispatcher preserves APX 3.8 behavior.
     if !ctx.is_gpu()
         && crate::apx_mode() == "6.5"
         && std::is_x86_feature_detected!("avx2")
@@ -24,7 +24,7 @@ pub fn dispatch_matmul(
         return;
     }
 
-    // GPU (a futuro con APX 4.0)
+    // GPU (future work with APX 4.0)
     if ctx.is_gpu() {
         if let Some(f) = registry.get("gpu_matmul") {
             return f(a, b, out, m, k, n);

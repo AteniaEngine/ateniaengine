@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-// Para evitar requerir que CudaModule (que envuelve un puntero CUmodule) sea Send/Sync,
-// el cache global sólo almacena el valor numérico del handle como u64.
+// To avoid requiring that CudaModule (which wraps a CUmodule pointer) be Send/Sync,
+// the global cache stores only the numeric handle value as u64.
 
 fn module_cache() -> &'static Mutex<HashMap<u64, u64>> {
     static MODULE_CACHE: OnceLock<Mutex<HashMap<u64, u64>>> = OnceLock::new();

@@ -48,9 +48,9 @@ fn apx_7_8_tlo_equivalence_with_sequential() {
 
 #[test]
 fn apx_7_8_tlo_reorders_ready_nodes_structural() {
-    // No observamos directamente ready_queue, pero aseguramos que la
-    // construcción de hints no paniquea y que TLO se puede invocar sin
-    // romper nada en un grafo sencillo con dos ramas.
+    // We do not observe ready_queue directly, but we ensure that
+    // hint construction does not panic and that TLO can be invoked without
+    // breaking anything in a simple two-branch graph.
     unsafe { std::env::set_var("ATENIA_APX_MODE", "7.8"); }
     let mut g = make_two_branch_graph();
     let _ = g.execute(make_inputs());
@@ -77,6 +77,6 @@ fn apx_7_8_tlo_performance_sanity() {
     let mut g_tlo = make_two_branch_graph();
     let t_tlo = now_ms(|| g_tlo.execute(inputs));
 
-    // En debug dejamos margen amplio, sólo verificamos que no sea muy peor.
+    // In debug we allow a wide margin; we only verify it's not much worse.
     assert!(t_tlo <= t_hpge * 1.3);
 }

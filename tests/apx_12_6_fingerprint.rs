@@ -19,10 +19,10 @@ fn apx_12_6_fingerprint_stable() {
         4,
     );
 
-    // Deben ser idénticos
+    // They must be identical
     assert_eq!(fp1.hash64(), fp2.hash64());
 
-    // Cambiando algo  cambia la huella
+    // If we change something, the fingerprint changes
     let fp3 = ExecFingerprint::new(
         "matmul_kernel",
         (16, 16, 1),

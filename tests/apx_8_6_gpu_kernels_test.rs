@@ -5,7 +5,7 @@ use atenia_engine::gpu_vec_add;
 fn apx_8_6_gpu_vec_add_structure() {
     let a = Tensor::ones(vec![8], Device::CPU, DType::F32);
     let b = Tensor::ones(vec![8], Device::CPU, DType::F32);
-    let _ = a.add(&b); // ruta CPU existente, sólo smoke test
+    let _ = a.add(&b); // existing CPU path, smoke test only
 }
 
 #[test]
@@ -14,14 +14,14 @@ fn apx_8_6_gpu_vec_add_equivalence() {
 
     let mut a = Tensor::ones(vec![8], Device::CPU, DType::F32);
     let mut b = Tensor::ones(vec![8], Device::CPU, DType::F32);
-    // b = vector de 2.0
+    // b = vector of 2.0
     for v in b.data.iter_mut() {
         *v = 2.0;
     }
 
     gpu_vec_add(&mut a, &b);
 
-    // CPU view debe ser 3.0 en todas las posiciones.
+    // CPU view must be 3.0 in all positions.
     for v in a.data.iter() {
         assert!((*v - 3.0).abs() < 1e-6);
     }
@@ -42,6 +42,6 @@ fn apx_8_6_gpu_vec_add_cpu_coherence() {
     a.sync_cpu();
     let after = a.data.clone();
 
-    // No introducimos NaNs ni corrupciones; el vector sigue siendo válido.
+    // We do not introduce NaNs or corruption; the vector remains valid.
     assert_eq!(after.len(), before.len());
 }

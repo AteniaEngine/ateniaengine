@@ -1,10 +1,10 @@
 use atenia_engine::gpu::nvrtc::NvrtcCompiler;
 use atenia_engine::gpu::kernel::KernelNormalizer;
 
-/// APX 12.0: test básico de normalización de kernel + compilación NVRTC.
+/// APX 12.0: basic test for kernel normalization + NVRTC compilation.
 #[test]
 fn apx_12_0_kernel_normalization_basic() {
-    // Kernel mínimo similar al usado en MatMulOp.
+    // Minimal kernel similar to the one used in MatMulOp.
     let src = r#"
     extern "C" __global__
     void matmul_kernel(const float* A,
@@ -24,10 +24,10 @@ fn apx_12_0_kernel_normalization_basic() {
     }
     "#;
 
-    // Normalización previa a NVRTC.
+    // Pre-NVRTC normalization.
     let normalized = KernelNormalizer::normalize_kernel(src, "matmul_kernel");
 
-    // Compilar con NVRTC usando la arquitectura compute_89 (igual que MatMulOp).
+    // Compile with NVRTC using compute_89 architecture (same as MatMulOp).
     let compiler = NvrtcCompiler::new().unwrap();
     let program = compiler
         .compile(&normalized, "matmul_kernel", "compute_89")
@@ -35,7 +35,7 @@ fn apx_12_0_kernel_normalization_basic() {
 
     let ptx = program.ptx;
 
-    // Verificar encabezado básico de PTX.
+    // Verify basic PTX header.
     assert!(ptx.contains(".version"), "PTX should contain .version header");
     assert!(ptx.contains(".target"), "PTX should contain .target header");
     assert!(
@@ -43,7 +43,7 @@ fn apx_12_0_kernel_normalization_basic() {
         "PTX should contain .address_size 64"
     );
 
-    // Verificar la entrada del kernel.
+    // Verify the kernel entry.
     assert!(
         ptx.contains(".visible .entry matmul_kernel"),
         "PTX should contain visible entry for matmul_kernel"

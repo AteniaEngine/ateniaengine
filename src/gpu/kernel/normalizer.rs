@@ -1,18 +1,18 @@
-/// APX 12.0: capa de normalización de kernels CUDA antes de pasar por NVRTC.
-/// Mantiene una firma consistente y un layout estable para futuros pasos
-/// como fusión y CUDAGraphs.
+/// APX 12.0: CUDA kernel normalization layer before passing through NVRTC.
+/// Keeps a consistent signature and a stable layout for future steps
+/// such as fusion and CUDAGraphs.
 pub struct KernelNormalizer;
 
 impl KernelNormalizer {
-    /// Normaliza el código fuente de un kernel CUDA C antes de compilarlo con NVRTC.
+    /// Normalize the source code of a CUDA C kernel before compiling it with NVRTC.
     ///
-    /// Pasos que realiza de forma conservadora (sin cambiar la semántica):
-    /// - Normaliza saltos de línea y elimina espacios en blanco al final de línea.
-    /// - Garantiza que el texto contenga `extern "C" __global__`.
-    /// - Garantiza que el nombre del kernel aparezca en la firma.
-    /// - Deja el resto del cuerpo intacto para no introducir bugs sutiles.
+    /// Steps performed conservatively (without changing semantics):
+    /// - Normalize newlines and remove trailing whitespace.
+    /// - Ensure the text contains `extern "C" __global__`.
+    /// - Ensure the kernel name appears in the signature.
+    /// - Keep the rest of the body intact to avoid introducing subtle bugs.
     pub fn normalize_kernel(src: &str, kernel_name: &str) -> String {
-        // 1. Normalizar saltos de línea a `\n` y recortar espacio al final de cada línea.
+        // 1. Normalize newlines to `\n` and trim trailing whitespace per line.
         let normalized_lines: Vec<String> = src
             .replace("\r\n", "\n")
             .replace("\r", "\n")
@@ -22,22 +22,22 @@ impl KernelNormalizer {
 
         let result = normalized_lines.join("\n");
 
-        // 2. Asegurar que existe `extern "C" __global__`.
+        // 2. Ensure `extern "C" __global__` exists.
         if !result.contains("extern \"C\" __global__") {
-            // Si no está, no intentamos reescribir todo el kernel; simplemente
-            // devolvemos el código tal cual para no romper kernels existentes.
+            // If not present, do not attempt to rewrite the whole kernel; just
+            // return the code as-is to avoid breaking existing kernels.
             return result;
         }
 
-        // 3. Asegurar que el nombre del kernel aparece en la firma.
+        // 3. Ensure the kernel name appears in the signature.
         if !result.contains(kernel_name) {
-            // De nuevo, evitamos tocar la semántica si no reconocemos el patrón.
+            // Again, avoid touching semantics if we do not recognize the pattern.
             return result;
         }
 
-        // En esta primera versión, la normalización es deliberadamente mínima y
-        // no reordena parámetros ni reescribe el prototipo. Eso se puede añadir
-        // de forma incremental cuando tengamos más kernels migrados.
+        // In this first version, normalization is deliberately minimal and does
+        // not reorder parameters nor rewrite the prototype. This can be added
+        // incrementally when we have more kernels migrated.
         result
     }
 }

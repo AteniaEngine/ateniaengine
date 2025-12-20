@@ -40,7 +40,7 @@ fn max_abs_diff(a: &Tensor, b: &Tensor) -> f32 {
 
 #[test]
 fn apx_6_10_fused_full_correctness() {
-    // Dimensiones pequeñas 2D para correctness
+    // Small 2D dimensions for correctness
     let m = 4;
     let dim = 8;
 
@@ -51,7 +51,7 @@ fn apx_6_10_fused_full_correctness() {
     let wproj = Tensor::randn(&[dim, dim], Device::CPU);
     let bias = Tensor::randn(&[dim], Device::CPU);
 
-    // Ruta baseline
+    // Baseline path
     let q = x.matmul(&wq);
     let k = x.matmul(&wk);
     let v = x.matmul(&wv);
@@ -61,7 +61,7 @@ fn apx_6_10_fused_full_correctness() {
     let out = probs.matmul(&v);
     let expected = nn_linear::linear(&out, &wproj, Some(&bias));
 
-    // Ruta fused full (APX 6.10, solo benchmarking auxiliar)
+    // Fused full path (APX 6.10, benchmarking helper only)
     let fused = fusions::execute_fused_attention_full(
         &x,
         &wq,

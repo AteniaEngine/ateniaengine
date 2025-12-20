@@ -6,8 +6,8 @@ pub struct FusionPlan {
     pub fused_pairs: Vec<(usize, usize)>,
 }
 
-/// Detecta pares Linear→Linear (A -> B) basados en el flujo de datos:
-/// la salida de A alimenta como primer input a B.
+/// Detect Linear->Linear pairs (A -> B) based on the data flow:
+/// A's output feeds as the first input of B.
 pub fn find_fusable_pairs(g: &Graph) -> Vec<(usize, usize)> {
     let mut pairs = Vec::new();
 
@@ -16,7 +16,7 @@ pub fn find_fusable_pairs(g: &Graph) -> Vec<(usize, usize)> {
             continue;
         }
 
-        // Buscar nodos B que consuman A como primer input y también sean Linear.
+        // Look for B nodes that consume A as first input and are also Linear.
         for (b_idx, b_node) in g.nodes.iter().enumerate() {
             if !matches!(b_node.node_type, NodeType::Linear) {
                 continue;

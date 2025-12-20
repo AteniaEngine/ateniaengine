@@ -1,6 +1,6 @@
 use crate::tensor::Tensor;
 
-/// Estructura mínima de un “kernel” PTX preparado para simulación.
+/// Minimal structure of a PTX "kernel" prepared for simulation.
 #[derive(Debug, Clone)]
 pub struct VirtualKernel {
     pub ptx: String,
@@ -9,10 +9,10 @@ pub struct VirtualKernel {
     pub args: Vec<Tensor>,   // CPU-side inputs/outputs
 }
 
-/// Ejecutor GPU virtual.
-/// Simula lanzar hilos, bloques y warps.
-/// No usa CUDA real. No toca backward.
-/// Garantiza que el cálculo CPU sea equivalente al kernel simulado.
+/// Virtual GPU executor.
+/// Simulates launching threads, blocks, and warps.
+/// Does not use real CUDA. Does not touch backward.
+/// Guarantees that CPU computation is equivalent to the simulated kernel.
 pub struct VirtualGpuExecutor {}
 
 impl VirtualGpuExecutor {
@@ -20,26 +20,26 @@ impl VirtualGpuExecutor {
         Self {}
     }
 
-    /// Ejecuta un kernel PTX simulado.
+    /// Execute a simulated PTX kernel.
     pub fn launch(&self, k: &mut VirtualKernel) {
-        // 1) Simular descomposición por bloques
+        // 1) Simulate block decomposition
         for block in 0..k.blocks {
-            // 2) Simular descomposición por threads
+            // 2) Simulate thread decomposition
             for thread in 0..k.threads_per_block {
                 let global_tid = block * k.threads_per_block + thread;
 
-                // 3) Llamar a un “interprete” trivial:
-                // acá sólo modificamos buffers CPU
+                // 3) Call a trivial "interpreter":
+                // here we only modify CPU buffers
                 self.simulate_instruction_stream(global_tid, k);
             }
         }
     }
 
-    /// Simulación de instrucciones PTX — sin interpretar el PTX real.
-    /// Esto NO es un decodificador, solo asegura que el test pase.
+    /// Simulate PTX instructions — without interpreting real PTX.
+    /// This is NOT a decoder; it only ensures the test passes.
     fn simulate_instruction_stream(&self, tid: usize, k: &mut VirtualKernel) {
-        // Ejemplo: vec_add: c[i] = a[i] + b[i]
-        // Se detecta por nombre dentro del PTX generado.
+        // Example: vec_add: c[i] = a[i] + b[i]
+        // Detected by name inside the generated PTX.
         if k.ptx.contains("VECADD") {
             let len_c = k.args[2].data.len();
             if tid < len_c {
@@ -50,6 +50,6 @@ impl VirtualGpuExecutor {
             }
         }
 
-        // Si fuese matmul se simularía algo simple también.
+        // If it were matmul we would also simulate something simple.
     }
 }

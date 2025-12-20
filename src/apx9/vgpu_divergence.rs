@@ -1,5 +1,5 @@
 // APX 9.19 — Warp Divergence Solver (WDS)
-// Modelo de máscaras y pila de reconvergencia SIMT, totalmente simulado en CPU.
+// SIMT mask and reconvergence stack model, fully simulated on CPU.
 
 #[derive(Debug, Clone)]
 pub struct WarpMask {

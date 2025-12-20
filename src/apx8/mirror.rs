@@ -1,21 +1,21 @@
 // APX 8.4 — GPU Mirroring Layer
-// No ejecuta GPU real ni mueve datos. GPU es sólo un cache opcional.
-// CPU sigue siendo la fuente de verdad.
+// Does not execute real GPU nor move data. GPU is only an optional cache.
+// CPU remains the source of truth.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MirrorState {
     Synced,      // CPU = GPU
-    CleanCPU,    // GPU está vacío o desinicializado, CPU tiene la verdad
-    DirtyCPU,    // GPU está limpio, CPU cambió
-    CleanGPU,    // CPU está limpio, GPU cambió
-    DirtyGPU,    // CPU antiguo, GPU tiene cambios
-    None,        // No existe buffer GPU todavía
+    CleanCPU,    // GPU is empty or uninitialized; CPU has the truth
+    DirtyCPU,    // GPU is clean; CPU changed
+    CleanGPU,    // CPU is clean; GPU changed
+    DirtyGPU,    // CPU is stale; GPU has changes
+    None,        // GPU buffer does not exist yet
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct GPUMirror {
-    // Representamos el puntero de dispositivo sólo como tamaño en bytes; en 8.4
-    // no necesitamos un puntero real y evitamos problemas de Send/Sync.
+    // We represent the device pointer only as size in bytes; in 8.4 we do not
+    // need a real pointer and avoid Send/Sync issues.
     pub bytes: usize,
     pub state: MirrorState,
 }
@@ -29,7 +29,7 @@ impl GPUMirror {
     }
 
     pub fn allocate(&mut self, bytes: usize) {
-        // Stub: no reservamos memoria real en GPU todavía.
+        // Stub: we do not allocate real GPU memory yet.
         self.bytes = bytes;
         if self.state == MirrorState::None {
             self.state = MirrorState::CleanCPU;
@@ -37,7 +37,7 @@ impl GPUMirror {
     }
 
     pub fn upload_from_cpu(&mut self, _cpu_ptr: *const f32, bytes: usize) {
-        // Stub seguro: asumimos que los datos de CPU se copiarían a GPU.
+        // Safe stub: assume CPU data would be copied to GPU.
         self.bytes = bytes;
         if self.state == MirrorState::None {
             self.state = MirrorState::CleanCPU;
@@ -47,14 +47,14 @@ impl GPUMirror {
     }
 
     pub fn download_to_cpu(&self, _cpu_ptr: *mut f32, _bytes: usize) {
-        // Stub seguro: en 8.4 no tocamos realmente los datos.
-        // Se mantiene la semántica de que CPU es la verdad.
+        // Safe stub: in 8.4 we do not touch real data.
+        // Keep the semantics that CPU is the truth.
     }
 
     pub fn mark_dirty_cpu(&mut self) {
         match self.state {
             MirrorState::None => {
-                // Sin buffer GPU, nada que marcar.
+                // No GPU buffer: nothing to mark.
                 self.state = MirrorState::None;
             }
             _ => {
@@ -66,7 +66,7 @@ impl GPUMirror {
     pub fn mark_dirty_gpu(&mut self) {
         match self.state {
             MirrorState::None => {
-                // Creamos el concepto de buffer GPU pero aún sin datos fiables.
+                // Create the concept of a GPU buffer, but still without reliable data.
                 self.state = MirrorState::DirtyGPU;
             }
             _ => {

@@ -38,10 +38,10 @@ fn build_linear_stack_graph(
 fn run_linear_bench(label: &str, layers: usize, batch: usize, in_dim: usize, hidden_dim: usize, out_dim: usize) {
     let x = Tensor::randn(&[batch, in_dim], Device::CPU);
 
-    // Benchmark CPU puro.
+    // Pure CPU benchmark.
     let mut g_cpu = build_linear_stack_graph(layers, in_dim, hidden_dim, out_dim);
 
-    // Calentamiento
+    // Warm-up
     let _ = g_cpu.execute(vec![x.clone()]);
 
     let iters = 50u32;
@@ -52,7 +52,7 @@ fn run_linear_bench(label: &str, layers: usize, batch: usize, in_dim: usize, hid
     let elapsed_cpu = start_cpu.elapsed();
     let cpu_per_it = elapsed_cpu.as_secs_f64() * 1e3 / iters as f64;
 
-    // Benchmark con GPU hooks (dependen sólo de disponibilidad CUDA y shapes).
+    // Benchmark with GPU hooks (depends only on CUDA availability and shapes).
     let mut g_gpu = build_linear_stack_graph(layers, in_dim, hidden_dim, out_dim);
 
     let _ = g_gpu.execute(vec![x.clone()]);
@@ -75,13 +75,13 @@ fn run_linear_bench(label: &str, layers: usize, batch: usize, in_dim: usize, hid
 }
 
 fn main() {
-    // Inicializar facilidades APX (incluye APX 4.12 GPU memory pool).
+    // Initialize APX facilities (includes APX 4.12 GPU memory pool).
     init_apx();
 
-    // Silenciar todo el motor APX para evitar trazas durante el benchmark.
+    // Silence the entire APX engine to avoid traces during the benchmark.
     apx_set_silent_mode(true);
 
-    // Algunos tamaños típicos. El hidden_dim se usa sólo para capas intermedias; la última es in_dim->out_dim.
+    // Some typical sizes. hidden_dim is used only for intermediate layers; the last is in_dim->out_dim.
     let configs = [
         ("Linear 64→64", 20usize, 32usize, 64usize, 64usize, 64usize),
         ("Linear 128→64", 20usize, 32usize, 128usize, 64usize, 64usize),

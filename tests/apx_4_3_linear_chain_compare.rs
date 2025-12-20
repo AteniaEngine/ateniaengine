@@ -13,7 +13,7 @@ fn apx_4_3_linear_chain_gpu_matches_cpu() {
     let x = gb.input();
     let mut last = x;
 
-    // Construimos una pequeña cadena de 3 lineares compatibles.
+    // Build a small chain of 3 compatible linear layers.
     let mut layers: Vec<(Tensor, Tensor)> = Vec::new();
     let m = 1usize;
     let k = 32usize;
@@ -31,16 +31,16 @@ fn apx_4_3_linear_chain_gpu_matches_cpu() {
     gb.output(last);
     let mut graph = gb.build();
 
-    // Entrada común CPU/GPU
+    // Common CPU/GPU input
     let x0 = Tensor::randn(&[m, k], Device::CPU);
 
-    // CPU: aplicar la misma cadena de lineares con los mismos pesos y bias.
+    // CPU: apply the same chain of linear layers with the same weights and bias.
     let mut cpu = x0.clone();
     for (w, b) in &layers {
         cpu = linear(&cpu, w, Some(b));
     }
 
-    // GPU: ejecutar el grafo (APX 4.3 debería rutear lineares a CUDA cuando sea posible).
+    // GPU: execute the graph (APX 4.3 should route linear layers to CUDA when possible).
     let out_vec = graph.execute(vec![x0.clone()]);
     assert_eq!(out_vec.len(), 1, "graph must produce a single output tensor");
     let gpu = &out_vec[0];

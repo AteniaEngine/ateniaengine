@@ -4,7 +4,7 @@ use atenia_engine::apx9::gpu_autotuner::*;
 fn apx_9_9_autotuner_learns_gpu_is_faster() {
     let mut tuner = GpuAutoTuner::new();
 
-    tuner.record(512, 1000, 300);  // GPU más rápido
+    tuner.record(512, 1000, 300);  // GPU faster
     tuner.record(600, 1100, 350);
     tuner.record(550, 1050, 320);
 

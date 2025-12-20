@@ -13,12 +13,12 @@ where
 
 #[test]
 fn apx_7_2_pgl_multisize_benchmark() {
-    // Aseguramos modo 7.2 para que PGL esté activo en la ruta "auto".
+    // Ensure mode 7.2 so PGL is active in the "auto" path.
     unsafe {
         std::env::set_var("ATENIA_APX_MODE", "7.2");
     }
 
-    // Warm-up: pagamos costes de inicialización fuera de las medidas.
+    // Warm-up: pay initialization costs outside the measurements.
     {
         let a = Tensor::randn(&[256, 256], Device::CPU);
         let b = Tensor::randn(&[256, 256], Device::CPU);
@@ -33,8 +33,8 @@ fn apx_7_2_pgl_multisize_benchmark() {
         let _ = a.matmul_parallel_ws(&b);
     }
 
-    // En debug limitamos a 2048 para evitar timeouts; 4096 se puede
-    // activar manualmente en ejecuciones --release.
+    // In debug we limit to 2048 to avoid timeouts; 4096 can be
+    // enabled manually in --release runs.
     let sizes = [256_usize, 512, 1024, 1536, 2048 /*, 4096*/];
 
     const REPS: usize = 3;
@@ -43,7 +43,7 @@ fn apx_7_2_pgl_multisize_benchmark() {
         let a = Tensor::randn(&[n, n], Device::CPU);
         let b = Tensor::randn(&[n, n], Device::CPU);
 
-        // Baseline secuencial: matmul del engine con flags sin PEX/WS.
+        // Sequential baseline: engine matmul with flags without PEX/WS.
         let mut best_seq = f64::INFINITY;
         let mut best_pex = f64::INFINITY;
         let mut best_ws = f64::INFINITY;

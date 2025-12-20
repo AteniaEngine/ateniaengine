@@ -70,9 +70,9 @@ impl Tensor {
         }
     }
 
-    /// APX 7.0: wrapper público que activa el modo PEX antes de delegar
-    /// en la ruta estándar de matmul. La lógica real de ejecución
-    /// paralela se controla vía flags de runtime en el dispatcher.
+    /// APX 7.0: public wrapper that enables PEX mode before delegating
+    /// to the standard matmul path. The real parallel execution logic
+    /// is controlled via runtime flags in the dispatcher.
     pub fn matmul_parallel(&self, rhs: &Tensor) -> Tensor {
         let mut flags = crate::config::get_runtime_flags();
         flags.enable_pex = true;
@@ -80,8 +80,8 @@ impl Tensor {
         self.matmul(rhs)
     }
 
-    /// APX 7.1: variante que activa PEX + work-stealing antes de delegar
-    /// en la ruta estándar de matmul.
+    /// APX 7.1: variant that enables PEX + work-stealing before delegating
+    /// to the standard matmul path.
     pub fn matmul_parallel_ws(&self, rhs: &Tensor) -> Tensor {
         let mut flags = crate::config::get_runtime_flags();
         flags.enable_pex = true;
@@ -90,10 +90,10 @@ impl Tensor {
         self.matmul(rhs)
     }
 
-    /// APX 7.3: wrapper opcional que activa el modo Adaptive PGL antes de
-    /// delegar en la ruta estándar de matmul. El comportamiento sigue
-    /// siendo matemáticamente idéntico; sólo afecta a la lógica de
-    /// scheduling interna cuando APX_MODE >= 7.3.
+    /// APX 7.3: optional wrapper that enables Adaptive PGL mode before
+    /// delegating to the standard matmul path. The behavior remains
+    /// mathematically identical; it only affects internal scheduling logic
+    /// when APX_MODE >= 7.3.
     pub fn matmul_adaptive(&self, rhs: &Tensor) -> Tensor {
         let mut flags = crate::config::get_runtime_flags();
         flags.enable_adaptive_pgl = true;

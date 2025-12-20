@@ -36,7 +36,7 @@ pub fn build_execution_plan(nodes: &Vec<Node>) -> (ExecutionPlan, HashMap<usize,
     let mut plan = ExecutionPlan::new();
     let mut fused_map: HashMap<usize, FusedOp> = HashMap::new();
 
-    // APX 4.13 / 4.14 / 4.16 / 4.17 / 4.18 / 4.19: detectar patrones fusionables en el grafo original.
+    // APX 4.13 / 4.14 / 4.16 / 4.17 / 4.18 / 4.19: detect fusible patterns in the original graph.
     let mode = crate::apx_mode();
     if mode.starts_with("4.13")
         || mode.starts_with("4.14")

@@ -1,6 +1,6 @@
 // APX 8.5 — GPU Persistence Layer
-// No modifica backward, kernels CPU ni la matemática del modelo.
-// GPU es sólo una caché persistente opcional; CPU sigue siendo la verdad.
+// Does not modify backward, CPU kernels, nor model math.
+// GPU is only an optional persistent cache; CPU remains the truth.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -16,8 +16,8 @@ pub fn current_global_step() -> u64 {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GPUPersistenceInfo {
-    pub reuse_score: u32,      // cuántas veces se reutilizó en GPU
-    pub last_used_step: u64,   // paso global del engine
-    pub tensor_bytes: usize,   // tamaño
-    pub pinned: bool,          // si debe quedarse sí o sí
+    pub reuse_score: u32,      // how many times it was reused on GPU
+    pub last_used_step: u64,   // engine global step
+    pub tensor_bytes: usize,   // size
+    pub pinned: bool,          // whether it must stay no matter what
 }

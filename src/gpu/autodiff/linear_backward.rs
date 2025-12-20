@@ -69,7 +69,7 @@ impl LinearBackwardGPU {
         }
         "#;
 
-        // NVRTC compile (mismo patrón que MatMulBackwardGPU)
+        // NVRTC compile (same pattern as MatMulBackwardGPU)
         let compiler = NvrtcCompiler::new().map_err(|_| ())?;
         let program = compiler
             .compile(kernel_code, "linear_backward_real", "auto")

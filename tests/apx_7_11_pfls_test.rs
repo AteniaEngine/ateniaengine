@@ -12,7 +12,7 @@ fn max_abs_diff(a: &Tensor, b: &Tensor) -> f32 {
 }
 
 fn make_simple_graph() -> Graph {
-    // Grafo sencillo con una pequeña cadena y suma.
+    // Simple graph with a small chain and sum.
     let mut nodes = Vec::new();
     nodes.push(Node::new(0, NodeType::Input, vec![]));
     nodes.push(Node::new(1, NodeType::SiLU, vec![0]));
@@ -30,11 +30,11 @@ fn make_inputs() -> Vec<Tensor> {
 #[test]
 fn apx_7_11_predicts_hotspot_correctly() {
     let mut h = PFLSHistory::default();
-    // SL 0: 1.0s, congestión 5
+    // SL 0: 1.0s, congestion 5
     h.record(0, 1.0, 5);
-    // SL 1: 0.5s, congestión 2
+    // SL 1: 0.5s, congestion 2
     h.record(1, 0.5, 2);
-    // SL 2: más lento y más congestionado
+    // SL 2: slower and more congested
     h.record(2, 2.0, 10);
 
     let hot = h.predict_next_hotspot().expect("must predict hotspot");
@@ -59,8 +59,8 @@ fn apx_7_11_equivalence_vs_7_10() {
 
 #[test]
 fn apx_7_11_structural_reordering() {
-    // Test de unidad sobre la heurística de ordenamiento: nodos con más hijos
-    // y mayor profundidad deberían recibir mayor prioridad (clave más baja
+    // Unit test for the ordering heuristic: nodes with more children
+    // and greater depth should receive higher priority (lower key
     // tras el signo negativo).
     let children: Vec<Vec<usize>> = vec![
         vec![1, 2], // nodo 0, 2 hijos
@@ -70,7 +70,7 @@ fn apx_7_11_structural_reordering() {
     let depths: Vec<usize> = vec![1, 3, 2];
     let mut ready = vec![0usize, 1, 2];
 
-    // Reproducimos la misma clave que en HLS-Deep PFLS.
+    // Reproduce the same key as in HLS-Deep PFLS.
     ready.sort_by_key(|&nid| {
         let out_degree = children[nid].len() as i32;
         let depth = depths[nid] as i32;

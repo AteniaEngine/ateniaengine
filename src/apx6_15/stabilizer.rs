@@ -3,7 +3,7 @@ use std::sync::{OnceLock, RwLock};
 use crate::apx6_10::GlobalDecision;
 use crate::apx6_11::runtime_policy::{set_runtime_policy, FusionRuntimePolicy};
 
-/// Pequeño wrapper de temperatura para APX 6.15 apoyado en 6.14.
+/// Small temperature wrapper for APX 6.15, built on top of 6.14.
 #[derive(Debug, Clone, Copy)]
 pub struct ApxTemperature {
     pub value: f32,
@@ -29,23 +29,23 @@ impl ApxStabilizer {
         Self { last_decision: None }
     }
 
-    /// Entrada principal: decide "quién manda" para este paso.
+    /// Main entrypoint: decide "who is in charge" for this step.
     pub fn stabilize(
         &mut self,
         selector_decision: Option<GlobalDecision>,
         temperature: &ApxTemperature,
     ) -> GlobalDecision {
-        // 1. Si no hay datos  baseline
+        // 1. If there is no data: baseline
         let Some(dec) = selector_decision else {
             self.last_decision = Some(GlobalDecision::NoPreference);
             set_runtime_policy(FusionRuntimePolicy::Baseline);
             return GlobalDecision::NoPreference;
         };
 
-        // 2. Aplicar probabilidad con temperatura (Softmax + sampling)
-        // Para APX 6.15 nos apoyamos en la decisión discreta ya producida por
-        // el selector 6.10/6.13: la temperatura aquí sólo controla la
-        // estabilidad frente a cambios, sin tocar kernels reales.
+        // 2. Apply temperature-based probability (Softmax + sampling)
+        // For APX 6.15 we rely on the discrete decision already produced by
+        // selector 6.10/6.13: temperature here only controls stability against
+        // changes, without touching real kernels.
         let t = temperature.current().max(0.05);
         let keep_prob = 1.0_f32.min(1.0_f32.max(1.0 - (t - 0.25).abs()));
         let r: f32 = rand::random();
@@ -53,11 +53,11 @@ impl ApxStabilizer {
         let sampled = if r < keep_prob {
             dec
         } else {
-            // Pequeña probabilidad de volver a la última decisión estable si existe.
+            // Small probability of returning to the last stable decision, if any.
             self.last_decision.unwrap_or(dec)
         };
 
-        // 3. Actualizar runtime policy sin tocar forward/backward
+        // 3. Update runtime policy without touching forward/backward
         match sampled {
             GlobalDecision::PreferFull =>
                 set_runtime_policy(FusionRuntimePolicy::PreferFull),

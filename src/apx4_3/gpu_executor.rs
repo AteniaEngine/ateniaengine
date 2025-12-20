@@ -65,7 +65,7 @@ impl Graph {
         let a = self.nodes[a_id].output.as_ref().expect("Add missing A");
         let b = self.nodes[b_id].output.as_ref().expect("Add missing B");
 
-        // De momento, usar suma CPU pero ejecutada en el segmento GPU lógico.
+        // For now, use CPU addition but executed inside the logical GPU segment.
         let gpu_out = a.add(b);
 
         self.nodes[id].output = Some(gpu_out);
@@ -74,7 +74,7 @@ impl Graph {
     pub fn exec_gpu_mul(&mut self, id: usize) {
         let inputs = self.nodes[id].inputs.clone();
         if inputs.len() < 2 {
-            // Grafo inconsistente o nodo Mul parcial; no intentamos la ruta GPU.
+            // Inconsistent graph or partial Mul node; do not attempt the GPU path.
             return;
         }
 
@@ -82,7 +82,7 @@ impl Graph {
         let b_opt = self.nodes[inputs[1]].output.as_ref();
 
         if let (Some(a), Some(b)) = (a_opt, b_opt) {
-            // Placeholder: multiplicación CPU dentro del segmento GPU hasta tener kernel dedicado.
+            // Placeholder: CPU multiplication inside the GPU segment until we have a dedicated kernel.
             let gpu_out = a.mul(b);
             self.nodes[id].output = Some(gpu_out);
         }
@@ -92,8 +92,8 @@ impl Graph {
         use crate::nn::linear::linear;
 
         let inputs = self.nodes[id].inputs.clone();
-        // Necesitamos al menos [x, w]. Si no hay suficientes entradas, no
-        // intentamos la ruta GPU.
+        // Need at least [x, w]. If there are not enough inputs, do not
+        // attempt the GPU path.
         if inputs.len() < 2 {
             return;
         }
@@ -104,10 +104,10 @@ impl Graph {
         let x_opt = self.nodes[x_id].output.as_ref();
         let w_opt = self.nodes[w_id].output.as_ref();
 
-        // En algunos grafos (especialmente tras fusiones y trazas APX 4.9),
-        // un segmento GPU puede empezar en un Linear cuyo input todavía no
-        // ha sido materializado. En lugar de hacer panic, hacemos fallback
-        // a la ruta CPU para ese nodo.
+        // In some graphs (especially after fusions and APX 4.9 traces),
+        // a GPU segment may start at a Linear whose input has not yet
+        // been materialized. Instead of panicking, fall back
+        // to the CPU path for that node.
         if x_opt.is_none() || w_opt.is_none() {
             if !crate::apx_is_silent() {
                 eprintln!(
@@ -124,8 +124,8 @@ impl Graph {
         let x = x_opt.expect("checked above as Some(x)");
         let w = w_opt.expect("checked above as Some(w)");
 
-        // Ruta CUDA solo soporta, de momento, Linear con bias explícito
-        // [x, w, b]. Si no hay bias, usamos siempre la ruta CPU.
+        // For now, the CUDA path only supports Linear with explicit bias
+        // [x, w, b]. If there is no bias, always use the CPU path.
         let maybe_b = if inputs.len() >= 3 {
             Some(
                 self.nodes[inputs[2]]
@@ -159,8 +159,8 @@ impl Graph {
 
             self.nodes[id].output = Some(out);
         } else {
-            // Fallback CPU cuando no hay bias compatible con el kernel CUDA
-            // o cuando las shapes no cumplen los requisitos.
+            // CPU fallback when there is no bias compatible with the CUDA kernel
+            // or when shapes do not meet requirements.
             let out = linear(x, w, maybe_b);
             self.nodes[id].output = Some(out);
         }

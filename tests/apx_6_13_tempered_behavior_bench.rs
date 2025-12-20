@@ -1,7 +1,7 @@
 use atenia_engine::{softmax3, sample_decision};
 
 fn run_one(temp: f32, iters: usize) {
-    // Scores sintéticos: full claramente mejor que qkv/base.
+    // Synthetic scores: full clearly better than qkv/base.
     let td = softmax3(10.0, 3.0, 1.0, temp);
 
     let mut full = 0;
@@ -29,9 +29,9 @@ fn run_one(temp: f32, iters: usize) {
 
 #[test]
 fn apx_6_13_tempered_behavior_bench() {
-    // Benchmark ligero, sólo logging: no hay aserciones duras para evitar
-    // flakiness por aleatoriedad. Sirve para inspeccionar manualmente cómo
-    // cambia la distribución al variar la temperatura.
+    // Light benchmark, logs only: no hard assertions to avoid
+    // flakiness due to randomness. Used to manually inspect how
+    // the distribution changes as temperature varies.
     let iters = 10_000;
 
     for &temp in &[0.3f32, 0.8f32, 2.0f32] {

@@ -65,7 +65,7 @@ fn apx_9_6_buffer_reuse_chain() {
 fn apx_9_6_spill_policy() {
     let mut planner = GPUMemoryPlanner::new(1024 * 1024 * 1024);
 
-    // Tensor "grande" para trigggear spill (depende del umbral interno, aquí usamos algo razonable).
+    // "Large" tensor to trigger spill (depends on the internal threshold; we use something reasonable here).
     let big = Tensor::ones(vec![512 * 1024], Device::CPU, DType::F32); // ~2MB
 
     let mut nodes = Vec::new();
@@ -76,8 +76,8 @@ fn apx_9_6_spill_policy() {
     let g = Graph::build(nodes);
     let plan = planner.plan_for_graph(&g);
 
-    // Dado que el umbral es alto, permitimos que el test sea laxo: o bien hay spill
-    // o bien se asigna normalmente, pero en ningún caso afecta a numéricos.
+    // Since the threshold is high, we allow the test to be lax: either there is a spill
+    // or it is assigned normally, but in no case should it affect numerics.
     assert!(plan.spills.len() == 0 || plan.spills.contains(&0));
 }
 

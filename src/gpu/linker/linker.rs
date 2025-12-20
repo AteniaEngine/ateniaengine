@@ -18,17 +18,17 @@ pub struct NvJitLinker {
 
 impl NvJitLinker {
     pub fn new() -> Result<Self, NvJitLinkError> {
-        // Intentar cargar nvJitLink en Windows y Linux con nombres reales.
-        // En Windows las DLL suelen tener sufijo _0 y variantes 64.
-        // En Linux usamos libnvJitLink.so.
+        // Try to load nvJitLink on Windows and Linux with real names.
+        // On Windows, DLLs usually have an _0 suffix and 64 variants.
+        // On Linux, we use libnvJitLink.so.
         let candidates: [&str; 13] = [
-            // Windows bin paths típicos (CUDA 13.0, carpeta x64)
+            // Typical Windows bin paths (CUDA 13.0, x64 folder)
             "C\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.0\\bin\\x64\\nvJitLink_130_0.dll",
             "C\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.0\\bin\\x64\\nvJitLink64_130_0.dll",
-            // Windows bin path típico (CUDA 12.6)
+            // Typical Windows bin path (CUDA 12.6)
             "C\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin\\nvJitLink_120_0.dll",
             "C\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin\\nvJitLink64_120_0.dll",
-            // Windows: nombres de DLL en PATH (con y sin sufijo _0, con y sin 64)
+            // Windows: DLL names in PATH (with and without _0 suffix, with and without 64)
             "nvJitLink_130_0.dll",
             "nvJitLink64_130_0.dll",
             "nvJitLink_120_0.dll",
@@ -69,7 +69,7 @@ impl NvJitLinker {
         }
     }
 
-    /// Enlaza un PTX (como &str) a un CUBIN usando nvJitLink.
+    /// Link a PTX (&str) into a CUBIN using nvJitLink.
     pub fn link_ptx_to_cubin(&self, ptx: &str) -> Result<Vec<u8>, NvJitLinkError> {
         unsafe {
             type NvJitLinkCreateFn = unsafe extern "C" fn(
@@ -112,7 +112,7 @@ impl NvJitLinker {
 
             let mut handle: NvJitLinkHandle = std::ptr::null_mut();
 
-            // Opciones mínimas para nvJitLink: target sm_89.
+            // Minimal options for nvJitLink: target sm_89.
             let arch_opt = CString::new("-arch=sm_89").unwrap();
             let mut options: [*mut i8; 1] = [arch_opt.as_ptr() as *mut i8];
             let mut option_vals: [*mut i8; 1] = [std::ptr::null_mut()];
@@ -128,11 +128,11 @@ impl NvJitLinker {
                 return Err(NvJitLinkError::LinkError("nvJitLinkCreate failed".into()));
             }
 
-            // Añadir PTX.
+            // Add PTX.
             let ptx_bytes = ptx.as_bytes();
             let name_c = CString::new("matmul_kernel.ptx").unwrap();
 
-            // NVJITLINK_INPUT_PTX = 0 según documentación.
+            // NVJITLINK_INPUT_PTX = 0 per documentation.
             let input_type_ptx: i32 = 0;
             let add_res = add_data(
                 handle,
@@ -150,7 +150,7 @@ impl NvJitLinker {
                 return Err(NvJitLinkError::LinkError("nvJitLinkAddData failed".into()));
             }
 
-            // Completar y recuperar CUBIN.
+            // Complete and retrieve CUBIN.
             let mut cubin_ptr: *mut c_void = std::ptr::null_mut();
             let mut cubin_size: usize = 0;
             let complete_res = complete(handle, &mut cubin_ptr, &mut cubin_size);

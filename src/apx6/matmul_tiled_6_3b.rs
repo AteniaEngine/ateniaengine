@@ -12,8 +12,8 @@ pub fn matmul_tiled_6_3b(
     let bn = 32;
     let bk = 32;
 
-    // Asegurar que la salida empieza en cero antes de acumular contribuciones
-    // de cada bloque en K.
+    // Ensure the output starts at zero before accumulating contributions
+    // from each K block.
     for v in out.iter_mut() {
         *v = 0.0;
     }
@@ -25,9 +25,9 @@ pub fn matmul_tiled_6_3b(
                 let j_max = (j0 + bn).min(n);
                 let p_max = (p0 + bk).min(k);
 
-                // Empaquetar B en un panel contiguo [bn x bk] para este tile,
-                // en layout column-major respecto a K: para una columna fija j
-                // (jj), los distintos pp son contiguos.
+                // Pack B into a contiguous [bn x bk] panel for this tile, in
+                // column-major layout with respect to K: for a fixed column j
+                // (jj), different pp values are contiguous.
                 let mut b_panel = vec![0f32; bk * bn];
                 for pp in 0..bk {
                     let p = p0 + pp;
@@ -39,7 +39,7 @@ pub fn matmul_tiled_6_3b(
                         if j >= n {
                             break;
                         }
-                        // Índice: jj * bk + pp para que K sea la dimensión contigua.
+                        // Index: jj * bk + pp so that K is the contiguous dimension.
                         b_panel[jj * bk + pp] = b[p * n + j];
                     }
                 }
@@ -53,9 +53,9 @@ pub fn matmul_tiled_6_3b(
                             unsafe {
                                 let a_vec = _mm256_loadu_ps(a.as_ptr().add(i * k + p));
 
-                                // Leer B desde el panel empaquetado: para una
-                                // columna fija jj = (j-j0), los 8 valores a lo
-                                // largo de K están contiguos.
+                                // Read B from the packed panel: for a fixed
+                                // column jj = (j-j0), the 8 values along K are
+                                // contiguous.
                                 let panel_col = (j - j0) as usize;
                                 let panel_row = (p - p0) as usize;
                                 let b_ptr = b_panel
@@ -85,7 +85,7 @@ pub fn matmul_tiled_6_3b(
                             _mm_cvtss_f32(sum3)
                         };
 
-                        // Acumular contribuciones de cada bloque en K sobre out.
+                        // Accumulate contributions from each K block into out.
                         out[i * n + j] += sum8 + tail;
                     }
                 }
@@ -94,10 +94,10 @@ pub fn matmul_tiled_6_3b(
     }
 }
 
-/// APX 7.0: variante paralela de 6.3b que ejecuta tiles (i0,j0) en
-/// paralelo usando PEXExecutor. Cada tarea escribe en una región disjunta
-/// de `out`, y el bucle sobre `p0` sigue siendo secuencial dentro de la
-/// tarea, preservando la suma exacta por elemento.
+/// APX 7.0: parallel variant of 6.3b that executes tiles (i0,j0) in
+/// parallel using PEXExecutor. Each task writes to a disjoint region of
+/// `out`, and the loop over `p0` remains sequential within the task,
+/// preserving the exact per-element sum.
 pub fn matmul_tiled_6_3b_pex(
     a: &[f32],
     b: &[f32],
@@ -110,7 +110,7 @@ pub fn matmul_tiled_6_3b_pex(
     let bn = 32;
     let bk = 32;
 
-    // Inicializar la salida a cero igual que en la versión secuencial.
+    // Initialize output to zero, same as the sequential version.
     for v in out.iter_mut() {
         *v = 0.0;
     }
@@ -118,10 +118,10 @@ pub fn matmul_tiled_6_3b_pex(
     let threads = crate::cpu_features::cpu_features().threads.max(1) as usize;
     let wsexec = crate::apx7::pex_engine::PEXWorkStealing::new(threads);
 
-    // Compartimos únicamente direcciones base numéricas para a, b y out
-    // para evitar capturar referencias no 'static en las closures.
-    // Cada tarea escribe en un bloque (i0..i_max, j0..j_max) disjunto,
-    // por lo que no hay data races.
+    // We only share numeric base addresses for a, b, and out to avoid
+    // capturing non-'static references in the closures.
+    // Each task writes to a disjoint (i0..i_max, j0..j_max) block,
+    // so there are no data races.
     let a_base = a.as_ptr() as usize;
     let b_base = b.as_ptr() as usize;
     let out_base = out.as_mut_ptr() as usize;
@@ -144,7 +144,7 @@ pub fn matmul_tiled_6_3b_pex(
                 for p0 in (0..k).step_by(bk) {
                     let p_max = (p0 + bk).min(k);
 
-                    // Panel local de B igual que en la versión secuencial.
+                    // Local B panel, same as in the sequential version.
                     let mut b_panel = vec![0f32; bk * bn];
                     for pp in 0..bk {
                         let p = p0 + pp;

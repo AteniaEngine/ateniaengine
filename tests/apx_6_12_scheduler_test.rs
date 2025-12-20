@@ -30,7 +30,7 @@ fn run_miniflux_with_mode(mode: &str) -> Tensor {
 
 #[test]
 fn apx_6_12_default_bias_is_none() {
-    // Asegurar estado limpio incluso si otros tests modificaron el bias.
+    // Ensure clean state even if other tests modified the bias.
     set_schedule_bias(AdaptiveScheduleBias::None);
 
     assert_eq!(get_schedule_bias(), AdaptiveScheduleBias::None);

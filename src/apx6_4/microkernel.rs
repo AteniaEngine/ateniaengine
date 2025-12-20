@@ -20,10 +20,10 @@ pub fn matmul_4x8_avx2(
 
     for j in (0..n).step_by(nr) {
         if j + nr > n {
-            // Para bordes no múltiplos de 8, caemos fuera por ahora.
-            // El dispatcher sólo llamará a este kernel cuando n >= 256
-            // y alineado a bloques grandes; los bordes se pueden manejar
-            // por el fallback 6.3B.
+            // For edges not multiples of 8, we bail out for now.
+            // The dispatcher will only call this kernel when n >= 256
+            // and aligned to large blocks; edges can be handled
+            // by the 6.3B fallback.
             break;
         }
         let jb = j;

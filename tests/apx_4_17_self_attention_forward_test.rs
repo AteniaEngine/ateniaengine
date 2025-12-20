@@ -40,10 +40,10 @@ fn build_self_attention_graph() -> (GraphBuilder, usize, usize, usize, usize) {
 
 #[test]
 fn self_attention_forward_fused_matches_naive() {
-    // Configurar modo 4.17 para activar la detección de Self-Attention fusionado.
+    // Configure mode 4.17 to enable fused Self-Attention detection.
     unsafe { std::env::set_var("ATENIA_APX_MODE", "4.17"); }
 
-    // Construir grafo base y clonar para obtener versiones naive y fusionada.
+    // Build the base graph and clone it to get naive and fused versions.
     let (gb, _x_id, _wq_id, _wk_id, _wv_id) = build_self_attention_graph();
     let graph_naive = gb.build();
     let graph_fused = graph_naive.clone();
@@ -51,7 +51,7 @@ fn self_attention_forward_fused_matches_naive() {
     let mut g_naive = graph_naive;
     let mut g_fused = graph_fused;
 
-    // Entradas determinísticas pequeñas.
+    // Small, deterministic inputs.
     let m = 2usize;
     let d = 4usize;
 

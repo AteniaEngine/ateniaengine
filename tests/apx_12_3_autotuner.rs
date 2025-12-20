@@ -2,10 +2,10 @@
 fn apx_12_3_autotuner_basic() {
     use atenia_engine::gpu::autotuner::*;
 
-    // Simula GPU runner
+    // Simulate GPU runner
     fn mock_runner(layout: (u32, u32, u32, u32)) -> f32 {
         let (bx, by, _, _) = layout;
-        // Simulamos "más rápido cuanto mayor el bloque"
+        // Simulate "faster as the block gets larger"
         50.0 / ((bx * by) as f32)
     }
 

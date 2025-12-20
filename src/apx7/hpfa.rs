@@ -1,4 +1,4 @@
-/// Afinidad de fusión para un nodo concreto según APX 6.9 / 6.10.
+/// Fusion affinity for a specific node according to APX 6.9 / 6.10.
 #[derive(Clone, Debug, Default)]
 pub struct FusionAffinity {
     pub qkv_chain: bool,
@@ -7,8 +7,8 @@ pub struct FusionAffinity {
     pub hot_factor: f64,
 }
 
-// En esta versión APX 7.7, HPFA sólo aporta señales de prioridad a HPGE v2.
-// No modifica kernels, ni el grafo, ni el backward.
+// In this APX 7.7 version, HPFA only provides priority signals to HPGE v2.
+// It does not modify kernels, the graph, or backward.
 impl FusionAffinity {
     pub fn fusion_bonus(&self) -> f64 {
         let mut bonus = 0.0;
@@ -25,8 +25,8 @@ impl FusionAffinity {
     }
 }
 
-/// Helper de depuración usado sólo en tests para verificar el wiring de HPFA
-/// dentro del scheduler de prioridades.
+/// Debug helper used only in tests to verify HPFA wiring inside the
+/// priority scheduler.
 #[allow(dead_code)]
 pub fn apply_hpfa_bonus(base: f64, affinity: &FusionAffinity) -> f64 {
     base + 0.2 * affinity.fusion_bonus()

@@ -15,8 +15,8 @@ unsafe extern "C" {
 
 /// CUDA fused Linear + SiLU kernel wrapper.
 ///
-/// For now this operates on host slices (same modelo que cuda_linear),
-/// usando Device::CPU de forma lógica.
+/// For now this operates on host slices (same model as cuda_linear),
+/// using Device::CPU in a logical way.
 pub fn cuda_fused_linear_silu(
     x: &[f32],
     w: &[f32],

@@ -63,7 +63,7 @@ fn run_mode(mode: &str) -> Grads {
     let (mut graph, x_id, wq_id, wk_id, wv_id, bq_id, bk_id, bv_id, _q_id, _k_id, _v_id) =
         build_qkv_sum_graph_with_bias();
 
-    // Dimensiones pequeñas y determinísticas.
+    // Small, deterministic dimensions.
     let m = 2usize;
     let k = 4usize;
     let n = 3usize;
@@ -92,20 +92,20 @@ fn run_mode(mode: &str) -> Grads {
     let bv_t = graph.nodes[bv_id].output.as_ref().expect("bv output missing").clone();
 
     let make_grad = |node_id: usize, proto: &Tensor| -> Tensor {
-        // 1) Intentar leer el grad directamente del tensor de salida.
+        // 1) Try to read grad directly from the output tensor.
         let from_tensor = graph.nodes[node_id]
             .output
             .as_ref()
             .and_then(|t| t.grad.as_ref())
             .cloned();
 
-        // 2) Si no hay grad en el tensor, intentar GradStore.
+        // 2) If there is no grad in the tensor, try GradStore.
         let data = if let Some(g) = from_tensor {
             g
         } else {
             let g = graph.grad_store.get(node_id);
             if g.is_empty() {
-                // 3) Como último recurso, devolver gradiente cero del mismo tamaño.
+                // 3) As a last resort, return a zero gradient of the same size.
                 vec![0.0; proto.data.len()]
             } else {
                 g

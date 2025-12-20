@@ -32,8 +32,8 @@ impl GpuMemoryPool {
         self.blocks.push(ptr);
     }
 
-    /// Versión genérica para kernels: intentamos servir cualquier tamaño
-    /// menor o igual al tamaño de bloque desde el pool.
+    /// Generic kernel variant: try to serve any size less than or equal to the
+    /// block size from the pool.
     pub unsafe fn alloc_device(&mut self, _bytes: usize) -> *mut u8 {
         self.alloc() as *mut u8
     }
@@ -42,8 +42,7 @@ impl GpuMemoryPool {
         self.free(ptr as *mut std::ffi::c_void);
     }
 
-    /// Heurística simple: podemos servir hasta block_size bytes por
-    /// asignación individual.
+    /// Simple heuristic: we can serve up to block_size bytes per single allocation.
     pub fn can_alloc(&self, bytes: usize) -> bool {
         bytes <= self.block_size
     }

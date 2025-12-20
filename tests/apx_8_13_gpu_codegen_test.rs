@@ -17,7 +17,7 @@ fn apx_8_13_codegen_does_not_change_numerics() {
 
     let res_before = a.add(&b);
 
-    // Generar código GPU sintético a partir de un IR mock.
+    // Generate synthetic GPU code from a mock IR.
     let cg = GPUCodegenV1 { target: "cuda".into() };
     let ir = KernelIR::new_mock("vecadd");
     let _code = cg.generate_kernel(&ir);

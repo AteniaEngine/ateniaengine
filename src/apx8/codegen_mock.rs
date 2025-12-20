@@ -1,5 +1,5 @@
 // APX 8.10 — GPU Codegen Mock
-// Generación de código GPU textual (no compilable, no ejecutable).
+// Textual GPU code generation (not compilable, not executable).
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuBackend {

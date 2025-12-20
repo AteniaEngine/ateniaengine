@@ -24,9 +24,9 @@ impl MatMulOp {
         let rt = GpuRuntime::new().unwrap();
         let launcher = GpuLauncher::new().unwrap();
 
-        // Kernel NVRTC-safe: triple bucle simple, sin shared memory ni inline PTX.
-        // Firma EXACTA pedida: extern "C" __global__ void matmul_kernel(..., int N)
-        // Nota: asumimos casos cuadrados (M == K == N) en los usos actuales.
+        // NVRTC-safe kernel: simple triple loop, without shared memory nor inline PTX.
+        // Required EXACT signature: extern "C" __global__ void matmul_kernel(..., int N)
+        // Note: we assume square cases (M == K == N) in current uses.
         let src = r#"
         extern "C" __global__
         void matmul_kernel(const float* A,
@@ -46,16 +46,16 @@ impl MatMulOp {
         }
         "#;
 
-        // APX 12.0: normalizar kernel antes de NVRTC.
+        // APX 12.0: normalize kernel before NVRTC.
         let src = KernelNormalizer::normalize_kernel(src, "matmul_kernel");
 
-        // Compilar con NVRTC usando solo la arquitectura compute_89.
-        // Se delega en NvrtcCompiler::compile, que traducirá arch -> "--gpu-architecture=...".
+        // Compile with NVRTC using only the compute_89 architecture.
+        // Delegated to NvrtcCompiler::compile, which translates arch -> "--gpu-architecture=...".
         let ptx = compiler
             .compile(&src, "matmul_kernel", "compute_89")
             .unwrap();
 
-        // Logs NVRTC / PTX (sólo en modo debug)
+        // NVRTC / PTX logs (debug mode only)
         let ptx_str = &ptx.ptx;
         let debug = std::env::var("ATENIA_DEBUG").ok().as_deref() == Some("1");
         if debug {
@@ -73,7 +73,7 @@ impl MatMulOp {
             println!("[MATMUL-DEBUG] PTX length = {} bytes", ptx_str.len());
         }
 
-        // Carga de módulo con compat layer; CpuFallback no debe panicar.
+        // Module load with compat layer; CpuFallback must not panic.
         let module = match loader.load_module_from_ptx(ptx_str) {
             Ok(m) => {
                 if debug {
@@ -82,8 +82,8 @@ impl MatMulOp {
                 m
             }
             Err(CudaLoaderError::CpuFallback) => {
-                // APX 12.2.5: entorno sin GPU usable. No paniqueamos;
-                // dejamos que la ruta CPU se encargue a nivel superior.
+                // APX 12.2.5: environment without a usable GPU. Do not panic;
+                // let the CPU path handle it at a higher level.
                 if debug {
                     eprintln!("[MATMUL] CpuFallback detected - skipping GPU matmul_kernel launch");
                 }
@@ -97,7 +97,7 @@ impl MatMulOp {
             }
         };
 
-        // Resolución de símbolo con logs (sólo en modo debug)
+        // Symbol resolution with logs (debug mode only)
         if debug {
             println!("[MATMUL] Calling cuModuleGetFunction(\"matmul_kernel\")");
             println!("[MATMUL-DEBUG] Kernel name = matmul_kernel");
@@ -117,8 +117,8 @@ impl MatMulOp {
             }
         };
 
-        // APX 12.1: calcular grid/block/shared_mem vía AutoPlanner.
-        // Para este kernel asumimos matrices cuadradas N x N.
+        // APX 12.1: compute grid/block/shared_mem via AutoPlanner.
+        // For this kernel we assume square matrices N x N.
         let cfg = AutoPlanner::plan_square_matmul(n);
 
         // Argumentos para kernel: (A, B, C, N)
@@ -130,10 +130,10 @@ impl MatMulOp {
             &n_i32 as *const i32 as *mut c_void,
         ];
 
-        // DEBUG grid/block/args antes del launch
+        // DEBUG grid/block/args before launch
         let shared_mem_bytes: u32 = cfg.shared_mem;
 
-        // APX 12.3: autotuner de grid/block basado en tiempo de ejecución.
+        // APX 12.3: grid/block autotuner based on runtime.
         let gpu_enabled = !CompatLoader::is_forced_fallback();
         let compute_cap = 89; // compute capability para hashing del autotuner
 
@@ -199,7 +199,7 @@ impl MatMulOp {
                 mem::size_of_val(&n_i32)
             );
 
-            // Validaciones previas al launch (solo log, no cambiamos control de flujo)
+            // Pre-launch validations (logs only; do not change control flow)
             if grid_x == 0 || grid_y == 0 || block_x == 0 || block_y == 0 {
                 eprintln!(
                     "[MATMUL-DEBUG] INVALID grid/block: cannot launch (grid=({}, {}), block=({}, {}))",
@@ -214,7 +214,7 @@ impl MatMulOp {
             }
         }
 
-        // Lanzamiento real (la lógica se mantiene igual; el launcher interno reportará el código)
+        // Real launch (logic remains the same; the internal launcher will report the code)
         launcher
             .launch(&rt, &func, grid, block, shared_mem_bytes, &mut args)
             .unwrap();

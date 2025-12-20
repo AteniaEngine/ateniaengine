@@ -1,9 +1,9 @@
 use crate::amg::graph::Graph;
 use crate::amg::nodes::NodeType;
 
-/// Detecta y fusiona pares Linear -> Activation en el grafo.
-/// La fusión convierte el nodo Activation en FusedLinearActivation y marca
-/// el Linear como NoOp, manteniendo las dependencias aguas abajo.
+/// Detect and fuse Linear -> Activation pairs in the graph.
+/// The fusion converts the Activation node into FusedLinearActivation and marks
+/// the Linear as NoOp, keeping downstream dependencies.
 pub fn detect_and_fuse_linear_activation(graph: &mut Graph) -> usize {
     let mut count = 0;
 
@@ -26,25 +26,25 @@ pub fn detect_and_fuse_linear_activation(graph: &mut Graph) -> usize {
                 continue;
             }
 
-            // Fusión: el nodo de activación se convierte en FusedLinearActivation
-            // y toma los mismos inputs que el Linear.
+            // Fusion: the activation node becomes FusedLinearActivation
+            // and takes the same inputs as the Linear.
             let lin_inputs = graph.nodes[lin_idx].inputs.clone();
             graph.nodes[act_idx].node_type = NodeType::FusedLinearActivation(act_kind);
             graph.nodes[act_idx].inputs = lin_inputs;
 
-            // El Linear original pasa a ser NoOp.
+            // The original Linear becomes NoOp.
             graph.nodes[lin_idx].node_type = NodeType::NoOp;
 
-            // Asegurar que el NoOp conserve solo su fuente de datos como input
-            // (primer input del Linear original).
+            // Ensure the NoOp keeps only its data source as input
+            // (first input of the original Linear).
             let old_inputs = graph.nodes[lin_idx].inputs.clone();
             if let Some(source) = old_inputs.get(0).cloned() {
                 graph.nodes[lin_idx].inputs.clear();
                 graph.nodes[lin_idx].inputs.push(source);
             }
 
-            // Redirigir dependencias aguas abajo: cualquier nodo que dependía del
-            // Linear original ahora debe depender del nodo fusionado.
+            // Redirect downstream dependencies: any node that depended on the
+            // original Linear must now depend on the fused node.
             let fused_id = act_idx;
             let old_output = lin_idx;
             for node in graph.nodes.iter_mut() {

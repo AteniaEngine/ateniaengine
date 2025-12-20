@@ -24,7 +24,7 @@ fn apx_9_2_emit_basic_structure() {
 
 #[test]
 fn apx_9_2_no_numeric_change() {
-    // El generador no debe modificar datos ni alterar ejecución
+    // The generator must not modify data or alter execution
     let a = vec![1.0f32, 2.0, 3.0];
     let b = vec![4.0f32, 5.0, 6.0];
     let mut out = a.clone();
@@ -33,6 +33,6 @@ fn apx_9_2_no_numeric_change() {
         out[i] = a[i] + b[i];
     }
 
-    // Igual que antes — PTX no ejecuta nada
+    // Same as before — PTX does not execute anything
     assert_eq!(out, vec![5.0, 7.0, 9.0]);
 }

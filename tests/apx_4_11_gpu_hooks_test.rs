@@ -15,7 +15,7 @@ fn test_apx4_11_matmul_hook_runs_and_matches_cpu() {
     let a = Tensor::randn(&[m, k], Device::CPU);
     let b = Tensor::randn(&[k, n], Device::CPU);
 
-    // Grafo mínimo: Input A, Input B, MatMul, Output.
+    // Minimal graph: Input A, Input B, MatMul, Output.
     let mut nodes = Vec::new();
     let a_id = 0usize;
     nodes.push(Node::new(a_id, NodeType::Input, vec![]));
@@ -28,12 +28,12 @@ fn test_apx4_11_matmul_hook_runs_and_matches_cpu() {
 
     let mut g = Graph::new(nodes);
 
-    // Ejecutar una vez con GPU hooks activos (APX_TRACE=1 ya está puesto).
+    // Execute once with GPU hooks active (APX_TRACE=1 is already set).
     let outputs_gpu = g.execute(vec![a.clone(), b.clone()]);
     assert_eq!(outputs_gpu.len(), 1);
     let y_gpu = &outputs_gpu[0];
 
-    // Referencia CPU pura: matmul naive.
+    // Pure CPU reference: naive matmul.
     let mut y_cpu = Tensor::zeros_new(&[m, n], Device::CPU);
     {
         for i in 0..m {
@@ -73,7 +73,7 @@ fn test_apx4_11_linear_hook_runs_and_matches_cpu() {
     let w = Tensor::randn(&[k, n], Device::CPU);
     let b = Tensor::randn(&[n], Device::CPU);
 
-    // Grafo: x, w, b, Linear, Output.
+    // Graph: x, w, b, Linear, Output.
     let mut nodes = Vec::new();
     let x_id = 0usize;
     nodes.push(Node::new(x_id, NodeType::Input, vec![]));
@@ -92,7 +92,7 @@ fn test_apx4_11_linear_hook_runs_and_matches_cpu() {
     assert_eq!(outputs_gpu.len(), 1);
     let y_gpu = &outputs_gpu[0];
 
-    // Referencia CPU simple: y = x·w + b
+    // Simple CPU reference: y = x·w + b
     let mut y_cpu = Tensor::zeros_new(&[m, n], Device::CPU);
     for i in 0..m {
         for j in 0..n {

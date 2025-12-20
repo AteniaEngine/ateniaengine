@@ -47,8 +47,8 @@ fn apx_7_7_hpfa_priority_bonus_structural() {
     use atenia_engine::apx6_10::global_fusion_selector;
     use atenia_engine::apx7::hpfa::FusionAffinity;
 
-    // Simular un nodo con afinidad alta de fusión y comprobar que la
-    // combinación base+bonus aumenta la prioridad.
+    // Simulate a node with high fusion affinity and verify that the
+    // base+bonus combination increases priority.
     let fa = FusionAffinity {
         qkv_chain: true,
         attn_fusable: true,
@@ -62,8 +62,8 @@ fn apx_7_7_hpfa_priority_bonus_structural() {
 
     assert!(boosted_score > base_score);
 
-    // Además, poblar el selector global para que no falle el wiring cuando
-    // HPGE lo consulte en modo 7.7 (aunque aquí no ejecutamos el grafo).
+    // Also, populate the global selector so wiring does not fail when
+    // HPGE queries it in mode 7.7 (even though we do not execute the graph here).
     if let Ok(mut sel) = global_fusion_selector().lock() {
         sel.qkv_candidates.insert(1);
         sel.attn_candidates.insert(2);
@@ -93,6 +93,6 @@ fn apx_7_7_hpfa_performance_sanity_like_7_6() {
     let mut g_hpfa = make_simple_graph();
     let t_hpfa = now_ms(|| g_hpfa.execute(inputs));
 
-    // En debug dejamos un margen amplio similar a 7.6.
+    // In debug we allow a wide margin similar to 7.6.
     assert!(t_hpfa <= t_seq * 1.5);
 }

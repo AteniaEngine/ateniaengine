@@ -8,7 +8,7 @@ fn test_fused_linear_silu_gpu_matches_cpu() {
     let k = 8;
     let n = 16;
 
-    // Para este APX usamos Device::CPU como backend lógico (igual que cuda_matmul).
+    // For this APX we use Device::CPU as the logical backend (same as cuda_matmul).
     let x = Tensor::randn(&[m, k], Device::CPU);
     let w = Tensor::randn(&[k, n], Device::CPU);
     let b = Tensor::randn(&[n], Device::CPU);
@@ -17,7 +17,7 @@ fn test_fused_linear_silu_gpu_matches_cpu() {
 
     cuda_fused_linear_silu(&x.data, &w.data, &b.data, &mut out_gpu.data, m, k, n);
 
-    // Referencia CPU usando implementación fusionada existente.
+    // CPU reference using the existing fused implementation.
     let out_cpu = exec_fused_linear_silu(&x, &w, Some(&b));
 
     let mut max_diff = 0.0f32;
