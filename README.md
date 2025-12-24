@@ -170,7 +170,7 @@ The technical foundations of Atenia Engine are described in the following paper:
 The paper is currently hosted in this repository while awaiting arXiv submission approval.
 
 ➡️ **Download PDF:**  
-`/paper/Atenia_Engine_Execution_Intelligence.pdf`
+(https://github.com/AteniaEngine/ateniaengine/tree/main/paper)
 
 All experiments described in the paper are fully reproducible via the test suite included in this repository.
 
