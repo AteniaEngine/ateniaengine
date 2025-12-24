@@ -170,7 +170,7 @@ The technical foundations of Atenia Engine are described in the following paper:
 The paper is currently hosted in this repository while awaiting arXiv submission approval.
 
 ➡️ **Download PDF:**  
-(https://github.com/AteniaEngine/ateniaengine/tree/main/paper)
+(https://github.com/AteniaEngine/ateniaengine/blob/main/paper/Atenia%20Engine_%20Hardware-Adaptive%20Execution%20Intelligence%20for%20Stable%20and%20Resilient%20AI%20Runtime%20Systems.pdf))
 
 All experiments described in the paper are fully reproducible via the test suite included in this repository.
 
