@@ -5,7 +5,30 @@
 
 > **Current Project Status**
 > - ✅ **APX v12 completed** — Adaptive execution intelligence fully validated through reproducible tests.
-> - 🔄 **APX v13 in progress** — Hybrid Execution Engine (H.E.E.): architectural unification of hybrid execution modes under dynamic runtime constraints.
+✅ **APX v13 completed — Hybrid Execution Engine (H.E.E.)**
+
+Atenia Engine now features a fully validated hybrid execution architecture:
+- Dynamic execution across CPU, GPU, RAM, VRAM, and SSD
+- Vendor-agnostic hardware profiling and tensor placement
+- Adaptive memory offloading with hysteresis and priority control
+- Reconfigurable execution graphs with per-batch replanning
+- Hybrid autograd across heterogeneous devices
+- Persistent caches, checkpoints, and warm-start planning
+- Self-learning execution loop with explainable decisions
+
+📂 **Full technical documentation and all validation tests are available at:**  
+👉 [`/src/v13/README.md`](https://github.com/AteniaEngine/ateniaengine/tree/main/src/v13)
+
+🔧 **APX v14 in development — Execution Observability & Diagnostics**  
+Next phase focuses on deep runtime introspection:
+- Execution timelines and causal traces
+- Memory and placement diagnostics
+- Drift, instability, and performance anomaly detection
+- Actionable debugging signals for hybrid execution systems
+
+📄 **Paper:** Preprint — arXiv submission in progress  
+🧾 **Patent:** USPTO Provisional Application No. 63/941,875 (Filed Dec 16, 2025)  
+🌍 **Website:** https://ateniaengine.com
 > - 📄 **Paper**: Preprint — arXiv submission in progress.
 > - 🧾 **Patent**: USPTO Provisional Application No. 63/941,875 (Filed Dec 16, 2025).
 > - 🌍 **Website**: https://ateniaengine.com
