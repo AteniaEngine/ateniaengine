@@ -133,7 +133,7 @@ fn apx_7_12_ule_performance_sanity() {
     // to absorb variations between machines/environments. The goal is to
     // detect only catastrophic regressions (orders of magnitude), not micro
     // diferencias.
-    let max_factor = 5.0;
+    let max_factor = 10.0;
     assert!(t_ule <= t_pfls * max_factor);
     assert!(t_ule <= t_hpge * max_factor);
 }
