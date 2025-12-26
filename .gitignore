@@ -33,6 +33,10 @@ matmul_kernel.*
 atenia_cache/
 tmp_offload_mm*/
 
+# Atenia test caches / temp artifacts
+.atenia_cache_*/
+*.tmp
+
 /data/
 
 # Atenia Engine source (must be versioned)
