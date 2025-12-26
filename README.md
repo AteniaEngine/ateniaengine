@@ -17,7 +17,7 @@ Atenia Engine now features a fully validated hybrid execution architecture:
 - Self-learning execution loop with explainable decisions
 
 📂 **Full technical documentation and all validation tests are available at:**  
-👉 [`/src/v13/README.md`](https://github.com/AteniaEngine/ateniaengine/tree/main/src/v13)
+👉 https://github.com/AteniaEngine/ateniaengine/blob/main/src/v13/README.md
 
 🔧 **APX v14 in development — Execution Observability & Diagnostics**  
 Next phase focuses on deep runtime introspection:
