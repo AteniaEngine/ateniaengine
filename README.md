@@ -5,7 +5,7 @@
 
 > **Current Project Status**
 > - ✅ **APX v12 completed** — Adaptive execution intelligence fully validated through reproducible tests.
-✅ **APX v13 completed — Hybrid Execution Engine (H.E.E.)**
+> - ✅ **APX v13 completed — Hybrid Execution Engine (H.E.E.)**
 
 Atenia Engine now features a fully validated hybrid execution architecture:
 - Dynamic execution across CPU, GPU, RAM, VRAM, and SSD
