@@ -3,28 +3,53 @@
 
 *Atenia Engine wasn’t born because it was wanted. It was born because it was needed.*
 
-> **Current Project Status**
-> - ✅ **APX v12 completed** — Adaptive execution intelligence fully validated through reproducible tests.
-> - ✅ **APX v13 completed — Hybrid Execution Engine (H.E.E.)  (2025-12-26)**
+Current Project Status
+
+✅ APX v12 completed — Adaptive execution intelligence fully validated through reproducible tests.
+
+✅ APX v13 completed — Hybrid Execution Engine (H.E.E.) (2025-12-26)
+
+✅ APX v14 completed — Execution Observability & Diagnostics (2026-01-03)
 
 Atenia Engine now features a fully validated hybrid execution architecture:
-- Dynamic execution across CPU, GPU, RAM, VRAM, and SSD
-- Vendor-agnostic hardware profiling and tensor placement
-- Adaptive memory offloading with hysteresis and priority control
-- Reconfigurable execution graphs with per-batch replanning
-- Hybrid autograd across heterogeneous devices
-- Persistent caches, checkpoints, and warm-start planning
-- Self-learning execution loop with explainable decisions
 
-📂 **Full technical documentation and all validation tests are available at:**  
+Dynamic execution across CPU, GPU, RAM, VRAM, and SSD
+
+Vendor-agnostic hardware profiling and tensor placement
+
+Adaptive memory offloading with hysteresis and priority control
+
+Reconfigurable execution graphs with per-batch replanning
+
+Hybrid autograd across heterogeneous devices
+
+Persistent caches, checkpoints, and warm-start planning
+
+Self-learning execution loop with explainable decisions
+
+📂 Full technical documentation and all validation tests are available at:
 👉 https://github.com/AteniaEngine/ateniaengine/blob/main/src/v13/README.md
 
-🔧 **APX v14 in development — Execution Observability & Diagnostics**  
-Next phase focuses on deep runtime introspection:
-- Execution timelines and causal traces
-- Memory and placement diagnostics
-- Drift, instability, and performance anomaly detection
-- Actionable debugging signals for hybrid execution systems
+🔍 APX v14 — Execution Observability & Diagnostics
+This phase introduces a complete runtime observability layer, enabling Atenia Engine to explain, trace, and audit its own execution behavior without altering runtime decisions:
+
+Deterministic execution timelines and causal traces
+
+Memory pressure and fragmentation diagnostics across VRAM, RAM, and SSD
+
+Structured explanation of execution decisions and avoided paths
+
+Failure, pre-failure, and recovery traceability
+
+Stable, machine-readable diagnostic output (JSON)
+
+Fully passive, vendor-agnostic, and reproducible design
+
+📂 Full technical documentation and all validation tests are available at:
+👉 https://github.com/AteniaEngine/ateniaengine/tree/main/src/v14
+
+🟨 Next: APX v15 — Execution Policy Engine (E.P.E.)
+The next phase will introduce evidence-driven execution policies, allowing Atenia Engine to adapt execution strategies based on real runtime observability while preserving stability and safety guarantees.
 
 📄 **Paper:** Preprint — arXiv submission in progress  
 🧾 **Patent:** USPTO Provisional Application No. 63/941,875 (Filed Dec 16, 2025)  
