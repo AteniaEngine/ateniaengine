@@ -1,3 +1,14 @@
+//! Atenia Engine core library
+//!
+//! Versioned architecture:
+//! - v15: Policy & decision layer
+//! - v16: Execution contracts, planning & guards
+//! - v17: Model runtime & inference engine
+
+pub mod v15;
+pub mod v16;
+pub mod v17;
+
 pub mod hal;
 pub mod tensor;
 pub mod amg;
