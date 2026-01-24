@@ -1,4 +1,5 @@
 use std::fs;
+use std::sync::{Mutex, OnceLock};
 
 use atenia_engine::v13::checkpoint::restore_checkpoint;
 use atenia_engine::v13::checkpoint::drift::take_all_for_test;
@@ -6,8 +7,19 @@ use atenia_engine::v13::hybrid_memory::HybridMemoryManager;
 use atenia_engine::v13::memory_types::MemoryTier;
 use atenia_engine::v13::persistent_cache::{CacheKind, PersistentHybridCache};
 
+static TEST_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+    TEST_MUTEX
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("test mutex poisoned")
+}
+
 #[test]
 fn checkpoint_warns_on_tier_downgrade() {
+    let _guard = test_lock();
+
     let cache_root = "./.atenia_cache_test_checkpoint_drift_downgrade_cache";
     let ckpt_root = "./.atenia_checkpoint_test_drift_downgrade";
 
@@ -79,6 +91,8 @@ fn checkpoint_warns_on_tier_downgrade() {
 
 #[test]
 fn checkpoint_detects_missing_backend() {
+    let _guard = test_lock();
+
     let cache_root = "./.atenia_cache_test_checkpoint_drift_missing_backend_cache";
     let ckpt_root = "./.atenia_checkpoint_test_drift_missing_backend";
 
@@ -149,6 +163,8 @@ fn checkpoint_detects_missing_backend() {
 
 #[test]
 fn checkpoint_plan_summary_mismatch() {
+    let _guard = test_lock();
+
     let cache_root = "./.atenia_cache_test_checkpoint_drift_plan_mismatch_cache";
     let ckpt_root = "./.atenia_checkpoint_test_drift_plan_mismatch";
 
