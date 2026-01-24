@@ -3,28 +3,85 @@
 
 *Atenia Engine wasn’t born because it was wanted. It was born because it was needed.*
 
-> **Current Project Status**
-> - ✅ **APX v12 completed** — Adaptive execution intelligence fully validated through reproducible tests.
-> - ✅ **APX v13 completed — Hybrid Execution Engine (H.E.E.)  (2025-12-26)**
+## Current Project Status
 
-Atenia Engine now features a fully validated hybrid execution architecture:
-- Dynamic execution across CPU, GPU, RAM, VRAM, and SSD
-- Vendor-agnostic hardware profiling and tensor placement
-- Adaptive memory offloading with hysteresis and priority control
-- Reconfigurable execution graphs with per-batch replanning
-- Hybrid autograd across heterogeneous devices
-- Persistent caches, checkpoints, and warm-start planning
-- Self-learning execution loop with explainable decisions
+- ✅ **APX v12 completed** — Adaptive execution intelligence fully validated through reproducible tests.
+- ✅ **APX v13 completed — Hybrid Execution Engine (H.E.E.)** (2025-12-26)
+- ✅ **APX v14 completed — Execution Observability & Diagnostics** (2026-01-03)
 
-📂 **Full technical documentation and all validation tests are available at:**  
-👉 https://github.com/AteniaEngine/ateniaengine/blob/main/src/v13/README.md
+📘 **APX v13 documentation:**  
+https://github.com/AteniaEngine/ateniaengine/blob/main/src/v13/README.md
 
-🔧 **APX v14 in development — Execution Observability & Diagnostics**  
-Next phase focuses on deep runtime introspection:
-- Execution timelines and causal traces
-- Memory and placement diagnostics
-- Drift, instability, and performance anomaly detection
-- Actionable debugging signals for hybrid execution systems
+📘 **APX v14 documentation:**  
+https://github.com/AteniaEngine/ateniaengine/blob/main/src/v14/README.md
+
+---
+
+### 🟦 APX v15 — Execution Policy Engine (E.P.E.)
+
+APX v15 introduces an explicit execution policy layer, allowing Atenia Engine to
+select execution strategies based on user intent, hardware constraints, and
+runtime evidence.
+
+Key capabilities:
+- Evidence-driven execution policies
+- User preferences and decision bias modeling
+- Policy simulation and outcome comparison
+- Explainable policy decisions and trade-offs
+- Stable policy registry with deterministic resolution
+
+📘 Documentation:  
+https://github.com/AteniaEngine/ateniaengine/blob/main/src/v15/README.md
+
+---
+
+### 🟩 APX v16 — Deterministic Execution Core
+
+APX v16 consolidates Atenia Engine’s execution semantics into a formal,
+deterministic core responsible for safe and auditable runtime behavior.
+
+Key capabilities:
+- Explicit execution contracts and constraints
+- Deterministic execution planning
+- Guarded execution with abort and rollback
+- Speculative execution with validation
+- Full execution replay and feedback tracing
+
+📘 Documentation:  
+https://github.com/AteniaEngine/ateniaengine/blob/main/src/v16/README.md
+
+---
+
+### 🟨 APX v17 — Model Inference Engine
+
+APX v17 introduces native model inference support inside Atenia Engine,
+including internal CNN execution and hybrid backend management.
+
+Key capabilities:
+- CPU and GPU inference backends with safe fallback
+- Internal tensor and operator system
+- Deterministic inference execution
+- Execution profiling and consistency checks
+- Model artifacts, manifests, and snapshots
+- End-to-end MNIST inference validation
+
+📘 Documentation:  
+https://github.com/AteniaEngine/ateniaengine/blob/main/src/v17/README.md
+
+---
+
+### 🟪 APX v18 — Model Runtime Integration (Planned)
+
+APX v18 will enable Atenia Engine to load, interpret, and execute real external
+models (initially ONNX) while preserving all existing guarantees.
+
+- External models are never executed directly
+- Models are transformed into internal graphs and execution plans
+- Abortability, determinism, and explainability are mandatory
+- CPU remains the baseline backend; GPU is optional with fallback
+
+APX v18 does not learn.  
+APX v18 connects the real world to the internal execution engine.
 
 📄 **Paper:** Preprint — arXiv submission in progress  
 🧾 **Patent:** USPTO Provisional Application No. 63/941,875 (Filed Dec 16, 2025)  
