@@ -83,6 +83,8 @@ models (initially ONNX) while preserving all existing guarantees.
 APX v18 does not learn.  
 APX v18 connects the real world to the internal execution engine.
 
+---
+
 📄 **Paper:** Preprint — arXiv submission in progress  
 🧾 **Patent:** USPTO Provisional Application No. 63/941,875 (Filed Dec 16, 2025)  
 🌍 **Website:** https://ateniaengine.com
