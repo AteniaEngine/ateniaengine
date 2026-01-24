@@ -90,6 +90,7 @@ APX v18 connects the real world to the internal execution engine.
 > - 🧾 **Patent**: USPTO Provisional Application No. 63/941,875 (Filed Dec 16, 2025).
 > - 🌍 **Website**: https://ateniaengine.com
 
+---
 
 ### Execution intelligence for AI systems that operate in the real world
 
