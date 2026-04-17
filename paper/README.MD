@@ -1,25 +1,30 @@
-# Atenia Engine — Research Paper (Preprint)
-
-This directory contains the current public preprint of the Atenia Engine research paper.
+Atenia Engine — Research Paper
 
 ## Status
 
-- 📘 Preprint — Publicly available
-- ⏳ arXiv submission pending endorsement
-- 🧾 Patent pending (USPTO provisional filed)
+The research preprint that previously lived in this directory has been 
+withdrawn while the implementation matures to fully back its empirical 
+claims.
 
-## Reproducibility
+A revised version will be published once the runtime signal integration 
+(planned for APX v18+) is complete, including:
 
-All experimental results presented in the paper are implemented as executable tests in the main repository.
+- Real memory telemetry sourced from hardware (VRAM/RAM)
+- Emergent policy decisions from runtime signals (no synthetic injection)
+- End-to-end reproducible experiments without controlled test harnesses
 
-To reproduce results:
+## Intellectual Property
 
-```bash
-cargo test -- --nocapture
+The architectural design and associated intellectual property remain in 
+place:
 
-Optional debug mode:
+- USPTO Provisional Application **63/941,875** (filed December 16, 2025)
+- GAAIA Labs — Independent Research Initiative
 
-$env:ATENIA_DEBUG="1"
-cargo test -- --nocapture
+## Current Development
 
-If the tests pass, the execution engine described in the paper is alive.
+For the current state of the engine, see the [main repository README](../README.md).
+
+The project is under active development. Contributions, issues, and 
+discussions are welcome — this is a research-in-progress, not a finished 
+product.

@@ -1,51 +1,31 @@
 # 🧠 Atenia Engine
+
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17970198.svg)](https://doi.org/10.5281/zenodo.17970198)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-*Atenia Engine wasn’t born because it was wanted. It was born because it was needed.*
+**An execution-centric AI runtime system written from scratch in Rust.**
 
-> **Current Project Status**
-> - ✅ **APX v12 completed** — Adaptive execution intelligence fully validated through reproducible tests.
-> - ✅ **APX v13 completed — Hybrid Execution Engine (H.E.E.)  (2025-12-26)**
+> [!NOTE]
+> **Status: Early research in progress.**  
+> This project is a working prototype with architectural scaffolding for 
+> hardware-adaptive execution intelligence. Several claimed capabilities 
+> are implemented as deterministic scaffolding and are currently being 
+> connected to real hardware signals.  
+> See [Current State](#-current-state) for an honest breakdown.
 
-Atenia Engine now features a fully validated hybrid execution architecture:
-- Dynamic execution across CPU, GPU, RAM, VRAM, and SSD
-- Vendor-agnostic hardware profiling and tensor placement
-- Adaptive memory offloading with hysteresis and priority control
-- Reconfigurable execution graphs with per-batch replanning
-- Hybrid autograd across heterogeneous devices
-- Persistent caches, checkpoints, and warm-start planning
-- Self-learning execution loop with explainable decisions
+---
 
-📂 **Full technical documentation and all validation tests are available at:**  
-👉 https://github.com/AteniaEngine/ateniaengine/blob/main/src/v13/README.md
-
-🔧 **APX v14 in development — Execution Observability & Diagnostics**  
-Next phase focuses on deep runtime introspection:
-- Execution timelines and causal traces
-- Memory and placement diagnostics
-- Drift, instability, and performance anomaly detection
-- Actionable debugging signals for hybrid execution systems
-
-📄 **Paper:** Preprint — arXiv submission in progress  
-🧾 **Patent:** USPTO Provisional Application No. 63/941,875 (Filed Dec 16, 2025)  
-🌍 **Website:** https://ateniaengine.com
-> - 📄 **Paper**: Preprint — arXiv submission in progress.
-> - 🧾 **Patent**: USPTO Provisional Application No. 63/941,875 (Filed Dec 16, 2025).
-> - 🌍 **Website**: https://ateniaengine.com
-
-
-### Execution intelligence for AI systems that operate in the real world
+## 🎯 Vision
 
 Modern AI runtimes assume stable hardware.
 
-Reality does not.
+**Reality does not.**
 
-GPUs are shared. Memory pressure fluctuates. Schedulers jitter. Execution policies thrash.
+GPUs are shared. Memory pressure fluctuates. Schedulers jitter. Execution policies thrash. Most production failures in AI systems are not numerical bugs — they are **decision failures** in the execution layer.
 
-Failures are rarely numerical bugs.
-They are decision failures.
+Atenia Engine aims to treat execution as a first-class adaptive system: one that observes runtime signals, reasons about stability and risk, and adapts execution policies without modifying computational semantics.
 
-**Atenia Engine** is an execution-centric AI runtime system that treats execution as a dynamic, adaptive control problem — not as a static orchestration layer fixed at compile time.
+This repository contains the architectural foundation and the reference implementation under active development.
 
 ---
 
@@ -59,196 +39,153 @@ launch kernels → move data → hope the hardware behaves
 
 Atenia Engine starts from a different premise:
 
-**Execution makes decisions. Decisions must adapt to reality.**
+> **Execution makes decisions. Decisions must adapt to reality.**
 
-Execution determines *where*, *when*, and *how* computation runs.
-Under dynamic conditions, these decisions must be observed, reasoned about, stabilized, and refined over time.
-
-Atenia treats execution as a **first-class system component** — one that reasons, adapts, and learns from experience, while preserving deterministic and reproducible computation.
+Execution determines *where*, *when*, and *how* computation runs. Under dynamic conditions, these decisions must be observed, reasoned about, stabilized, and refined over time.
 
 ---
 
-## 🎯 What Atenia Engine Does
+## 🧭 Design Principles
 
-Atenia introduces an execution intelligence layer that:
+These are the principles guiding every design decision in Atenia. Some are fully realized today, others are under active development:
 
-* 🔍 observes execution-relevant runtime signals
-* 🧠 reasons about stability, risk, and hardware behavior
-* 🔁 selects and stabilizes execution policies
-* 🚫 prevents policy oscillation and thrashing
-* 🛑 anticipates failures before they occur
-* 🔒 adapts execution **without modifying computational semantics**
-
-All adaptation happens at the **execution level only**.
-
-✔ No semantic drift
-✔ No hidden learning
-✔ No numerical surprises
+- **🧱 Stability before performance** — Short-term gains mean nothing if execution collapses under noise.
+- **🔒 Adaptation without semantic drift** — The engine may change *how* things run, never *what* is computed.
+- **🧠 Learning by experience, without ML** — Execution outcomes are distilled into persistent memory — no opaque training loops in the runtime.
+- **🔬 Observable and reproducible** — Every behavior claimed by the engine must be verifiable through executable tests.
 
 ---
 
-## 🧘 Stability Before Performance
+## 📊 Current State
 
-Atenia does not optimize for peak throughput under ideal conditions.
+Atenia Engine is implemented in Rust. The project follows an APX (Adaptive Execution) versioning scheme from v1 to v25, describing the progression from primitives to a fully adaptive runtime.
 
-It optimizes for:
+### ✅ What works today
 
-* 🧱 stable execution under noise
-* 💾 continuity under memory pressure
-* 🔮 predictive resilience instead of reactive failure
-* 🎚 confidence over aggressive heuristics
+Real, executable, deterministic:
 
-Short-term performance gains mean little if execution collapses under real-world conditions.
+- **🦀 Tensor engine** — Forward + backward with autograd, CPU + CUDA paths
+- **🧩 AMG (Adaptive Model Graph)** — Graph representation with executor, independent of PyTorch/TF
+- **⚡ Fused kernels** — Attention and QKV paths on CPU and GPU
+- **🧮 MNIST pipeline** — Conv2D, MaxPool, Dense on f32 tensors, end-to-end structural
+- **🔒 Deterministic execution** — Same input, same output, always
+- **📋 Policy registry** — Pure, deterministic, explainable policy layer
+- **📜 Execution contracts** — Data structures, validators, replay scaffolding
+- **📡 System load sampling** — Real CPU metrics via `sysinfo`
 
-**Atenia optimizes for execution that survives.**
+### 🟡 Scaffolding in place (not yet wired to runtime signals)
 
----
+Architecture exists. Integration with real hardware signals is in progress:
 
-## 🧠 Learning by Execution Experience (Without ML)
+- **AMM Forecaster** — Currently a tensor byte counter. Needs real VRAM/RAM telemetry.
+- **Runtime Guards (v16)** — Pure evaluator of `GuardConditions`. No producer from runtime yet.
+- **Execution Policies (v15)** — Return hardcoded `DecisionBias` constants. Waiting on emergent signals.
+- **Fusion Selector (v6.10/6.11)** — Measures `fused_full_us`; `fused_qkv_us = 0` is a hardcoded placeholder.
+- **Predictive fallback** — Demonstrated in controlled test harnesses. Engine-native trigger pending.
+- **MNIST validation** — Structural pipeline runs with a synthetic model. Real MNIST dataset + trained weights pending.
 
-Atenia Engine improves execution behavior over time — **without machine learning**.
+### ⏳ Roadmap (APX v18 → v25)
 
-Execution outcomes are distilled into **persistent execution memory**.
-
-When similar execution contexts reappear, Atenia can:
-
-* ♻️ avoid previously unstable strategies
-* 🎯 converge faster to stable policies
-* 🧯 reduce unnecessary fallback and defensive behavior
-
-Seeing the same execution twice should never feel like the first time.
-
----
-
-## 🧪 Virtual Execution Before Real Risk
-
-Exploration is dangerous when done directly on hardware.
-
-Atenia introduces a **Virtual GPU Execution Model** used to evaluate execution policies *before* they reach physical devices.
-
-This enables:
-
-* 🧪 safe autotuning
-* 🚨 risk-aware policy filtering
-* 🧯 predictive fallback selection
-* 🛡 protection against catastrophic failures (e.g. OOM)
-
-Unstable strategies are discarded **before they touch real hardware**.
+- **v18** — Real external model loading (ONNX via `ModelLoader`)
+- **v19** — Runtime signal integration: VRAM / RAM / CPU → Guards / Policies / AMM
+- **v20** — Emergent policy decisions from real hardware telemetry
+- **v21–v25** — Multi-backend (ROCm, Metal, Vulkan), distributed execution, autonomous runtime
 
 ---
 
-## 🔬 Reproducible Research
+## 🔬 Running the Code
 
-Execution intelligence must be observable to be credible.
-
-All experiments described in the paper are implemented as **executable tests**.
+Atenia Engine compiles with Rust stable (2024 edition or later) and requires no external ML frameworks.
 
 ```bash
+cargo build --release
 cargo test
 ```
 
-If the tests pass, the execution engine is alive.
+### Test coverage
 
----
+The repository contains 270+ tests covering:
 
-## 📁 Test Execution Guide
+- Tensor operations and autograd correctness
+- Graph construction and execution
+- Deterministic serialization (JSON, CSV)
+- Structural integration of APX v13–v17 modules
+- CPU + CUDA numerical equivalence where applicable
 
-All execution and research tests in this repository are **fully documented**.
-
-Detailed instructions on how to run tests, enable debug output, interpret results, and reproduce paper experiments are provided here:
-
-📄 **tests/README.md**
-
-This includes:
-
-* standard test execution
-* verbose output (`--nocapture`)
-* debug execution mode via environment variables
-* guidance for reproducing research results
-
----
-
-## 🧪 Test Coverage
-
-The repository currently includes:
-
-* ✅ 270+ execution and stability tests
-* 📄 paper-specific experimental validations
-* 🔁 warm vs. cold execution scenarios
-* 🧩 end-to-end adaptive execution tests
-* 🧠 full validation up to **APX-12**
-
----
-
-## 📄 Research Context
-
-The technical foundations of Atenia Engine are described in the following paper:
-
-**Atenia Engine: Hardware-Adaptive Execution Intelligence for Stable and Resilient AI Runtime Systems**
-
-📘 Status: **Preprint (publicly available)**  
-🧾 Patent: **USPTO Provisional Application No. 63/941,875**  
-📅 Filed: December 16, 2025  
-
-The paper is currently hosted in this repository while awaiting arXiv submission approval.
-
-➡️ **Download PDF:**  
-(https://github.com/AteniaEngine/ateniaengine/blob/main/paper/Atenia%20Engine_%20Hardware-Adaptive%20Execution%20Intelligence%20for%20Stable%20and%20Resilient%20AI%20Runtime%20Systems.pdf))
-
-All experiments described in the paper are fully reproducible via the test suite included in this repository.
-
-The project is released under **Apache License 2.0** and is compatible with this filing.
+> [!WARNING]
+> **Note on test methodology.**  
+> Some tests from earlier APX versions use controlled harnesses that 
+> inject runtime conditions (memory pressure, policy competition) to 
+> exercise the scaffolding. These are being rewritten to derive signals 
+> from the engine itself as part of the v18+ roadmap.
 
 ---
 
 ## ❌ What Atenia Engine Is Not
 
-Atenia Engine:
+- ❌ Not a machine learning framework
+- ❌ Not a compiler or graph optimizer
+- ❌ Does not modify model semantics
+- ❌ Does not require retraining
+- ❌ Does not assume ideal hardware
 
-* ❌ is not a machine learning framework
-* ❌ is not a compiler or graph optimizer
-* ❌ does not modify model semantics
-* ❌ does not require retraining
-* ❌ does not assume ideal hardware
-
-It complements existing frameworks by addressing a layer they largely ignore:
-
-**execution stability**.
+Atenia is designed to sit **below** ML frameworks and **above** raw hardware execution — addressing a layer they largely ignore: **execution stability**.
 
 ---
 
 ## 🛠 Implementation
 
-* 🦀 Implemented in **Rust**
-* 🔒 Deterministic execution behavior
-* 🧵 Explicit memory and concurrency control
-* 🚫 No garbage collection
-* 🧩 No opaque runtime adaptation
-
-Designed to sit **below ML frameworks** and **above raw hardware execution**.
+- 🦀 Implemented in **Rust**
+- 🔒 Deterministic execution behavior
+- 🧵 Explicit memory and concurrency control
+- 🚫 No garbage collection
+- 🧩 No opaque runtime adaptation
 
 ---
 
-## 📜 License
+## 🧾 Intellectual Property
 
-📄 **Apache License 2.0**
+- **Patent:** USPTO Provisional Application **63/941,875** (filed December 16, 2025)
+- **License:** Apache License 2.0 (with explicit patent grant)
+- **Author:** Guillermo Alonso Albella — GAAIA Labs (Independent Research Initiative)
 
-Allows broad adoption, modification, and commercial use while providing explicit patent protection.
+Apache 2.0 allows broad adoption, modification, and commercial use while providing explicit patent protection.
+
+---
+
+## 📄 Research Paper
+
+The initial research preprint has been withdrawn while the implementation matures to fully back its empirical claims.
+
+See [`paper/README.md`](paper/README.md) for details. A revised version with end-to-end empirical validation will be published once runtime signal integration (APX v18+) is complete.
+
+---
+
+## 🤝 Contributing
+
+This is a research-in-progress. Contributions, issues, and technical discussions are welcome — especially from people with experience in:
+
+- GPU runtime systems and CUDA / ROCm low-level APIs
+- Memory management and OOM prevention
+- Adaptive scheduling and execution policies
+- Systems research and MLSys
+
+Open an issue or reach out if you want to collaborate on any specific layer.
 
 ---
 
 ## 🌐 Links
 
-* 🌍 Website: [https://ateniaengine.com](https://ateniaengine.com)
-* 💾 Repository: [https://github.com/AteniaEngine/ateniaengine](https://github.com/AteniaEngine/ateniaengine)
-* 📄 Paper: *(to be added after arXiv submission)*
+- 🌍 **Website:** [ateniaengine.com](https://ateniaengine.com)
+- 💾 **Repository:** [github.com/AteniaEngine/ateniaengine](https://github.com/AteniaEngine/ateniaengine)
+- 🧾 **Zenodo archive:** [10.5281/zenodo.17970198](https://doi.org/10.5281/zenodo.17970198)
 
 ---
 
 ## 👤 Author
 
-**Guillermo Alonso Albella**
-Independent Research Initiative — **GAAIA Labs**
+**Guillermo Alonso Albella**  
+GAAIA Labs — Independent Research Initiative
 
 ---
 
@@ -256,6 +193,7 @@ Independent Research Initiative — **GAAIA Labs**
 
 This README does not try to sell.
 
-It states a position.
+It states a position — honestly, including what is built and what is still being built.
 
-And that’s what makes it real.
+**And that's what makes it real.**
+
