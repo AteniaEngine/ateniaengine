@@ -1,5 +1,13 @@
 # APX v16.0 — Execution Contract Resolver
 
+> [!NOTE]
+> **Scope and status.**  
+> This document describes the architecture and design intent of APX v16.  
+> Several capabilities listed below exist as structural scaffolding —
+> pure data structures, validators, and deterministic logic — and are
+> not yet wired to runtime signals from real hardware. See the
+> [main README](../../README.md) for the current state of each component.
+
 APX v16.0 defines the **execution contract layer**. It does not execute kernels, move
 Tensors, or talk to hardware. Instead, it takes the **intention** coming from APX 15
 (`DecisionBias`) and a passive snapshot of runtime-like state, and produces an
@@ -155,6 +163,14 @@ with `RuntimeState`.
 ---
 
 ### ExecutionContract
+
+> [!IMPORTANT]
+> `ExecutionContract`s are currently produced and inspectable, but not yet
+> enforced by execution paths. For example, the v17 inference pipeline
+> constructs a contract (`mnist_runner.rs` builds one via
+> `make_default_contract`) but does not consult it during the actual
+> forward pass. Contract enforcement at execution time is part of the
+> APX v18+ roadmap.
 
 File: `src/v16/contract/execution_contract.rs`
 

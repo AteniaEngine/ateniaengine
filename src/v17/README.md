@@ -1,5 +1,13 @@
 # APX v17 — Model Runtime Integration
 
+> [!NOTE]
+> **Scope and status.**  
+> This document describes the architecture and design intent of APX v17.  
+> Several capabilities listed below exist as structural scaffolding —
+> pure data structures, validators, and deterministic logic — and are
+> not yet wired to runtime signals from real hardware. See the
+> [main README](../../README.md) for the current state of each component.
+
 This directory contains the **APX 17.x** model runtime integration layers.
 
 APX 17.0 introduces a stable, auditable, and extensible definition of what a
@@ -122,6 +130,14 @@ Errors are descriptive and deterministic.
 ---
 
 ## ModelArtifact
+
+> [!IMPORTANT]
+> APX 17.0–17.1 define the `ModelArtifact` and `ModelLoader` interfaces.  
+> The current MNIST integration (APX 17.10.x) uses
+> `MnistCNNModel::synthetic()` directly and does **not** exercise
+> `ModelLoader`: weights are constructed in code rather than loaded from
+> disk. Full loader integration — reading real weight files into the
+> inference pipeline — is still pending.
 
 File: `src/v17/model/model_artifact.rs`
 

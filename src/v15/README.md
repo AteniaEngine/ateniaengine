@@ -1,5 +1,13 @@
 # APX v15 — Execution Policy Layer
 
+> [!NOTE]
+> **Scope and status.**  
+> This document describes the architecture and design intent of APX v15.  
+> Several capabilities listed below exist as structural scaffolding —
+> pure data structures, validators, and deterministic logic — and are
+> not yet wired to runtime signals from real hardware. See the
+> [main README](../../README.md) for the current state of each component.
+
 APX v15 is an **isolated, declarative policy layer** that lives entirely under `src/v15` and is tested from the crate-level `tests` directory. It does **not** depend on the engine runtime, hardware backends, or previous APX versions.
 
 APX 15.0 defines the **formal base layer** on which future policy-related features (15.1+, 16.x, …) can build.
@@ -379,6 +387,14 @@ Key properties:
 ---
 
 ## Evidence snapshots (`PolicyEvidenceSnapshot`)
+
+> [!IMPORTANT]
+> `PolicyEvidenceSnapshot` and `evaluate_with_evidence` are
+> **consumer-ready** — policies correctly adjust `DecisionBias` when fed
+> evidence signals. However, no producer of `PolicySignal` is currently
+> wired to the runtime: snapshots are only constructed by tests with
+> hardcoded values. Emitting real `PolicySignal`s from runtime telemetry
+> is part of the APX v18+ roadmap.
 
 File: `src/v15/policy/evidence/snapshot.rs`
 

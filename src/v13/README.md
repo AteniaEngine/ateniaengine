@@ -1,24 +1,35 @@
 # APX v13
 
+> [!NOTE]
+> **Scope and status.**  
+> This document describes the architecture and design intent of APX v13.  
+> Several capabilities listed below exist as structural scaffolding —
+> pure data structures, validators, and deterministic logic — and are
+> not yet wired to runtime signals from real hardware. See the
+> [main README](../../README.md) for the current state of each component.
+
 APX v13 – Hybrid Execution Engine (H.E.E.)
 
-APX v13 introduces Atenia Engine’s Hybrid Execution Engine: a fully
-hardware-agnostic runtime layer capable of dynamically deciding where tensors
-live, where kernels execute, and how memory is managed across CPU, GPU, RAM,
-VRAM, and SSD.
+APX v13 introduces Atenia Engine’s Hybrid Execution Engine: a logical-tier
+runtime layer that tracks where tensors conceptually live (CPU, GPU, RAM,
+VRAM, SSD) and plans movement between tiers. At this stage, tier transitions
+operate on logical residency and in-process byte movement only — real device
+transfers (VRAM allocation, H2D/D2H copies, vendor APIs) are pending
+hardware integration in later APX versions.
 
 This version unifies:
 
-- hardware profiling
-- tensor placement
-- hybrid memory movement
+- hardware profiling types (probing logic not yet implemented)
+- logical tensor placement across tiers
+- hybrid memory movement (RAM/SSD real bytes; VRAM logical only)
 - execution planning
 - offloading
 - checkpointing
 - self-training and explainability
 
-All components are deterministic, test-driven, vendor-independent, and designed
-for stability under real runtime constraints.
+All components are deterministic, test-driven, and vendor-independent at the
+logical level. They are designed to integrate cleanly with real hardware
+probing and device transfers once those are added in later APX versions.
 
 # APX v13 – Hardware Profiler Scaffold
 
