@@ -25,6 +25,8 @@ APX 6.11/6.12 no añaden nuevos kernels ni modifican la matemática de los exist
 
 ---
 
+## 🟦 APX 7.4 — Dynamic Workload Adaptation
+
 - ✔ Detecta automáticamente la carga real del sistema (uso de CPU, hilos disponibles) en tiempo de ejecución.
 - ✔ Ajusta dinámicamente el paralelismo efectivo del MatMul: número de hilos utilizados por el scheduler PEX/WS y estrategia preferida (Seq / PEX / WS).
 - ✔ Aprovecha APX 7.2/7.3 para delegar en PGL cuando no hay una preferencia fuerte dictada por la carga externa.
