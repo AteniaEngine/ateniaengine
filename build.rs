@@ -1,17 +1,152 @@
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Detects the highest installed CUDA Toolkit version under the default
+/// NVIDIA install root, or respects the `CUDA_PATH` env var if set.
+///
+/// Returns the full toolkit directory (e.g.
+/// `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2`).
+fn detect_cuda_path() -> Result<String, String> {
+    // Manual override via env var.
+    if let Ok(p) = std::env::var("CUDA_PATH") {
+        if Path::new(&p).join("bin").join("nvcc.exe").is_file() {
+            return Ok(p);
+        }
+        return Err(format!(
+            "CUDA_PATH is set to '{}' but nvcc.exe was not found there.",
+            p
+        ));
+    }
+
+    // Default Windows install location.
+    let base = r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA";
+    let entries = fs::read_dir(base).map_err(|_| {
+        format!(
+            "CUDA Toolkit not found at {}. Install from \
+             https://developer.nvidia.com/cuda-downloads or set CUDA_PATH.",
+            base
+        )
+    })?;
+
+    // Collect every "vMAJOR.MINOR" subdir that actually contains nvcc.exe,
+    // then sort by (major, minor) descending so the highest version wins.
+    let mut versions: Vec<((u32, u32), PathBuf)> = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(rest) = name.strip_prefix('v') else { continue };
+        let Some((maj, min)) = rest.split_once('.') else { continue };
+        let (Ok(m), Ok(n)) = (maj.parse::<u32>(), min.parse::<u32>()) else { continue };
+        let p = entry.path();
+        if p.join("bin").join("nvcc.exe").is_file() {
+            versions.push(((m, n), p));
+        }
+    }
+    versions.sort_by(|a, b| b.0.cmp(&a.0));
+
+    versions
+        .into_iter()
+        .next()
+        .map(|(_, p)| p.to_string_lossy().into_owned())
+        .ok_or_else(|| {
+            format!(
+                "No valid CUDA version found under {}. Install from \
+                 https://developer.nvidia.com/cuda-downloads.",
+                base
+            )
+        })
+}
+
+/// Detects the most recent MSVC BuildTools/Community/Professional/Enterprise
+/// installation and returns the path to its `bin\Hostx64\x64` directory
+/// (which contains `cl.exe` and `lib.exe`).
+///
+/// Respects `MSVC_TOOLS_PATH` as a manual override pointing at that same
+/// `bin\Hostx64\x64` directory.
+fn detect_msvc_bin() -> Result<String, String> {
+    // Manual override via env var.
+    if let Ok(p) = std::env::var("MSVC_TOOLS_PATH") {
+        if Path::new(&p).join("lib.exe").is_file() {
+            return Ok(p);
+        }
+        return Err(format!(
+            "MSVC_TOOLS_PATH is set to '{}' but lib.exe was not found there.",
+            p
+        ));
+    }
+
+    // Visual Studio roots. Modern VS uses a numeric version (18, 19, ...);
+    // older layouts use the year (2019, 2022). Accept any purely numeric
+    // subfolder so the detection covers both schemes.
+    let roots = [
+        r"C:\Program Files (x86)\Microsoft Visual Studio",
+        r"C:\Program Files\Microsoft Visual Studio",
+    ];
+    let editions = ["BuildTools", "Community", "Professional", "Enterprise"];
+
+    // Score entries by MSVC version parts descending; the highest wins.
+    let mut candidates: Vec<(Vec<u32>, PathBuf)> = Vec::new();
+
+    for root in roots {
+        let Ok(root_entries) = fs::read_dir(root) else { continue };
+        for vs_dir in root_entries.flatten() {
+            let name = vs_dir.file_name().to_string_lossy().into_owned();
+            if name.is_empty() || !name.chars().all(|c| c.is_ascii_digit()) {
+                continue;
+            }
+
+            for ed in editions {
+                let msvc_root = vs_dir
+                    .path()
+                    .join(ed)
+                    .join("VC")
+                    .join("Tools")
+                    .join("MSVC");
+                let Ok(vers) = fs::read_dir(&msvc_root) else { continue };
+                for v in vers.flatten() {
+                    let vname = v.file_name().to_string_lossy().into_owned();
+                    let parts: Option<Vec<u32>> =
+                        vname.split('.').map(|s| s.parse().ok()).collect();
+                    let Some(parts) = parts else { continue };
+
+                    let bin = v.path().join("bin").join("Hostx64").join("x64");
+                    if bin.join("lib.exe").is_file() && bin.join("cl.exe").is_file() {
+                        candidates.push((parts, bin));
+                    }
+                }
+            }
+        }
+    }
+    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+
+    candidates
+        .into_iter()
+        .next()
+        .map(|(_, p)| p.to_string_lossy().into_owned())
+        .ok_or_else(|| {
+            "MSVC BuildTools/Community/Professional/Enterprise not found. \
+             Install Visual Studio with the 'Desktop development with C++' \
+             workload, or set MSVC_TOOLS_PATH to the directory containing \
+             lib.exe and cl.exe (Hostx64\\x64)."
+                .to_string()
+        })
+}
+
 fn main() {
-    // Usar ruta NORMAL, NO canonicalize()
     let cu_path = "src/cuda/atenia_kernels.cu";
 
-    // Ruta explícita al compilador MSVC (cl.exe) según tu instalación
-    let msvc_bin = r#"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64"#;
+    // Auto-detected toolchain paths. Overridable via CUDA_PATH / MSVC_TOOLS_PATH.
+    let cuda_path = detect_cuda_path().unwrap_or_else(|e| panic!("{}", e));
+    let nvcc_path = format!(r"{}\bin\nvcc.exe", cuda_path);
+    let msvc_bin = detect_msvc_bin().unwrap_or_else(|e| panic!("{}", e));
     let lib_exe = format!(r"{}\lib.exe", msvc_bin);
 
-    // Ruta explícita a nvcc (ajusta si quieres usar v13.0)
-    let nvcc_path = r#"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6\bin\nvcc.exe"#;
-    // Alternativa:
-    // let nvcc_path = r#"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\bin\nvcc.exe"#;
+    // Rebuild when the user changes toolchain overrides.
+    println!("cargo:rerun-if-env-changed=CUDA_PATH");
+    println!("cargo:rerun-if-env-changed=MSVC_TOOLS_PATH");
+
+    eprintln!("[build.rs] Detected CUDA:  {}", cuda_path);
+    eprintln!("[build.rs] Detected MSVC:  {}", msvc_bin);
 
     println!("cargo:rerun-if-changed=src/cuda/atenia_kernels.cu");
     println!("cargo:rerun-if-changed=src/cuda/atenia_kernels.h");
@@ -24,10 +159,10 @@ fn main() {
     eprintln!("[DEBUG] Using NVCC path: {}", nvcc_path);
     eprintln!("[DEBUG] CU file path: {}", cu_path);
 
-    let output = Command::new(nvcc_path)
+    let output = Command::new(&nvcc_path)
         .args(&[
             "-ccbin",
-            msvc_bin,
+            msvc_bin.as_str(),
             "-c",
             cu_path,
             "-o", "atenia_kernels.obj",
@@ -56,10 +191,10 @@ fn main() {
     eprintln!("---- LIB STDERR ----\n{}", String::from_utf8_lossy(&output_lib.stderr));
 
     // Compile matmul kernel
-    let matmul_out = Command::new(nvcc_path)
+    let matmul_out = Command::new(&nvcc_path)
         .args(&[
             "-ccbin",
-            msvc_bin,
+            msvc_bin.as_str(),
             "-c",
             "src/cuda/matmul_kernel.cu",
             "-o",
@@ -102,10 +237,10 @@ fn main() {
     );
 
     // Compile linear CUDA kernel into separate static library
-    let linear_out = Command::new(nvcc_path)
+    let linear_out = Command::new(&nvcc_path)
         .args(&[
             "-ccbin",
-            msvc_bin,
+            msvc_bin.as_str(),
             "-c",
             "src/cuda/linear_cuda.cu",
             "-o",
@@ -148,10 +283,10 @@ fn main() {
     );
 
     // Compile batch_matmul CUDA kernel into separate static library
-    let bmm_out = Command::new(nvcc_path)
+    let bmm_out = Command::new(&nvcc_path)
         .args(&[
             "-ccbin",
-            msvc_bin,
+            msvc_bin.as_str(),
             "-c",
             "src/cuda/batch_matmul.cu",
             "-o",
@@ -194,10 +329,10 @@ fn main() {
     );
 
     // Compile fused_linear_silu CUDA kernel into separate static library
-    let fls_out = Command::new(nvcc_path)
+    let fls_out = Command::new(&nvcc_path)
         .args(&[
             "-ccbin",
-            msvc_bin,
+            msvc_bin.as_str(),
             "-c",
             "src/cuda/fused_linear_silu.cu",
             "-o",
@@ -239,9 +374,7 @@ fn main() {
         String::from_utf8_lossy(&fls_lib.stderr)
     );
 
-    // Añadir ruta a cudart.lib usando CUDA_PATH
-    let cuda_path =
-        std::env::var("CUDA_PATH").unwrap_or_else(|_| r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6".into());
+    // Link against cudart from the same toolkit we used to compile kernels.
     let cuda_lib_dir = format!(r"{}\lib\x64", cuda_path);
     println!("cargo:rustc-link-search=native={}", cuda_lib_dir);
     println!("cargo:rustc-link-lib=dylib=cudart");
