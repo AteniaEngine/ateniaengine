@@ -129,13 +129,21 @@ This mode does not change execution semantics.
 It only increases observability and is intended for research and debugging.
 
  Notes
-This directory contains hundreds of tests accumulated across the engine’s evolution.
 
-Not all tests are expected to be lightweight or fast.
+The directory contains **284 test files** (current revision). Categories overlap — an APX integration test may also be a benchmark — so counts do not sum to the total.
 
-Some tests intentionally stress the system to reveal instability or fallback behavior.
+| Category | Approx. count | What they assert |
+|---|---|---|
+| Core correctness / numerical / gradient | ~30 | Equivalence against reference CPU or analytical solutions |
+| APX phase integration (structural) | ~175 | Module wiring and deterministic behavior across APX 2.x–17.x |
+| Adaptive / scheduler / policy / selector | ~35 | Decision logic over synthetic profiles and injected conditions |
+| Benchmarks embedded as tests | ~25 | Timing + correctness assertion (not for `cargo bench`) |
+| GPU smoke / safety / loader fallback | ~15 | Shape, finiteness, no-panic under `CpuFallback` |
+| Training / end-to-end / pipeline | ~20 | Multi-subsystem integration, synthetic inputs |
+| Hybrid memory / checkpoint / planner | ~25 | Logical tier movement, serialization determinism |
+| Infrastructure (HAL, loader, CLI, etc.) | ~15 | Supporting utilities |
 
-For quick demos, refer to the examples/ directory instead.
+Not all tests are lightweight or fast. Some tests intentionally stress the system to exercise fallback paths. For quick demos, refer to the `examples/` directory instead.
 
 🧭 Philosophy
 If a system claims intelligence at runtime,
