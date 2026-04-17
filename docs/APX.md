@@ -219,7 +219,7 @@ APX 8.x no ejecuta kernels GPU reales, no reserva memoria de dispositivo, no rea
     - planner de dispositivo (8.18), planner de partición (8.19), router multi-arch (8.16), cache de precompilación (8.15) y codegen+finalizer (8.13+8.17).
   - `hybrid_dispatch(ir, shape)` expone un `HybridDispatchResult::Pseudo` sólo con metadatos, sin tocar `Graph` ni `Tensor`.
 
-En conjunto, APX 8.x prepara una cadena GPU completa a nivel de arquitectura —grafo dual, dispatch híbrido, IR, registros, codegen, planners y orquestador— mientras mantiene la ejecución real estrictamente en CPU y numéricamente equivalente a las versiones previas.
+En conjunto, APX 8.x prepara una cadena GPU simbólica completa a nivel de arquitectura —grafo dual, dispatch híbrido, IR, registros, codegen, planners y orquestador— mientras mantiene la ejecución real estrictamente en CPU y numéricamente equivalente a las versiones previas.
 
 ---
 
