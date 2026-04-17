@@ -1,4 +1,4 @@
-markdown# Atenia Engine — Research Paper
+Atenia Engine — Research Paper
 
 ## Status
 
