@@ -2,6 +2,14 @@
 name = "atenia-engine"
 version = "0.1.0"
 edition = "2024"
+authors = ["Guillermo Alonso Albella"]
+description = "Hardware-adaptive execution intelligence runtime for AI, in Rust."
+license = "Apache-2.0"
+repository = "https://github.com/AteniaEngine/ateniaengine"
+homepage = "https://ateniaengine.com"
+readme = "README.md"
+keywords = ["runtime", "execution", "ai", "rust", "adaptive"]
+categories = ["science", "algorithms", "simulation"]
 
 [dependencies]
 rand = "0.8"
