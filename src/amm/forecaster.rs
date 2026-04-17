@@ -1,4 +1,4 @@
-//! Predictive models for upcoming memory requirements.
+//! Simple arithmetic estimator for static memory footprint of tensor operations.
 
 use crate::tensor::tensor::Tensor;
 
@@ -20,9 +20,10 @@ impl MemoryForecaster {
         self.current_bytes += tensor.estimated_bytes();
     }
 
-    /// Predicts the memory that will be required if an addition between `a` and `b` occurs.
+    /// Estimates the memory footprint of a binary tensor operation by summing operand sizes.
     ///
-    /// This simplistic heuristic assumes the result tensor shares `a`'s storage footprint.
+    /// Assumes the result tensor shares `a`'s storage footprint. Not a predictive model:
+    /// this is static arithmetic over declared tensor sizes, with no runtime signals.
     pub fn predict_add_operation(&mut self, a: &Tensor, b: &Tensor) {
         self.predicted_next_bytes =
             a.estimated_bytes() + b.estimated_bytes() + a.estimated_bytes();
