@@ -98,6 +98,32 @@ impl MemoryForecaster {
         self.vram_probe_failed.load(Ordering::Relaxed)
     }
 
+    /// Returns whether the system is currently under VRAM pressure for a
+    /// proposed allocation of `required_bytes` with an extra
+    /// `safety_margin_bytes` headroom.
+    ///
+    /// Returns:
+    /// - `Some(true)`: `required + margin` exceeds the currently free VRAM.
+    /// - `Some(false)`: the allocation fits within the margin.
+    /// - `None`: the VRAM probe is unavailable (no NVIDIA GPU, driver
+    ///   error, etc.). The `None` from
+    ///   [`available_vram_bytes`](Self::available_vram_bytes) is propagated
+    ///   automatically via the `?` operator in the implementation.
+    ///
+    /// "Memory pressure" here is defined narrowly as the gap between a
+    /// proposed allocation and what the hardware reports as free. It does
+    /// not include RAM pressure, fragmentation, or historical trend;
+    /// those will be introduced by later APX versions.
+    pub fn is_under_memory_pressure(
+        &self,
+        required_bytes: u64,
+        safety_margin_bytes: u64,
+    ) -> Option<bool> {
+        let free = self.available_vram_bytes()?;
+        let needed = required_bytes.saturating_add(safety_margin_bytes);
+        Some(needed > free)
+    }
+
     /// Records a probe failure; emits a warning to stderr the first time only.
     fn note_probe_failure(&self, err: &VramProbeError) {
         let was_failed = self.vram_probe_failed.swap(true, Ordering::Relaxed);
@@ -137,5 +163,44 @@ mod tests {
         f.note_probe_failure(&VramProbeError::ParseError("x".into()));
         f.note_probe_failure(&VramProbeError::CommandFailed("y".into()));
         assert!(f.vram_probe_failed_once());
+    }
+
+    #[test]
+    fn test_pressure_detected_when_insufficient_vram() {
+        let f = MemoryForecaster::new();
+        match f.available_vram_bytes() {
+            None => {
+                eprintln!(
+                    "SKIPPED: VRAM probe unavailable \
+                     (test_pressure_detected_when_insufficient_vram)"
+                );
+            }
+            Some(free) => {
+                // Request 100 MiB more than the currently free VRAM.
+                let required = free.saturating_add(100 * 1024 * 1024);
+                assert_eq!(f.is_under_memory_pressure(required, 0), Some(true));
+            }
+        }
+    }
+
+    #[test]
+    fn test_no_pressure_when_sufficient_vram() {
+        let f = MemoryForecaster::new();
+        match f.available_vram_bytes() {
+            None => {
+                eprintln!(
+                    "SKIPPED: VRAM probe unavailable \
+                     (test_no_pressure_when_sufficient_vram)"
+                );
+            }
+            Some(_) => {
+                // 1 MiB request + 1 MiB margin must fit on any GPU that
+                // reports any free VRAM.
+                assert_eq!(
+                    f.is_under_memory_pressure(1024 * 1024, 1024 * 1024),
+                    Some(false)
+                );
+            }
+        }
     }
 }
