@@ -1,9 +1,150 @@
 use std::ffi::{CString, CStr};
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::ptr;
 use libloading::{Library, Symbol};
 
 use super::{NvrtcError, cache::KernelCache};
 use crate::gpu::arch::CudaArchDetector;
+
+/// Known NVRTC DLL names, ordered from newest CUDA major version to oldest.
+const NVRTC_DLL_NAMES: &[&str] = &[
+    "nvrtc64_130_0.dll", // CUDA 13.x
+    "nvrtc64_120_0.dll", // CUDA 12.x
+    "nvrtc64_112_0.dll", // CUDA 11.x
+];
+
+/// Subdirectories under a CUDA Toolkit root where NVRTC DLLs may live.
+/// CUDA 13 moved the runtime DLLs to `bin\x64`; earlier versions kept
+/// them directly in `bin`.
+const CUDA_DLL_SUBDIRS: &[&str] = &["bin\\x64", "bin"];
+
+/// Detects the root directory of the installed CUDA Toolkit.
+///
+/// Respects `CUDA_PATH` when set; otherwise scans the default Windows
+/// install location and picks the highest available version.
+///
+/// NOTE: This duplicates the logic in `build.rs::detect_cuda_path`. The
+/// two implementations must be kept in sync. We cannot share code because
+/// `build.rs` is a separate build-time binary and its symbols are not
+/// linked into the runtime library.
+fn cuda_root() -> Option<String> {
+    if let Ok(p) = std::env::var("CUDA_PATH") {
+        if Path::new(&p).is_dir() {
+            return Some(p);
+        }
+    }
+
+    let base = r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA";
+    let entries = fs::read_dir(base).ok()?;
+
+    let mut versions: Vec<((u32, u32), PathBuf)> = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(rest) = name.strip_prefix('v') else { continue };
+        let Some((maj, min)) = rest.split_once('.') else { continue };
+        let (Ok(m), Ok(n)) = (maj.parse::<u32>(), min.parse::<u32>()) else { continue };
+        versions.push(((m, n), entry.path()));
+    }
+    versions.sort_by(|a, b| b.0.cmp(&a.0));
+    versions
+        .into_iter()
+        .next()
+        .map(|(_, p)| p.to_string_lossy().into_owned())
+}
+
+/// Attempts to load NVRTC across multiple strategies and OS conventions.
+///
+/// Order:
+/// 1. Bare DLL names (works when CUDA's bin directory is on `PATH`).
+/// 2. Absolute paths constructed from `cuda_root()` — covers shells whose
+///    `PATH` does not include CUDA even though the Toolkit is installed.
+/// 3. Linux shared object.
+///
+/// On failure returns a human-readable string listing every path probed
+/// and every CUDA directory scanned. Callers are expected to surface this
+/// detail via logging before returning the static `NvrtcError::LoadError`.
+/// Prepends CUDA's DLL subdirectories to the process `PATH`.
+///
+/// Required because NVRTC's main DLL transitively loads a companion DLL
+/// (`nvrtc-builtins64_*.dll`) via `LoadLibrary`, which searches the
+/// process `PATH`. Shells like MSYS/Git Bash often inherit a `PATH` that
+/// does not include CUDA even when the Toolkit is installed; this
+/// function patches the in-process `PATH` so transitive loads succeed.
+fn prepend_cuda_dirs_to_path(cuda_root: &str) {
+    let existing = std::env::var("PATH").unwrap_or_default();
+    let mut new_entries: Vec<String> = Vec::new();
+    for subdir in CUDA_DLL_SUBDIRS {
+        let dir = format!(r"{}\{}", cuda_root, subdir);
+        if Path::new(&dir).is_dir() && !existing.contains(&dir) {
+            new_entries.push(dir);
+        }
+    }
+    if new_entries.is_empty() {
+        return;
+    }
+    let new_path = if existing.is_empty() {
+        new_entries.join(";")
+    } else {
+        format!("{};{}", new_entries.join(";"), existing)
+    };
+    // SAFETY: Rust 2024 requires `unsafe` for set_var. We only mutate PATH
+    // at process-local scope during NVRTC initialization. No other Atenia
+    // code mutates PATH concurrently.
+    unsafe {
+        std::env::set_var("PATH", new_path);
+    }
+}
+
+fn try_load_nvrtc() -> Result<Library, String> {
+    let mut attempted: Vec<String> = Vec::new();
+
+    // Before attempting any load, ensure CUDA's bin dirs are on PATH so
+    // transitive dependencies (e.g. nvrtc-builtins) resolve correctly.
+    if let Some(root) = cuda_root() {
+        prepend_cuda_dirs_to_path(&root);
+    }
+
+    // Strategy 1: bare names resolved via process PATH.
+    for name in NVRTC_DLL_NAMES {
+        attempted.push((*name).to_string());
+        if let Ok(lib) = unsafe { Library::new(name) } {
+            return Ok(lib);
+        }
+    }
+
+    // Strategy 2: absolute paths built from the detected CUDA root.
+    let mut scanned_dirs: Vec<String> = Vec::new();
+    if let Some(root) = cuda_root() {
+        for subdir in CUDA_DLL_SUBDIRS {
+            let dir = format!(r"{}\{}", root, subdir);
+            scanned_dirs.push(dir.clone());
+            for name in NVRTC_DLL_NAMES {
+                let full = format!(r"{}\{}", dir, name);
+                attempted.push(full.clone());
+                if let Ok(lib) = unsafe { Library::new(&full) } {
+                    return Ok(lib);
+                }
+            }
+        }
+    }
+
+    // Strategy 3: Linux shared object.
+    attempted.push("libnvrtc.so".to_string());
+    if let Ok(lib) = unsafe { Library::new("libnvrtc.so") } {
+        return Ok(lib);
+    }
+
+    Err(format!(
+        "tried: [{}]; scanned CUDA dirs: [{}]",
+        attempted.join(", "),
+        if scanned_dirs.is_empty() {
+            "<none>".to_string()
+        } else {
+            scanned_dirs.join(", ")
+        }
+    ))
+}
 
 // Opaque type for nvrtcProgram.
 #[allow(non_camel_case_types)]
@@ -23,13 +164,10 @@ pub struct NvrtcCompiler {
 
 impl NvrtcCompiler {
     pub fn new() -> Result<Self, NvrtcError> {
-        // Try to load NVRTC on Windows and Linux.
-        let lib = unsafe {
-            Library::new("nvrtc64_120_0.dll")
-                .or_else(|_| Library::new("nvrtc64_112_0.dll"))
-                .or_else(|_| Library::new("libnvrtc.so"))
-                .map_err(|_| NvrtcError::LoadError("Cannot load NVRTC"))?
-        };
+        let lib = try_load_nvrtc().map_err(|details| {
+            eprintln!("[NVRTC loader] Failed to load NVRTC: {}", details);
+            NvrtcError::LoadError("Cannot load NVRTC")
+        })?;
 
         Ok(Self {
             lib,
