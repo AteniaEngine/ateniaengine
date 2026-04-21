@@ -1,5 +1,6 @@
 use crate::amg::graph::Graph;
 use crate::amg::nodes::{Node, NodeType};
+use crate::amg::reactive::ExecutionAbortReason;
 use std::sync::{OnceLock, RwLock};
 use crate::apx7::hpfa::FusionAffinity;
 
@@ -110,10 +111,12 @@ fn compute_priority(p: &NodePriorityInfo) -> f64 {
 /// Version 7.6 of the priority graph executor (Critical-Path Optimizer).
 ///
 /// Keeps the same guarantees as HPGE v1 and never alters kernels nor backward.
-pub fn execute_graph_parallel_priority(graph: &mut Graph) {
+pub fn execute_graph_parallel_priority(
+    graph: &mut Graph,
+) -> Result<(), ExecutionAbortReason> {
     let node_count = graph.nodes.len();
     if node_count == 0 {
-        return;
+        return Ok(());
     }
 
     // Build children and parents_left (same as HPGE v1).
@@ -140,8 +143,7 @@ pub fn execute_graph_parallel_priority(graph: &mut Graph) {
         if crate::apx_debug_enabled() {
             eprintln!("[APX 7.6 HPGE] no ready nodes found, falling back to run_plan()");
         }
-        graph.run_plan(true);
-        return;
+        return graph.run_plan(true);
     }
 
     // Prepare priority scheduler.
@@ -218,6 +220,7 @@ pub fn execute_graph_parallel_priority(graph: &mut Graph) {
         let batch: Vec<usize> = ready.drain(..).collect();
 
         for node_id in &batch {
+            graph.check_guard_before_node(*node_id)?;
             graph.execute_single(*node_id, true);
             executed += 1;
         }
@@ -241,6 +244,7 @@ pub fn execute_graph_parallel_priority(graph: &mut Graph) {
                 executed, node_count
             );
         }
-        graph.run_plan(true);
+        return graph.run_plan(true);
     }
+    Ok(())
 }

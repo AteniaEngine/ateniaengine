@@ -1,4 +1,5 @@
 use crate::amg::graph::Graph;
+use crate::amg::reactive::ExecutionAbortReason;
 use std::time::Instant;
 
 #[derive(Clone, Debug)]
@@ -116,10 +117,10 @@ pub fn build_superlevels(depths: &[usize]) -> Vec<HLSDPLevel> {
 /// APX 7.10: execution via deep superlevels. Does not modify kernels nor
 /// backward, only the order in which execute_single is called while respecting
 /// dependencies.
-pub fn execute_graph_hls_deep(graph: &mut Graph) {
+pub fn execute_graph_hls_deep(graph: &mut Graph) -> Result<(), ExecutionAbortReason> {
     let n = graph.nodes.len();
     if n == 0 {
-        return;
+        return Ok(());
     }
 
     // Build children and parents_left the same way as HPGE.
@@ -139,8 +140,7 @@ pub fn execute_graph_hls_deep(graph: &mut Graph) {
     let superlevels = build_superlevels(&depths);
     if superlevels.is_empty() {
         // Safe fallback.
-        graph.run_plan(true);
-        return;
+        return graph.run_plan(true);
     }
 
     let mut executed = vec![false; n];
@@ -162,8 +162,7 @@ pub fn execute_graph_hls_deep(graph: &mut Graph) {
                 // If there are still nodes in this superlevel not executed,
                 // but none is ready, something is inconsistent.
                 if remaining.iter().any(|&id| !executed[id]) {
-                    graph.run_plan(true);
-                    return;
+                    return graph.run_plan(true);
                 } else {
                     break;
                 }
@@ -201,6 +200,7 @@ pub fn execute_graph_hls_deep(graph: &mut Graph) {
                 if executed[node_id] {
                     continue;
                 }
+                graph.check_guard_before_node(node_id)?;
                 graph.execute_single(node_id, true);
                 executed[node_id] = true;
                 executed_count += 1;
@@ -228,6 +228,7 @@ pub fn execute_graph_hls_deep(graph: &mut Graph) {
 
     if executed_count != n {
         // Fallback to protect correctness.
-        graph.run_plan(true);
+        return graph.run_plan(true);
     }
+    Ok(())
 }

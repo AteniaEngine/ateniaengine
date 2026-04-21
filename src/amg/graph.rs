@@ -16,7 +16,10 @@ use super::chunking::{chunk_tensor, merge_chunks};
 use super::nodes::{Node, NodeType};
 use super::scheduler::{build_execution_plan, ExecStep, ExecutionPlan};
 use crate::amg::grad_store::GradStore;
+use crate::amg::reactive::{ExecutionAbortReason, ReactiveExecutionContext};
 use crate::autograd::{BackOp, BackwardTape};
+use crate::v16::guards::guard_action::GuardAction;
+use crate::v16::guards::guard_errors::GuardError;
 use rayon::prelude::*;
 use crate::nn::activations as nn_act;
 use crate::nn::linear as nn_linear;
@@ -54,6 +57,14 @@ pub struct Graph {
     /// APX 8.1: optional CPU+GPU dual graph. It is not used for execution yet;
     /// it is only built as structural metadata.
     pub dual_graph: Option<crate::apx8::dualgraph::DualGraph>,
+    /// APX v20 M2: optional reactive execution layer. When set,
+    /// schedulers consult `check_guard_before_node` before each node
+    /// and abort cleanly if guards fire. Opt-in; default is `None`
+    /// and execution behavior is identical to pre-M2.
+    pub(crate) reactive_context: Option<ReactiveExecutionContext>,
+    /// APX v20 M2: diagnostic — reason of the last abort during a
+    /// checked execution, cleared at the start of each `execute_checked`.
+    pub(crate) last_abort: Option<ExecutionAbortReason>,
 }
 
 impl Graph {
@@ -83,6 +94,91 @@ impl Graph {
             }
         }
         false
+    }
+
+    /// Attaches a reactive execution context so that subsequent
+    /// checked executions consult guards before each node. Replaces
+    /// any previously set context.
+    pub fn set_reactive_context(&mut self, ctx: ReactiveExecutionContext) {
+        self.reactive_context = Some(ctx);
+    }
+
+    /// Removes any previously set reactive context. Subsequent
+    /// executions run without guard checks.
+    pub fn clear_reactive_context(&mut self) {
+        self.reactive_context = None;
+    }
+
+    /// Returns the most recent abort reason produced by a checked
+    /// execution path, if any. Cleared at the start of every
+    /// `execute_checked`.
+    pub fn last_abort(&self) -> Option<&ExecutionAbortReason> {
+        self.last_abort.as_ref()
+    }
+
+    /// Consults the reactive context (if set) and returns `Err` when
+    /// guards produce an `Abort` verdict or the manager rejects the
+    /// verdict as illegal. Called by schedulers before each node.
+    ///
+    /// `Ok(())` is returned when:
+    /// - No `reactive_context` is set.
+    /// - The signal bus returns `None` for `collect_guard_conditions`
+    ///   (fail-open: absence of telemetry does not block execution).
+    /// - The combined guard verdict is `Continue` or `Degrade`. In
+    ///   M2, `Degrade` is treated as `Continue` with a debug log;
+    ///   strategy selection arrives in M3.
+    ///
+    /// When `Err` is returned, `self.last_abort` is also populated
+    /// with the same reason for post-execution inspection.
+    pub(crate) fn check_guard_before_node(
+        &mut self,
+        node_id: usize,
+    ) -> Result<(), ExecutionAbortReason> {
+        // TODO(PERF): `collect_guard_conditions` runs two subprocess
+        // reads (nvidia-smi + sysinfo) per call, ~40 ms. Without a
+        // cache this makes a 1000-node graph take minutes just on
+        // probing. Must be resolved before APX v20 M5 (first real
+        // model end-to-end). See ROADMAP.
+        let Some(ctx) = self.reactive_context.as_ref() else {
+            return Ok(());
+        };
+        let Some(conditions) = ctx.signal_bus.collect_guard_conditions() else {
+            // Fail-open: absence of telemetry doesn't block execution.
+            return Ok(());
+        };
+
+        match ctx.guard_manager.evaluate(&ctx.contract, &conditions) {
+            Ok(GuardAction::Abort) => {
+                let reason = ExecutionAbortReason::GuardAborted {
+                    at_node: node_id,
+                    conditions,
+                };
+                self.last_abort = Some(reason.clone());
+                Err(reason)
+            }
+            Ok(GuardAction::Degrade) => {
+                // M2: treat Degrade as Continue. M3 will introduce
+                // strategy selection to act on Degrade.
+                if crate::apx_debug_enabled() && !crate::apx_is_silent() {
+                    eprintln!(
+                        "[AMG] Degrade verdict at node {} ignored in M2 \
+                         (strategies arrive in M3)",
+                        node_id
+                    );
+                }
+                Ok(())
+            }
+            Ok(GuardAction::Continue) => Ok(()),
+            Err(GuardError::IllegalAction(msg))
+            | Err(GuardError::InconsistentGuards(msg)) => {
+                let reason = ExecutionAbortReason::GuardEvaluationFailed {
+                    at_node: node_id,
+                    message: msg,
+                };
+                self.last_abort = Some(reason.clone());
+                Err(reason)
+            }
+        }
     }
 }
 
@@ -175,6 +271,10 @@ impl Clone for Graph {
             fused_ops: self.fused_ops.clone(),
             fused_outputs: self.fused_outputs.clone(),
             dual_graph: None,
+            // Clones start without a reactive context; the caller
+            // attaches one explicitly if needed.
+            reactive_context: None,
+            last_abort: None,
         }
     }
 }
@@ -203,6 +303,8 @@ impl Graph {
             fused_ops,
             fused_outputs: std::collections::HashMap::new(),
             dual_graph: None,
+            reactive_context: None,
+            last_abort: None,
         };
 
         graph.persistent_plan = Some(PersistentPlan::analyze(&graph));
@@ -403,22 +505,51 @@ impl Graph {
         id
     }
 
-    /// Standard execution with automatic execution plan (including fusion).
+    /// Standard execution with automatic execution plan (including
+    /// fusion). Backward-compatible wrapper over
+    /// [`execute_checked`](Self::execute_checked).
+    ///
+    /// Panics if a reactive context is set and a guard triggers an
+    /// abort. By construction no caller that existed before APX v20
+    /// M2 sets a reactive context, so existing code paths never
+    /// panic. Callers that set a reactive context should use
+    /// `execute_checked` to handle aborts gracefully.
     pub fn execute(&mut self, inputs: Vec<Tensor>) -> Vec<Tensor> {
+        match self.execute_checked(inputs) {
+            Ok(outputs) => outputs,
+            Err(reason) => panic!(
+                "Graph::execute triggered an abort: {:?}. \
+                 Callers that set reactive_context should use \
+                 `execute_checked` to handle aborts gracefully.",
+                reason
+            ),
+        }
+    }
+
+    /// Checked execution: consults the reactive context (if set)
+    /// before each node and returns `Err(ExecutionAbortReason)` when
+    /// a guard triggers or a guard evaluation fails. When no
+    /// reactive context is set, behavior is identical to the
+    /// pre-M2 `execute` (never returns `Err`).
+    pub fn execute_checked(
+        &mut self,
+        inputs: Vec<Tensor>,
+    ) -> Result<Vec<Tensor>, ExecutionAbortReason> {
+        self.last_abort = None;
         self.tape.clear();
         self.set_input_outputs(inputs);
         if crate::apx_mode_at_least("7.12") {
-            crate::apx7::ule::ule_execute_graph(self);
+            crate::apx7::ule::ule_execute_graph(self)?;
         } else if crate::apx_mode_at_least("7.11") {
-            crate::apx7::hls_deep::execute_graph_hls_deep(self);
+            crate::apx7::hls_deep::execute_graph_hls_deep(self)?;
         } else if crate::apx_mode_at_least("7.10") {
-            crate::apx7::hls_deep::execute_graph_hls_deep(self);
+            crate::apx7::hls_deep::execute_graph_hls_deep(self)?;
         } else if crate::apx_mode_at_least("7.7") {
-            crate::apx7::hpge_priority::execute_graph_parallel_priority(self);
+            crate::apx7::hpge_priority::execute_graph_parallel_priority(self)?;
         } else if crate::apx_mode_at_least("7.5") {
-            crate::apx7::hpge::execute_graph_parallel(self);
+            crate::apx7::hpge::execute_graph_parallel(self)?;
         } else {
-            self.run_plan(true);
+            self.run_plan(true)?;
         }
 
         // APX 6.11 / 6.12 / 6.13: update global execution policies based on
@@ -514,7 +645,7 @@ impl Graph {
             }
         }
 
-        self.collect_outputs()
+        Ok(self.collect_outputs())
     }
 
     /// APX 7.5: opt-in execution using the Hierarchical Parallel Graph
@@ -590,7 +721,13 @@ impl Graph {
 
             self.clear_intermediate_outputs();
             self.set_input_outputs(per_chunk_inputs);
-            self.run_plan(false);
+            // `execute_chunked` predates APX v20 M2 and returns
+            // `Vec<Tensor>` (not `Result`). If a reactive context is
+            // attached and a guard fires inside the chunk, surface it
+            // as a panic rather than silently swallowing the abort.
+            self.run_plan(false)
+                .expect("execute_chunked: guard triggered inside chunk; \
+                         chunked execution does not yet support reactive_context");
 
             let mut chunk_outputs = self.collect_outputs();
             assert_eq!(
@@ -630,22 +767,31 @@ impl Graph {
         }
     }
 
-    pub(crate) fn run_plan(&mut self, record_tape: bool) {
+    pub(crate) fn run_plan(
+        &mut self,
+        record_tape: bool,
+    ) -> Result<(), ExecutionAbortReason> {
         let steps = self.plan.steps.clone();
         for step in steps {
             match step {
-                ExecStep::Single(node_id) => self.execute_single(node_id, record_tape),
+                ExecStep::Single(node_id) => {
+                    self.check_guard_before_node(node_id)?;
+                    self.execute_single(node_id, record_tape);
+                }
                 ExecStep::FusedAddMul { add_node, mul_node } => {
                     if record_tape {
+                        self.check_guard_before_node(add_node)?;
                         self.execute_single(add_node, true);
+                        self.check_guard_before_node(mul_node)?;
                         self.execute_single(mul_node, true);
                     } else {
+                        self.check_guard_before_node(add_node)?;
                         self.execute_fused_add_mul(add_node, mul_node);
                     }
                 }
             }
         }
-
+        Ok(())
     }
 
     fn exec_fused(&mut self, id: usize, fused: FusedOp, record_tape: bool) {
@@ -1055,6 +1201,16 @@ impl Graph {
         self.nodes[id].output = Some(out);
     }
 
+    /// Executes a single node without consulting guards.
+    ///
+    /// Guard evaluation is performed by the scheduler (see
+    /// `apx7::*`, `run_plan`) via `check_guard_before_node` before
+    /// calling this method. Internal recursive calls from
+    /// `execute_single_inner` for dependency materialization
+    /// intentionally bypass guard evaluation: the scheduler already
+    /// evaluated runtime state before the parent node, and
+    /// re-evaluating during sub-microsecond materialization adds
+    /// probe latency without providing new information.
     pub(crate) fn execute_single(&mut self, node_id: usize, record_tape: bool) {
         if crate::apx_mode_at_least("8.2") {
             let op = match self.nodes[node_id].node_type {

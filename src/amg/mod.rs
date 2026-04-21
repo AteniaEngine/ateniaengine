@@ -8,3 +8,4 @@ pub mod chunking;
 pub mod grad_store;
 pub mod fusions;
 pub mod ops;
+pub mod reactive;

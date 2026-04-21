@@ -1,6 +1,7 @@
 use std::time::Instant;
 
 use crate::amg::graph::Graph;
+use crate::amg::reactive::ExecutionAbortReason;
 use crate::apx7::hls_deep::{compute_depth, build_superlevels};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,10 +36,10 @@ pub fn choose_backend(sl_nodes: &[usize]) -> ULEStrategy {
 /// reorganizes the order in which `execute_single` is called, always respecting
 /// dependencies. If it detects an inconsistency, it falls back to
 /// `graph.run_plan(true)`.
-pub fn ule_execute_graph(graph: &mut Graph) {
+pub fn ule_execute_graph(graph: &mut Graph) -> Result<(), ExecutionAbortReason> {
     let n = graph.nodes.len();
     if n == 0 {
-        return;
+        return Ok(());
     }
 
     // Build children and parents_left just like HPGE.
@@ -57,8 +58,7 @@ pub fn ule_execute_graph(graph: &mut Graph) {
     let depths = compute_depth(graph);
     let superlevels = build_superlevels(&depths);
     if superlevels.is_empty() {
-        graph.run_plan(true);
-        return;
+        return graph.run_plan(true);
     }
 
     let mut executed = vec![false; n];
@@ -77,8 +77,7 @@ pub fn ule_execute_graph(graph: &mut Graph) {
 
             if ready.is_empty() {
                 if remaining.iter().any(|&id| !executed[id]) {
-                    graph.run_plan(true);
-                    return;
+                    return graph.run_plan(true);
                 } else {
                     break;
                 }
@@ -127,6 +126,7 @@ pub fn ule_execute_graph(graph: &mut Graph) {
             match backend {
                 ULEStrategy::Seq | ULEStrategy::Pex | ULEStrategy::WorkStealing => {
                     for node_id in &batch {
+                        graph.check_guard_before_node(*node_id)?;
                         graph.execute_single(*node_id, true);
                         executed[*node_id] = true;
                         executed_count += 1;
@@ -157,6 +157,7 @@ pub fn ule_execute_graph(graph: &mut Graph) {
     }
 
     if executed_count != n {
-        graph.run_plan(true);
+        return graph.run_plan(true);
     }
+    Ok(())
 }

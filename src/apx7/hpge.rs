@@ -1,14 +1,15 @@
 use crate::amg::graph::Graph;
+use crate::amg::reactive::ExecutionAbortReason;
 
 /// APX 7.5 - Hierarchical Parallel Graph Executor (HPGE)
 ///
 /// Node-level hierarchical scheduler that sits above `execute_single` and
 /// strictly respects graph dependencies. If it detects any inconsistency, it
 /// falls back to `run_plan(true)`.
-pub fn execute_graph_parallel(graph: &mut Graph) {
+pub fn execute_graph_parallel(graph: &mut Graph) -> Result<(), ExecutionAbortReason> {
     let node_count = graph.nodes.len();
     if node_count == 0 {
-        return;
+        return Ok(());
     }
 
     // Build children list and remaining-parent counter per node.
@@ -38,8 +39,7 @@ pub fn execute_graph_parallel(graph: &mut Graph) {
         if crate::apx_debug_enabled() {
             eprintln!("[APX 7.5 HPGE] no ready nodes found, falling back to run_plan()");
         }
-        graph.run_plan(true);
-        return;
+        return graph.run_plan(true);
     }
 
     let mut executed = 0usize;
@@ -59,6 +59,7 @@ pub fn execute_graph_parallel(graph: &mut Graph) {
         // Execute the batch. Conservative implementation: sequential, but
         // ready for future parallel extensions.
         for node_id in &batch {
+            graph.check_guard_before_node(*node_id)?;
             graph.execute_single(*node_id, true);
             executed += 1;
         }
@@ -85,6 +86,7 @@ pub fn execute_graph_parallel(graph: &mut Graph) {
                 executed, node_count
             );
         }
-        graph.run_plan(true);
+        return graph.run_plan(true);
     }
+    Ok(())
 }
