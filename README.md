@@ -8,10 +8,11 @@
 > [!NOTE]
 > **Status: Early research in progress.**  
 > This project is a working prototype with architectural scaffolding for 
-> hardware-adaptive execution intelligence. Several claimed capabilities 
-> are implemented as deterministic scaffolding and are currently being 
-> connected to real hardware signals.  
-> See [Current State](#-current-state) for an honest breakdown.
+> hardware-adaptive execution intelligence. Several capabilities are now 
+> wired to real hardware signals; others remain scaffolding being connected 
+> milestone by milestone.  
+> See [Current State](#-current-state) for an honest breakdown, and 
+> [ROADMAP.md](./ROADMAP.md) for the delivery plan.
 
 ---
 
@@ -54,6 +55,8 @@ These are the principles guiding every design decision in Atenia. Some are fully
 - **🧠 Learning by experience, without ML** — Execution outcomes are distilled into persistent memory — no opaque training loops in the runtime.
 - **🔬 Observable and reproducible** — Every behavior claimed by the engine must be verifiable through executable tests.
 
+See [docs/ARCHITECTURE_REACTION_STRATEGIES.md](./docs/ARCHITECTURE_REACTION_STRATEGIES.md) for the reaction-strategy design that grounds future APX milestones.
+
 ---
 
 ## 📊 Current State
@@ -67,22 +70,28 @@ Real, executable, deterministic:
 - **🦀 Tensor engine** — Forward + backward with autograd, CPU + CUDA paths
 - **🧩 AMG (Adaptive Model Graph)** — Graph representation with executor, independent of PyTorch/TF
 - **⚡ Fused kernels** — Attention and QKV paths on CPU and GPU
+- **🖼 Convolutional ops in AMG** — `Conv2D` and `MaxPool2D` with forward, backward, and autograd tape integration (APX v20 M1)
 - **🧮 MNIST pipeline** — Conv2D, MaxPool, Dense on f32 tensors, end-to-end structural
 - **🔒 Deterministic execution** — Same input, same output, always
-- **📋 Policy registry** — Pure, deterministic, explainable policy layer
+- **📋 Policy registry** — Pure, deterministic, explainable policy layer with evidence-aware evaluation
 - **📜 Execution contracts** — Data structures, validators, replay scaffolding
-- **📡 System load sampling** — Real CPU metrics via `sysinfo`
+- **📡 Real memory telemetry** — VRAM (via `nvidia-smi` subprocess) and RAM (via `sysinfo`), validated against ground-truth readings
+- **🧠 Signal producers** — `FailureCounter` (time-windowed) and `LatencyMonitor` (P50-baseline spike detection) with deterministic purge semantics
+- **🚦 SignalBus** — Single integration point that assembles real telemetry into `GuardConditions` (v16) and `PolicyEvidenceSnapshot` (v15)
+- **⚡ Reactive execution hook** — `ReactiveExecutionContext` wires the SignalBus to the AMG executor; `execute_checked` returns a typed `ExecutionAbortReason` when a guard triggers mid-run (APX v20 M2)
+- **🏗 Portable build** — Auto-detection of CUDA Toolkit and MSVC BuildTools installation paths in `build.rs`; respects `CUDA_PATH` and `MSVC_TOOLS_PATH` overrides
 
-### 🟡 Scaffolding in place (not yet wired to runtime signals)
+### 🟡 Scaffolding still being wired to runtime signals
 
-Architecture exists. Integration with real hardware signals is in progress:
+Architecture in place, full end-to-end wiring in progress:
 
-- **AMM Forecaster** — Currently a tensor byte counter. Needs real VRAM/RAM telemetry.
-- **Runtime Guards (v16)** — Pure evaluator of `GuardConditions`. No producer from runtime yet.
-- **Execution Policies (v15)** — Return hardcoded `DecisionBias` constants. Waiting on emergent signals.
-- **Fusion Selector (v6.10/6.11)** — Measures `fused_full_us`; `fused_qkv_us = 0` is a hardcoded placeholder.
-- **Predictive fallback** — Demonstrated in controlled test harnesses. Engine-native trigger pending.
+- **Production guards** — The guard framework (v16) and the SignalBus (v19) are both real; however, the built-in `ExecutionGuard` implementations currently live in tests only. Guards in production code are a v21 deliverable.
+- **Execution Policies (v15)** — `DecisionBias` base weights are hardcoded constants per built-in policy. `evaluate_with_evidence` does react to real signals from the SignalBus, but no execution path consumes the resulting `DecisionBias` yet.
+- **AMM Forecaster** — Now exposes real VRAM and RAM readings in addition to the static byte counter. Integration with the memory manager's allocation decisions is pending.
+- **Fusion Selector (v6.10/6.11)** — Measures `fused_full_us`; `fused_qkv_us = 0` is a hardcoded placeholder awaiting real paired measurement.
+- **`FragmentationWarning`** — Intentionally not emitted. External proxies (reserved memory, per-process attribution) would be semantically misleading. Deferred until the engine exposes its own GPU allocator.
 - **MNIST validation** — Structural pipeline runs with a synthetic model. Real MNIST dataset + trained weights pending.
+- **v17 model runtime** — Loader and compute backend defined; real model loading and execution integration pending.
 
 ### Roadmap (APX v18 → v25)
 
@@ -95,26 +104,34 @@ Architecture exists. Integration with real hardware signals is in progress:
 - **v16** — Execution contracts and guard framework
 - **v17** — Kernel normalization and symbolic GPU chain
 - **v18** — Memory telemetry foundation:
-  - Real VRAM probe via nvidia-smi
+  - Real VRAM probe via `nvidia-smi`
   - Memory pressure detection (replaces the withdrawn predictive fallback test)
-  - System RAM telemetry via sysinfo
+  - System RAM telemetry via `sysinfo`
 - **v19** — SignalBus: integrated sensor-to-decision pipeline
-  - All 4 GuardConditions fields sourced from real telemetry
-  - 4 of 5 PolicySignalKind variants produced; FragmentationWarning deferred
-    pending a dedicated GPU allocator
-  - FailureCounter and LatencyMonitor as internal producers
+  - All 4 `GuardConditions` fields sourced from real telemetry
+  - 4 of 5 `PolicySignalKind` variants produced; `FragmentationWarning` deferred
+  - `FailureCounter` and `LatencyMonitor` as internal state producers
 
-**Next:**
+**In progress — v20 (model runtime integration, in milestones):**
 
-- **v20** — Real external model loading (ONNX via ModelLoader)
-- **v21** — Emergent policy decisions from telemetry (real guard/policy 
-  effects on execution flow)
-- **v22** — Multi-backend foundation: abstraction layer for vendor-agnostic 
-  hardware probes and kernel compilation (NVIDIA + Intel iGPU as first
-  coexistence target)
+- **M1 ✅** — `Conv2D` and `MaxPool2D` implemented natively in AMG with forward, backward, tape integration, and gradient checking against finite differences
+- **M2 ✅** — `ReactiveExecutionContext` attached to `Graph`; the executor (`run_plan`, `apx7::*` schedulers) consults `check_guard_before_node` before each node; `execute_checked` returns `Result<_, ExecutionAbortReason>` on abort; existing APIs preserved as backward-compatible wrappers
+- **M3 🟡 (in progress)** — Real GPU allocation for `Tensor` behind a vendor-neutral storage abstraction. Redesigned after investigation revealed that `Tensor.device` was a logical label (data always lived in RAM). Structured in sub-milestones:
+  - **M3-a ✅** — `TensorStorage` enum introduced; `Tensor.data: Vec<f32>` replaced by `Tensor.storage: TensorStorage`; new canonical accessor API (`new_cpu`, `as_cpu_slice`, `copy_to_cpu_vec`, `ensure_cpu`, `numel`, `storage`, …); 132 files migrated across `src/` and `tests/`; 8 tests cover the new storage API end to end. Pre-0.20 `data()` / `data_mut()` / `num_elements()` methods kept as deprecated shims.
+  - **M3-c, M3-d, M3-e** — Pending: remove the deprecated shims (M3-c); implement `TensorStorage::Cuda` with real VRAM allocation and device↔host transfers (M3-d); wire the reaction-strategy that moves real VRAM to RAM on guard `Degrade` (M3-e) — the capability originally targeted by v20 M3, now unblocked by M3-a/d.
+  
+  See [docs/ARCHITECTURE_REACTION_STRATEGIES.md](./docs/ARCHITECTURE_REACTION_STRATEGIES.md) for the broader strategy and [docs/RESEARCH_INTEL_APIS.md](./docs/RESEARCH_INTEL_APIS.md) for the multi-vendor research that motivated the vendor-neutral decision.
+- **M4–M8** — Reaction strategies driven by real memory migration, real model loading, and eventual v17 retirement. See [ROADMAP.md](./ROADMAP.md).
+
+**Later:**
+
+- **v21** — Emergent policy decisions: production guards and policies consume SignalBus output to shape real execution paths
+- **v22** — Multi-backend foundation: vendor-neutral abstraction for hardware probes and kernel compilation (NVIDIA + Intel iGPU as first coexistence target, via DXGI on Windows)
 - **v23** — ROCm backend (AMD)
 - **v24** — Metal backend (Apple Silicon)
 - **v25** — Distributed execution, autonomous runtime
+
+Full, current roadmap: [ROADMAP.md](./ROADMAP.md).
 
 ---
 
@@ -127,22 +144,32 @@ cargo build --release
 cargo test
 ```
 
+The build script auto-detects CUDA Toolkit and MSVC BuildTools installation paths. If detection fails (CUDA installed in a non-standard location, multiple MSVC versions), override via the `CUDA_PATH` and `MSVC_TOOLS_PATH` environment variables.
+
 ### Test coverage
 
-The repository contains 270+ tests covering:
+The repository contains a growing suite (~300 test files as of v20 M2) covering:
 
 - Tensor operations and autograd correctness
 - Graph construction and execution
 - Deterministic serialization (JSON, CSV)
-- Structural integration of APX v13–v17 modules
+- Structural integration of APX v13–v20 modules
 - CPU + CUDA numerical equivalence where applicable
+- Forward equivalence of native AMG conv/pool against the v17 reference
+- Gradient checking via central finite differences
+- SignalBus producing `GuardConditions` and `PolicyEvidenceSnapshot` from real probes
+- AMG executor aborting cleanly on guard verdicts and resuming execution when conditions are clean
+
+See [docs/TESTS.md](./docs/TESTS.md) and [tests/README.md](./tests/README.md) for the test methodology note and category breakdown.
 
 > [!WARNING]
 > **Note on test methodology.**  
 > Some tests from earlier APX versions use controlled harnesses that 
 > inject runtime conditions (memory pressure, policy competition) to 
 > exercise the scaffolding. These are being rewritten to derive signals 
-> from the engine itself as part of the v18+ roadmap.
+> from the engine itself as part of the v18+ roadmap; several were 
+> completed in v18 (memory pressure detection) and v19 (SignalBus-driven 
+> integration tests).
 
 ---
 
@@ -160,11 +187,22 @@ Atenia is designed to sit **below** ML frameworks and **above** raw hardware exe
 
 ## 🛠 Implementation
 
-- 🦀 Implemented in **Rust**
+- 🦀 Implemented in **Rust** (2024 edition)
 - 🔒 Deterministic execution behavior
 - 🧵 Explicit memory and concurrency control
 - 🚫 No garbage collection
 - 🧩 No opaque runtime adaptation
+
+---
+
+## 📚 Documentation
+
+- [ROADMAP.md](./ROADMAP.md) — Versioned roadmap with milestones and design constraints per APX version
+- [docs/APX.md](./docs/APX.md) — Per-version notes on what each APX milestone introduced and its scope
+- [docs/TESTS.md](./docs/TESTS.md) — Test methodology and categorization
+- [docs/ARCHITECTURE_REACTION_STRATEGIES.md](./docs/ARCHITECTURE_REACTION_STRATEGIES.md) — Design principle for reaction strategies (APX v21+)
+- [docs/RESEARCH_INTEL_APIS.md](./docs/RESEARCH_INTEL_APIS.md) — Multi-vendor GPU API research (APX v22+)
+- Subversion READMEs: [`src/v13`](./src/v13/README.md), [`src/v14`](./src/v14/README.md), [`src/v15`](./src/v15/README.md), [`src/v16`](./src/v16/README.md), [`src/v17`](./src/v17/README.md)
 
 ---
 
@@ -182,7 +220,7 @@ Apache 2.0 allows broad adoption, modification, and commercial use while providi
 
 The initial research preprint has been withdrawn while the implementation matures to fully back its empirical claims.
 
-See [`paper/README.md`](paper/README.md) for details. A revised version with end-to-end empirical validation will be published once runtime signal integration (APX v18+) is complete.
+See [`paper/README.md`](./paper/README.md) for details. A revised version with end-to-end empirical validation will be published once runtime signal integration and real model loading (APX v20+) are complete.
 
 ---
 
@@ -221,4 +259,3 @@ This README does not try to sell.
 It states a position — honestly, including what is built and what is still being built.
 
 **And that's what makes it real.**
-
