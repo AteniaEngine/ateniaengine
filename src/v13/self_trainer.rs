@@ -264,31 +264,34 @@ impl SelfTrainer {
     ) -> Option<DecisionExplanation> {
         let snap = self.snapshot();
 
-        // Filter entries that match the provided context.
-        let mut best_entry: Option<&LearningEntrySnapshot> = None;
+        // Prefer the GPU entry for this context as the basis for the
+        // explanation: if a GPU recommendation is produced downstream,
+        // the GPU entry justifies the choice; if a CPU recommendation
+        // is produced, the GPU entry justifies the rejection — drift
+        // events observed under GPU are what motivate falling back to
+        // CPU, so they must be sourced from the GPU entry, not the
+        // CPU one.
+        //
+        // Selecting a specific entry also removes the prior
+        // HashMap-iteration non-determinism that made this function
+        // flaky when two entries tied on `episodes`.
+        //
+        // If no GPU entry exists under this context (edge case: only
+        // CPU episodes recorded), fall back to any matching entry.
+        let gpu_entry = snap.entries.iter().find(|e| {
+            e.context.gpu_available == context.gpu_available
+                && e.context.vram_band == context.vram_band
+                && e.context.ram_band == context.ram_band
+                && matches!(e.recommended_backend, BackendKind::Gpu)
+        });
 
-        for entry in &snap.entries {
-            if entry.context.gpu_available != context.gpu_available {
-                continue;
-            }
-            if entry.context.vram_band != context.vram_band {
-                continue;
-            }
-            if entry.context.ram_band != context.ram_band {
-                continue;
-            }
+        let fallback_entry = snap.entries.iter().find(|e| {
+            e.context.gpu_available == context.gpu_available
+                && e.context.vram_band == context.vram_band
+                && e.context.ram_band == context.ram_band
+        });
 
-            match best_entry {
-                None => best_entry = Some(entry),
-                Some(current) => {
-                    if entry.stats.episodes > current.stats.episodes {
-                        best_entry = Some(entry);
-                    }
-                }
-            }
-        }
-
-        let chosen = match best_entry {
+        let chosen = match gpu_entry.or(fallback_entry) {
             Some(e) => e,
             None => return None,
         };
