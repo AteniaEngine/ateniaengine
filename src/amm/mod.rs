@@ -7,3 +7,4 @@ pub mod fp8_manager;
 pub mod batch_manager;
 pub mod memory_manager;
 pub mod vram_probe;
+pub mod ram_probe;

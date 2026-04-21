@@ -80,7 +80,7 @@ fn test_engine_detects_real_vram_pressure() {
     // Step 7-8: engine should report pressure for a request that does not fit.
     let required = free_after_alloc.saturating_add(50 * MIB);
     assert_eq!(
-        forecaster.is_under_memory_pressure(required, 0),
+        forecaster.is_under_vram_pressure(required, 0),
         Some(true),
         "forecaster must report pressure when required={} MiB > free={} MiB",
         required / MIB,
@@ -108,7 +108,7 @@ fn test_engine_detects_real_vram_pressure() {
 
     // Step 11: trivial request must not be pressured.
     assert_eq!(
-        forecaster.is_under_memory_pressure(1 * MIB, 1 * MIB),
+        forecaster.is_under_vram_pressure(1 * MIB, 1 * MIB),
         Some(false),
         "forecaster must NOT report pressure for 2 MiB when free VRAM is {} MiB",
         free_after_free / MIB
