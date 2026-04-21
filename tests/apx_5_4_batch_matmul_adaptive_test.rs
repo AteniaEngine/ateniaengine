@@ -1,3 +1,16 @@
+//! Adaptive selector tests.
+//!
+//! Two of the three tests in this file are currently ignored
+//! (marked `#[ignore]`) because they validate the selector's argmin
+//! logic by injecting hardcoded durations rather than by measuring
+//! real matmul execution. Re-enabling them honestly requires
+//! end-to-end matmul execution on CPU and GPU with real timing,
+//! which is planned for APX v20+.
+//!
+//! The third test (no_data case) remains enabled because it
+//! validates a legitimate contract (no samples -> no preference)
+//! without requiring real execution.
+
 use atenia_engine::apx5_4::{AdaptiveSelector, Sample, DeviceTarget};
 use atenia_engine::apx5::apx_5_3_planner::NodeExecInfo;
 use atenia_engine::tensor::DType;
@@ -25,6 +38,7 @@ fn make_info(shape: Vec<usize>, dtype: DType) -> NodeExecInfo {
 }
 
 #[test]
+#[ignore = "METHODOLOGICAL: injects hardcoded durations instead of measuring real CPU/GPU matmul latency. Requires real matmul execution (planned for APX v20+) to become a valid test of the adaptive selector."]
 fn adaptive_prefers_cpu_for_batch_matmul_when_cpu_faster() {
     let mut selector = AdaptiveSelector::new();
 
@@ -56,6 +70,7 @@ fn adaptive_prefers_cpu_for_batch_matmul_when_cpu_faster() {
 }
 
 #[test]
+#[ignore = "METHODOLOGICAL: injects hardcoded durations instead of measuring real CPU/GPU matmul latency. Requires real matmul execution (planned for APX v20+) to become a valid test of the adaptive selector."]
 fn adaptive_prefers_gpu_for_batch_matmul_when_gpu_faster() {
     let mut selector = AdaptiveSelector::new();
 

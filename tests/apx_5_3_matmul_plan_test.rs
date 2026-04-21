@@ -1,3 +1,18 @@
+//! Decision-table tests for `Planner5_3::select_plan`.
+//!
+//! These tests validate that the planner maps hardcoded `NodeExecInfo`
+//! inputs to their expected plan branches (kernel name + layout).
+//! They do not demonstrate that the planner makes optimal decisions
+//! for real matmul workloads: the inputs are calibrated to fall on
+//! specific sides of the planner's own thresholds, and no real matrix
+//! is computed.
+//!
+//! Scope of these tests: validate the decision-table wiring.
+//! Out of scope: validate that the thresholds themselves are
+//! well-chosen, or that the plan branches correspond to optimal
+//! execution paths under real hardware. Those questions require
+//! end-to-end benchmarks, not plan-decision tests.
+
 use atenia_engine::apx5::apx_5_3_planner::{
     Planner5_3,
     NodeExecInfo,
@@ -37,7 +52,7 @@ fn small_matmul_prefers_cpu() {
     let plan = planner.select_plan(&info);
 
     assert_eq!(plan.kernel_name, "matmul_cpu_small");
-    matches!(plan.layout, LayoutDecision::Original);
+    assert!(matches!(plan.layout, LayoutDecision::Original));
 }
 
 #[test]
@@ -49,7 +64,7 @@ fn medium_matmul_cpu_medium() {
     let plan = planner.select_plan(&info);
 
     assert_eq!(plan.kernel_name, "matmul_cpu_medium");
-    matches!(plan.layout, LayoutDecision::Original);
+    assert!(matches!(plan.layout, LayoutDecision::Original));
 }
 
 #[test]
@@ -61,7 +76,7 @@ fn large_contiguous_f32_marked_gpu_candidate() {
     let plan = planner.select_plan(&info);
 
     assert_eq!(plan.kernel_name, "matmul_gpu_candidate");
-    matches!(plan.layout, LayoutDecision::Original);
+    assert!(matches!(plan.layout, LayoutDecision::Original));
 }
 
 #[test]

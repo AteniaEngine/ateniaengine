@@ -1,3 +1,17 @@
+//! Decision-table tests for `Planner5_3::select_plan` under batch matmul shapes.
+//!
+//! These tests validate that the planner maps hardcoded `NodeExecInfo`
+//! inputs to their expected plan branches (kernel name + layout) for
+//! batch-matmul node descriptions. They do not demonstrate that the
+//! planner makes optimal decisions for real batch-matmul workloads:
+//! the shapes are calibrated to fall on specific sides of the planner's
+//! own thresholds, and no real tensor is computed.
+//!
+//! Scope of these tests: validate the decision-table wiring for batch
+//! matmul. Out of scope: validate that the thresholds themselves are
+//! well-chosen, or that the plan branches correspond to optimal
+//! execution paths under real hardware.
+
 use atenia_engine::apx5::apx_5_3_planner::{Planner5_3, NodeExecInfo, LayoutDecision};
 
 fn make_info(shape: Vec<usize>, dtype: &str, contiguous: bool) -> NodeExecInfo {
