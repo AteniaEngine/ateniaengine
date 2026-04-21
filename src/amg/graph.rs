@@ -297,6 +297,8 @@ impl Graph {
                 NodeType::Activation(_) => in_len == 1,
                 NodeType::FusedLinearActivation(_) => in_len == 2 || in_len == 3,
                 NodeType::FusedLinearActivationChain(_) => in_len == 4 || in_len == 5,
+                NodeType::Conv2D(_) => in_len == 2 || in_len == 3,
+                NodeType::MaxPool2D(_) => in_len == 1,
                 NodeType::NoOp => in_len == 1,
             };
 
@@ -2688,6 +2690,94 @@ impl Graph {
                         output: node_id,
                         backward: Box::new(move |store, _forward_inputs, out_grad| {
                             add_to_grad_slice(store, src, &out_grad.data);
+                        }),
+                    });
+                }
+            }
+            NodeType::Conv2D(cfg) => {
+                let inputs = self.nodes[node_id].inputs.clone();
+                let input_t = self.nodes[inputs[0]]
+                    .output
+                    .clone()
+                    .expect("Conv2D: input tensor missing");
+                let weight_t = self.nodes[inputs[1]]
+                    .output
+                    .clone()
+                    .expect("Conv2D: weight tensor missing");
+                let bias_t = if inputs.len() == 3 {
+                    Some(
+                        self.nodes[inputs[2]]
+                            .output
+                            .clone()
+                            .expect("Conv2D: bias tensor missing"),
+                    )
+                } else {
+                    None
+                };
+                let out = crate::amg::ops::conv2d::execute_conv2d(
+                    &input_t,
+                    &weight_t,
+                    bias_t.as_ref(),
+                    &cfg,
+                );
+                self.nodes[node_id].set_output(out);
+
+                if record_tape {
+                    let op_inputs = inputs.clone();
+                    let cfg_captured = cfg;
+                    self.tape.push(BackOp {
+                        inputs: op_inputs.clone(),
+                        output: node_id,
+                        backward: Box::new(move |store, forward_inputs, out_grad| {
+                            let input_t = forward_inputs[0];
+                            let weight_t = forward_inputs[1];
+                            let bias_t = if forward_inputs.len() == 3 {
+                                Some(forward_inputs[2])
+                            } else {
+                                None
+                            };
+                            let grads = crate::amg::ops::conv2d::execute_conv2d_backward(
+                                input_t,
+                                weight_t,
+                                bias_t,
+                                out_grad,
+                                &cfg_captured,
+                            );
+                            add_to_grad_slice(store, op_inputs[0], &grads.grad_input);
+                            add_to_grad_slice(store, op_inputs[1], &grads.grad_weight);
+                            if let (Some(gb), Some(&bias_id)) =
+                                (grads.grad_bias, op_inputs.get(2))
+                            {
+                                add_to_grad_slice(store, bias_id, &gb);
+                            }
+                        }),
+                    });
+                }
+            }
+            NodeType::MaxPool2D(cfg) => {
+                let inputs = self.nodes[node_id].inputs.clone();
+                let input_t = self.nodes[inputs[0]]
+                    .output
+                    .clone()
+                    .expect("MaxPool2D: input tensor missing");
+                let out = crate::amg::ops::maxpool2d::execute_maxpool2d(&input_t, &cfg);
+                self.nodes[node_id].set_output(out);
+
+                if record_tape {
+                    let op_inputs = inputs.clone();
+                    let cfg_captured = cfg;
+                    self.tape.push(BackOp {
+                        inputs: op_inputs.clone(),
+                        output: node_id,
+                        backward: Box::new(move |store, forward_inputs, out_grad| {
+                            let input_t = forward_inputs[0];
+                            let grad_input =
+                                crate::amg::ops::maxpool2d::execute_maxpool2d_backward(
+                                    input_t,
+                                    out_grad,
+                                    &cfg_captured,
+                                );
+                            add_to_grad_slice(store, op_inputs[0], &grad_input);
                         }),
                     });
                 }
