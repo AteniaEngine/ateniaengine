@@ -41,11 +41,11 @@ impl VirtualGpuExecutor {
         // Example: vec_add: c[i] = a[i] + b[i]
         // Detected by name inside the generated PTX.
         if k.ptx.contains("VECADD") {
-            let len_c = k.args[2].data.len();
+            let len_c = k.args[2].numel();
             if tid < len_c {
-                let a_val = k.args[0].data[tid];
-                let b_val = k.args[1].data[tid];
-                let c = &mut k.args[2].data;
+                let a_val = k.args[0].as_cpu_slice()[tid];
+                let b_val = k.args[1].as_cpu_slice()[tid];
+                let c = k.args[2].as_cpu_slice_mut();
                 c[tid] = a_val + b_val;
             }
         }

@@ -24,13 +24,14 @@ pub fn rms_norm(x: &Tensor, eps: f32) -> Tensor {
         x.dtype,
     );
 
+    let x_slice = x.as_cpu_slice();
     out
-        .data
+        .as_cpu_slice_mut()
         .par_chunks_mut(cols)
         .enumerate()
         .for_each(|(row, chunk)| {
             let start = row * cols;
-            let slice = &x.data[start..start + cols];
+            let slice = &x_slice[start..start + cols];
             let sum_sq: f32 = slice.iter().map(|v| v * v).sum();
             let mean_sq = sum_sq / (cols as f32).max(1.0);
             let inv_rms = 1.0f32 / (mean_sq + eps).sqrt();
@@ -61,11 +62,13 @@ pub fn rmsnorm_backward_parallel(x: &Tensor, grad_out: &Tensor) -> Tensor {
         x.dtype,
     );
 
+    let x_slice = x.as_cpu_slice();
+    let grad_out_slice = grad_out.as_cpu_slice();
     grad_in
-        .data
+        .as_cpu_slice_mut()
         .par_chunks_mut(cols)
-        .zip(x.data.par_chunks(cols))
-        .zip(grad_out.data.par_chunks(cols))
+        .zip(x_slice.par_chunks(cols))
+        .zip(grad_out_slice.par_chunks(cols))
         .for_each(|((dst, xrow), grow)| {
             let mean_sq = xrow.iter().map(|v| v * v).sum::<f32>() / cols as f32;
             let denom = (mean_sq + 1e-5).sqrt();

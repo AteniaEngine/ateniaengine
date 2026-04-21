@@ -111,6 +111,11 @@ pub fn execute_conv2d(
         (((n_i * c_out + oc) * h_out) + oh) * w_out + ow
     };
 
+    let input_data = input.as_cpu_slice();
+    let weight_data = weight.as_cpu_slice();
+    let bias_data = bias.map(|b| b.as_cpu_slice());
+    let out_data = out.as_cpu_slice_mut();
+
     for n_i in 0..n {
         for oc in 0..c_out {
             for oh in 0..h_out {
@@ -132,16 +137,16 @@ pub fn execute_conv2d(
                                 if ih >= h_in || iw >= w_in {
                                     continue;
                                 }
-                                let x = input.data[in_idx(n_i, ic, ih, iw)];
-                                let w_v = weight.data[w_idx(oc, ic, kh, kw)];
+                                let x = input_data[in_idx(n_i, ic, ih, iw)];
+                                let w_v = weight_data[w_idx(oc, ic, kh, kw)];
                                 acc += x * w_v;
                             }
                         }
                     }
-                    if let Some(b) = bias {
-                        acc += b.data[oc];
+                    if let Some(bd) = bias_data {
+                        acc += bd[oc];
                     }
-                    out.data[out_idx(n_i, oc, oh, ow)] = acc;
+                    out_data[out_idx(n_i, oc, oh, ow)] = acc;
                 }
             }
         }
@@ -241,11 +246,15 @@ pub fn execute_conv2d_backward(
         (((n_i * c_out + oc) * h_out) + oh) * w_out + ow
     };
 
+    let input_data = input.as_cpu_slice();
+    let weight_data = weight.as_cpu_slice();
+    let out_grad_data = out_grad.as_cpu_slice();
+
     for n_i in 0..n {
         for oc in 0..c_out {
             for oh in 0..h_out {
                 for ow in 0..w_out {
-                    let g_out = out_grad.data[out_idx(n_i, oc, oh, ow)];
+                    let g_out = out_grad_data[out_idx(n_i, oc, oh, ow)];
 
                     // grad_bias: Σ_{n, oh, ow} out_grad per output channel
                     if let Some(gb) = grad_bias.as_mut() {
@@ -271,8 +280,8 @@ pub fn execute_conv2d_backward(
                                 let in_i = in_idx(n_i, ic, ih, iw);
                                 let w_i = w_idx(oc, ic, kh, kw);
 
-                                let x = input.data[in_i];
-                                let w_v = weight.data[w_i];
+                                let x = input_data[in_i];
+                                let w_v = weight_data[w_i];
 
                                 // grad_input[n, ic, ih, iw] += weight * g_out
                                 grad_input[in_i] += w_v * g_out;

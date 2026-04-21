@@ -51,9 +51,14 @@ pub fn cuda_matmul(a: &Tensor, b: &Tensor, m: usize, k: usize, n: usize) -> Tens
         let d_c = pool_alloc() as *mut f32;
 
         // Copy host -> device.
+        // M3-a: `as_cpu_slice()` panics if the storage is not CPU-resident.
+        // When M3-d adds `TensorStorage::Cuda`, callers of `cuda_matmul` must
+        // either pass already-GPU tensors (skipping H2D) or call `ensure_cpu`
+        // upstream; the current shape of this function assumes CPU-resident
+        // inputs.
         let err = cudaMemcpy(
             d_a as *mut c_void,
-            a.data.as_ptr() as *const c_void,
+            a.as_cpu_slice().as_ptr() as *const c_void,
             size_a_bytes,
             CUDA_MEMCPY_HOST_TO_DEVICE,
         );
@@ -66,7 +71,7 @@ pub fn cuda_matmul(a: &Tensor, b: &Tensor, m: usize, k: usize, n: usize) -> Tens
 
         let err = cudaMemcpy(
             d_b as *mut c_void,
-            b.data.as_ptr() as *const c_void,
+            b.as_cpu_slice().as_ptr() as *const c_void,
             size_b_bytes,
             CUDA_MEMCPY_HOST_TO_DEVICE,
         );
@@ -90,7 +95,7 @@ pub fn cuda_matmul(a: &Tensor, b: &Tensor, m: usize, k: usize, n: usize) -> Tens
 
         // Copy device -> host.
         let err = cudaMemcpy(
-            out.data.as_mut_ptr() as *mut c_void,
+            out.as_cpu_slice_mut().as_mut_ptr() as *mut c_void,
             d_c as *const c_void,
             size_c_bytes,
             CUDA_MEMCPY_DEVICE_TO_HOST,

@@ -85,8 +85,8 @@ pub fn make_batches(tokens: Vec<usize>, seq_len: usize, batch_size: usize) -> Ve
                 let x = tokens[start + offset] as f32;
                 let y = tokens[start + offset + 1] as f32;
                 let dst = row * seq_len + offset;
-                input.data[dst] = x;
-                target.data[dst] = y;
+                input.as_cpu_slice_mut()[dst] = x;
+                target.as_cpu_slice_mut()[dst] = y;
             }
         }
 

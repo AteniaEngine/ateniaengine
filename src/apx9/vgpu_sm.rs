@@ -120,12 +120,15 @@ impl VirtualSM {
     /// but all arithmetic happens on CPU over normal tensors.
     /// This guarantees APX 9.25 does not change math compared to the CPU model.
     pub fn simulate_vec_add(&self, a: &Tensor, b: &Tensor) -> Tensor {
-        assert_eq!(a.data.len(), b.data.len());
-        let len = a.data.len();
+        assert_eq!(a.numel(), b.numel());
+        let len = a.numel();
 
         let mut out = Tensor::zeros(vec![len], Device::CPU, DType::F32);
+        let a_slice = a.as_cpu_slice();
+        let b_slice = b.as_cpu_slice();
+        let out_slice = out.as_cpu_slice_mut();
         for i in 0..len {
-            out.data[i] = a.data[i] + b.data[i];
+            out_slice[i] = a_slice[i] + b_slice[i];
         }
         out
     }

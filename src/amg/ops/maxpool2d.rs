@@ -76,6 +76,9 @@ pub fn execute_maxpool2d(input: &Tensor, config: &MaxPool2DConfig) -> Tensor {
         (((n_i * c + c_i) * h_out) + oh) * w_out + ow
     };
 
+    let input_data = input.as_cpu_slice();
+    let out_data = out.as_cpu_slice_mut();
+
     for n_i in 0..n {
         for c_i in 0..c {
             for oh in 0..h_out {
@@ -95,7 +98,7 @@ pub fn execute_maxpool2d(input: &Tensor, config: &MaxPool2DConfig) -> Tensor {
                             if ih >= h_in || iw >= w_in {
                                 continue;
                             }
-                            let v = input.data[in_idx(n_i, c_i, ih, iw)];
+                            let v = input_data[in_idx(n_i, c_i, ih, iw)];
                             // Strict `>`: first-seen wins in tie-breaking.
                             // Backward replicates this condition exactly.
                             if v > max_val {
@@ -103,7 +106,7 @@ pub fn execute_maxpool2d(input: &Tensor, config: &MaxPool2DConfig) -> Tensor {
                             }
                         }
                     }
-                    out.data[out_idx(n_i, c_i, oh, ow)] = max_val;
+                    out_data[out_idx(n_i, c_i, oh, ow)] = max_val;
                 }
             }
         }
@@ -175,6 +178,9 @@ pub fn execute_maxpool2d_backward(
         (((n_i * c + c_i) * h_out) + oh) * w_out + ow
     };
 
+    let input_data = input.as_cpu_slice();
+    let out_grad_data = out_grad.as_cpu_slice();
+
     for n_i in 0..n {
         for c_i in 0..c {
             for oh in 0..h_out {
@@ -198,7 +204,7 @@ pub fn execute_maxpool2d_backward(
                                 continue;
                             }
                             let pos = in_idx(n_i, c_i, ih, iw);
-                            let v = input.data[pos];
+                            let v = input_data[pos];
                             if v > max_val {
                                 max_val = v;
                                 best_pos = Some(pos);
@@ -206,7 +212,7 @@ pub fn execute_maxpool2d_backward(
                         }
                     }
                     if let Some(p) = best_pos {
-                        grad_input[p] += out_grad.data[out_idx(n_i, c_i, oh, ow)];
+                        grad_input[p] += out_grad_data[out_idx(n_i, c_i, oh, ow)];
                     }
                     // best_pos == None → window entirely inside padding;
                     // no gradient to propagate (forward left NEG_INFINITY).

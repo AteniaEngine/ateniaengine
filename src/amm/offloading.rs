@@ -1,7 +1,6 @@
 //! Logic for offloading tensors and activations to secondary storage.
 
-use crate::tensor::tensor::{Device, Layout, Tensor};
-use crate::tensor::DType;
+use crate::tensor::tensor::{Device, Tensor};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use uuid::Uuid;
@@ -41,7 +40,7 @@ impl Offloader {
         let path = format!("{}/{}.bin", self.disk_directory, id);
 
         let mut file = File::create(&path).unwrap();
-        for value in &tensor.data {
+        for value in tensor.as_cpu_slice() {
             file.write_all(&value.to_le_bytes()).unwrap();
         }
 
@@ -64,20 +63,6 @@ impl Offloader {
             data.push(f32::from_le_bytes(arr));
         }
 
-        let layout = Layout::Contiguous;
-        let strides = Tensor::compute_strides(&shape, &layout);
-
-        Tensor {
-            shape,
-            data,
-            device: Device::CPU,
-            dtype: DType::F32,
-            layout,
-            strides,
-            grad: None,
-            gpu: None,
-            persistence: None,
-            op: None,
-        }
+        Tensor::new_cpu(shape, data)
     }
 }

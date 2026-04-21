@@ -8,7 +8,7 @@ pub fn chunk_tensor(t: &Tensor, max_elements: usize) -> Vec<Tensor> {
         "chunk_tensor currently supports only 1D tensors"
     );
 
-    let total = t.data.len();
+    let total = t.numel();
     if max_elements == 0 || total == 0 {
         return Vec::new();
     }
@@ -18,23 +18,19 @@ pub fn chunk_tensor(t: &Tensor, max_elements: usize) -> Vec<Tensor> {
 
     while start < total {
         let end = usize::min(start + max_elements, total);
-        let slice = &t.data[start..end];
+        let slice = &t.as_cpu_slice()[start..end];
 
         let mut data = Vec::with_capacity(slice.len());
         data.extend_from_slice(slice);
 
-        let chunk = Tensor {
-            shape: vec![(end - start)],
+        let mut chunk = Tensor::new_cpu_with_layout(
+            vec![(end - start)],
             data,
-            device: t.device,
-            dtype: t.dtype,
-            layout: t.layout.clone(),
-            strides: t.strides.clone(),
-            grad: None,
-            gpu: None,
-            persistence: None,
-            op: None,
-        };
+            t.device,
+            t.dtype,
+            t.layout.clone(),
+        );
+        chunk.strides = t.strides.clone();
 
         chunks.push(chunk);
         start = end;
@@ -60,23 +56,20 @@ pub fn merge_chunks(chunks: Vec<Tensor>, original_shape: Vec<usize>) -> Tensor {
     let layout = chunks[0].layout.clone();
     let strides = chunks[0].strides.clone();
 
-    let total_len: usize = chunks.iter().map(|c| c.data.len()).sum();
+    let total_len: usize = chunks.iter().map(|c| c.numel()).sum();
     let mut data = Vec::with_capacity(total_len);
 
     for c in chunks {
-        data.extend_from_slice(&c.data);
+        data.extend_from_slice(c.as_cpu_slice());
     }
 
-    Tensor {
-        shape: original_shape,
+    let mut out = Tensor::new_cpu_with_layout(
+        original_shape,
         data,
         device,
         dtype,
         layout,
-        strides,
-        grad: None,
-        gpu: None,
-        persistence: None,
-        op: None,
-    }
+    );
+    out.strides = strides;
+    out
 }

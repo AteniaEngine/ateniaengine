@@ -54,8 +54,8 @@ impl Tensor {
         assert_eq!(self.strides.len(), other.strides.len(), "Stride ranks must match for {}", op);
         assert_eq!(self.dtype, other.dtype, "Tensor dtypes must match for {}", op);
         assert_eq!(
-            self.num_elements(),
-            other.num_elements(),
+            self.numel(),
+            other.numel(),
             "Tensor element counts must match for {}",
             op
         );
@@ -124,9 +124,9 @@ fn fast_add(a: &Tensor, b: &Tensor) -> Tensor {
     record_fast_add_call();
 
     let data = a
-        .data
+        .as_cpu_slice()
         .iter()
-        .zip(&b.data)
+        .zip(b.as_cpu_slice())
         .map(|(lhs, rhs)| lhs + rhs)
         .collect();
 
@@ -137,9 +137,9 @@ fn fast_mul(a: &Tensor, b: &Tensor) -> Tensor {
     record_fast_mul_call();
 
     let data = a
-        .data
+        .as_cpu_slice()
         .iter()
-        .zip(&b.data)
+        .zip(b.as_cpu_slice())
         .map(|(lhs, rhs)| lhs * rhs)
         .collect();
 
@@ -148,9 +148,9 @@ fn fast_mul(a: &Tensor, b: &Tensor) -> Tensor {
 
 fn fast_sub(a: &Tensor, b: &Tensor) -> Tensor {
     let data = a
-        .data
+        .as_cpu_slice()
         .iter()
-        .zip(&b.data)
+        .zip(b.as_cpu_slice())
         .map(|(lhs, rhs)| lhs - rhs)
         .collect();
 
@@ -175,15 +175,18 @@ fn elementwise_with_strides<F>(a: &Tensor, b: &Tensor, op: F) -> Tensor
 where
     F: Fn(f32, f32) -> f32,
 {
-    let total = a.num_elements();
+    let total = a.numel();
     let mut data = vec![0.0; total];
 
     if total == 0 {
         return create_result_tensor(a, data);
     }
 
+    let a_slice = a.as_cpu_slice();
+    let b_slice = b.as_cpu_slice();
+
     if a.shape.is_empty() {
-        data[0] = op(a.data[0], b.data[0]);
+        data[0] = op(a_slice[0], b_slice[0]);
         return create_result_tensor(a, data);
     }
 
@@ -191,7 +194,7 @@ where
     loop {
         let offset_a = linear_offset(&index, &a.strides);
         let offset_b = linear_offset(&index, &b.strides);
-        data[offset_a] = op(a.data[offset_a], b.data[offset_b]);
+        data[offset_a] = op(a_slice[offset_a], b_slice[offset_b]);
 
         if !increment_index(&mut index, &a.shape) {
             break;
@@ -221,18 +224,15 @@ fn increment_index(index: &mut [usize], shape: &[usize]) -> bool {
 }
 
 fn create_result_tensor(proto: &Tensor, data: Vec<f32>) -> Tensor {
-    Tensor {
-        shape: proto.shape.clone(),
+    let mut t = Tensor::new_cpu_with_layout(
+        proto.shape.clone(),
         data,
-        device: proto.device,
-        dtype: proto.dtype,
-        layout: proto.layout,
-        strides: proto.strides.clone(),
-        grad: None,
-        gpu: None,
-        persistence: None,
-        op: None,
-    }
+        proto.device,
+        proto.dtype,
+        proto.layout,
+    );
+    t.strides = proto.strides.clone();
+    t
 }
 
 mod instrumentation {
@@ -335,15 +335,18 @@ fn matmul_serial(a: &Tensor, b: &Tensor) -> Tensor {
         Layout::Contiguous,
         a.dtype,
     );
+    let a_slice = a.as_cpu_slice();
+    let b_slice = b.as_cpu_slice();
+    let out_slice = out.as_cpu_slice_mut();
     for i in 0..m {
         for j in 0..n {
             let mut sum = 0.0f32;
             for kk in 0..k {
                 let a_idx = i * k + kk;
                 let b_idx = kk * n + j;
-                sum += a.data[a_idx] * b.data[b_idx];
+                sum += a_slice[a_idx] * b_slice[b_idx];
             }
-            out.data[i * n + j] = sum;
+            out_slice[i * n + j] = sum;
         }
     }
     out

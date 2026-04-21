@@ -46,11 +46,47 @@ pub enum Layout {
     ChannelsLast,
 }
 
+/// Physical storage backend for a [`Tensor`]'s element data.
+///
+/// `TensorStorage` encapsulates *where* the raw numeric bytes live (host RAM,
+/// device VRAM, eventually ROCm / Metal buffers) independent of the tensor's
+/// logical shape, dtype, or layout — those are properties of the [`Tensor`]
+/// wrapper, not of the storage.
+///
+/// # Why an enum instead of a trait
+///
+/// - Dispatch through `dyn Storage` would add indirection on every element
+///   access; we want the hot path to be a direct `match`.
+/// - An exhaustive `match` forces every new backend to be handled explicitly
+///   at each consumer — the right default for vendor-specific behavior.
+///   CUDA / ROCm / Metal APIs diverge enough that a shared trait surface
+///   would be a useless lowest common denominator.
+///
+/// # Variants
+///
+/// Only `Cpu` is available today. Additional backends (`Cuda`, `Rocm`,
+/// `Metal`) are introduced by later sub-milestones together with their
+/// allocation, `Drop`, and cross-backend transfer logic.
+#[derive(Clone, Debug)]
+pub enum TensorStorage {
+    /// Host-resident dense `f32` storage.
+    ///
+    /// Element order follows the contiguous / NCHW / NHWC ordering declared
+    /// by the owning [`Tensor`]'s `shape` and `layout` fields. The storage
+    /// variant itself is layout-agnostic.
+    Cpu(Vec<f32>),
+    // Cuda(TensorGPU) — added in a later sub-milestone (M3-d). Do not add
+    // variants here until the corresponding backend lands with real
+    // allocation, Drop semantics, and cross-backend transfers.
+}
+
 /// Minimal tensor container backing data with owned storage.
 #[derive(Clone)]
 pub struct Tensor {
     pub shape: Vec<usize>,
-    pub data: Vec<f32>,
+    /// Physical storage backend. In APX v20 M3-a only `TensorStorage::Cpu`
+    /// exists; additional variants are added in later sub-milestones.
+    pub storage: TensorStorage,
     pub device: Device,
     pub dtype: DType,
     pub layout: Layout,
@@ -98,7 +134,7 @@ impl Tensor {
         let strides = Self::compute_strides(&shape_vec, &Layout::Contiguous);
         Self {
             shape: shape_vec,
-            data,
+            storage: TensorStorage::Cpu(data),
             device,
             dtype: DType::F32,
             layout: Layout::Contiguous,
@@ -158,7 +194,7 @@ impl Tensor {
         let strides = Self::compute_strides(&shape, &layout);
         Self {
             shape,
-            data: vec![fill; num_elements],
+            storage: TensorStorage::Cpu(vec![fill; num_elements]),
             device,
             dtype,
             layout,
@@ -205,10 +241,10 @@ impl Tensor {
         let layout = Layout::Contiguous;
         let strides = Self::compute_strides(&shape, &layout);
         let num_elements = shape.iter().product::<usize>();
-        let data = (0..num_elements).map(|_| random::<f32>()).collect();
+        let data: Vec<f32> = (0..num_elements).map(|_| random::<f32>()).collect();
         Self {
             shape,
-            data,
+            storage: TensorStorage::Cpu(data),
             device,
             dtype,
             layout,
@@ -220,16 +256,213 @@ impl Tensor {
         }
     }
 
-    /// Returns the total number of elements represented by the tensor shape.
-    pub fn num_elements(&self) -> usize {
+    // ================================================================
+    //  APX v20 M3-a — vendor-neutral storage API
+    // ================================================================
+
+    /// Constructs a CPU-resident tensor from an existing `Vec<f32>` payload.
+    ///
+    /// Uses `Device::CPU`, `DType::F32`, and `Layout::Contiguous`; strides
+    /// are derived from `shape`. This is the canonical constructor for
+    /// tensors with known initial contents — it replaces the pre-0.20
+    /// pattern of building a `Tensor` struct literal with `data: vec![...]`.
+    ///
+    /// # Panics
+    /// Panics if `data.len() != shape.iter().product()`.
+    pub fn new_cpu(shape: Vec<usize>, data: Vec<f32>) -> Self {
+        let expected: usize = shape.iter().product();
+        assert_eq!(
+            data.len(),
+            expected,
+            "Tensor::new_cpu: data length {} does not match shape product {} (shape = {:?})",
+            data.len(),
+            expected,
+            shape
+        );
+        let strides = Self::compute_strides(&shape, &Layout::Contiguous);
+        Self {
+            shape,
+            storage: TensorStorage::Cpu(data),
+            device: Device::CPU,
+            dtype: DType::F32,
+            layout: Layout::Contiguous,
+            strides,
+            grad: None,
+            gpu: None,
+            persistence: None,
+            op: None,
+        }
+    }
+
+    /// Constructs a CPU-resident tensor with explicit device/dtype/layout.
+    ///
+    /// Wrapper around [`Tensor::new_cpu`] for call sites that historically
+    /// built a `Tensor` struct literal with non-default `device`, `dtype`,
+    /// or `layout` fields. Strides are computed from `shape` and `layout`;
+    /// callers that need custom strides can assign `t.strides = ...` after
+    /// construction.
+    ///
+    /// # Panics
+    /// Panics if `data.len() != shape.iter().product()`.
+    pub fn new_cpu_with_layout(
+        shape: Vec<usize>,
+        data: Vec<f32>,
+        device: Device,
+        dtype: DType,
+        layout: Layout,
+    ) -> Self {
+        let expected: usize = shape.iter().product();
+        assert_eq!(
+            data.len(),
+            expected,
+            "Tensor::new_cpu_with_layout: data length {} does not match shape product {} (shape = {:?})",
+            data.len(),
+            expected,
+            shape
+        );
+        let strides = Self::compute_strides(&shape, &layout);
+        Self {
+            shape,
+            storage: TensorStorage::Cpu(data),
+            device,
+            dtype,
+            layout,
+            strides,
+            grad: None,
+            gpu: None,
+            persistence: None,
+            op: None,
+        }
+    }
+
+    /// Replaces the current storage with CPU-resident `data`.
+    ///
+    /// Does not modify `shape` or `strides`; callers are expected to have
+    /// constructed the tensor with the correct shape already. The previous
+    /// storage is dropped. Replaces the pre-0.20 pattern `t.data = vec![...]`.
+    ///
+    /// # Panics
+    /// Panics if `data.len() != self.numel()`.
+    pub fn set_cpu_data(&mut self, data: Vec<f32>) {
+        let expected = self.numel();
+        assert_eq!(
+            data.len(),
+            expected,
+            "Tensor::set_cpu_data: data length {} does not match shape product {} (shape = {:?})",
+            data.len(),
+            expected,
+            self.shape
+        );
+        self.storage = TensorStorage::Cpu(data);
+    }
+
+    /// Returns an immutable view of the CPU-resident element buffer.
+    ///
+    /// # Panics
+    /// Panics if the storage is not currently CPU-resident. Callers that
+    /// need to work with tensors of any backend should call
+    /// [`Tensor::ensure_cpu`] first.
+    pub fn as_cpu_slice(&self) -> &[f32] {
+        match &self.storage {
+            TensorStorage::Cpu(v) => v.as_slice(),
+        }
+    }
+
+    /// Returns a mutable view of the CPU-resident element buffer.
+    ///
+    /// # Panics
+    /// Panics if the storage is not currently CPU-resident.
+    pub fn as_cpu_slice_mut(&mut self) -> &mut [f32] {
+        match &mut self.storage {
+            TensorStorage::Cpu(v) => v.as_mut_slice(),
+        }
+    }
+
+    /// Returns an owned `Vec<f32>` copy of the element buffer.
+    ///
+    /// For CPU storage this is an O(n) clone. For non-CPU backends added in
+    /// later milestones this performs a device → host transfer and returns
+    /// a newly allocated vector.
+    pub fn copy_to_cpu_vec(&self) -> Vec<f32> {
+        match &self.storage {
+            TensorStorage::Cpu(v) => v.clone(),
+        }
+    }
+
+    /// Ensures the storage is CPU-resident after this call.
+    ///
+    /// No-op for tensors already on the CPU. For non-CPU backends added in
+    /// later milestones this triggers a device → host transfer. Returns
+    /// `&mut Self` to allow chaining.
+    pub fn ensure_cpu(&mut self) -> &mut Self {
+        match &self.storage {
+            TensorStorage::Cpu(_) => {}
+        }
+        self
+    }
+
+    /// Total number of elements in the tensor, computed from `shape`.
+    ///
+    /// Independent of the storage backend. O(rank).
+    pub fn numel(&self) -> usize {
         self.shape.iter().product()
     }
+
+    /// Accessor to the underlying storage variant.
+    ///
+    /// Intended for code that needs an explicit `match` against specific
+    /// backends (e.g. dispatch helpers). For element access prefer
+    /// [`Tensor::as_cpu_slice`] / [`Tensor::as_cpu_slice_mut`] /
+    /// [`Tensor::copy_to_cpu_vec`].
+    pub fn storage(&self) -> &TensorStorage {
+        &self.storage
+    }
+
+    // ================================================================
+    //  Deprecated compatibility shims (pre-0.20 field-access surface)
+    // ================================================================
+
+    /// Deprecated; use [`Tensor::as_cpu_slice`] instead.
+    #[deprecated(
+        since = "0.20.0",
+        note = "Use `Tensor::as_cpu_slice()` instead. This method is a \
+                compatibility shim for the pre-0.20 direct field access to \
+                `data` and will be removed in a future version."
+    )]
+    pub fn data(&self) -> &[f32] {
+        self.as_cpu_slice()
+    }
+
+    /// Deprecated; use [`Tensor::as_cpu_slice_mut`] instead.
+    #[deprecated(
+        since = "0.20.0",
+        note = "Use `Tensor::as_cpu_slice_mut()` instead. This method is a \
+                compatibility shim for the pre-0.20 direct field access to \
+                `data` and will be removed in a future version."
+    )]
+    pub fn data_mut(&mut self) -> &mut [f32] {
+        self.as_cpu_slice_mut()
+    }
+
+    /// Deprecated; use [`Tensor::numel`] instead.
+    #[deprecated(
+        since = "0.20.0",
+        note = "Use `Tensor::numel()` instead. This is the pre-0.20 name \
+                and will be removed in a future version."
+    )]
+    pub fn num_elements(&self) -> usize {
+        self.numel()
+    }
+
+    // ================================================================
+    //  Other pre-existing methods
+    // ================================================================
 
     /// Returns a CPU-resident clone of this tensor.
     pub fn to_cpu(&self) -> Self {
         Self {
             shape: self.shape.clone(),
-            data: self.data.clone(),
+            storage: TensorStorage::Cpu(self.copy_to_cpu_vec()),
             device: Device::CPU,
             dtype: self.dtype,
             layout: self.layout,
@@ -242,10 +475,14 @@ impl Tensor {
     }
 
     /// Returns a GPU-resident clone of this tensor.
+    ///
+    /// In M3-a this is still a logical relabeling — the storage stays
+    /// CPU-resident but `device` is set to `GPU`. Real GPU residency is
+    /// introduced in a later sub-milestone.
     pub fn to_gpu(&self) -> Self {
         Self {
             shape: self.shape.clone(),
-            data: self.data.clone(),
+            storage: TensorStorage::Cpu(self.copy_to_cpu_vec()),
             device: Device::GPU,
             dtype: self.dtype,
             layout: self.layout,
@@ -273,7 +510,7 @@ impl Tensor {
 
         Self {
             shape: self.shape.clone(),
-            data: self.data.clone(),
+            storage: self.storage.clone(),
             device: self.device,
             dtype,
             layout: self.layout,
@@ -287,14 +524,15 @@ impl Tensor {
 
     /// Estimates the amount of memory consumed by the tensor in bytes.
     pub fn estimated_bytes(&self) -> usize {
-        self.num_elements() * self.dtype.size_in_bytes()
+        self.numel() * self.dtype.size_in_bytes()
     }
 
     /// Returns a zero-initialized tensor sharing metadata with `self`.
     pub fn zeros_like(&self) -> Tensor {
+        let n = self.numel();
         Tensor {
             shape: self.shape.clone(),
-            data: vec![0.0; self.data.len()],
+            storage: TensorStorage::Cpu(vec![0.0; n]),
             device: self.device,
             dtype: self.dtype,
             layout: self.layout,
@@ -309,7 +547,7 @@ impl Tensor {
     /// Initializes the gradient buffer to zeros if not already present.
     pub fn init_grad(&mut self) {
         if self.grad.is_none() {
-            self.grad = Some(vec![0.0; self.data.len()]);
+            self.grad = Some(vec![0.0; self.numel()]);
         }
     }
 
@@ -341,7 +579,7 @@ impl Tensor {
         }
         let rows = self.shape[0];
         let cols = if self.shape.len() > 1 { self.shape[1] } else { 1 };
-        mgr.from_cpu_vec(&self.data, rows, cols)
+        mgr.from_cpu_vec(self.as_cpu_slice(), rows, cols)
     }
 
     /// Returns a reference to the operation that produced this tensor, if any.
@@ -377,7 +615,11 @@ impl Tensor {
     pub fn sync_cpu(&mut self) {
         let bytes = self.estimated_bytes();
         if let Some(ref mut m) = self.gpu {
-            m.download_to_cpu(self.data.as_mut_ptr(), bytes);
+            match &mut self.storage {
+                TensorStorage::Cpu(v) => {
+                    m.download_to_cpu(v.as_mut_ptr(), bytes);
+                }
+            }
             m.mark_synced();
         }
     }
@@ -386,7 +628,11 @@ impl Tensor {
     pub fn sync_gpu(&mut self) {
         let bytes = self.estimated_bytes();
         if let Some(ref mut m) = self.gpu {
-            m.upload_from_cpu(self.data.as_ptr(), bytes);
+            match &self.storage {
+                TensorStorage::Cpu(v) => {
+                    m.upload_from_cpu(v.as_ptr(), bytes);
+                }
+            }
             m.mark_synced();
         }
     }

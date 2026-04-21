@@ -23,8 +23,8 @@ pub fn softmax_last_dim(x: &Tensor) -> Tensor {
         x.dtype,
     );
 
-    let x_data = &x.data;
-    out.data
+    let x_data = x.as_cpu_slice();
+    out.as_cpu_slice_mut()
         .par_chunks_mut(cols)
         .enumerate()
         .for_each(|(row, chunk)| {
@@ -74,11 +74,13 @@ pub fn softmax_backward_parallel(prob: &Tensor, grad_out: &Tensor) -> Tensor {
         prob.dtype,
     );
 
+    let prob_slice = prob.as_cpu_slice();
+    let grad_out_slice = grad_out.as_cpu_slice();
     grad_in
-        .data
+        .as_cpu_slice_mut()
         .par_chunks_mut(cols)
-        .zip(prob.data.par_chunks(cols))
-        .zip(grad_out.data.par_chunks(cols))
+        .zip(prob_slice.par_chunks(cols))
+        .zip(grad_out_slice.par_chunks(cols))
         .for_each(|((dst, p), g)| {
             let dot = p.iter().zip(g).map(|(a, b)| a * b).sum::<f32>();
             for i in 0..cols {

@@ -53,6 +53,13 @@ impl AdamW {
             Self::ensure_slot(&mut self.m[idx], grad.len());
             Self::ensure_slot(&mut self.v[idx], grad.len());
 
+            // Split-borrow trick: `param.grad` (borrowed via `grad`) and
+            // `param.storage` are disjoint fields, so we access `storage`
+            // directly to avoid the `&mut self` method call that would
+            // conflict with the `grad` borrow held across this loop.
+            let param_data = match &mut param.storage {
+                crate::tensor::TensorStorage::Cpu(v) => v,
+            };
             for i in 0..grad.len() {
                 let g = grad[i];
                 self.m[idx][i] = self.beta1 * self.m[idx][i] + (1.0 - self.beta1) * g;
@@ -62,8 +69,8 @@ impl AdamW {
                 let v_hat = self.v[idx][i] / bias_correction2;
 
                 let denom = v_hat.sqrt() + self.eps;
-                let wd_term = self.weight_decay * param.data[i];
-                param.data[i] -= self.lr * (m_hat / denom + wd_term);
+                let wd_term = self.weight_decay * param_data[i];
+                param_data[i] -= self.lr * (m_hat / denom + wd_term);
             }
 
             param.clear_grad();

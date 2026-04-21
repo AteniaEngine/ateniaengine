@@ -50,7 +50,7 @@ impl GpuTensorManager {
             DType::F32,
         );
 
-        tensor.data.copy_from_slice(&cpu_vec);
+        tensor.as_cpu_slice_mut().copy_from_slice(&cpu_vec);
         Ok(tensor)
     }
 }

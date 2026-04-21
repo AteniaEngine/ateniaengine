@@ -45,7 +45,7 @@ impl HybridDispatcher {
         // 8.3 heuristic: use a simple threshold on number of elements.
         //  - Small tensors: copy cost dominates => CPU.
         //  - Large tensors: prepare for GPU => GPU.
-        let elems = t.num_elements();
+        let elems = t.numel();
         let threshold: usize = 256 * 256; // 65_536 elementos
 
         if elems >= threshold {

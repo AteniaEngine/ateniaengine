@@ -200,10 +200,12 @@ fn log_softmax_last_dim(x: &Tensor) -> Tensor {
         x.dtype,
     );
 
+    let x_data = x.as_cpu_slice();
+    let out_data = out.as_cpu_slice_mut();
     for row in 0..rows {
         let start = row * cols;
         let end = start + cols;
-        let slice = &x.data[start..end];
+        let slice = &x_data[start..end];
         let mut max_val = f32::NEG_INFINITY;
         for &v in slice {
             if v > max_val {
@@ -219,7 +221,7 @@ fn log_softmax_last_dim(x: &Tensor) -> Tensor {
         }
         let log_denom = max_val + sum_exp.ln();
         for i in 0..cols {
-            out.data[start + i] = slice[i] - log_denom;
+            out_data[start + i] = slice[i] - log_denom;
         }
     }
 
@@ -232,10 +234,10 @@ fn gather_last_dim(data: &Tensor, indices: &Tensor) -> Tensor {
         "Gather data must have at least one dimension"
     );
     let last_dim = *data.shape.last().expect("gather last dim");
-    let data_rows = data.data.len() / last_dim;
+    let data_rows = data.numel() / last_dim;
     assert_eq!(
         data_rows,
-        indices.data.len(),
+        indices.numel(),
         "Gather indices must match data rows"
     );
 
@@ -247,11 +249,14 @@ fn gather_last_dim(data: &Tensor, indices: &Tensor) -> Tensor {
         data.dtype,
     );
 
+    let data_src = data.as_cpu_slice();
+    let indices_src = indices.as_cpu_slice();
+    let out_dst = out.as_cpu_slice_mut();
     for row in 0..data_rows {
-        let idx = indices.data[row].round() as isize;
+        let idx = indices_src[row].round() as isize;
         assert!(idx >= 0 && (idx as usize) < last_dim, "Gather index out of bounds");
         let src = row * last_dim + idx as usize;
-        out.data[row] = data.data[src];
+        out_dst[row] = data_src[src];
     }
 
     out
@@ -951,18 +956,15 @@ impl Graph {
                             }
 
                             let make_grad_tensor = |data: Vec<f32>, proto: &Tensor| -> Tensor {
-                                Tensor {
-                                    shape: vec![m, n],
+                                let mut t = Tensor::new_cpu_with_layout(
+                                    vec![m, n],
                                     data,
-                                    device: proto.device,
-                                    dtype: proto.dtype,
-                                    layout: proto.layout,
-                                    strides: proto.strides.clone(),
-                                    grad: None,
-                                    gpu: None,
-                                    persistence: None,
-                                    op: None,
-                                }
+                                    proto.device,
+                                    proto.dtype,
+                                    proto.layout,
+                                );
+                                t.strides = proto.strides.clone();
+                                t
                             };
 
                             let gq = make_grad_tensor(gq_data, x_f);
@@ -978,9 +980,13 @@ impl Graph {
                             let dx_k = nn_linear::matmul(&gk, &wk_t);
                             let dx_v = nn_linear::matmul(&gv, &wv_t);
 
-                            let mut dx_total = dx_q.data.clone();
-                            for i in 0..dx_total.len() {
-                                dx_total[i] += dx_k.data[i] + dx_v.data[i];
+                            let mut dx_total = dx_q.copy_to_cpu_vec();
+                            {
+                                let dx_k_slice = dx_k.as_cpu_slice();
+                                let dx_v_slice = dx_v.as_cpu_slice();
+                                for i in 0..dx_total.len() {
+                                    dx_total[i] += dx_k_slice[i] + dx_v_slice[i];
+                                }
                             }
                             add_to_grad_slice(store, x, &dx_total);
 
@@ -988,13 +994,13 @@ impl Graph {
                             let x_t = transpose_2d(x_f);
 
                             let dwq = nn_linear::matmul(&x_t, &gq);
-                            add_to_grad_slice(store, wq, &dwq.data);
+                            add_to_grad_slice(store, wq, dwq.as_cpu_slice());
 
                             let dwk = nn_linear::matmul(&x_t, &gk);
-                            add_to_grad_slice(store, wk, &dwk.data);
+                            add_to_grad_slice(store, wk, dwk.as_cpu_slice());
 
                             let dwv = nn_linear::matmul(&x_t, &gv);
-                            add_to_grad_slice(store, wv, &dwv.data);
+                            add_to_grad_slice(store, wv, dwv.as_cpu_slice());
 
                             // Biases opcionales: sumar filas de gQ,gK,gV
                             if has_bq {
@@ -1324,7 +1330,7 @@ impl Graph {
                 eprintln!(
                     "[APX4.9 DEBUG] FusedLinearActivationChain node_id={} produced output len={}",
                     node_id,
-                    out.data.len()
+                    out.numel()
                 );
             }
 
@@ -1579,8 +1585,8 @@ impl Graph {
                             inputs: op_inputs,
                             output: node_id,
                             backward: Box::new(move |store, _forward_inputs, out_grad| {
-                                add_to_grad_slice(store, ids[0], &out_grad.data);
-                                add_to_grad_slice(store, ids[1], &out_grad.data);
+                                add_to_grad_slice(store, ids[0], out_grad.as_cpu_slice());
+                                add_to_grad_slice(store, ids[1], out_grad.as_cpu_slice());
                             }),
                         });
                     }
@@ -1633,9 +1639,9 @@ impl Graph {
                         inputs: op_inputs,
                         output: node_id,
                         backward: Box::new(move |store, _forward_inputs, out_grad| {
-                            add_to_grad_slice(store, ids[0], &out_grad.data);
+                            add_to_grad_slice(store, ids[0], out_grad.as_cpu_slice());
 
-                            let neg: Vec<f32> = out_grad.data.iter().map(|v| -*v).collect();
+                            let neg: Vec<f32> = out_grad.as_cpu_slice().iter().map(|v| -*v).collect();
                             add_to_grad_slice(store, ids[1], &neg);
                         }),
                     });
@@ -1666,11 +1672,15 @@ impl Graph {
                             backward: Box::new(move |store, forward_inputs, out_grad| {
                                 let lhs = forward_inputs[0];
                                 let rhs = forward_inputs[1];
-                                let mut grad_a = vec![0.0; out_grad.data.len()];
-                                let mut grad_b = vec![0.0; out_grad.data.len()];
-                                for i in 0..out_grad.data.len() {
-                                    grad_a[i] = out_grad.data[i] * rhs.data[i];
-                                    grad_b[i] = out_grad.data[i] * lhs.data[i];
+                                let out_grad_slice = out_grad.as_cpu_slice();
+                                let lhs_slice = lhs.as_cpu_slice();
+                                let rhs_slice = rhs.as_cpu_slice();
+                                let n = out_grad.numel();
+                                let mut grad_a = vec![0.0; n];
+                                let mut grad_b = vec![0.0; n];
+                                for i in 0..n {
+                                    grad_a[i] = out_grad_slice[i] * rhs_slice[i];
+                                    grad_b[i] = out_grad_slice[i] * lhs_slice[i];
                                 }
                                 add_to_grad_slice(store, ids[0], &grad_a);
                                 add_to_grad_slice(store, ids[1], &grad_b);
@@ -1747,15 +1757,15 @@ impl Graph {
                                 kernel_dispatch::dispatch_matmul as dispatch_matmul_apx3_8,
                             };
                             let ctx = DeviceContext::new(crate::tensor::Device::CPU);
-                            dispatch_matmul_apx3_8(&a.data, &b.data, &mut out.data, m, k, n, &ctx);
+                            dispatch_matmul_apx3_8(a.as_cpu_slice(), b.as_cpu_slice(), out.as_cpu_slice_mut(), m, k, n, &ctx);
                         }
                         KernelKind::Tiled63B | KernelKind::Micro64 => {
                             // Reuse the CPU dispatcher that already integrates 6.3B,
                             // 6.4, and a safe fallback to 3.8/6.1.
                             crate::matmul_dispatcher::matmul_dispatch(
-                                &a.data,
-                                &b.data,
-                                &mut out.data,
+                                a.as_cpu_slice(),
+                                b.as_cpu_slice(),
+                                out.as_cpu_slice_mut(),
                                 m,
                                 k,
                                 n,
@@ -1777,11 +1787,11 @@ impl Graph {
                                 let b = forward_inputs[1];
                                 let b_t = transpose_2d(b);
                                 let grad_a = nn_linear::matmul(out_grad, &b_t);
-                                add_to_grad_slice(store, ids[0], &grad_a.data);
+                                add_to_grad_slice(store, ids[0], grad_a.as_cpu_slice());
 
                                 let a_t = transpose_2d(a);
                                 let grad_b = nn_linear::matmul(&a_t, out_grad);
-                                add_to_grad_slice(store, ids[1], &grad_b.data);
+                                add_to_grad_slice(store, ids[1], grad_b.as_cpu_slice());
                             }),
                         });
                     }
@@ -1840,9 +1850,9 @@ impl Graph {
                     // for safely falling back to the APX 3.8 dispatcher when
                     // AVX2 is not available.
                     crate::apx6_2::dispatch::dispatch_matmul_avx2(
-                        &a.data,
-                        &b.data,
-                        &mut out.data,
+                        a.as_cpu_slice(),
+                        b.as_cpu_slice(),
+                        out.as_cpu_slice_mut(),
                         m,
                         k,
                         n,
@@ -1863,12 +1873,12 @@ impl Graph {
                     };
 
                     dispatch_matmul_gpu(
-                        &a.data,
-                        &b.data,
+                        a.as_cpu_slice(),
+                        b.as_cpu_slice(),
                         m,
                         k,
                         n,
-                        &mut out.data,
+                        out.as_cpu_slice_mut(),
                         mapped,
                     );
                     mapped
@@ -1921,11 +1931,11 @@ impl Graph {
                             let b = forward_inputs[1];
                             let b_t = transpose_2d(b);
                             let grad_a = nn_linear::matmul(out_grad, &b_t);
-                            add_to_grad_slice(store, ids[0], &grad_a.data);
+                            add_to_grad_slice(store, ids[0], grad_a.as_cpu_slice());
 
                             let a_t = transpose_2d(a);
                             let grad_b = nn_linear::matmul(&a_t, out_grad);
-                            add_to_grad_slice(store, ids[1], &grad_b.data);
+                            add_to_grad_slice(store, ids[1], grad_b.as_cpu_slice());
                         }),
                     });
                 }
@@ -1947,7 +1957,7 @@ impl Graph {
                         output: node_id,
                         backward: Box::new(move |store, _forward_inputs, out_grad| {
                             let grad_x = transpose_2d(out_grad);
-                            add_to_grad_slice(store, op_inputs[0], &grad_x.data);
+                            add_to_grad_slice(store, op_inputs[0], grad_x.as_cpu_slice());
                         }),
                     });
                 }
@@ -1983,8 +1993,8 @@ impl Graph {
                                 .shape
                                 .get(1)
                                 .expect("IndexSelect table must be 2D");
-                            let mut grad_table = vec![0.0; table.data.len()];
-                            scatter_add_rows(&mut grad_table, indices, &out_grad.data, cols);
+                            let mut grad_table = vec![0.0; table.numel()];
+                            scatter_add_rows(&mut grad_table, indices, out_grad.as_cpu_slice(), cols);
                             add_to_grad_slice(store, ids[0], &grad_table);
                             // No gradient for indices (integer gather)
                         }),
@@ -2012,7 +2022,7 @@ impl Graph {
                             output: node_id,
                             backward: Box::new(move |store, _forward_inputs, out_grad| {
                                 let reshaped_back = reshape_back(out_grad, &original_shape);
-                                add_to_grad_slice(store, op_inputs[0], &reshaped_back.data);
+                                add_to_grad_slice(store, op_inputs[0], reshaped_back.as_cpu_slice());
                             }),
                         });
                     }
@@ -2035,7 +2045,7 @@ impl Graph {
                         output: node_id,
                         backward: Box::new(move |store, _forward_inputs, out_grad| {
                             let back = transpose_last_two(out_grad);
-                            add_to_grad_slice(store, op_inputs[0], &back.data);
+                            add_to_grad_slice(store, op_inputs[0], back.as_cpu_slice());
                         }),
                     });
                 }
@@ -2100,9 +2110,9 @@ impl Graph {
                         // CPU path as fallback.
                         if crate::cuda::cuda_available() {
                             dispatch_batch_matmul_cuda(
-                                &a.data,
-                                &b.data,
-                                &mut out.data,
+                                a.as_cpu_slice(),
+                                b.as_cpu_slice(),
+                                out.as_cpu_slice_mut(),
                                 batch,
                                 m,
                                 k,
@@ -2111,13 +2121,13 @@ impl Graph {
                             device_chosen = DeviceTarget::GPU;
                         } else {
                             let cpu_out = batch_matmul(&a, &b);
-                            out.data.copy_from_slice(&cpu_out.data);
+                            out.as_cpu_slice_mut().copy_from_slice(cpu_out.as_cpu_slice());
                             device_chosen = DeviceTarget::CPU;
                         }
                     }
                     Apx4ExecTarget::CPU | Apx4ExecTarget::Auto => {
                         let cpu_out = batch_matmul(&a, &b);
-                        out.data.copy_from_slice(&cpu_out.data);
+                        out.as_cpu_slice_mut().copy_from_slice(cpu_out.as_cpu_slice());
                         device_chosen = DeviceTarget::CPU;
                     }
                 }
@@ -2215,7 +2225,7 @@ impl Graph {
                 if record_tape {
                     let op_inputs = inputs.clone();
                     let output_shape = out_clone.shape.clone();
-                    let output_data = out_clone.data.clone();
+                    let output_data = out_clone.copy_to_cpu_vec();
                     self.tape.push(BackOp {
                         inputs: op_inputs.clone(),
                         output: node_id,
@@ -2230,11 +2240,12 @@ impl Graph {
                                     .iter()
                                     .product()
                             };
-                            let mut grad_x = vec![0.0; out_grad.data.len()];
+                            let out_grad_slice = out_grad.as_cpu_slice();
+                            let mut grad_x = vec![0.0; out_grad.numel()];
                             for row in 0..rows {
                                 let start = row * cols;
                                 let end = start + cols;
-                                let row_grad = &out_grad.data[start..end];
+                                let row_grad = &out_grad_slice[start..end];
                                 let row_logp = &output_data[start..end];
                                 let sum_grad: f32 = row_grad.iter().copied().sum();
                                 for i in 0..cols {
@@ -2268,7 +2279,7 @@ impl Graph {
                 if record_tape {
                     let op_inputs = inputs.clone();
                     let data_shape = data.shape.clone();
-                    let indices_values = indices.data.clone();
+                    let indices_values = indices.copy_to_cpu_vec();
                     self.tape.push(BackOp {
                         inputs: op_inputs.clone(),
                         output: node_id,
@@ -2277,13 +2288,14 @@ impl Graph {
                                 .last()
                                 .expect("Gather data must have rank >= 1");
                             let rows = indices_values.len();
-                            assert_eq!(rows, out_grad.data.len(), "Gather grad mismatch");
+                            assert_eq!(rows, out_grad.numel(), "Gather grad mismatch");
                             let mut grad_data = vec![0.0; data_shape.iter().product()];
+                            let out_grad_slice = out_grad.as_cpu_slice();
                             for row in 0..rows {
                                 let idx = indices_values[row].round() as isize;
                                 assert!(idx >= 0 && (idx as usize) < last_dim, "Gather index out of bounds");
                                 let dst = row * last_dim + idx as usize;
-                                grad_data[dst] += out_grad.data[row];
+                                grad_data[dst] += out_grad_slice[row];
                             }
                             add_to_grad_slice(store, op_inputs[0], &grad_data);
                         }),
@@ -2309,22 +2321,24 @@ impl Graph {
                     .shape
                     .last()
                     .expect("CrossEntropyLoss log probs require rank >= 1");
-                let rows = log_probs.data.len() / last_dim;
+                let rows = log_probs.numel() / last_dim;
                 assert_eq!(
-                    targets.data.len(),
+                    targets.numel(),
                     rows,
                     "CrossEntropyLoss targets mismatch"
                 );
 
+                let targets_slice = targets.as_cpu_slice();
+                let log_probs_slice = log_probs.as_cpu_slice();
                 let mut total = 0.0f32;
                 let mut target_indices = Vec::with_capacity(rows);
                 for row in 0..rows {
-                    let idx = targets.data[row].round() as isize;
+                    let idx = targets_slice[row].round() as isize;
                     assert!(idx >= 0 && (idx as usize) < last_dim, "CrossEntropyLoss target out of bounds");
                     let idx_usize = idx as usize;
                     target_indices.push(idx_usize);
                     let pos = row * last_dim + idx_usize;
-                    total += log_probs.data[pos];
+                    total += log_probs_slice[pos];
                 }
                 let loss_val = -total / rows as f32;
 
@@ -2335,20 +2349,20 @@ impl Graph {
                     Layout::Contiguous,
                     log_probs.dtype,
                 );
-                out.data[0] = loss_val;
+                out.as_cpu_slice_mut()[0] = loss_val;
                 self.nodes[node_id].set_output(out);
 
                 if record_tape {
                     let op_inputs = inputs.clone();
                     let total_rows = rows;
                     let vocab = last_dim;
-                    let log_prob_len = log_probs.data.len();
+                    let log_prob_len = log_probs.numel();
                     self.tape.push(BackOp {
                         inputs: op_inputs.clone(),
                         output: node_id,
                         backward: Box::new(move |store, _forward_inputs, out_grad| {
-                            assert_eq!(out_grad.data.len(), 1, "CrossEntropyLoss grad must be scalar");
-                            let scale = -out_grad.data[0] / total_rows as f32;
+                            assert_eq!(out_grad.numel(), 1, "CrossEntropyLoss grad must be scalar");
+                            let scale = -out_grad.as_cpu_slice()[0] / total_rows as f32;
                             let mut grad_log_probs = vec![0.0; log_prob_len];
                             for (row, &idx) in target_indices.iter().enumerate() {
                                 let pos = row * vocab + idx;
@@ -2573,11 +2587,11 @@ impl Graph {
 
                             let w_t = transpose_2d(w);
                             let grad_x = nn_linear::matmul(out_grad, &w_t);
-                            add_to_grad_slice(store, ids[0], &grad_x.data);
+                            add_to_grad_slice(store, ids[0], grad_x.as_cpu_slice());
 
                             let x_t = transpose_2d(x);
                             let grad_w = nn_linear::matmul(&x_t, out_grad);
-                            add_to_grad_slice(store, ids[1], &grad_w.data);
+                            add_to_grad_slice(store, ids[1], grad_w.as_cpu_slice());
 
                             if has_bias {
                                 let bias_grad = sum_rows(out_grad);
@@ -2756,12 +2770,15 @@ impl Graph {
                             output: node_id,
                             backward: Box::new(move |store, forward_inputs, out_grad| {
                                 let x = forward_inputs[0];
-                                let mut grad_x = vec![0.0; x.data.len()];
-                                for i in 0..x.data.len() {
-                                    let v = x.data[i];
+                                let x_slice = x.as_cpu_slice();
+                                let out_grad_slice = out_grad.as_cpu_slice();
+                                let n = x.numel();
+                                let mut grad_x = vec![0.0; n];
+                                for i in 0..n {
+                                    let v = x_slice[i];
                                     let sig = 1.0f32 / (1.0f32 + (-v).exp());
                                     let deriv = sig + v * sig * (1.0 - sig);
-                                    grad_x[i] = out_grad.data[i] * deriv;
+                                    grad_x[i] = out_grad_slice[i] * deriv;
                                 }
                                 add_to_grad_slice(store, ids[0], &grad_x);
                             }),
@@ -2790,7 +2807,7 @@ impl Graph {
                             .cloned()
                             .expect("Softmax output just computed");
                         let serial_shape = softmax_out.shape.clone();
-                        let serial_data = softmax_out.data.clone();
+                        let serial_data = softmax_out.copy_to_cpu_vec();
 
                         self.tape.push(BackOp {
                             inputs: op_inputs,
@@ -2798,7 +2815,7 @@ impl Graph {
                             backward: Box::new(move |store, _forward_inputs, out_grad| {
                                 if cpu_features().avx2 {
                                     let grad_x = nn_softmax::softmax_backward_parallel(&softmax_out, out_grad);
-                                    add_to_grad_slice(store, ids[0], &grad_x.data);
+                                    add_to_grad_slice(store, ids[0], grad_x.as_cpu_slice());
                                 } else {
                                     let cols = *serial_shape
                                         .last()
@@ -2810,11 +2827,12 @@ impl Graph {
                                             .iter()
                                             .product()
                                     };
-                                    let mut grad_x = vec![0.0; out_grad.data.len()];
+                                    let out_grad_slice = out_grad.as_cpu_slice();
+                                    let mut grad_x = vec![0.0; out_grad.numel()];
                                     for row in 0..rows {
                                         let start = row * cols;
                                         let end = start + cols;
-                                        let row_grad = &out_grad.data[start..end];
+                                        let row_grad = &out_grad_slice[start..end];
                                         let row_y = &serial_data[start..end];
                                         let dot: f32 = row_grad
                                             .iter()
@@ -2845,7 +2863,7 @@ impl Graph {
                         inputs: op_inputs,
                         output: node_id,
                         backward: Box::new(move |store, _forward_inputs, out_grad| {
-                            add_to_grad_slice(store, src, &out_grad.data);
+                            add_to_grad_slice(store, src, out_grad.as_cpu_slice());
                         }),
                     });
                 }
@@ -2950,7 +2968,7 @@ impl Graph {
                             self.nodes[*i]
                                 .output
                                 .as_ref()
-                                .map(|t| t.data.len())
+                                .map(|t| t.numel())
                                 .unwrap_or(0)
                         })
                         .collect();
@@ -2959,7 +2977,7 @@ impl Graph {
                         node_id,
                         node_type,
                         out.shape,
-                        out.data.len(),
+                        out.numel(),
                         input_lens
                     );
                 }
@@ -2977,7 +2995,7 @@ impl Graph {
             .as_ref()
             .expect("Loss node missing output");
         self.grad_store
-            .set(loss_node_id, vec![1.0; loss.data.len()]);
+            .set(loss_node_id, vec![1.0; loss.numel()]);
 
         // Build topological levels starting from the loss and run per-level parallel backward.
         let levels = self.build_backward_levels(loss_node_id);
@@ -3002,7 +3020,7 @@ impl Graph {
             if let Some(output) = &mut node.output {
                 assert_eq!(
                     buffer.len(),
-                    output.data.len(),
+                    output.numel(),
                     "gradient length mismatch for node {} ({:?})",
                     node_id,
                     node.node_type
@@ -3024,7 +3042,7 @@ impl Graph {
             .as_ref()
             .expect("Loss node missing output");
         self.grad_store
-            .set(loss_node_id, vec![1.0; loss.data.len()]);
+            .set(loss_node_id, vec![1.0; loss.numel()]);
 
         // Build topological levels starting from the loss and run backward sequentially.
         let levels = self.build_backward_levels(loss_node_id);
@@ -3043,7 +3061,7 @@ impl Graph {
             if let Some(output) = &mut node.output {
                 assert_eq!(
                     buffer.len(),
-                    output.data.len(),
+                    output.numel(),
                     "gradient length mismatch for node {} ({:?}) (sequential)",
                     node_id,
                     node.node_type
@@ -3079,14 +3097,14 @@ impl Graph {
             .expect("Missing output tensor during backward");
         assert_eq!(
             grad_output.len(),
-            output_template.data.len(),
+            output_template.numel(),
             "gradient length mismatch for node {} ({:?})",
             op.output,
             self.nodes[op.output].node_type
         );
 
         let mut out_grad_tensor = output_template.clone();
-        out_grad_tensor.data = grad_output;
+        out_grad_tensor.set_cpu_data(grad_output);
         out_grad_tensor.grad = None;
 
         let input_refs: Vec<&Tensor> = op
@@ -3212,26 +3230,21 @@ fn transpose_2d(t: &Tensor) -> Tensor {
     assert_eq!(t.shape.len(), 2, "transpose_2d expects a 2D tensor");
     let rows = t.shape[0];
     let cols = t.shape[1];
-    let mut data = vec![0.0; t.data.len()];
+    let t_data = t.as_cpu_slice();
+    let mut data = vec![0.0; t.numel()];
     for r in 0..rows {
         for c in 0..cols {
-            data[c * rows + r] = t.data[r * cols + c];
+            data[c * rows + r] = t_data[r * cols + c];
         }
     }
     let new_shape = vec![cols, rows];
-    let strides = Tensor::compute_strides(&new_shape, &Layout::Contiguous);
-    Tensor {
-        shape: new_shape,
+    Tensor::new_cpu_with_layout(
+        new_shape,
         data,
-        device: t.device,
-        dtype: t.dtype,
-        layout: Layout::Contiguous,
-        strides,
-        grad: None,
-        gpu: None,
-        persistence: None,
-        op: None,
-    }
+        t.device,
+        t.dtype,
+        Layout::Contiguous,
+    )
 }
 
 fn sum_rows(t: &Tensor) -> Vec<f32> {
@@ -3243,10 +3256,11 @@ fn sum_rows(t: &Tensor) -> Vec<f32> {
         t.shape[..t.shape.len() - 1].iter().product()
     };
     let mut result = vec![0.0; cols];
+    let t_data = t.as_cpu_slice();
     for row in 0..rows {
         let start = row * cols;
         for i in 0..cols {
-            result[i] += t.data[start + i];
+            result[i] += t_data[start + i];
         }
     }
     result
@@ -3273,18 +3287,13 @@ fn reshape_tensor(x: &Tensor, target: &Vec<isize>) -> Tensor {
         new_shape[idx] = inferred_dim;
     }
     assert_eq!(new_shape.iter().product::<usize>(), total, "reshape must preserve elements");
-    Tensor {
-        shape: new_shape.clone(),
-        data: x.data.clone(),
-        device: x.device,
-        dtype: x.dtype,
-        layout: Layout::Contiguous,
-        strides: Tensor::compute_strides(&new_shape, &Layout::Contiguous),
-        grad: None,
-        gpu: None,
-        persistence: None,
-        op: None,
-    }
+    Tensor::new_cpu_with_layout(
+        new_shape,
+        x.copy_to_cpu_vec(),
+        x.device,
+        x.dtype,
+        Layout::Contiguous,
+    )
 }
 
 fn reshape_back(x: &Tensor, original_shape: &Vec<usize>) -> Tensor {
@@ -3303,6 +3312,8 @@ fn transpose_last_two(x: &Tensor) -> Tensor {
     let outer: usize = new_shape[..rank - 2].iter().product();
     let rows = new_shape[rank - 2];
     let cols = new_shape[rank - 1];
+    let x_data = x.as_cpu_slice();
+    let out_data = out.as_cpu_slice_mut();
     for outer_idx in 0..outer {
         let offset_in = outer_idx * rows * cols;
         let offset_out = offset_in;
@@ -3310,7 +3321,7 @@ fn transpose_last_two(x: &Tensor) -> Tensor {
             for c in 0..cols {
                 let src = offset_in + c * rows + r;
                 let dst = offset_out + r * cols + c;
-                out.data[dst] = x.data[src];
+                out_data[dst] = x_data[src];
             }
         }
     }
@@ -3336,9 +3347,9 @@ fn batch_matmul(a: &Tensor, b: &Tensor) -> Tensor {
     );
 
     crate::matmul_dispatcher::batch_matmul_dispatch(
-        &a.data,
-        &b.data,
-        &mut out.data,
+        a.as_cpu_slice(),
+        b.as_cpu_slice(),
+        out.as_cpu_slice_mut(),
         batch,
         m,
         k,
@@ -3353,8 +3364,11 @@ fn batch_matmul_backward(a: &Tensor, b: &Tensor, out_grad: &Tensor) -> (Vec<f32>
     let m = a.shape[1];
     let k = a.shape[2];
     let n = b.shape[2];
-    let mut grad_a = vec![0.0; a.data.len()];
-    let mut grad_b = vec![0.0; b.data.len()];
+    let a_slice = a.as_cpu_slice();
+    let b_slice = b.as_cpu_slice();
+    let out_grad_slice = out_grad.as_cpu_slice();
+    let mut grad_a = vec![0.0; a.numel()];
+    let mut grad_b = vec![0.0; b.numel()];
     for batch_idx in 0..batch {
         let a_offset = batch_idx * m * k;
         let b_offset = batch_idx * k * n;
@@ -3365,7 +3379,7 @@ fn batch_matmul_backward(a: &Tensor, b: &Tensor, out_grad: &Tensor) -> (Vec<f32>
                 for j in 0..n {
                     let grad_idx = out_offset + i * n + j;
                     let b_idx = b_offset + kk * n + j;
-                    sum += out_grad.data[grad_idx] * b.data[b_idx];
+                    sum += out_grad_slice[grad_idx] * b_slice[b_idx];
                 }
                 grad_a[a_offset + i * k + kk] = sum;
             }
@@ -3376,7 +3390,7 @@ fn batch_matmul_backward(a: &Tensor, b: &Tensor, out_grad: &Tensor) -> (Vec<f32>
                 for i in 0..m {
                     let grad_idx = out_offset + i * n + j;
                     let a_idx = a_offset + i * k + kk;
-                    sum += out_grad.data[grad_idx] * a.data[a_idx];
+                    sum += out_grad_slice[grad_idx] * a_slice[a_idx];
                 }
                 grad_b[b_offset + kk * n + j] = sum;
             }
@@ -3406,7 +3420,7 @@ fn add_broadcast_inplace(out: &mut Tensor, other: &Tensor) {
             }
         }
         let other_offset = linear_index(&other_index, &other.shape);
-        out.data[out_offset] += other.data[other_offset];
+        out.as_cpu_slice_mut()[out_offset] += other.as_cpu_slice()[other_offset];
         if !increment_multi_index(&mut index, &out.shape) {
             break;
         }
@@ -3428,7 +3442,7 @@ fn reduce_broadcast_grad(out_grad: &Tensor, target_shape: &Vec<usize>) -> Vec<f3
             }
         }
         let target_offset = linear_index(&target_index, target_shape);
-        grad[target_offset] += out_grad.data[out_offset];
+        grad[target_offset] += out_grad.as_cpu_slice()[out_offset];
         if !increment_multi_index(&mut index, &out_grad.shape) {
             break;
         }
@@ -3472,22 +3486,25 @@ fn index_select_rows(table: &Tensor, indices: &Tensor) -> Tensor {
         table.dtype,
     );
 
-    for (slot, &raw_idx) in indices.data.iter().enumerate() {
+    let indices_slice = indices.as_cpu_slice();
+    let table_slice = table.as_cpu_slice();
+    let out_slice = out.as_cpu_slice_mut();
+    for (slot, &raw_idx) in indices_slice.iter().enumerate() {
         let idx = raw_idx.round() as isize;
         assert!(idx >= 0 && (idx as usize) < rows, "IndexSelect index out of bounds");
         let idx = idx as usize;
         let src_start = idx * cols;
         let dst_start = slot * cols;
-        out.data[dst_start..dst_start + cols]
-            .copy_from_slice(&table.data[src_start..src_start + cols]);
+        out_slice[dst_start..dst_start + cols]
+            .copy_from_slice(&table_slice[src_start..src_start + cols]);
     }
 
     out
 }
 
 fn scatter_add_rows(grad_table: &mut [f32], indices: &Tensor, grad_out: &[f32], cols: usize) {
-    assert_eq!(grad_out.len(), indices.data.len() * cols);
-    for (slot, &raw_idx) in indices.data.iter().enumerate() {
+    assert_eq!(grad_out.len(), indices.numel() * cols);
+    for (slot, &raw_idx) in indices.as_cpu_slice().iter().enumerate() {
         let idx = raw_idx.round() as isize;
         assert!(idx >= 0, "IndexSelect gradient index negative");
         let idx = idx as usize;

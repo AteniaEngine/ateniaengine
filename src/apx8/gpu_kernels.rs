@@ -17,7 +17,8 @@ pub fn gpu_vec_add(a: &mut Tensor, b: &Tensor) {
     b_clone.ensure_gpu_mirror();
 
     // Simulated kernel: sum over CPU buffers.
-    for (va, vb) in a.data.iter_mut().zip(b.data.iter()) {
+    let b_slice = b.as_cpu_slice();
+    for (va, vb) in a.as_cpu_slice_mut().iter_mut().zip(b_slice.iter()) {
         *va += *vb;
     }
 

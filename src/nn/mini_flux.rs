@@ -261,7 +261,7 @@ fn register_weight<G: GraphLike>(
     }
     let seed = (hash % 4096) as f32 / 4096.0;
     let scale = 0.1f32;
-    for (idx, value) in tensor.data.iter_mut().enumerate() {
+    for (idx, value) in tensor.as_cpu_slice_mut().iter_mut().enumerate() {
         let angle = (idx as f32 + seed) * 0.37;
         *value = angle.sin() * scale;
     }
@@ -279,10 +279,13 @@ fn build_positional_table(seq_len: usize, dim: usize) -> Tensor {
         Layout::Contiguous,
         DType::F32,
     );
-    for i in 0..seq_len {
-        for j in 0..dim {
-            let idx = i * dim + j;
-            tensor.data[idx] = (i as f32) / ((j + 1) as f32);
+    {
+        let t_slice = tensor.as_cpu_slice_mut();
+        for i in 0..seq_len {
+            for j in 0..dim {
+                let idx = i * dim + j;
+                t_slice[idx] = (i as f32) / ((j + 1) as f32);
+            }
         }
     }
     tensor.strides = Tensor::compute_strides(&tensor.shape, &tensor.layout);

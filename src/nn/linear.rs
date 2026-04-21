@@ -57,15 +57,16 @@ pub fn linear(x: &Tensor, weight: &Tensor, bias: Option<&Tensor>) -> Tensor {
         x.dtype,
     );
 
-    let weight_data = weight.data.clone();
-    let bias_data = bias.map(|b| b.data.clone());
+    let weight_data = weight.copy_to_cpu_vec();
+    let bias_data = bias.map(|b| b.copy_to_cpu_vec());
+    let x_slice = x.as_cpu_slice();
 
     out
-        .data
+        .as_cpu_slice_mut()
         .par_chunks_mut(out_features)
         .enumerate()
         .for_each(|(row, chunk)| {
-            let x_row = &x.data[row * in_features_x..row * in_features_x + in_features_x];
+            let x_row = &x_slice[row * in_features_x..row * in_features_x + in_features_x];
             for j in 0..out_features {
                 let mut sum = 0.0f32;
                 for k in 0..in_features_x {

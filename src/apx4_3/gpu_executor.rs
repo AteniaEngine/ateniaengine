@@ -155,7 +155,7 @@ impl Graph {
 
             let mut out = crate::tensor::Tensor::zeros_new(&[m, n], x.device);
 
-            cuda_linear(&x.data, &w.data, &b.data, &mut out.data, m, k, n);
+            cuda_linear(x.as_cpu_slice(), w.as_cpu_slice(), b.as_cpu_slice(), out.as_cpu_slice_mut(), m, k, n);
 
             self.nodes[id].output = Some(out);
         } else {
@@ -189,7 +189,7 @@ impl Graph {
 
         let mut out = crate::tensor::Tensor::zeros_new(&[m, n], x.device);
 
-        cuda_fused_linear_silu(&x.data, &w.data, &b.data, &mut out.data, m, k, n);
+        cuda_fused_linear_silu(x.as_cpu_slice(), w.as_cpu_slice(), b.as_cpu_slice(), out.as_cpu_slice_mut(), m, k, n);
 
         self.nodes[id].output = Some(out);
     }

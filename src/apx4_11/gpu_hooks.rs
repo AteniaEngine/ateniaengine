@@ -68,7 +68,7 @@ pub fn try_gpu_matmul(a: &Tensor, b: &Tensor, out: &mut Tensor) -> bool {
         || {
             let gpu_out = cuda_matmul(a, b, m, k, n);
             if gpu_out.shape == out.shape {
-                out.data.clone_from_slice(&gpu_out.data);
+                out.as_cpu_slice_mut().clone_from_slice(gpu_out.as_cpu_slice());
                 ran_gpu = true;
                 if apx_trace_enabled() {
                     println!("[APX 4.11] GPU MatMul executed");
@@ -137,10 +137,10 @@ pub unsafe fn fused_linear_silu_gpu(
             .clone();
 
         cuda_fused_linear_silu(
-            &x.data,
-            &w.data,
-            &b.data,
-            &mut out.data,
+            x.as_cpu_slice(),
+            w.as_cpu_slice(),
+            b.as_cpu_slice(),
+            out.as_cpu_slice_mut(),
             m,
             k,
             n,

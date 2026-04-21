@@ -16,7 +16,7 @@ pub struct GPUTransferEstimator;
 
 impl GPUTransferEstimator {
     pub fn estimate(_t: &Tensor, _placement: DevicePlacement) -> TransferEstimate {
-        let bytes = (_t.num_elements() as f64) * (_t.dtype.size_in_bytes() as f64);
+        let bytes = (_t.numel() as f64) * (_t.dtype.size_in_bytes() as f64);
 
         // Default calibrated values
         let bw_pcie_gb_s = 12.0;     // typical PCIe 4.0

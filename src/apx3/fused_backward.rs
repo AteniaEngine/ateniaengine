@@ -18,19 +18,23 @@ pub fn fused_linear_backward(
     let out_dim = weight.shape[1];
 
     assert_eq!(weight.shape[0], in_dim, "weight rows must match in_dim");
-    assert_eq!(out_grad.data.len(), batch * out_dim, "out_grad shape mismatch");
+    assert_eq!(out_grad.numel(), batch * out_dim, "out_grad shape mismatch");
 
     let mut d_w = vec![0.0f32; in_dim * out_dim];
     let mut d_x = vec![0.0f32; batch * in_dim];
 
     let chunk = chunk_size(batch);
 
+    let input_slice = input.as_cpu_slice();
+    let out_grad_slice = out_grad.as_cpu_slice();
+    let weight_slice = weight.as_cpu_slice();
+
     for start in (0..batch).step_by(chunk) {
         let end = (start + chunk).min(batch);
 
         for i in start..end {
-            let x = &input.data[i * in_dim..(i + 1) * in_dim];
-            let dy = &out_grad.data[i * out_dim..(i + 1) * out_dim];
+            let x = &input_slice[i * in_dim..(i + 1) * in_dim];
+            let dy = &out_grad_slice[i * out_dim..(i + 1) * out_dim];
 
             // dW += x outer dy  (layout [in_dim, out_dim])
             for o in 0..out_dim {
@@ -43,7 +47,7 @@ pub fn fused_linear_backward(
             for ii in 0..in_dim {
                 let mut acc = 0.0f32;
                 for o in 0..out_dim {
-                    acc += dy[o] * weight.data[ii * out_dim + o];
+                    acc += dy[o] * weight_slice[ii * out_dim + o];
                 }
                 d_x[i * in_dim + ii] = acc;
             }

@@ -28,7 +28,7 @@ impl Trainer {
 
     /// Simulates a forward pass by summing tensor data for now.
     pub fn forward(&self, batch: &Tensor) -> f32 {
-        batch.data.iter().sum()
+        batch.as_cpu_slice().iter().sum()
     }
 
     /// Placeholder update method (no-op for now).
@@ -49,21 +49,17 @@ impl Trainer {
         for chunk in dataset.chunks(batch_size) {
             let mut combined = Vec::new();
             for tensor in chunk {
-                combined.extend_from_slice(&tensor.data);
+                combined.extend_from_slice(tensor.as_cpu_slice());
             }
 
-            let batch_tensor = Tensor {
-                shape: vec![chunk.len(), sample_template.num_elements()],
-                data: combined,
-                device: Device::CPU,
-                dtype: sample_template.dtype,
-                layout: sample_template.layout,
-                strides: sample_template.strides.clone(),
-                grad: None,
-                gpu: None,
-                persistence: None,
-                op: None,
-            };
+            let mut batch_tensor = Tensor::new_cpu_with_layout(
+                vec![chunk.len(), sample_template.numel()],
+                combined,
+                Device::CPU,
+                sample_template.dtype,
+                sample_template.layout,
+            );
+            batch_tensor.strides = sample_template.strides.clone();
 
             let loss = self.forward(&batch_tensor);
             self.update(loss);

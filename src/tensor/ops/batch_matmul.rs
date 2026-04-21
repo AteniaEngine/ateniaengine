@@ -19,7 +19,7 @@ pub fn batch_matmul_parallel(a: &Tensor, b: &Tensor) -> Tensor {
         a.dtype,
     );
 
-    batch_matmul_dispatch(&a.data, &b.data, &mut out.data, batch, m, k, n);
+    batch_matmul_dispatch(a.as_cpu_slice(), b.as_cpu_slice(), out.as_cpu_slice_mut(), batch, m, k, n);
 
     out
 }

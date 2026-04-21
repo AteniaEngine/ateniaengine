@@ -1,5 +1,5 @@
 use crate::cuda::matmul::cuda_matmul;
-use crate::tensor::{DType, Device, Layout, Tensor};
+use crate::tensor::Tensor;
 
 pub fn gpu_matmul(
     a: &[f32],
@@ -14,42 +14,16 @@ pub fn gpu_matmul(
     // CUDA kernel when available.
 
     // Tensor A with shape [m, k]
-    let shape_a = vec![m, k];
-    let strides_a = Tensor::compute_strides(&shape_a, &Layout::Contiguous);
-    let ta = Tensor {
-        shape: shape_a,
-        data: a.to_vec(),
-        device: Device::CPU,
-        dtype: DType::F32,
-        layout: Layout::Contiguous,
-        strides: strides_a,
-        grad: None,
-        gpu: None,
-        persistence: None,
-        op: None,
-    };
+    let ta = Tensor::new_cpu(vec![m, k], a.to_vec());
 
     // Tensor B with shape [k, n]
-    let shape_b = vec![k, n];
-    let strides_b = Tensor::compute_strides(&shape_b, &Layout::Contiguous);
-    let tb = Tensor {
-        shape: shape_b,
-        data: b.to_vec(),
-        device: Device::CPU,
-        dtype: DType::F32,
-        layout: Layout::Contiguous,
-        strides: strides_b,
-        grad: None,
-        gpu: None,
-        persistence: None,
-        op: None,
-    };
+    let tb = Tensor::new_cpu(vec![k, n], b.to_vec());
 
     let tc = cuda_matmul(&ta, &tb, m, k, n);
 
     // Copy the result into the flat output buffer.
-    assert_eq!(tc.data.len(), out.len(), "gpu_matmul: unexpected output size");
-    out.copy_from_slice(&tc.data);
+    assert_eq!(tc.numel(), out.len(), "gpu_matmul: unexpected output size");
+    out.copy_from_slice(tc.as_cpu_slice());
 }
 
 pub fn gpu_add(_a: &[f32], _b: &[f32], _out: &mut [f32]) {

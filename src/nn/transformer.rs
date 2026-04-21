@@ -86,7 +86,7 @@ fn register_weight(
     );
     let seed = deterministic_seed(prefix, name);
     let scale = 0.1f32;
-    for (idx, value) in tensor.data.iter_mut().enumerate() {
+    for (idx, value) in tensor.as_cpu_slice_mut().iter_mut().enumerate() {
         let angle = (idx as f32 + seed) * 0.37;
         *value = angle.sin() * scale;
     }
