@@ -77,32 +77,6 @@ fn test_ensure_cpu_noop() {
 }
 
 #[test]
-#[allow(deprecated)]
-fn test_deprecated_data_still_works() {
-    // The pre-0.20 `data()` method still returns the CPU slice,
-    // so pre-migration call sites (expected to be removed in a
-    // later sub-milestone) keep compiling.
-    let t = Tensor::new_cpu(vec![3], vec![1.5, 2.5, 3.5]);
-    let slice: &[f32] = t.data();
-    assert_eq!(slice, &[1.5, 2.5, 3.5]);
-}
-
-#[test]
-#[allow(deprecated)]
-fn test_deprecated_data_mut_still_works() {
-    // The pre-0.20 `data_mut()` method still returns a mutable
-    // CPU slice.
-    let mut t = Tensor::new_cpu(vec![3], vec![0.0, 0.0, 0.0]);
-    {
-        let slice: &mut [f32] = t.data_mut();
-        slice[0] = 11.0;
-        slice[1] = 22.0;
-        slice[2] = 33.0;
-    }
-    assert_eq!(t.as_cpu_slice(), &[11.0, 22.0, 33.0]);
-}
-
-#[test]
 fn test_clone_preserves_storage() {
     let t = Tensor::new_cpu(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0]);
     let c = t.clone();

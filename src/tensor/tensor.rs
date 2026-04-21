@@ -419,42 +419,6 @@ impl Tensor {
     }
 
     // ================================================================
-    //  Deprecated compatibility shims (pre-0.20 field-access surface)
-    // ================================================================
-
-    /// Deprecated; use [`Tensor::as_cpu_slice`] instead.
-    #[deprecated(
-        since = "0.20.0",
-        note = "Use `Tensor::as_cpu_slice()` instead. This method is a \
-                compatibility shim for the pre-0.20 direct field access to \
-                `data` and will be removed in a future version."
-    )]
-    pub fn data(&self) -> &[f32] {
-        self.as_cpu_slice()
-    }
-
-    /// Deprecated; use [`Tensor::as_cpu_slice_mut`] instead.
-    #[deprecated(
-        since = "0.20.0",
-        note = "Use `Tensor::as_cpu_slice_mut()` instead. This method is a \
-                compatibility shim for the pre-0.20 direct field access to \
-                `data` and will be removed in a future version."
-    )]
-    pub fn data_mut(&mut self) -> &mut [f32] {
-        self.as_cpu_slice_mut()
-    }
-
-    /// Deprecated; use [`Tensor::numel`] instead.
-    #[deprecated(
-        since = "0.20.0",
-        note = "Use `Tensor::numel()` instead. This is the pre-0.20 name \
-                and will be removed in a future version."
-    )]
-    pub fn num_elements(&self) -> usize {
-        self.numel()
-    }
-
-    // ================================================================
     //  Other pre-existing methods
     // ================================================================
 
