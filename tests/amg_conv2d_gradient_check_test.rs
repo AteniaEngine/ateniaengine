@@ -1,4 +1,4 @@
-//! Gradient check: AMG's `Conv2D` analytical backward vs central-difference
+﻿//! Gradient check: AMG's `Conv2D` analytical backward vs central-difference
 //! numerical gradient on a small hand-chosen setup.
 //!
 //! Technique: for loss `L(x) = sum(Conv2D(x, ...))`, the numerical
@@ -19,22 +19,13 @@ use atenia_engine::amg::nodes::Conv2DConfig;
 use atenia_engine::amg::ops::conv2d::{
     execute_conv2d as amg_conv2d, execute_conv2d_backward as amg_conv2d_backward,
 };
-use atenia_engine::tensor::{DType, Device, Layout, Tensor as AmgTensor};
+use atenia_engine::tensor::Tensor as AmgTensor;
 
 const H: f32 = 1e-3;
 const REL_TOL: f32 = 1e-2;
 
 fn amg_tensor(shape: Vec<usize>, data: Vec<f32>) -> AmgTensor {
-    let mut t = AmgTensor::with_layout(
-        shape,
-        0.0,
-        Device::CPU,
-        Layout::Contiguous,
-        DType::F32,
-    );
-    assert_eq!(t.data.len(), data.len());
-    t.data = data;
-    t
+    AmgTensor::new_cpu(shape, data)
 }
 
 /// Central-difference gradient of a scalar function `f: Vec<f32> -> f32`
@@ -111,13 +102,13 @@ fn conv2d_grad_input_matches_finite_diff() {
     // Analytical gradient: loss = sum(out) ⇒ out_grad = ones.
     let input = amg_tensor(input_shape.clone(), input_data.clone());
     let out = amg_conv2d(&input, &weight, None, &cfg);
-    let ones = amg_tensor(out.shape.clone(), vec![1.0; out.data.len()]);
+    let ones = amg_tensor(out.shape.clone(), vec![1.0; out.numel()]);
     let grads = amg_conv2d_backward(&input, &weight, None, &ones, &cfg);
 
     // Numerical gradient: perturb each input element and sum forward output.
     let grad_num = finite_diff_grad(&input_data, |x| {
         let t = amg_tensor(input_shape.clone(), x.to_vec());
-        amg_conv2d(&t, &weight, None, &cfg).data.iter().sum()
+        amg_conv2d(&t, &weight, None, &cfg).as_cpu_slice().iter().sum()
     });
 
     assert_grad_close(&grads.grad_input, &grad_num, "grad_input");
@@ -132,13 +123,13 @@ fn conv2d_grad_weight_matches_finite_diff() {
     // Analytical.
     let weight = amg_tensor(weight_shape.clone(), weight_data.clone());
     let out = amg_conv2d(&input, &weight, None, &cfg);
-    let ones = amg_tensor(out.shape.clone(), vec![1.0; out.data.len()]);
+    let ones = amg_tensor(out.shape.clone(), vec![1.0; out.numel()]);
     let grads = amg_conv2d_backward(&input, &weight, None, &ones, &cfg);
 
     // Numerical: perturb each weight element.
     let grad_num = finite_diff_grad(&weight_data, |w| {
         let wt = amg_tensor(weight_shape.clone(), w.to_vec());
-        amg_conv2d(&input, &wt, None, &cfg).data.iter().sum()
+        amg_conv2d(&input, &wt, None, &cfg).as_cpu_slice().iter().sum()
     });
 
     assert_grad_close(&grads.grad_weight, &grad_num, "grad_weight");
@@ -154,7 +145,7 @@ fn conv2d_grad_bias_matches_finite_diff() {
 
     // Analytical.
     let out = amg_conv2d(&input, &weight, Some(&bias), &cfg);
-    let ones = amg_tensor(out.shape.clone(), vec![1.0; out.data.len()]);
+    let ones = amg_tensor(out.shape.clone(), vec![1.0; out.numel()]);
     let grads = amg_conv2d_backward(&input, &weight, Some(&bias), &ones, &cfg);
     let grad_bias = grads
         .grad_bias
@@ -164,7 +155,7 @@ fn conv2d_grad_bias_matches_finite_diff() {
     // Numerical.
     let grad_num = finite_diff_grad(&bias_data, |b| {
         let bt = amg_tensor(vec![b.len()], b.to_vec());
-        amg_conv2d(&input, &weight, Some(&bt), &cfg).data.iter().sum()
+        amg_conv2d(&input, &weight, Some(&bt), &cfg).as_cpu_slice().iter().sum()
     });
 
     assert_grad_close(grad_bias, &grad_num, "grad_bias");

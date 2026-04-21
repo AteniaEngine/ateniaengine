@@ -1,4 +1,4 @@
-use atenia_engine::tensor::{Device, Tensor};
+﻿use atenia_engine::tensor::{Device, Tensor};
 use atenia_engine::apx3_5::memory_manager::MemoryManager;
 
 #[test]
@@ -8,9 +8,9 @@ fn apx_3_5_cpu_to_cpu_roundtrip_is_identical() {
 
     assert_eq!(t.shape, moved.shape);
     assert_eq!(t.strides, moved.strides);
-    assert_eq!(t.data.len(), moved.data.len());
+    assert_eq!(t.numel(), moved.numel());
 
-    for (a, b) in t.data.iter().zip(&moved.data) {
+    for (a, b) in t.as_cpu_slice().iter().zip(moved.as_cpu_slice()) {
         let diff = (a - b).abs();
         assert!(diff < 1e-6, "values differ: a={} b={} diff={}", a, b, diff);
     }

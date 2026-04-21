@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+﻿#![allow(dead_code)]
 
 use atenia_engine::v16;
 use atenia_engine::v17;
@@ -58,7 +58,7 @@ fn end_to_end_inference_produces_correct_output() {
     let result = infer(&artifact, input, None).expect("inference");
 
     assert_eq!(result.output.shape, vec![2, 1]);
-    assert_eq!(result.output.data, vec![2.0, 3.0]);
+    assert_eq!(result.output.data.clone(), vec![2.0, 3.0]);
     assert!(!result.executed_steps.is_empty());
     assert!(!result.explanation_text.is_empty());
     assert!(!result.explanation_json.is_empty());

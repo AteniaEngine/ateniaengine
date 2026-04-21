@@ -1,25 +1,11 @@
-use atenia_engine::amm::offloading::{Offloader, StorageLocation};
+﻿use atenia_engine::amm::offloading::{Offloader, StorageLocation};
 use atenia_engine::tensor::tensor::{Device, DType, Layout, Tensor};
 use std::fs;
 use uuid::Uuid;
 
 fn make_tensor(values: Vec<f32>, device: Device) -> Tensor {
     let shape = vec![values.len()];
-    let layout = Layout::Contiguous;
-    let strides = Tensor::compute_strides(&shape, &layout);
-
-    Tensor {
-        shape,
-        data: values,
-        device,
-        dtype: DType::F32,
-        layout,
-        strides,
-        grad: None,
-        gpu: None,
-        persistence: None,
-        op: None,
-    }
+    Tensor::new_cpu_with_layout(shape, values, device, DType::F32, Layout::Contiguous)
 }
 
 fn temp_dir() -> String {
@@ -56,7 +42,7 @@ fn loading_from_disk_restores_data() {
     let tensor = make_tensor(vec![3.14, 2.71], Device::CPU);
     let handle = offloader.to_disk(&tensor);
     let restored = offloader.from_disk(&handle, tensor.shape.clone());
-    assert_eq!(restored.data, tensor.data);
+    assert_eq!(restored.as_cpu_slice(), tensor.as_cpu_slice());
     assert_eq!(restored.shape, tensor.shape);
     assert_eq!(restored.device, Device::CPU);
 }

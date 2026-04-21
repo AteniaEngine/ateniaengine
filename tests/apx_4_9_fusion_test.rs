@@ -1,4 +1,4 @@
-use atenia_engine::amg::builder::GraphBuilder;
+﻿use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::amg::nodes::{NodeType, ActType};
 use atenia_engine::tensor::{Tensor, Device};
 
@@ -87,11 +87,11 @@ fn test_apx_4_9_equivalencia_numerica() {
     let fused_out = &out[0];
 
     assert_eq!(ref_out.shape, fused_out.shape);
-    assert_eq!(ref_out.data.len(), fused_out.data.len());
+    assert_eq!(ref_out.numel(), fused_out.numel());
 
     let mut max_diff = 0.0f32;
-    for i in 0..ref_out.data.len() {
-        let d = (ref_out.data[i] - fused_out.data[i]).abs();
+    for i in 0..ref_out.numel() {
+        let d = (ref_out.as_cpu_slice()[i] - fused_out.as_cpu_slice()[i]).abs();
         if d > max_diff {
             max_diff = d;
         }

@@ -15,7 +15,7 @@ fn make_tensor_2d(shape: (usize, usize), fill_fn: impl Fn(usize, usize) -> f32) 
     );
     for i in 0..rows {
         for j in 0..cols {
-            t.data[i * cols + j] = fill_fn(i, j);
+            t.as_cpu_slice_mut()[i * cols + j] = fill_fn(i, j);
         }
     }
     t
@@ -29,7 +29,7 @@ fn matmul_basic() {
     let out = matmul(&a, &b);
 
     assert_eq!(out.shape, vec![2, 2]);
-    assert!((out.data[0] - 22.0).abs() < 1e-5);
+    assert!((out.as_cpu_slice()[0] - 22.0).abs() < 1e-5);
 }
 
 #[test]
@@ -53,13 +53,13 @@ fn linear_with_bias() {
         Layout::Contiguous,
         DType::F32,
     );
-    b.data[0] = 1.0;
-    b.data[1] = -1.0;
+    b.as_cpu_slice_mut()[0] = 1.0;
+    b.as_cpu_slice_mut()[1] = -1.0;
 
     let out = linear(&x, &w, Some(&b));
 
     assert_eq!(out.shape, vec![1, 2]);
-    assert_ne!(out.data[0], out.data[1]);
+    assert_ne!(out.as_cpu_slice()[0], out.as_cpu_slice()[1]);
 }
 
 #[test]
@@ -71,14 +71,14 @@ fn rms_norm_keeps_constant_vector_same_scale() {
         Layout::Contiguous,
         DType::F32,
     );
-    for v in t.data.iter_mut() {
+    for v in t.as_cpu_slice_mut().iter_mut() {
         *v = 1.0;
     }
 
     let out = rms_norm(&t, 1e-5);
 
     assert_eq!(out.shape, t.shape);
-    for v in &out.data {
+    for v in out.as_cpu_slice() {
         assert!((*v - 1.0).abs() < 1e-3);
     }
 }
@@ -92,16 +92,16 @@ fn silu_is_reasonable() {
         Layout::Contiguous,
         DType::F32,
     );
-    t.data = vec![-2.0, -1.0, 0.0, 2.0];
+    t.set_cpu_data(vec![-2.0, -1.0, 0.0, 2.0]);
 
     let out = silu(&t);
 
     assert_eq!(out.shape, t.shape);
-    assert!(out.data[0] < 0.0);
-    assert!(out.data[1] < 0.0);
-    assert!((out.data[2]).abs() < 1e-6);
-    assert!(out.data[3] > 0.0);
-    assert!(out.data[3] < t.data[3]);
+    assert!(out.as_cpu_slice()[0] < 0.0);
+    assert!(out.as_cpu_slice()[1] < 0.0);
+    assert!((out.as_cpu_slice()[2]).abs() < 1e-6);
+    assert!(out.as_cpu_slice()[3] > 0.0);
+    assert!(out.as_cpu_slice()[3] < t.as_cpu_slice()[3]);
 }
 
 #[test]
@@ -118,7 +118,7 @@ fn softmax_rows_sum_to_one() {
     for i in 0..rows {
         let start = i * cols;
         let end = start + cols;
-        let row = &out.data[start..end];
+        let row = &out.as_cpu_slice()[start..end];
 
         let sum: f32 = row.iter().sum();
         assert!((sum - 1.0).abs() < 1e-4, "softmax row {} sums to {}", i, sum);

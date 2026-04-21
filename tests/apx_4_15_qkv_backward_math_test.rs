@@ -1,4 +1,4 @@
-use atenia_engine::amg::builder::GraphBuilder;
+﻿use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::amg::graph::Graph;
 use atenia_engine::nn::linear as nn_linear;
 use atenia_engine::tensor::{Tensor, Device, DType, Layout};
@@ -25,8 +25,8 @@ fn build_qkv_sum_graph() -> (Graph, usize, usize, usize, usize, usize, usize, us
 
 fn assert_close(a: &Tensor, b: &Tensor, tol: f32) {
     assert_eq!(a.shape, b.shape, "shape mismatch: {:?} vs {:?}", a.shape, b.shape);
-    assert_eq!(a.data.len(), b.data.len(), "len mismatch");
-    for (i, (va, vb)) in a.data.iter().zip(b.data.iter()).enumerate() {
+    assert_eq!(a.numel(), b.numel(), "len mismatch");
+    for (i, (va, vb)) in a.as_cpu_slice().iter().zip(b.as_cpu_slice().iter()).enumerate() {
         let diff = (va - vb).abs();
         assert!(
             diff <= tol,
@@ -50,7 +50,7 @@ fn transpose_2d_2d(t: &Tensor) -> Tensor {
         for j in 0..n {
             let src = i * n + j;
             let dst = j * m + i;
-            out.data[dst] = t.data[src];
+            out.as_cpu_slice_mut()[dst] = t.as_cpu_slice()[src];
         }
     }
     out
@@ -118,24 +118,21 @@ fn test_qkv_backward_math_matches_naive() {
             let g = graph.grad_store.get(node_id);
             if g.is_empty() {
                 // 3) As a last resort, return a zero gradient of the same size.
-                vec![0.0; proto.data.len()]
+                vec![0.0; proto.numel()]
             } else {
                 g
             }
         };
 
-        Tensor {
-            shape: proto.shape.clone(),
+        let mut t = Tensor::new_cpu_with_layout(
+            proto.shape.clone(),
             data,
-            device: proto.device,
-            dtype: proto.dtype,
-            layout: proto.layout,
-            strides: proto.strides.clone(),
-            grad: None,
-            gpu: None,
-            persistence: None,
-            op: None,
-        }
+            proto.device,
+            proto.dtype,
+            proto.layout,
+        );
+        t.strides = proto.strides.clone();
+        t
     };
 
     // Naive gradients obtained via helper (logical equivalent to case 4.16).

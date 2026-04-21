@@ -1,4 +1,4 @@
-use atenia_engine::apx8::kernel_generator::*;
+﻿use atenia_engine::apx8::kernel_generator::*;
 use atenia_engine::apx8::kernel_registry::KERNEL_REGISTRY;
 use atenia_engine::tensor::{Tensor, Device, DType};
 
@@ -54,7 +54,7 @@ fn apx_8_9_no_math_change() {
 
     let res = a.add(&b);
 
-    for v in res.data.iter() {
+    for v in res.as_cpu_slice().iter() {
         assert!((*v - 2.0).abs() < 1e-6);
     }
 }

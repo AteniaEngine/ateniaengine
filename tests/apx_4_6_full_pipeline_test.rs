@@ -1,4 +1,4 @@
-use atenia_engine::amg::builder::GraphBuilder;
+﻿use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::tensor::{Tensor, Device};
 
 #[test]
@@ -33,8 +33,8 @@ fn apx_4_6_full_pipeline_runs_gpu_segments_correctly() {
     let gpu_out = graph.execute(vec![input.clone()]);
     let cpu_out = cpu_graph.execute(vec![input]);
 
-    let g = &gpu_out[0].data;
-    let c = &cpu_out[0].data;
+    let g = gpu_out[0].as_cpu_slice();
+    let c = cpu_out[0].as_cpu_slice();
 
     let mut max_diff: f32 = 0.0;
 

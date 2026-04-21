@@ -1,4 +1,4 @@
-use atenia_engine::apx9::vgpu_warp::*;
+﻿use atenia_engine::apx9::vgpu_warp::*;
 use atenia_engine::apx9::vgpu_pipeline::*;
 use atenia_engine::apx9::vgpu_instr::*;
 use atenia_engine::apx9::vgpu_scoreboard::*;
@@ -46,5 +46,5 @@ fn apx_9_21_write_complete_allows_next() {
 #[test]
 fn apx_9_21_no_numeric_change() {
     let t = Tensor::zeros(vec![4], Device::CPU, DType::F32);
-    assert_eq!(t.data[0], 0.0);
+    assert_eq!(t.as_cpu_slice()[0], 0.0);
 }

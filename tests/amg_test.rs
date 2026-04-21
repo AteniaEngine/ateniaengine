@@ -1,4 +1,4 @@
-use atenia_engine::tensor::{Device, DType, Layout, Tensor};
+﻿use atenia_engine::tensor::{Device, DType, Layout, Tensor};
 use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::amg::scheduler::{build_execution_plan, ExecStep};
 
@@ -18,7 +18,7 @@ fn simple_add_graph() {
     let results = g.execute(vec![t1, t2]);
 
     assert_eq!(results.len(), 1);
-    for v in &results[0].data {
+    for v in results[0].as_cpu_slice() {
         assert_eq!(*v, 2.0);
     }
 }
@@ -68,10 +68,10 @@ fn chunked_execution_produces_same_result_as_normal() {
         DType::F32,
     );
 
-    for (i, v) in t1.data.iter_mut().enumerate() {
+    for (i, v) in t1.as_cpu_slice_mut().iter_mut().enumerate() {
         *v = i as f32;
     }
-    for (i, v) in t2.data.iter_mut().enumerate() {
+    for (i, v) in t2.as_cpu_slice_mut().iter_mut().enumerate() {
         *v = (len - i) as f32;
     }
 
@@ -80,9 +80,9 @@ fn chunked_execution_produces_same_result_as_normal() {
 
     assert_eq!(normal.len(), 1);
     assert_eq!(chunked.len(), 1);
-    assert_eq!(normal[0].data.len(), chunked[0].data.len());
+    assert_eq!(normal[0].numel(), chunked[0].numel());
 
-    for (a, b) in normal[0].data.iter().zip(chunked[0].data.iter()) {
+    for (a, b) in normal[0].as_cpu_slice().iter().zip(chunked[0].as_cpu_slice().iter()) {
         assert!((a - b).abs() < 1e-6);
     }
 }
@@ -103,7 +103,7 @@ fn chained_ops_graph() {
 
     let results = g.execute(vec![t1, t2]);
 
-    for v in &results[0].data {
+    for v in results[0].as_cpu_slice() {
         assert_eq!(*v, 2.0);
     }
 }

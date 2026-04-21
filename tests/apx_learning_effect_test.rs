@@ -1,4 +1,4 @@
-use atenia_engine::amg::builder::GraphBuilder;
+﻿use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::amg::graph::Graph;
 use atenia_engine::nn::mini_flux::{build_mini_flux_language_model, MiniFluxConfig};
 use atenia_engine::tensor::{Device, DType, Layout, Tensor};
@@ -51,7 +51,7 @@ fn apx_learning_effect_warm_vs_cold() {
 
     // Validity constraint: outputs must remain identical (no semantic changes).
     assert_eq!(cold_out.shape, warm_out.shape, "output shape mismatch");
-    assert_eq!(cold_out.data, warm_out.data, "output data mismatch");
+    assert_eq!(cold_out.as_cpu_slice(), warm_out.as_cpu_slice(), "output data mismatch");
 
     // Assertions: warm start must be strictly better (measurable learning effect).
     assert!(
@@ -223,7 +223,7 @@ fn build_deterministic_tokens(batch: usize, seq_len: usize, vocab_size: usize) -
     for b in 0..batch {
         for s in 0..seq_len {
             let idx = b * seq_len + s;
-            x.data[idx] = ((b + 3 * s) % vocab_size) as f32;
+            x.as_cpu_slice_mut()[idx] = ((b + 3 * s) % vocab_size) as f32;
         }
     }
 

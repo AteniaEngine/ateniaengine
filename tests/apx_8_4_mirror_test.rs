@@ -1,4 +1,4 @@
-use atenia_engine::tensor::{Tensor, Device, DType};
+﻿use atenia_engine::tensor::{Tensor, Device, DType};
 use atenia_engine::{MirrorState, HybridDispatcher, ExecDevice};
 
 #[test]
@@ -29,16 +29,16 @@ fn apx_8_4_mirror_mark_dirty_gpu() {
 #[test]
 fn apx_8_4_mirror_cpu_equivalence_after_sync() {
     let mut t = Tensor::zeros(vec![4], Device::CPU, DType::F32);
-    t.data[0] = 1.0;
-    t.data[1] = 2.0;
-    t.data[2] = 3.0;
-    t.data[3] = 4.0;
+    t.as_cpu_slice_mut()[0] = 1.0;
+    t.as_cpu_slice_mut()[1] = 2.0;
+    t.as_cpu_slice_mut()[2] = 3.0;
+    t.as_cpu_slice_mut()[3] = 4.0;
 
-    let before = t.data.clone();
+    let before = t.copy_to_cpu_vec();
     t.ensure_gpu_mirror();
     t.sync_cpu();
 
-    assert_eq!(t.data, before);
+    assert_eq!(t.as_cpu_slice(), before);
 }
 
 #[test]
@@ -60,6 +60,6 @@ fn apx_8_4_mirror_dispatcher_simulation() {
     }
 
     // In all cases, CPU data remains the source of truth.
-    let sum: f32 = t.data.iter().sum();
+    let sum: f32 = t.as_cpu_slice().iter().sum();
     assert!(sum >= 0.0 || sum <= 0.0); // only to use `sum` and avoid warnings.
 }

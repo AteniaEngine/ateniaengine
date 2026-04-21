@@ -1,4 +1,4 @@
-use atenia_engine::amg::graph::Graph;
+﻿use atenia_engine::amg::graph::Graph;
 use atenia_engine::amg::nodes::{Node, NodeType};
 use atenia_engine::tensor::{Tensor, Device, Layout};
 
@@ -31,9 +31,9 @@ fn make_branch_inputs() -> Vec<Tensor> {
 }
 
 fn max_abs_diff(a: &Tensor, b: &Tensor) -> f32 {
-    a.data
+    a.as_cpu_slice()
         .iter()
-        .zip(b.data.iter())
+        .zip(b.as_cpu_slice().iter())
         .map(|(x, y)| (x - y).abs())
         .fold(0.0f32, |acc, d| if d > acc { d } else { acc })
 }

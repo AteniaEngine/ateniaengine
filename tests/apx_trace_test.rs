@@ -1,4 +1,4 @@
-use atenia_engine::amg::builder::GraphBuilder;
+﻿use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::nn::mini_flux::{build_mini_flux_language_model, MiniFluxConfig};
 use atenia_engine::tensor::{Device, DType, Layout, Tensor};
 
@@ -55,7 +55,7 @@ fn apx_25_traces_show_parallelism() {
         DType::F32,
     );
     for s in 0..4usize {
-        input.data[s] = (s % 16) as f32;
+        input.as_cpu_slice_mut()[s] = (s % 16) as f32;
     }
 
     let _ = g.execute(vec![input.clone()]);

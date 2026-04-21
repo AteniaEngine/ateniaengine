@@ -1,11 +1,11 @@
-use atenia_engine::amg::builder::GraphBuilder;
+﻿use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::optim::adamw::AdamW;
 use atenia_engine::tensor::{Device, DType, Layout, Tensor};
 use atenia_engine::training::trainer_v2::TrainerV2;
 
 fn scalar(value: f32) -> Tensor {
     let mut t = Tensor::with_layout(vec![1, 1], 0.0, Device::CPU, Layout::Contiguous, DType::F32);
-    t.data[0] = value;
+    t.as_cpu_slice_mut()[0] = value;
     t
 }
 
@@ -34,7 +34,7 @@ fn trainer_v2_reduces_loss_on_linear_problem() {
     let mut losses = Vec::new();
     for _ in 0..40 {
         let outputs = trainer.train_step(vec![x.clone(), target.clone()]);
-        losses.push(outputs[0].data[0]);
+        losses.push(outputs[0].as_cpu_slice()[0]);
     }
 
     let first = *losses.first().unwrap();

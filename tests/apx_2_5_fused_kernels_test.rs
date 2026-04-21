@@ -1,4 +1,4 @@
-use atenia_engine::amg::builder::GraphBuilder;
+﻿use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::amg::graph::Graph;
 use atenia_engine::tensor::{Device, DType, Layout, Tensor};
 
@@ -56,7 +56,7 @@ fn apx_2_5_gradients_match_reference() {
         DType::F32,
     );
     for (i, v) in rand_vec(batch * in_dim).into_iter().enumerate() {
-        x.data[i] = v;
+        x.as_cpu_slice_mut()[i] = v;
     }
 
     let mut t = Tensor::with_layout(
@@ -67,13 +67,13 @@ fn apx_2_5_gradients_match_reference() {
         DType::F32,
     );
     for b in 0..batch {
-        t.data[b] = ((b * 7) % classes) as f32;
+        t.as_cpu_slice_mut()[b] = ((b * 7) % classes) as f32;
     }
 
     let out_seq = g_seq.execute(vec![x.clone(), t.clone()]);
     let out_par = g_par.execute(vec![x, t]);
 
-    assert!((out_seq[0].data[0] - out_par[0].data[0]).abs() < 1e-6);
+    assert!((out_seq[0].as_cpu_slice()[0] - out_par[0].as_cpu_slice()[0]).abs() < 1e-6);
 
     let loss_id_seq = g_seq.last_output_id();
     let loss_id_par = g_par.last_output_id();

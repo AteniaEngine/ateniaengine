@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+﻿#![allow(dead_code)]
 
 use atenia_engine::v17;
 
@@ -17,7 +17,7 @@ fn relu_zeroes_negative_values() {
     let out = relu(&input, &flag).unwrap();
 
     assert_eq!(out.shape, input.shape);
-    assert_eq!(out.data, vec![
+    assert_eq!(out.data.clone(), vec![
         0.0, 0.0, 1.0,
         0.0, 2.0, 3.0,
     ]);
@@ -35,7 +35,7 @@ fn relu_is_deterministic() {
     let out2 = relu(&input, &flag).unwrap();
 
     assert_eq!(out1.shape, out2.shape);
-    assert_eq!(out1.data, out2.data);
+    assert_eq!(&out1.data, &out2.data);
 }
 
 #[test]

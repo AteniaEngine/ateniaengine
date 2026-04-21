@@ -15,7 +15,7 @@ fn dataset_with_samples(count: usize, num_elements: usize) -> Vec<Tensor> {
     (0..count)
         .map(|i| {
             let mut tensor = sample_template(num_elements);
-            tensor.data = vec![(i + 1) as f32; num_elements];
+            tensor.set_cpu_data(vec![(i + 1) as f32; num_elements]);
             tensor
         })
         .collect()
@@ -38,7 +38,7 @@ fn forward_sums_data() {
         safety_margin_bytes: 0,
     });
     let mut tensor = sample_template(4);
-    tensor.data = vec![1.0, 2.0, 3.0, 4.0];
+    tensor.set_cpu_data(vec![1.0, 2.0, 3.0, 4.0]);
     assert_eq!(trainer.forward(&tensor), 10.0);
 }
 

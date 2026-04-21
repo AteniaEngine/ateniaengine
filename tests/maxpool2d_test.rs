@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+﻿#![allow(dead_code)]
 
 use atenia_engine::v17;
 
@@ -30,7 +30,7 @@ fn maxpool2d_matches_reference() {
     // [[6, 8],
     //  [14,16]]
     assert_eq!(out.shape, vec![1, 1, 2, 2]);
-    assert_eq!(out.data, vec![6.0, 8.0, 14.0, 16.0]);
+    assert_eq!(out.data.clone(), vec![6.0, 8.0, 14.0, 16.0]);
 }
 
 #[test]
@@ -53,7 +53,7 @@ fn maxpool2d_is_deterministic() {
     let out2 = maxpool2d_cpu(&input, &params, &flag).unwrap();
 
     assert_eq!(out1.shape, out2.shape);
-    assert_eq!(out1.data, out2.data);
+    assert_eq!(&out1.data, &out2.data);
 }
 
 #[test]

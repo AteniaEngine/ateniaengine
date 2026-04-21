@@ -1,10 +1,10 @@
-use atenia_engine::amg::builder::GraphBuilder;
+﻿use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::tensor::{Tensor, Device, DType, Layout};
 
 fn assert_close(a: &Tensor, b: &Tensor, tol: f32) {
     assert_eq!(a.shape, b.shape, "shape mismatch: {:?} vs {:?}", a.shape, b.shape);
-    assert_eq!(a.data.len(), b.data.len(), "len mismatch");
-    for (i, (va, vb)) in a.data.iter().zip(b.data.iter()).enumerate() {
+    assert_eq!(a.numel(), b.numel(), "len mismatch");
+    for (i, (va, vb)) in a.as_cpu_slice().iter().zip(b.as_cpu_slice().iter()).enumerate() {
         let diff = (va - vb).abs();
         assert!(
             diff <= tol,
@@ -74,19 +74,16 @@ fn run_mode(mode: &str) -> (Tensor, Tensor, Tensor, Tensor) {
             .as_ref()
             .and_then(|t| t.grad.as_ref())
             .cloned()
-            .unwrap_or_else(|| vec![0.0; proto.data.len()]);
-        Tensor {
-            shape: proto.shape.clone(),
+            .unwrap_or_else(|| vec![0.0; proto.numel()]);
+        let mut t = Tensor::new_cpu_with_layout(
+            proto.shape.clone(),
             data,
-            device: proto.device,
-            dtype: proto.dtype,
-            layout: proto.layout,
-            strides: proto.strides.clone(),
-            grad: None,
-            gpu: None,
-            persistence: None,
-            op: None,
-        }
+            proto.device,
+            proto.dtype,
+            proto.layout,
+        );
+        t.strides = proto.strides.clone();
+        t
     };
 
     let dx  = make_grad(x_id,  &x_t);

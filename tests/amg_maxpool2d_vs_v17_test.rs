@@ -1,4 +1,4 @@
-//! Forward-equivalence tests: AMG's `MaxPool2D` vs v17's `maxpool2d_cpu`.
+﻿//! Forward-equivalence tests: AMG's `MaxPool2D` vs v17's `maxpool2d_cpu`.
 //!
 //! Both implementations operate on NCHW layouts with identical
 //! iteration order (`kh` outer, `kw` inner) and strict `>` comparison
@@ -15,7 +15,7 @@
 
 use atenia_engine::amg::nodes::MaxPool2DConfig;
 use atenia_engine::amg::ops::maxpool2d::execute_maxpool2d as amg_maxpool2d;
-use atenia_engine::tensor::{DType, Device, Layout, Tensor as AmgTensor};
+use atenia_engine::tensor::Tensor as AmgTensor;
 use atenia_engine::v17::cnn::conv2d::AbortFlag;
 use atenia_engine::v17::cnn::maxpool2d::{maxpool2d_cpu as v17_maxpool2d, MaxPool2DParams};
 use atenia_engine::v17::compute::tensor::Tensor as V17Tensor;
@@ -23,20 +23,7 @@ use atenia_engine::v17::compute::tensor::Tensor as V17Tensor;
 const TOLERANCE: f32 = 1e-5;
 
 fn amg_tensor(shape: Vec<usize>, data: Vec<f32>) -> AmgTensor {
-    let mut t = AmgTensor::with_layout(
-        shape,
-        0.0,
-        Device::CPU,
-        Layout::Contiguous,
-        DType::F32,
-    );
-    assert_eq!(
-        t.data.len(),
-        data.len(),
-        "amg_tensor: data length does not match shape"
-    );
-    t.data = data;
-    t
+    AmgTensor::new_cpu(shape, data)
 }
 
 fn v17_tensor(shape: Vec<usize>, data: Vec<f32>) -> V17Tensor {
@@ -92,7 +79,7 @@ fn maxpool2d_2x2_stride2_no_padding() {
 
     assert_eq!(amg_out.shape, v17_out.shape, "shape mismatch");
     assert_close(
-        &amg_out.data,
+        amg_out.as_cpu_slice(),
         &v17_out.data,
         "maxpool2d_2x2_stride2_no_padding",
     );
@@ -127,7 +114,7 @@ fn maxpool2d_2x2_with_padding_stride1() {
 
     assert_eq!(amg_out.shape, v17_out.shape, "shape mismatch");
     assert_close(
-        &amg_out.data,
+        amg_out.as_cpu_slice(),
         &v17_out.data,
         "maxpool2d_2x2_with_padding_stride1",
     );

@@ -1,4 +1,4 @@
-//! Absolute-correctness forward tests for AMG's `Conv2D`.
+﻿//! Absolute-correctness forward tests for AMG's `Conv2D`.
 //!
 //! Inputs and weights are small integer-valued tensors chosen so the
 //! expected output can be computed by hand. Each expected value is
@@ -8,21 +8,12 @@
 
 use atenia_engine::amg::nodes::Conv2DConfig;
 use atenia_engine::amg::ops::conv2d::execute_conv2d as amg_conv2d;
-use atenia_engine::tensor::{DType, Device, Layout, Tensor as AmgTensor};
+use atenia_engine::tensor::Tensor as AmgTensor;
 
 const TOLERANCE: f32 = 1e-6;
 
 fn amg_tensor(shape: Vec<usize>, data: Vec<f32>) -> AmgTensor {
-    let mut t = AmgTensor::with_layout(
-        shape,
-        0.0,
-        Device::CPU,
-        Layout::Contiguous,
-        DType::F32,
-    );
-    assert_eq!(t.data.len(), data.len());
-    t.data = data;
-    t
+    AmgTensor::new_cpu(shape, data)
 }
 
 fn assert_close(got: &[f32], want: &[f32], ctx: &str) {
@@ -58,7 +49,7 @@ fn conv2d_diagonal_kernel_no_padding() {
 
     assert_eq!(out.shape, vec![1, 1, 2, 2]);
     assert_close(
-        &out.data,
+        out.as_cpu_slice(),
         &[6.0, 8.0, 12.0, 14.0],
         "conv2d_diagonal_kernel_no_padding",
     );
@@ -93,7 +84,7 @@ fn conv2d_with_padding_3x3_kernel() {
 
     assert_eq!(out.shape, vec![1, 1, 2, 2]);
     assert_close(
-        &out.data,
+        out.as_cpu_slice(),
         &[77.0, 67.0, 47.0, 37.0],
         "conv2d_with_padding_3x3_kernel",
     );
@@ -115,7 +106,7 @@ fn conv2d_with_bias_shifts_output() {
 
     assert_eq!(out.shape, vec![1, 1, 2, 2]);
     assert_close(
-        &out.data,
+        out.as_cpu_slice(),
         &[16.0, 18.0, 22.0, 24.0],
         "conv2d_with_bias_shifts_output",
     );

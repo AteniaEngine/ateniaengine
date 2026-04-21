@@ -1,4 +1,4 @@
-mod mini_flux_common;
+﻿mod mini_flux_common;
 
 use atenia_engine::nn::mini_flux::MiniFluxConfig;
 use mini_flux_common::{build_trainer, default_cfg, sample_tokens, tokens_to_one_hot};
@@ -26,7 +26,7 @@ fn mini_flux_learns_identity() {
         let tokens = sample_tokens(&cfg, step);
         let targets = tokens_to_one_hot(&tokens, cfg.vocab_size);
         let outputs = trainer.train_step(vec![tokens.clone(), targets]);
-        let loss = outputs[0].data[0];
+        let loss = outputs[0].as_cpu_slice()[0];
         if step == 0 {
             first_loss = Some(loss);
         }

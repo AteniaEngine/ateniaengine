@@ -1,4 +1,4 @@
-use atenia_engine::tensor::{Tensor, Device};
+﻿use atenia_engine::tensor::{Tensor, Device};
 use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::nn::linear::linear;
 
@@ -47,8 +47,8 @@ fn apx_4_3_linear_chain_gpu_matches_cpu() {
 
     assert_eq!(cpu.shape, gpu.shape, "CPU/GPU shapes must match");
 
-    for i in 0..cpu.data.len() {
-        let d = (cpu.data[i] - gpu.data[i]).abs();
+    for i in 0..cpu.numel() {
+        let d = (cpu.as_cpu_slice()[i] - gpu.as_cpu_slice()[i]).abs();
         assert!(d < 1e-3, "diff too large at {}: {}", i, d);
     }
 }

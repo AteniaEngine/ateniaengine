@@ -1,4 +1,4 @@
-mod mini_flux_common;
+﻿mod mini_flux_common;
 
 use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::nn::mini_flux::{build_mini_flux_language_model, MiniFluxConfig};
@@ -43,7 +43,7 @@ fn language_loss_reduces_over_time() {
     // - Only require a moderate improvement in loss.
     for step in 0..200 {
         let outputs = trainer.train_step(vec![tokens.clone(), targets.clone()]);
-        let loss = outputs[0].data[0];
+        let loss = outputs[0].as_cpu_slice()[0];
         if initial_loss.is_none() {
             initial_loss = Some(loss);
         }

@@ -1,4 +1,4 @@
-use atenia_engine::tensor::{Tensor, Device};
+﻿use atenia_engine::tensor::{Tensor, Device};
 use atenia_engine::apx7::pex_engine::PEXExecutor;
 
 #[test]
@@ -11,7 +11,7 @@ fn apx_7_0_parallel_matmul_matches_sequential() {
 
     // Compare maximum absolute error.
     let mut max_diff = 0.0f32;
-    for (x, y) in seq.data.iter().zip(par.data.iter()) {
+    for (x, y) in seq.as_cpu_slice().iter().zip(par.as_cpu_slice().iter()) {
         let d = (x - y).abs();
         if d > max_diff {
             max_diff = d;

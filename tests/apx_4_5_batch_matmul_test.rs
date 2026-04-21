@@ -1,4 +1,4 @@
-use atenia_engine::tensor::{Tensor, Device};
+﻿use atenia_engine::tensor::{Tensor, Device};
 use atenia_engine::tensor::ops::batch_matmul::batch_matmul_parallel;
 use atenia_engine::cuda::batch_matmul::cuda_batch_matmul;
 
@@ -16,12 +16,12 @@ fn apx_4_5_batch_matmul_matches_cpu() {
 
     let mut out = Tensor::zeros_new(&[batch, m, n], Device::CPU);
 
-    cuda_batch_matmul(&a.data, &b.data, &mut out.data, batch, m, k, n);
+    cuda_batch_matmul(a.as_cpu_slice(), b.as_cpu_slice(), out.as_cpu_slice_mut(), batch, m, k, n);
 
     assert_eq!(cpu.shape, out.shape);
 
-    for i in 0..cpu.data.len() {
-        let d = (cpu.data[i] - out.data[i]).abs();
+    for i in 0..cpu.numel() {
+        let d = (cpu.as_cpu_slice()[i] - out.as_cpu_slice()[i]).abs();
         assert!(d < 1e-3, "diff too large at {}: {}", i, d);
     }
 }

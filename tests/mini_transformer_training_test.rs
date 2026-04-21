@@ -1,4 +1,4 @@
-use atenia_engine::amg::builder::GraphBuilder;
+﻿use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::amg::nodes::NodeType;
 use atenia_engine::nn::transformer::{build_transformer_block, TransformerBlockHandles, TransformerConfig};
 use atenia_engine::optim::adamw::AdamW;
@@ -18,15 +18,15 @@ fn sample_input(cfg: &TransformerConfig) -> Tensor {
         let end = start + cfg.d_model;
         for j in 0..cfg.d_model {
             let idx = start + j;
-            t.data[idx] = (idx as f32 + 1.0) * 0.05;
+            t.as_cpu_slice_mut()[idx] = (idx as f32 + 1.0) * 0.05;
         }
         let mut sum_sq = 0.0f32;
         for idx in start..end {
-            sum_sq += t.data[idx] * t.data[idx];
+            sum_sq += t.as_cpu_slice()[idx] * t.as_cpu_slice()[idx];
         }
         let rms = (sum_sq / cfg.d_model as f32).sqrt().max(1e-6);
         for idx in start..end {
-            t.data[idx] /= rms;
+            t.as_cpu_slice_mut()[idx] /= rms;
         }
     }
     t
@@ -91,7 +91,7 @@ fn mini_transformer_learns_identity() {
 
     for step in 0..200 {
         let outputs = trainer.train_step(vec![input_tensor.clone(), input_tensor.clone()]);
-        let loss = outputs[0].data[0];
+        let loss = outputs[0].as_cpu_slice()[0];
         if step == 0 {
             first_loss = Some(loss);
         }

@@ -1,4 +1,4 @@
-use atenia_engine::tensor::{Tensor, Device};
+﻿use atenia_engine::tensor::{Tensor, Device};
 use atenia_engine::config::get_runtime_flags;
 
 #[test]
@@ -21,7 +21,7 @@ fn apx_7_1_ws_matmul_matches_seq() {
     let out_ws = a.matmul_parallel_ws(&b);
 
     let mut max_diff = 0.0f32;
-    for (x, y) in out_seq.data.iter().zip(out_ws.data.iter()) {
+    for (x, y) in out_seq.as_cpu_slice().iter().zip(out_ws.as_cpu_slice().iter()) {
         let d = (x - y).abs();
         if d > max_diff {
             max_diff = d;

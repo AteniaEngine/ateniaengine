@@ -1,4 +1,4 @@
-use atenia_engine::apx9::cpu_to_ptx::*;
+﻿use atenia_engine::apx9::cpu_to_ptx::*;
 use atenia_engine::apx8::kernel_generator::{KernelIR, KernelOp};
 
 #[test]
@@ -41,7 +41,7 @@ fn apx_9_11_no_numeric_change() {
     let b = Tensor::ones(vec![4], Device::CPU, DType::F32);
     let c = a.add(&b);
 
-    for v in c.data {
+    for v in c.as_cpu_slice().iter() {
         assert!((v - 2.0).abs() < 1e-6);
     }
 }

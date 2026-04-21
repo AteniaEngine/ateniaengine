@@ -1,4 +1,4 @@
-use atenia_engine::apx8::gpu_autoselector::GPUAutoSelector;
+﻿use atenia_engine::apx8::gpu_autoselector::GPUAutoSelector;
 use atenia_engine::apx8::kernel_generator::KernelIR;
 use atenia_engine::tensor::{Tensor, Device, DType};
 
@@ -24,5 +24,5 @@ fn apx_8_14_no_numeric_change() {
     let a = Tensor::ones(vec![4], Device::CPU, DType::F32);
     let b = Tensor::ones(vec![4], Device::CPU, DType::F32);
     let c = a.add(&b);
-    assert_eq!(c.data[0], 2.0);
+    assert_eq!(c.as_cpu_slice()[0], 2.0);
 }

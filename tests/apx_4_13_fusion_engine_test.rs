@@ -1,4 +1,4 @@
-use atenia_engine::amg::builder::GraphBuilder;
+﻿use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::tensor::{Tensor, Device, DType, Layout};
 
 #[test]
@@ -26,5 +26,5 @@ fn test_fused_linear_silu_pipeline() {
     let out = g.execute(vec![x, w, b]);
 
     assert_eq!(out.len(), 1);
-    assert!(out[0].data.len() > 0);
+    assert!(out[0].numel() > 0);
 }

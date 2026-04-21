@@ -1,4 +1,4 @@
-use atenia_engine::amg::graph::Graph;
+﻿use atenia_engine::amg::graph::Graph;
 use atenia_engine::amg::nodes::{Node, NodeType};
 use atenia_engine::tensor::{Tensor, Device, DType};
 use atenia_engine::{HybridDispatcher, ExecDevice};
@@ -21,8 +21,8 @@ fn max_abs_diff(a: &[Tensor], b: &[Tensor]) -> f32 {
         assert_eq!(ta.shape, tb.shape);
         assert_eq!(ta.dtype, tb.dtype);
         assert_eq!(ta.layout, tb.layout);
-        assert_eq!(ta.data.len(), tb.data.len());
-        for (va, vb) in ta.data.iter().zip(tb.data.iter()) {
+        assert_eq!(ta.numel(), tb.numel());
+        for (va, vb) in ta.as_cpu_slice().iter().zip(tb.as_cpu_slice().iter()) {
             let d = (va - vb).abs();
             if d > max_diff {
                 max_diff = d;

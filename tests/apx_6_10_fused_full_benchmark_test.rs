@@ -1,4 +1,4 @@
-use atenia_engine::tensor::{Tensor, Device, Layout};
+﻿use atenia_engine::tensor::{Tensor, Device, Layout};
 use atenia_engine::amg::fusions;
 use atenia_engine::nn::softmax as nn_softmax;
 use atenia_engine::nn::linear as nn_linear;
@@ -8,33 +8,21 @@ fn transpose_2d(t: &Tensor) -> Tensor {
     assert_eq!(t.shape.len(), 2, "transpose_2d expects a 2D tensor");
     let rows = t.shape[0];
     let cols = t.shape[1];
-    let mut data = vec![0.0; t.data.len()];
+    let mut data = vec![0.0; t.numel()];
     for r in 0..rows {
         for c in 0..cols {
-            data[c * rows + r] = t.data[r * cols + c];
+            data[c * rows + r] = t.as_cpu_slice()[r * cols + c];
         }
     }
     let new_shape = vec![cols, rows];
-    let strides = Tensor::compute_strides(&new_shape, &Layout::Contiguous);
-    Tensor {
-        shape: new_shape,
-        data,
-        device: t.device,
-        dtype: t.dtype,
-        layout: Layout::Contiguous,
-        strides,
-        grad: None,
-        gpu: None,
-        persistence: None,
-        op: None,
-    }
+    Tensor::new_cpu_with_layout(new_shape, data, t.device, t.dtype, Layout::Contiguous)
 }
 
 fn max_abs_diff(a: &Tensor, b: &Tensor) -> f32 {
     assert_eq!(a.shape, b.shape, "Tensors must have same shape to compare");
-    a.data
+    a.as_cpu_slice()
         .iter()
-        .zip(b.data.iter())
+        .zip(b.as_cpu_slice().iter())
         .map(|(x, y)| (x - y).abs())
         .fold(0.0f32, |acc, v| acc.max(v))
 }

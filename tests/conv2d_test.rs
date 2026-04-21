@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+﻿#![allow(dead_code)]
 
 use atenia_engine::v17;
 
@@ -62,7 +62,7 @@ fn conv2d_is_deterministic() {
     let y2 = conv2d_cpu(&input, &weights, None, &params, &abort).unwrap();
 
     assert_eq!(y1.shape, y2.shape);
-    assert_eq!(y1.data, y2.data);
+    assert_eq!(&y1.data, &y2.data);
 }
 
 #[test]

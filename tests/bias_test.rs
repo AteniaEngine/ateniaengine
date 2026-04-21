@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+﻿#![allow(dead_code)]
 
 use atenia_engine::v17;
 
@@ -54,7 +54,7 @@ fn bias_is_deterministic() {
     let out2 = add_bias(&input, &bias, &flag).unwrap();
 
     assert_eq!(out1.shape, out2.shape);
-    assert_eq!(out1.data, out2.data);
+    assert_eq!(&out1.data, &out2.data);
 }
 
 #[test]

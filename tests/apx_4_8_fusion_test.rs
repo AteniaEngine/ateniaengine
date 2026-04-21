@@ -1,4 +1,4 @@
-use atenia_engine::amg::builder::GraphBuilder;
+﻿use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::tensor::{Tensor, Device};
 use atenia_engine::apx4_8::pattern::detect_and_fuse_linear_activation;
 
@@ -40,11 +40,11 @@ fn test_apx_4_8_exec_fused_linear_activation_equivalente() {
     let fused_out = exec_fused_linear_silu(&x, &w, Some(&b));
 
     assert_eq!(ref_out.shape, fused_out.shape);
-    assert_eq!(ref_out.data.len(), fused_out.data.len());
+    assert_eq!(ref_out.numel(), fused_out.numel());
 
     let mut max_diff = 0.0f32;
-    for i in 0..ref_out.data.len() {
-        let d = (ref_out.data[i] - fused_out.data[i]).abs();
+    for i in 0..ref_out.numel() {
+        let d = (ref_out.as_cpu_slice()[i] - fused_out.as_cpu_slice()[i]).abs();
         if d > max_diff {
             max_diff = d;
         }

@@ -1,4 +1,4 @@
-use atenia_engine::tensor::tensor::{Device, DType, Tensor};
+﻿use atenia_engine::tensor::tensor::{Device, DType, Tensor};
 
 #[test]
 fn dtype_size_in_bytes_matches_spec() {
@@ -28,12 +28,12 @@ fn cast_changes_dtype_but_not_shape_or_device() {
     assert_eq!(casted.dtype, DType::BF16);
     assert_eq!(casted.shape, base.shape);
     assert_eq!(casted.device, base.device);
-    assert_eq!(casted.data, base.data);
+    assert_eq!(casted.as_cpu_slice(), base.as_cpu_slice());
 }
 
 #[test]
 fn estimated_bytes_matches_elements_times_dtype_size() {
     let tensor = Tensor::new(vec![2, 3], 1.0, Device::CPU, DType::F16);
-    assert_eq!(tensor.num_elements(), 6);
+    assert_eq!(tensor.numel(), 6);
     assert_eq!(tensor.estimated_bytes(), 6 * DType::F16.size_in_bytes());
 }

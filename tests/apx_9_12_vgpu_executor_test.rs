@@ -1,4 +1,4 @@
-use atenia_engine::{
+﻿use atenia_engine::{
     VirtualGpuExecutor, VirtualKernel,
     tensor::{Tensor, Device, DType}
 };
@@ -29,7 +29,7 @@ fn apx_9_12_no_numeric_change() {
     exec.launch(&mut k);
 
     for i in 0..8 {
-        assert!((k.args[2].data[i] - 2.0).abs() < 1e-6);
+        assert!((k.args[2].as_cpu_slice()[i] - 2.0).abs() < 1e-6);
     }
 }
 
@@ -42,8 +42,8 @@ fn apx_9_12_launch_thread_indexing() {
     let mut a = Tensor::zeros(vec![16], Device::CPU, DType::F32);
     let mut b = Tensor::zeros(vec![16], Device::CPU, DType::F32);
     for i in 0..16 {
-        a.data[i] = i as f32;
-        b.data[i] = i as f32;
+        a.as_cpu_slice_mut()[i] = i as f32;
+        b.as_cpu_slice_mut()[i] = i as f32;
     }
 
     let mut k = VirtualKernel {
@@ -61,6 +61,6 @@ fn apx_9_12_launch_thread_indexing() {
     exec.launch(&mut k);
 
     for i in 0..16 {
-        assert!((k.args[2].data[i] - (i as f32 * 2.0)).abs() < 1e-6);
+        assert!((k.args[2].as_cpu_slice()[i] - (i as f32 * 2.0)).abs() < 1e-6);
     }
 }

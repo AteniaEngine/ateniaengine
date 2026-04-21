@@ -1,12 +1,9 @@
-use atenia_engine::nn::normalization::rmsnorm_backward_parallel;
+﻿use atenia_engine::nn::normalization::rmsnorm_backward_parallel;
 use atenia_engine::nn::softmax::softmax_backward_parallel;
-use atenia_engine::tensor::{Device, DType, Layout, Tensor};
+use atenia_engine::tensor::{Device, Tensor};
 
 fn tensor_from_vec(data: Vec<f32>, shape: &[usize]) -> Tensor {
-    assert_eq!(data.len(), shape.iter().product());
-    let mut t = Tensor::with_layout(shape.to_vec(), 0.0, Device::CPU, Layout::Contiguous, DType::F32);
-    t.data = data;
-    t
+    Tensor::new_cpu(shape.to_vec(), data)
 }
 
 #[test]

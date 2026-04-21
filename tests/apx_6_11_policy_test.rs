@@ -1,4 +1,4 @@
-mod mini_flux_common;
+﻿mod mini_flux_common;
 
 use atenia_engine::apx5::apx_5_3_planner::NodeExecInfo;
 use atenia_engine::apx6_11::runtime_policy::{
@@ -11,9 +11,9 @@ use mini_flux_common::{default_cfg, run_logits_forward, sample_tokens};
 
 fn max_abs_diff(a: &Tensor, b: &Tensor) -> f32 {
     assert_eq!(a.shape, b.shape, "Tensors must have same shape to compare");
-    a.data
+    a.as_cpu_slice()
         .iter()
-        .zip(b.data.iter())
+        .zip(b.as_cpu_slice().iter())
         .map(|(x, y)| (x - y).abs())
         .fold(0.0f32, |acc, v| acc.max(v))
 }

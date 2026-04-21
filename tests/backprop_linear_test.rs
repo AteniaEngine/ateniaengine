@@ -1,4 +1,4 @@
-use atenia_engine::amg::builder::GraphBuilder;
+﻿use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::tensor::{Device, DType, Layout, Tensor};
 
 fn make_tensor(shape: Vec<usize>, value: f32) -> Tensor {
@@ -9,7 +9,7 @@ fn make_tensor(shape: Vec<usize>, value: f32) -> Tensor {
         Layout::Contiguous,
         DType::F32,
     );
-    for v in t.data.iter_mut() {
+    for v in t.as_cpu_slice_mut().iter_mut() {
         *v = value;
     }
     t
@@ -45,7 +45,7 @@ fn linear_backward_matches_manual_gradients() {
 
     let outputs = graph.execute(vec![x.clone(), w.clone(), b.clone()]);
     assert_eq!(outputs.len(), 1);
-    let loss_value = outputs[0].data[0];
+    let loss_value = outputs[0].as_cpu_slice()[0];
     assert!((loss_value - 6.25).abs() < 1e-5);
 
     graph.backward(out_id);

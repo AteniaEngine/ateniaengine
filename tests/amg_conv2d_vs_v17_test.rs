@@ -1,4 +1,4 @@
-//! Forward-equivalence tests: AMG's `Conv2D` vs v17's `conv2d_cpu`.
+﻿//! Forward-equivalence tests: AMG's `Conv2D` vs v17's `conv2d_cpu`.
 //!
 //! Both implementations operate on NCHW/OIHW layouts with identical
 //! padding and stride semantics. This suite verifies that, for a
@@ -15,27 +15,14 @@
 
 use atenia_engine::amg::nodes::Conv2DConfig;
 use atenia_engine::amg::ops::conv2d::execute_conv2d as amg_conv2d;
-use atenia_engine::tensor::{DType, Device, Layout, Tensor as AmgTensor};
+use atenia_engine::tensor::Tensor as AmgTensor;
 use atenia_engine::v17::cnn::conv2d::{conv2d_cpu as v17_conv2d, AbortFlag, Conv2DParams};
 use atenia_engine::v17::compute::tensor::Tensor as V17Tensor;
 
 const TOLERANCE: f32 = 1e-5;
 
 fn amg_tensor(shape: Vec<usize>, data: Vec<f32>) -> AmgTensor {
-    let mut t = AmgTensor::with_layout(
-        shape,
-        0.0,
-        Device::CPU,
-        Layout::Contiguous,
-        DType::F32,
-    );
-    assert_eq!(
-        t.data.len(),
-        data.len(),
-        "amg_tensor: data length does not match shape"
-    );
-    t.data = data;
-    t
+    AmgTensor::new_cpu(shape, data)
 }
 
 fn v17_tensor(shape: Vec<usize>, data: Vec<f32>) -> V17Tensor {
@@ -90,7 +77,7 @@ fn conv2d_no_bias_no_padding_stride1() {
 
     assert_eq!(amg_out.shape, v17_out.shape, "shape mismatch");
     assert_close(
-        &amg_out.data,
+        amg_out.as_cpu_slice(),
         &v17_out.data,
         "conv2d_no_bias_no_padding_stride1",
     );
@@ -130,7 +117,7 @@ fn conv2d_with_bias() {
     .expect("v17 conv2d failed");
 
     assert_eq!(amg_out.shape, v17_out.shape, "shape mismatch");
-    assert_close(&amg_out.data, &v17_out.data, "conv2d_with_bias");
+    assert_close(amg_out.as_cpu_slice(), &v17_out.data, "conv2d_with_bias");
 }
 
 #[test]
@@ -161,7 +148,7 @@ fn conv2d_with_padding() {
         .expect("v17 conv2d failed");
 
     assert_eq!(amg_out.shape, v17_out.shape, "shape mismatch");
-    assert_close(&amg_out.data, &v17_out.data, "conv2d_with_padding");
+    assert_close(amg_out.as_cpu_slice(), &v17_out.data, "conv2d_with_padding");
 }
 
 #[test]
@@ -188,5 +175,5 @@ fn conv2d_stride_2() {
         .expect("v17 conv2d failed");
 
     assert_eq!(amg_out.shape, v17_out.shape, "shape mismatch");
-    assert_close(&amg_out.data, &v17_out.data, "conv2d_stride_2");
+    assert_close(amg_out.as_cpu_slice(), &v17_out.data, "conv2d_stride_2");
 }

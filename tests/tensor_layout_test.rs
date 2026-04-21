@@ -35,14 +35,14 @@ fn add_respects_layout() {
         DType::F32,
     );
 
-    a.data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0];
-    b.data = vec![12.0, 11.0, 10.0, 9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0];
+    a.set_cpu_data(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]);
+    b.set_cpu_data(vec![12.0, 11.0, 10.0, 9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0]);
 
     let result = a.add(&b);
     assert_eq!(result.layout, Layout::ChannelsLast);
     assert_eq!(result.strides, Tensor::compute_strides(&shape, &Layout::ChannelsLast));
-    assert_eq!(result.data[0], 13.0);
-    assert_eq!(result.data[11], 13.0);
+    assert_eq!(result.as_cpu_slice()[0], 13.0);
+    assert_eq!(result.as_cpu_slice()[11], 13.0);
 }
 
 #[test]
@@ -58,5 +58,5 @@ fn with_layout_constructor_sets_fields() {
     assert_eq!(tensor.layout, Layout::ChannelsFirst);
     assert_eq!(tensor.strides, Tensor::compute_strides(&shape, &Layout::ChannelsFirst));
     assert_eq!(tensor.device, Device::GPU);
-    assert!(tensor.data.iter().all(|&v| (v - 2.0).abs() < f32::EPSILON));
+    assert!(tensor.as_cpu_slice().iter().all(|&v| (v - 2.0).abs() < f32::EPSILON));
 }

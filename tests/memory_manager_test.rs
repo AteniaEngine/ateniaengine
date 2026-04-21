@@ -1,4 +1,4 @@
-use atenia_engine::amm::memory_manager::{ManagedTensor, MemoryManager};
+﻿use atenia_engine::amm::memory_manager::{ManagedTensor, MemoryManager};
 use atenia_engine::tensor::{Device, DType, Layout, Tensor};
 
 fn make_tensor(len: usize, value: f32) -> Tensor {
@@ -9,7 +9,7 @@ fn make_tensor(len: usize, value: f32) -> Tensor {
         Layout::Contiguous,
         DType::F32,
     );
-    for v in t.data.iter_mut() {
+    for v in t.as_cpu_slice_mut().iter_mut() {
         *v = value;
     }
     t
@@ -96,8 +96,8 @@ fn load_from_disk_restores_tensor() {
     assert!(mts[idx].tensor.is_some());
     let restored = mts[idx].tensor.as_ref().unwrap();
 
-    assert_eq!(restored.data.len(), t.data.len());
-    for (a, b) in restored.data.iter().zip(t.data.iter()) {
+    assert_eq!(restored.numel(), t.numel());
+    for (a, b) in restored.as_cpu_slice().iter().zip(t.as_cpu_slice().iter()) {
         assert_eq!(*a, *b);
     }
 }

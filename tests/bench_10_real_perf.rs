@@ -1,4 +1,4 @@
-use std::time::Instant;
+﻿use std::time::Instant;
 
 use atenia_engine::tensor::{Tensor, Device, DType};
 use atenia_engine::gpu::tensor::{GpuTensorManager, TensorGPU};
@@ -29,9 +29,9 @@ fn matmul_cpu(a: &Tensor, b: &Tensor) -> Tensor {
         for j in 0..m {
             let mut acc = 0.0f32;
             for kk in 0..k {
-                acc += a.data[i * k + kk] * b.data[kk * m + j];
+                acc += a.as_cpu_slice()[i * k + kk] * b.as_cpu_slice()[kk * m + j];
             }
-            out.data[i * m + j] = acc;
+            out.as_cpu_slice_mut()[i * m + j] = acc;
         }
     }
     out
@@ -47,10 +47,10 @@ fn linear_cpu(x: &Tensor, w: &Tensor, b: &Tensor) -> Tensor {
         for j in 0..n {
             let mut acc = 0.0f32;
             for kk in 0..k {
-                acc += x.data[i * k + kk] * w.data[j * k + kk];
+                acc += x.as_cpu_slice()[i * k + kk] * w.as_cpu_slice()[j * k + kk];
             }
-            acc += b.data[j];
-            out.data[i * n + j] = acc;
+            acc += b.as_cpu_slice()[j];
+            out.as_cpu_slice_mut()[i * n + j] = acc;
         }
     }
     out
@@ -80,14 +80,14 @@ fn bench_real_perf() {
         let b_cpu = Tensor::random(vec![n, n], Device::CPU, DType::F32);
 
         // GPU tensors (from raw data)
-        let a_gpu = match mgr.from_cpu_vec(&a_cpu.data, n, n) {
+        let a_gpu = match mgr.from_cpu_vec(a_cpu.as_cpu_slice(), n, n) {
             Ok(t) => t,
             Err(_) => {
                 println!("[BENCH] GPU alloc failed at size {} (a_gpu)", n);
                 continue;
             }
         };
-        let b_gpu = match mgr.from_cpu_vec(&b_cpu.data, n, n) {
+        let b_gpu = match mgr.from_cpu_vec(b_cpu.as_cpu_slice(), n, n) {
             Ok(t) => t,
             Err(_) => {
                 println!("[BENCH] GPU alloc failed at size {} (b_gpu)", n);
@@ -124,14 +124,14 @@ fn bench_real_perf() {
         });
 
         // LINEAR GPU
-        let w_gpu = match mgr.from_cpu_vec(&w_cpu.data, n, n) {
+        let w_gpu = match mgr.from_cpu_vec(w_cpu.as_cpu_slice(), n, n) {
             Ok(t) => t,
             Err(_) => {
                 println!("[BENCH] GPU alloc failed at size {} (w_gpu)", n);
                 continue;
             }
         };
-        let b_gpu = match mgr.from_cpu_vec(&b_cpu_lin.data, 1, n) {
+        let b_gpu = match mgr.from_cpu_vec(b_cpu_lin.as_cpu_slice(), 1, n) {
             Ok(t) => t,
             Err(_) => {
                 println!("[BENCH] GPU alloc failed at size {} (b_gpu)", n);

@@ -1,4 +1,4 @@
-use atenia_engine::apx9::vgpu_warp::*;
+﻿use atenia_engine::apx9::vgpu_warp::*;
 use atenia_engine::apx9::vgpu_instr::*;
 use atenia_engine::apx9::vgpu_dual_issue::VGPUDualIssue;
 use atenia_engine::{tensor::Tensor, tensor::DType, tensor::Device};
@@ -44,5 +44,5 @@ fn apx_9_23_prevents_conflict() {
 #[test]
 fn apx_9_23_no_numeric_change() {
     let t = Tensor::ones(vec![1], Device::CPU, DType::F32);
-    assert_eq!(t.data[0], 1.0);
+    assert_eq!(t.as_cpu_slice()[0], 1.0);
 }

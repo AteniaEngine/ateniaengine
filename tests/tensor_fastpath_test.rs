@@ -1,11 +1,11 @@
-use atenia_engine::tensor::ops::testing::{fast_add_calls, reset_op_counters, slow_add_calls};
+﻿use atenia_engine::tensor::ops::testing::{fast_add_calls, reset_op_counters, slow_add_calls};
 use atenia_engine::tensor::tensor::{Device, DType, Layout, Tensor};
 
 fn assign_logical_values(tensor: &mut Tensor, values: &[f32]) {
-    assert_eq!(values.len(), tensor.num_elements());
+    assert_eq!(values.len(), tensor.numel());
 
     if tensor.shape.is_empty() {
-        tensor.data[0] = values[0];
+        tensor.as_cpu_slice_mut()[0] = values[0];
         return;
     }
 
@@ -13,7 +13,7 @@ fn assign_logical_values(tensor: &mut Tensor, values: &[f32]) {
     let mut value_iter = values.iter();
     loop {
         let offset = linear_offset(&index, &tensor.strides);
-        tensor.data[offset] = *value_iter.next().unwrap();
+        tensor.as_cpu_slice_mut()[offset] = *value_iter.next().unwrap();
         if !increment_index(&mut index, &tensor.shape) {
             break;
         }
@@ -21,9 +21,9 @@ fn assign_logical_values(tensor: &mut Tensor, values: &[f32]) {
 }
 
 fn collect_logical_values(tensor: &Tensor) -> Vec<f32> {
-    let mut result = vec![0.0; tensor.num_elements()];
+    let mut result = vec![0.0; tensor.numel()];
     if tensor.shape.is_empty() {
-        result[0] = tensor.data[0];
+        result[0] = tensor.as_cpu_slice()[0];
         return result;
     }
 
@@ -31,7 +31,7 @@ fn collect_logical_values(tensor: &Tensor) -> Vec<f32> {
     let mut pos = 0;
     loop {
         let offset = linear_offset(&index, &tensor.strides);
-        result[pos] = tensor.data[offset];
+        result[pos] = tensor.as_cpu_slice()[offset];
         pos += 1;
         if !increment_index(&mut index, &tensor.shape) {
             break;

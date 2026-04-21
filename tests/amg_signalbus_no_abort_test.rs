@@ -53,7 +53,7 @@ fn build_small_matmul_graph() -> atenia_engine::amg::graph::Graph {
         Layout::Contiguous,
         DType::F32,
     );
-    weight.data = vec![1.0, 0.0, 0.0, 1.0]; // identity
+    weight.set_cpu_data(vec![1.0, 0.0, 0.0, 1.0]); // identity
     let w_id = gb.parameter(weight);
 
     let mm_id = gb.matmul(input_id, w_id);
@@ -69,7 +69,7 @@ fn make_input_tensor() -> Tensor {
         Layout::Contiguous,
         DType::F32,
     );
-    t.data = vec![1.0, 2.0, 3.0, 4.0];
+    t.set_cpu_data(vec![1.0, 2.0, 3.0, 4.0]);
     t
 }
 
@@ -173,8 +173,8 @@ fn no_abort_with_continue_guard_matches_baseline() {
 
     // --- Outputs must be numerically identical ---
     assert_close(
-        &guarded_outputs[0].data,
-        &baseline_outputs[0].data,
+        guarded_outputs[0].as_cpu_slice(),
+        baseline_outputs[0].as_cpu_slice(),
         "guarded vs baseline output",
     );
 }
@@ -201,7 +201,7 @@ fn no_abort_without_reactive_context() {
     assert_eq!(outputs.len(), 1);
     // Identity matmul: output = input.
     assert_close(
-        &outputs[0].data,
+        outputs[0].as_cpu_slice(),
         &[1.0, 2.0, 3.0, 4.0],
         "identity matmul output",
     );

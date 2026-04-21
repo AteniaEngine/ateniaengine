@@ -1,4 +1,4 @@
-use atenia_engine::tensor::{Tensor, Device, DType};
+﻿use atenia_engine::tensor::{Tensor, Device, DType};
 use atenia_engine::gpu_vec_add;
 
 #[test]
@@ -15,14 +15,14 @@ fn apx_8_6_gpu_vec_add_equivalence() {
     let mut a = Tensor::ones(vec![8], Device::CPU, DType::F32);
     let mut b = Tensor::ones(vec![8], Device::CPU, DType::F32);
     // b = vector of 2.0
-    for v in b.data.iter_mut() {
+    for v in b.as_cpu_slice_mut().iter_mut() {
         *v = 2.0;
     }
 
     gpu_vec_add(&mut a, &b);
 
     // CPU view must be 3.0 in all positions.
-    for v in a.data.iter() {
+    for v in a.as_cpu_slice().iter() {
         assert!((*v - 3.0).abs() < 1e-6);
     }
 }
@@ -33,14 +33,14 @@ fn apx_8_6_gpu_vec_add_cpu_coherence() {
 
     let mut a = Tensor::ones(vec![8], Device::CPU, DType::F32);
     let mut b = Tensor::ones(vec![8], Device::CPU, DType::F32);
-    for v in b.data.iter_mut() {
+    for v in b.as_cpu_slice_mut().iter_mut() {
         *v = 2.0;
     }
 
-    let before = a.data.clone();
+    let before = a.copy_to_cpu_vec();
     gpu_vec_add(&mut a, &b);
     a.sync_cpu();
-    let after = a.data.clone();
+    let after = a.copy_to_cpu_vec();
 
     // We do not introduce NaNs or corruption; the vector remains valid.
     assert_eq!(after.len(), before.len());

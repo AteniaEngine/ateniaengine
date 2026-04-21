@@ -1,4 +1,4 @@
-use atenia_engine::amg::builder::GraphBuilder;
+﻿use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::amg::graph::{Graph, FusedOutput};
 use atenia_engine::tensor::{Tensor, Device, DType, Layout};
 
@@ -63,8 +63,8 @@ fn test_qkv_fusion_forward_matches_naive() {
 
     for (naive, fused) in out_naive.iter().zip(fused_list.iter()) {
         assert_eq!(naive.shape, fused.shape);
-        assert_eq!(naive.data.len(), fused.data.len());
-        for (a, b) in naive.data.iter().zip(fused.data.iter()) {
+        assert_eq!(naive.numel(), fused.numel());
+        for (a, b) in naive.as_cpu_slice().iter().zip(fused.as_cpu_slice().iter()) {
             assert!((a - b).abs() < 1e-6);
         }
     }

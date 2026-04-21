@@ -1,4 +1,4 @@
-use atenia_engine::apx9::vgpu_warp::*;
+﻿use atenia_engine::apx9::vgpu_warp::*;
 use atenia_engine::apx9::vgpu_pipeline::*;
 use atenia_engine::apx9::vgpu_instr::*;
 use atenia_engine::apx9::vgpu_oows::VGPUOOWarpScheduler;
@@ -42,5 +42,5 @@ fn apx_9_22_selects_first_ready() {
 #[test]
 fn apx_9_22_no_numeric_change() {
     let t = Tensor::ones(vec![2], Device::CPU, DType::F32);
-    assert_eq!(t.data[0], 1.0);
+    assert_eq!(t.as_cpu_slice()[0], 1.0);
 }

@@ -1,4 +1,4 @@
-use atenia_engine::apx9::vgpu_memory::VGpuMemory;
+﻿use atenia_engine::apx9::vgpu_memory::VGpuMemory;
 use atenia_engine::apx9::vgpu_tensor_core::{VGPUTensorCore, TENSOR_CORE_TILE};
 use atenia_engine::apx9::vgpu_instr::VGPUInstr;
 use atenia_engine::{tensor::Tensor, tensor::DType, tensor::Device};
@@ -55,6 +55,6 @@ fn apx_9_24_hmma_matches_cpu_matmul_2x2() {
 #[test]
 fn apx_9_24_no_numeric_change() {
     let t = Tensor::ones(vec![4], Device::CPU, DType::F32);
-    let sum: f32 = t.data.iter().sum();
+    let sum: f32 = t.as_cpu_slice().iter().sum();
     assert!((sum - 4.0).abs() < 1e-6);
 }

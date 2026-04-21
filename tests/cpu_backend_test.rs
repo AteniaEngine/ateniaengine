@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+﻿#![allow(dead_code)]
 
 use atenia_engine::v15;
 use atenia_engine::v16;
@@ -112,7 +112,7 @@ fn simple_inference_produces_correct_output() {
     // y = ReLU(W x) with W = [[1, 0], [0, -1]] and x = [2, -3]^
     // W x = [2, 3]; ReLU -> [2, 3]
     assert_eq!(out.shape, vec![2, 1]);
-    assert_eq!(out.data, vec![2.0, 3.0]);
+    assert_eq!(out.data.clone(), vec![2.0, 3.0]);
 }
 
 #[test]

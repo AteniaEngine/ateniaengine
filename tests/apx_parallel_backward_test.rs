@@ -1,4 +1,4 @@
-use atenia_engine::amg::builder::GraphBuilder;
+﻿use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::amg::graph::Graph;
 use atenia_engine::amg::nodes::NodeType;
 use atenia_engine::tensor::{Device, DType, Layout, Tensor};
@@ -107,10 +107,10 @@ fn build_inputs() -> (Tensor, Tensor) {
 
     for b in 0..batch {
         for i in 0..in_dim {
-            x.data[b * in_dim + i] = (b as f32) + (i as f32) * 0.1;
+            x.as_cpu_slice_mut()[b * in_dim + i] = (b as f32) + (i as f32) * 0.1;
         }
         for o in 0..out_dim {
-            y.data[b * out_dim + o] = ((b + o) as f32) * 0.2;
+            y.as_cpu_slice_mut()[b * out_dim + o] = ((b + o) as f32) * 0.2;
         }
     }
 
@@ -126,7 +126,7 @@ fn collect_param_grads(graph: &Graph, param_ids: &[usize]) -> Vec<Vec<f32>> {
                 .as_ref()
                 .and_then(|t| t.grad.as_ref())
                 .map(|g| g.clone())
-                .unwrap_or_else(|| vec![0.0; graph.nodes[pid].output.as_ref().unwrap().data.len()])
+                .unwrap_or_else(|| vec![0.0; graph.nodes[pid].output.as_ref().unwrap().numel()])
         })
         .collect()
 }

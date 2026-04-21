@@ -1,4 +1,4 @@
-use atenia_engine::amg::builder::GraphBuilder;
+﻿use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::amg::nodes::NodeType;
 use atenia_engine::tensor::{Device, DType, Layout, Tensor};
 
@@ -15,7 +15,7 @@ fn run_model() -> Vec<Vec<f32>> {
         DType::F32,
     );
     // Deterministic initialization
-    for (i, v) in w.data.iter_mut().enumerate() {
+    for (i, v) in w.as_cpu_slice_mut().iter_mut().enumerate() {
         *v = (i as f32) * 0.1;
     }
     let w_id = gb.parameter(w);
@@ -35,7 +35,7 @@ fn run_model() -> Vec<Vec<f32>> {
         Layout::Contiguous,
         DType::F32,
     );
-    input_tensor.data.copy_from_slice(&[1.0, -2.0, 0.5]);
+    input_tensor.as_cpu_slice_mut().copy_from_slice(&[1.0, -2.0, 0.5]);
 
     let _ = g.execute(vec![input_tensor]);
     let loss_id = g.last_output_id();

@@ -1,4 +1,4 @@
-use atenia_engine::amg::graph::Graph;
+﻿use atenia_engine::amg::graph::Graph;
 use atenia_engine::amg::nodes::{Node, NodeType};
 use atenia_engine::tensor::{Tensor, Device};
 use atenia_engine::init_apx;
@@ -40,16 +40,16 @@ fn test_apx4_11_matmul_hook_runs_and_matches_cpu() {
             for j in 0..n {
                 let mut acc = 0.0f32;
                 for p in 0..k {
-                    acc += a.data[i * k + p] * b.data[p * n + j];
+                    acc += a.as_cpu_slice()[i * k + p] * b.as_cpu_slice()[p * n + j];
                 }
-                y_cpu.data[i * n + j] = acc;
+                y_cpu.as_cpu_slice_mut()[i * n + j] = acc;
             }
         }
     }
 
     assert_eq!(y_gpu.shape, y_cpu.shape);
     let mut max_diff = 0.0f32;
-    for (yg, yc) in y_gpu.data.iter().zip(y_cpu.data.iter()) {
+    for (yg, yc) in y_gpu.as_cpu_slice().iter().zip(y_cpu.as_cpu_slice().iter()) {
         let d = (yg - yc).abs();
         if d > max_diff {
             max_diff = d;
@@ -98,16 +98,16 @@ fn test_apx4_11_linear_hook_runs_and_matches_cpu() {
         for j in 0..n {
             let mut acc = 0.0f32;
             for p in 0..k {
-                acc += x.data[i * k + p] * w.data[p * n + j];
+                acc += x.as_cpu_slice()[i * k + p] * w.as_cpu_slice()[p * n + j];
             }
-            acc += b.data[j];
-            y_cpu.data[i * n + j] = acc;
+            acc += b.as_cpu_slice()[j];
+            y_cpu.as_cpu_slice_mut()[i * n + j] = acc;
         }
     }
 
     assert_eq!(y_gpu.shape, y_cpu.shape);
     let mut max_diff = 0.0f32;
-    for (yg, yc) in y_gpu.data.iter().zip(y_cpu.data.iter()) {
+    for (yg, yc) in y_gpu.as_cpu_slice().iter().zip(y_cpu.as_cpu_slice().iter()) {
         let d = (yg - yc).abs();
         if d > max_diff {
             max_diff = d;

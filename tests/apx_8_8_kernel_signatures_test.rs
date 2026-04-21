@@ -1,4 +1,4 @@
-use atenia_engine::apx8::gpu_kernel_signature::*;
+﻿use atenia_engine::apx8::gpu_kernel_signature::*;
 use atenia_engine::tensor::{Tensor, Device, DType};
 
 #[test]
@@ -32,7 +32,7 @@ fn apx_8_8_no_numeric_change() {
 
     let res = a.add(&b);
 
-    for v in res.data.iter() {
+    for v in res.as_cpu_slice().iter() {
         assert!((*v - 2.0).abs() < 1e-6);
     }
 }

@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+﻿#![allow(dead_code)]
 
 use atenia_engine::v17;
 
@@ -24,7 +24,7 @@ fn inference_is_deterministic() {
     let r2 = run_ok();
 
     assert_eq!(r1.logits.shape, r2.logits.shape);
-    assert_eq!(r1.logits.data, r2.logits.data);
+    assert_eq!(&r1.logits.data, &r2.logits.data);
     assert_eq!(r1.predicted_digit, r2.predicted_digit);
 }
 

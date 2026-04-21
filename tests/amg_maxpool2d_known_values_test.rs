@@ -1,25 +1,16 @@
-//! Absolute-correctness forward tests for AMG's `MaxPool2D`.
+﻿//! Absolute-correctness forward tests for AMG's `MaxPool2D`.
 //!
 //! Inputs chosen so the expected max per window is obvious and can
 //! be derived inline. Tolerance 1e-6 because max selection is exact.
 
 use atenia_engine::amg::nodes::MaxPool2DConfig;
 use atenia_engine::amg::ops::maxpool2d::execute_maxpool2d as amg_maxpool2d;
-use atenia_engine::tensor::{DType, Device, Layout, Tensor as AmgTensor};
+use atenia_engine::tensor::Tensor as AmgTensor;
 
 const TOLERANCE: f32 = 1e-6;
 
 fn amg_tensor(shape: Vec<usize>, data: Vec<f32>) -> AmgTensor {
-    let mut t = AmgTensor::with_layout(
-        shape,
-        0.0,
-        Device::CPU,
-        Layout::Contiguous,
-        DType::F32,
-    );
-    assert_eq!(t.data.len(), data.len());
-    t.data = data;
-    t
+    AmgTensor::new_cpu(shape, data)
 }
 
 fn assert_close(got: &[f32], want: &[f32], ctx: &str) {
@@ -65,7 +56,7 @@ fn maxpool2d_2x2_non_overlapping() {
 
     assert_eq!(out.shape, vec![1, 1, 2, 2]);
     assert_close(
-        &out.data,
+        out.as_cpu_slice(),
         &[8.0, 7.0, 14.0, 16.0],
         "maxpool2d_2x2_non_overlapping",
     );
@@ -91,7 +82,7 @@ fn maxpool2d_3x3_stride1() {
 
     assert_eq!(out.shape, vec![1, 1, 2, 2]);
     assert_close(
-        &out.data,
+        out.as_cpu_slice(),
         &[11.0, 12.0, 15.0, 16.0],
         "maxpool2d_3x3_stride1",
     );

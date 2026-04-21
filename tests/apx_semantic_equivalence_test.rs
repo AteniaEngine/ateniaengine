@@ -1,4 +1,4 @@
-use atenia_engine::amg::builder::GraphBuilder;
+﻿use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::amg::graph::Graph;
 use atenia_engine::nn::mini_flux::{build_mini_flux_language_model, MiniFluxConfig};
 use atenia_engine::tensor::{Device, DType, Layout, Tensor};
@@ -32,9 +32,9 @@ fn apx_semantic_equivalence_mini_flux_forward() {
     let out_adaptive = run_forward_with_mode(&cfg, &input, "7.12");
 
     assert_eq!(out_baseline.shape, out_adaptive.shape, "output shape mismatch");
-    assert_eq!(out_baseline.data.len(), out_adaptive.data.len(), "output length mismatch");
+    assert_eq!(out_baseline.numel(), out_adaptive.numel(), "output length mismatch");
 
-    let (max_diff, mean_diff) = diff_stats(&out_baseline.data, &out_adaptive.data);
+    let (max_diff, mean_diff) = diff_stats(out_baseline.as_cpu_slice(), out_adaptive.as_cpu_slice());
 
     // Machine-precision level equivalence.
     // We prefer exact equality; if a future change introduces tiny rounding differences,
@@ -81,7 +81,7 @@ fn build_deterministic_tokens(batch: usize, seq_len: usize, vocab_size: usize) -
     for b in 0..batch {
         for s in 0..seq_len {
             let idx = b * seq_len + s;
-            x.data[idx] = ((b + 3 * s) % vocab_size) as f32;
+            x.as_cpu_slice_mut()[idx] = ((b + 3 * s) % vocab_size) as f32;
         }
     }
 

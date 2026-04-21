@@ -1,4 +1,4 @@
-use std::fs;
+﻿use std::fs;
 use std::io::Write;
 use std::time::{Duration, Instant};
 
@@ -63,7 +63,7 @@ fn apx_runtime_stability_under_dynamic_conditions() {
 
     // Validity constraint: outputs must be identical across modes.
     assert_eq!(baseline_out.shape, adaptive_out.shape, "output shape mismatch");
-    assert_eq!(baseline_out.data, adaptive_out.data, "output data mismatch");
+    assert_eq!(baseline_out.as_cpu_slice(), adaptive_out.as_cpu_slice(), "output data mismatch");
 
     export_csv(&metrics);
     print_summary(&metrics);
@@ -180,7 +180,7 @@ fn build_deterministic_tokens(batch: usize, seq_len: usize, vocab_size: usize) -
     for b in 0..batch {
         for s in 0..seq_len {
             let idx = b * seq_len + s;
-            x.data[idx] = ((b + 3 * s) % vocab_size) as f32;
+            x.as_cpu_slice_mut()[idx] = ((b + 3 * s) % vocab_size) as f32;
         }
     }
 

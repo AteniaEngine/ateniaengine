@@ -54,7 +54,7 @@ fn build_small_matmul_graph() -> atenia_engine::amg::graph::Graph {
         Layout::Contiguous,
         DType::F32,
     );
-    weight.data = vec![1.0, 0.0, 0.0, 1.0]; // identity
+    weight.set_cpu_data(vec![1.0, 0.0, 0.0, 1.0]); // identity
     let w_id = gb.parameter(weight);
 
     let mm_id = gb.matmul(input_id, w_id);
@@ -70,7 +70,7 @@ fn make_input_tensor() -> Tensor {
         Layout::Contiguous,
         DType::F32,
     );
-    t.data = vec![1.0, 2.0, 3.0, 4.0];
+    t.set_cpu_data(vec![1.0, 2.0, 3.0, 4.0]);
     t
 }
 

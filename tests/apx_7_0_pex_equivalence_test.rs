@@ -1,4 +1,4 @@
-use atenia_engine::tensor::{Tensor, Device};
+﻿use atenia_engine::tensor::{Tensor, Device};
 use atenia_engine::config::get_runtime_flags;
 
 #[test]
@@ -25,7 +25,7 @@ fn apx_7_0_pex_matches_seq_in_6_3_mode() {
 
     // Compare maximum absolute element-wise error.
     let mut max_diff = 0.0f32;
-    for (x, y) in seq.data.iter().zip(par.data.iter()) {
+    for (x, y) in seq.as_cpu_slice().iter().zip(par.as_cpu_slice().iter()) {
         let d = (x - y).abs();
         if d > max_diff {
             max_diff = d;

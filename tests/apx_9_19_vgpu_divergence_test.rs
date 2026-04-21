@@ -1,4 +1,4 @@
-use atenia_engine::apx9::vgpu_warp::*;
+﻿use atenia_engine::apx9::vgpu_warp::*;
 use atenia_engine::apx9::vgpu_divergence::*;
 use atenia_engine::{tensor::Tensor, tensor::DType, tensor::Device};
 
@@ -46,6 +46,6 @@ fn apx_9_19_diverge_and_reconverge() {
 fn apx_9_19_integration_no_numeric_change() {
     let a = Tensor::ones(vec![4], Device::CPU, DType::F32);
     let b = Tensor::ones(vec![4], Device::CPU, DType::F32);
-    assert_eq!(a.data[0], 1.0);
-    assert_eq!(b.data[0], 1.0);
+    assert_eq!(a.as_cpu_slice()[0], 1.0);
+    assert_eq!(b.as_cpu_slice()[0], 1.0);
 }

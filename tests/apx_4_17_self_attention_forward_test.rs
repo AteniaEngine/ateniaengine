@@ -1,10 +1,10 @@
-use atenia_engine::amg::builder::GraphBuilder;
+﻿use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::tensor::{Tensor, Device, DType, Layout};
 
 fn assert_close(a: &Tensor, b: &Tensor, tol: f32) {
     assert_eq!(a.shape, b.shape, "shape mismatch: {:?} vs {:?}", a.shape, b.shape);
-    assert_eq!(a.data.len(), b.data.len(), "len mismatch");
-    for (i, (va, vb)) in a.data.iter().zip(b.data.iter()).enumerate() {
+    assert_eq!(a.numel(), b.numel(), "len mismatch");
+    for (i, (va, vb)) in a.as_cpu_slice().iter().zip(b.as_cpu_slice().iter()).enumerate() {
         let diff = (va - vb).abs();
         assert!(
             diff <= tol,

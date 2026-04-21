@@ -1,4 +1,4 @@
-use atenia_engine::amg::builder::GraphBuilder;
+﻿use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::amg::graph::Graph;
 use atenia_engine::amg::nodes::NodeType;
 use atenia_engine::nn::mini_flux::{build_language_training_graph, build_mini_flux, MiniFluxConfig};
@@ -35,8 +35,8 @@ pub fn next_token_targets(tokens: &Tensor, vocab: usize) -> Tensor {
             let idx = b * seq + s;
             let next_col = (s + 1) % seq;
             let next_idx = b * seq + next_col;
-            let target = tokens.data[next_idx].round() as usize % vocab;
-            t.data[idx] = target as f32;
+            let target = tokens.as_cpu_slice()[next_idx].round() as usize % vocab;
+            t.as_cpu_slice_mut()[idx] = target as f32;
         }
     }
     t
@@ -54,7 +54,7 @@ pub fn sample_tokens(cfg: &MiniFluxConfig, seed: usize) -> Tensor {
         for s in 0..cfg.seq_len {
             let idx = b * cfg.seq_len + s;
             let val = ((b + s + seed) % cfg.vocab_size) as f32;
-            t.data[idx] = val;
+            t.as_cpu_slice_mut()[idx] = val;
         }
     }
     t
@@ -74,9 +74,9 @@ pub fn tokens_to_one_hot(tokens: &Tensor, vocab: usize) -> Tensor {
     );
     for b in 0..batch {
         for s in 0..seq {
-            let token = tokens.data[b * seq + s].round() as usize % vocab;
+            let token = tokens.as_cpu_slice()[b * seq + s].round() as usize % vocab;
             let offset = b * seq * vocab + s * vocab + token;
-            t.data[offset] = 1.0;
+            t.as_cpu_slice_mut()[offset] = 1.0;
         }
     }
     t

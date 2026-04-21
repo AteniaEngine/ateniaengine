@@ -1,4 +1,4 @@
-use atenia_engine::apx8::kernel_generator::KernelIR;
+﻿use atenia_engine::apx8::kernel_generator::KernelIR;
 use atenia_engine::apx8::codegen::gpu_codegen_v1::GPUCodegenV1;
 use atenia_engine::tensor::{Tensor, Device, DType};
 
@@ -24,7 +24,7 @@ fn apx_8_13_codegen_does_not_change_numerics() {
 
     let res_after = a.add(&b);
 
-    for (x, y) in res_before.data.iter().zip(res_after.data.iter()) {
+    for (x, y) in res_before.as_cpu_slice().iter().zip(res_after.as_cpu_slice().iter()) {
         assert!((x - y).abs() < 1e-6);
     }
 }

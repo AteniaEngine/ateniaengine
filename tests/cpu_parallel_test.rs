@@ -7,9 +7,12 @@ use atenia_engine::tensor::{Device, DType, Layout, Tensor};
 fn tensor_from_fn(shape: (usize, usize), f: impl Fn(usize, usize) -> f32) -> Tensor {
     let (rows, cols) = shape;
     let mut t = Tensor::with_layout(vec![rows, cols], 0.0, Device::CPU, Layout::Contiguous, DType::F32);
-    for r in 0..rows {
-        for c in 0..cols {
-            t.data[r * cols + c] = f(r, c);
+    {
+        let slice = t.as_cpu_slice_mut();
+        for r in 0..rows {
+            for c in 0..cols {
+                slice[r * cols + c] = f(r, c);
+            }
         }
     }
     t
@@ -20,13 +23,16 @@ fn serial_matmul(a: &Tensor, b: &Tensor) -> Tensor {
     let k = a.shape[1];
     let n = b.shape[1];
     let mut out = Tensor::with_layout(vec![m, n], 0.0, Device::CPU, Layout::Contiguous, DType::F32);
+    let a_slice = a.as_cpu_slice();
+    let b_slice = b.as_cpu_slice();
+    let out_slice = out.as_cpu_slice_mut();
     for i in 0..m {
         for j in 0..n {
             let mut sum = 0.0f32;
             for kk in 0..k {
-                sum += a.data[i * k + kk] * b.data[kk * n + j];
+                sum += a_slice[i * k + kk] * b_slice[kk * n + j];
             }
-            out.data[i * n + j] = sum;
+            out_slice[i * n + j] = sum;
         }
     }
     out
@@ -37,9 +43,11 @@ fn serial_softmax(x: &Tensor) -> Tensor {
     let cols = x.shape[ndim - 1];
     let rows = if ndim == 1 { 1 } else { x.shape[..ndim - 1].iter().product() };
     let mut out = Tensor::with_layout(x.shape.clone(), 0.0, Device::CPU, Layout::Contiguous, DType::F32);
+    let x_slice = x.as_cpu_slice();
+    let out_slice = out.as_cpu_slice_mut();
     for row in 0..rows {
         let start = row * cols;
-        let slice = &x.data[start..start + cols];
+        let slice = &x_slice[start..start + cols];
         let mut max_val = f32::NEG_INFINITY;
         for &v in slice {
             max_val = max_val.max(v);
@@ -53,7 +61,7 @@ fn serial_softmax(x: &Tensor) -> Tensor {
         }
         let inv = 1.0f32 / sum_exp.max(1e-12);
         for i in 0..cols {
-            out.data[start + i] = temp[i] * inv;
+            out_slice[start + i] = temp[i] * inv;
         }
     }
     out
@@ -68,7 +76,7 @@ fn test_parallel_matmul_matches_serial() {
     let serial = serial_matmul(&a, &b);
 
     assert_eq!(parallel.shape, serial.shape);
-    for (p, s) in parallel.data.iter().zip(serial.data.iter()) {
+    for (p, s) in parallel.as_cpu_slice().iter().zip(serial.as_cpu_slice().iter()) {
         assert!((p - s).abs() < 1e-5);
     }
 }
@@ -80,7 +88,7 @@ fn test_parallel_softmax_identical() {
     let parallel = softmax_last_dim(&x);
     let serial = serial_softmax(&x);
 
-    for (p, s) in parallel.data.iter().zip(serial.data.iter()) {
+    for (p, s) in parallel.as_cpu_slice().iter().zip(serial.as_cpu_slice().iter()) {
         assert!((p - s).abs() < 1e-6);
     }
 }
@@ -91,20 +99,28 @@ fn test_parallel_linear_matches_serial() {
     let w = tensor_from_fn((8, 4), |i, j| (i * 4 + j) as f32 * 0.05);
     let bias = Tensor::with_layout(vec![4], 0.0, Device::CPU, Layout::Contiguous, DType::F32);
     let mut bias = bias;
-    for i in 0..4 {
-        bias.data[i] = i as f32 * 0.01;
+    {
+        let b_slice = bias.as_cpu_slice_mut();
+        for i in 0..4 {
+            b_slice[i] = i as f32 * 0.01;
+        }
     }
 
     let parallel = linear(&x, &w, Some(&bias));
     let serial_mat = serial_matmul(&x, &w);
     let mut serial = serial_mat.clone();
-    for row in 0..serial.shape[0] {
-        for col in 0..serial.shape[1] {
-            serial.data[row * serial.shape[1] + col] += bias.data[col];
+    let shape = serial.shape.clone();
+    {
+        let serial_slice = serial.as_cpu_slice_mut();
+        let bias_slice = bias.as_cpu_slice();
+        for row in 0..shape[0] {
+            for col in 0..shape[1] {
+                serial_slice[row * shape[1] + col] += bias_slice[col];
+            }
         }
     }
 
-    for (p, s) in parallel.data.iter().zip(serial.data.iter()) {
+    for (p, s) in parallel.as_cpu_slice().iter().zip(serial.as_cpu_slice().iter()) {
         assert!((p - s).abs() < 1e-5);
     }
 }
@@ -113,10 +129,10 @@ fn test_parallel_linear_matches_serial() {
 fn test_batch_matmul_3d() {
     let mut a = Tensor::with_layout(vec![3, 2, 4], 0.0, Device::CPU, Layout::Contiguous, DType::F32);
     let mut b = Tensor::with_layout(vec![3, 4, 3], 0.0, Device::CPU, Layout::Contiguous, DType::F32);
-    for (idx, v) in a.data.iter_mut().enumerate() {
+    for (idx, v) in a.as_cpu_slice_mut().iter_mut().enumerate() {
         *v = (idx as f32) * 0.01;
     }
-    for (idx, v) in b.data.iter_mut().enumerate() {
+    for (idx, v) in b.as_cpu_slice_mut().iter_mut().enumerate() {
         *v = ((idx as f32) * 0.02) - 1.0;
     }
 
@@ -124,22 +140,27 @@ fn test_batch_matmul_3d() {
 
     // serial baseline
     let mut serial = Tensor::with_layout(vec![3, 2, 3], 0.0, Device::CPU, Layout::Contiguous, DType::F32);
-    for batch in 0..3 {
-        for i in 0..2 {
-            for j in 0..3 {
-                let mut sum = 0.0f32;
-                for kk in 0..4 {
-                    let a_idx = batch * 2 * 4 + i * 4 + kk;
-                    let b_idx = batch * 4 * 3 + kk * 3 + j;
-                    sum += a.data[a_idx] * b.data[b_idx];
+    {
+        let a_slice = a.as_cpu_slice();
+        let b_slice = b.as_cpu_slice();
+        let serial_slice = serial.as_cpu_slice_mut();
+        for batch in 0..3 {
+            for i in 0..2 {
+                for j in 0..3 {
+                    let mut sum = 0.0f32;
+                    for kk in 0..4 {
+                        let a_idx = batch * 2 * 4 + i * 4 + kk;
+                        let b_idx = batch * 4 * 3 + kk * 3 + j;
+                        sum += a_slice[a_idx] * b_slice[b_idx];
+                    }
+                    serial_slice[batch * 2 * 3 + i * 3 + j] = sum;
                 }
-                serial.data[batch * 2 * 3 + i * 3 + j] = sum;
             }
         }
     }
 
     assert_eq!(parallel.shape, serial.shape);
-    for (p, s) in parallel.data.iter().zip(serial.data.iter()) {
+    for (p, s) in parallel.as_cpu_slice().iter().zip(serial.as_cpu_slice().iter()) {
         assert!((p - s).abs() < 1e-5);
     }
 }

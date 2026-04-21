@@ -1,4 +1,4 @@
-use atenia_engine::apx9::vgpu_instr::VGPUInstr;
+﻿use atenia_engine::apx9::vgpu_instr::VGPUInstr;
 use atenia_engine::apx9::vgpu_sm::VirtualSM;
 use atenia_engine::tensor::{Tensor, Device, DType};
 
@@ -25,12 +25,12 @@ fn apx_9_25_no_numeric_change() {
     let c_sm = sm.simulate_vec_add(&a, &b);
 
     let expected: f32 = a
-        .data
+        .as_cpu_slice()
         .iter()
-        .zip(b.data.iter())
+        .zip(b.as_cpu_slice().iter())
         .map(|(x, y)| x + y)
         .sum();
-    let got: f32 = c_sm.data.iter().sum();
+    let got: f32 = c_sm.as_cpu_slice().iter().sum();
 
     assert!((expected - got).abs() < 1e-6);
 }

@@ -1,4 +1,4 @@
-use atenia_engine::amg::builder::GraphBuilder;
+﻿use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::nn::activations as nn_act;
 use atenia_engine::nn::linear as nn_linear;
 use atenia_engine::nn::normalization as nn_norm;
@@ -16,7 +16,7 @@ fn make_tensor_2d(shape: (usize, usize), fill_fn: impl Fn(usize, usize) -> f32) 
     );
     for i in 0..rows {
         for j in 0..cols {
-            t.data[i * cols + j] = fill_fn(i, j);
+            t.as_cpu_slice_mut()[i * cols + j] = fill_fn(i, j);
         }
     }
     t
@@ -50,7 +50,7 @@ fn graph_linear_matches_direct_linear() {
         DType::F32,
     );
     for j in 0..out_features {
-        b.data[j] = j as f32;
+        b.as_cpu_slice_mut()[j] = j as f32;
     }
 
     let direct = nn_linear::linear(&x, &w, Some(&b));
@@ -61,9 +61,9 @@ fn graph_linear_matches_direct_linear() {
     let y = &graph_out[0];
 
     assert_eq!(y.shape, direct.shape);
-    assert_eq!(y.data.len(), direct.data.len());
+    assert_eq!(y.numel(), direct.numel());
 
-    for (a, b) in y.data.iter().zip(direct.data.iter()) {
+    for (a, b) in y.as_cpu_slice().iter().zip(direct.as_cpu_slice().iter()) {
         assert!((a - b).abs() < 1e-5);
     }
 }
@@ -94,7 +94,7 @@ fn graph_rms_silu_softmax_pipeline_is_valid() {
     for r in 0..rows {
         let start = r * cols;
         let end = start + cols;
-        let row = &y.data[start..end];
+        let row = &y.as_cpu_slice()[start..end];
 
         let sum: f32 = row.iter().sum();
         assert!((sum - 1.0).abs() < 1e-4, "row {} sum = {}", r, sum);
@@ -110,7 +110,7 @@ fn graph_rms_silu_softmax_pipeline_is_valid() {
     let silu = nn_act::silu(&rms);
     let direct_softmax = nn_softmax::softmax_last_dim(&silu);
 
-    for (a, b) in y.data.iter().zip(direct_softmax.data.iter()) {
+    for (a, b) in y.as_cpu_slice().iter().zip(direct_softmax.as_cpu_slice().iter()) {
         assert!((a - b).abs() < 1e-5);
     }
 }

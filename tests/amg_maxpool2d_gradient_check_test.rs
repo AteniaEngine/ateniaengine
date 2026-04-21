@@ -1,4 +1,4 @@
-//! Gradient check: AMG's `MaxPool2D` analytical backward vs
+﻿//! Gradient check: AMG's `MaxPool2D` analytical backward vs
 //! central-difference numerical gradient.
 //!
 //! MaxPool's gradient is piecewise constant: each input element
@@ -21,22 +21,13 @@ use atenia_engine::amg::nodes::MaxPool2DConfig;
 use atenia_engine::amg::ops::maxpool2d::{
     execute_maxpool2d as amg_maxpool2d, execute_maxpool2d_backward as amg_maxpool2d_backward,
 };
-use atenia_engine::tensor::{DType, Device, Layout, Tensor as AmgTensor};
+use atenia_engine::tensor::Tensor as AmgTensor;
 
 const H: f32 = 1e-3;
 const REL_TOL: f32 = 1e-2;
 
 fn amg_tensor(shape: Vec<usize>, data: Vec<f32>) -> AmgTensor {
-    let mut t = AmgTensor::with_layout(
-        shape,
-        0.0,
-        Device::CPU,
-        Layout::Contiguous,
-        DType::F32,
-    );
-    assert_eq!(t.data.len(), data.len());
-    t.data = data;
-    t
+    AmgTensor::new_cpu(shape, data)
 }
 
 fn finite_diff_grad<F>(base: &[f32], forward: F) -> Vec<f32>
@@ -82,13 +73,13 @@ fn maxpool2d_grad_input_matches_finite_diff_non_overlapping() {
     // Analytical gradient: loss = sum(out) ⇒ out_grad = ones.
     let input = amg_tensor(input_shape.clone(), input_data.clone());
     let out = amg_maxpool2d(&input, &cfg);
-    let ones = amg_tensor(out.shape.clone(), vec![1.0; out.data.len()]);
+    let ones = amg_tensor(out.shape.clone(), vec![1.0; out.numel()]);
     let grad_analytical = amg_maxpool2d_backward(&input, &ones, &cfg);
 
     // Numerical.
     let grad_num = finite_diff_grad(&input_data, |x| {
         let t = amg_tensor(input_shape.clone(), x.to_vec());
-        amg_maxpool2d(&t, &cfg).data.iter().sum()
+        amg_maxpool2d(&t, &cfg).as_cpu_slice().iter().sum()
     });
 
     assert_grad_close(&grad_analytical, &grad_num, "grad_input (non-overlapping)");
@@ -104,12 +95,12 @@ fn maxpool2d_grad_input_matches_finite_diff_with_padding() {
 
     let input = amg_tensor(input_shape.clone(), input_data.clone());
     let out = amg_maxpool2d(&input, &cfg);
-    let ones = amg_tensor(out.shape.clone(), vec![1.0; out.data.len()]);
+    let ones = amg_tensor(out.shape.clone(), vec![1.0; out.numel()]);
     let grad_analytical = amg_maxpool2d_backward(&input, &ones, &cfg);
 
     let grad_num = finite_diff_grad(&input_data, |x| {
         let t = amg_tensor(input_shape.clone(), x.to_vec());
-        amg_maxpool2d(&t, &cfg).data.iter().sum()
+        amg_maxpool2d(&t, &cfg).as_cpu_slice().iter().sum()
     });
 
     assert_grad_close(&grad_analytical, &grad_num, "grad_input (with padding)");

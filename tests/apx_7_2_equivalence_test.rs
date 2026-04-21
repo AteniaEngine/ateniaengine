@@ -1,10 +1,10 @@
-use atenia_engine::tensor::{Tensor, Device};
+﻿use atenia_engine::tensor::{Tensor, Device};
 use atenia_engine::config::get_runtime_flags;
 
 fn max_abs_diff(a: &Tensor, b: &Tensor) -> f32 {
-    a.data
+    a.as_cpu_slice()
         .iter()
-        .zip(b.data.iter())
+        .zip(b.as_cpu_slice().iter())
         .map(|(x, y)| (x - y).abs())
         .fold(0.0f32, |acc, d| if d > acc { d } else { acc })
 }

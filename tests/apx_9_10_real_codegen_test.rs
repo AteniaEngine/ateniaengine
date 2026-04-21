@@ -1,4 +1,4 @@
-use atenia_engine::apx9::gpu_codegen_real::*;
+﻿use atenia_engine::apx9::gpu_codegen_real::*;
 use atenia_engine::apx8::kernel_registry::register_real_kernel;
 use atenia_engine::tensor::{Tensor, Device, DType};
 
@@ -28,7 +28,7 @@ fn apx_9_10_no_numeric_change() {
     let b = Tensor::ones(vec![4], Device::CPU, DType::F32);
     let c = a.add(&b);
 
-    for v in c.data {
+    for v in c.as_cpu_slice().iter() {
         assert!((v - 2.0).abs() < 1e-6);
     }
 }

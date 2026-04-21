@@ -13,7 +13,7 @@ fn manual_cross_entropy(logits: &Tensor, targets: &[usize]) -> f32 {
     for row in 0..(batch * seq) {
         let start = row * vocab;
         let end = start + vocab;
-        let slice = &logits.data[start..end];
+        let slice = &logits.as_cpu_slice()[start..end];
         let mut max_val = f32::NEG_INFINITY;
         for &v in slice {
             if v > max_val {
@@ -41,12 +41,12 @@ fn cross_entropy_matches_manual() {
         Layout::Contiguous,
         DType::F32,
     );
-    logits.data = vec![
+    logits.set_cpu_data(vec![
         1.0, 0.5, -0.5,
         0.2, 0.1, -0.1,
         -0.3, 0.7, 0.1,
         0.9, -0.4, 0.3,
-    ];
+    ]);
 
     let mut targets = Tensor::with_layout(
         vec![2, 2],
@@ -55,7 +55,7 @@ fn cross_entropy_matches_manual() {
         Layout::Contiguous,
         DType::F32,
     );
-    targets.data = vec![0.0, 1.0, 2.0, 1.0];
+    targets.set_cpu_data(vec![0.0, 1.0, 2.0, 1.0]);
 
     let mut gb = GraphBuilder::new();
     let logits_id = gb.input();
@@ -66,10 +66,10 @@ fn cross_entropy_matches_manual() {
     let mut graph = gb.build();
 
     let outputs = graph.execute(vec![logits.clone(), targets.clone()]);
-    let graph_loss = outputs[0].data[0];
+    let graph_loss = outputs[0].as_cpu_slice()[0];
 
     let manual_targets: Vec<usize> = targets
-        .data
+        .as_cpu_slice()
         .iter()
         .map(|v| v.round() as usize)
         .collect();

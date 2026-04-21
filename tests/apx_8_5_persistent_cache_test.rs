@@ -1,4 +1,4 @@
-use atenia_engine::tensor::{Tensor, Device};
+﻿use atenia_engine::tensor::{Tensor, Device};
 use atenia_engine::{HybridDispatcher, ExecDevice};
 use atenia_engine::apx8::persistent::current_global_step;
 
@@ -41,14 +41,14 @@ fn apx_8_5_persistence_mirror_survives_op() {
 #[test]
 fn apx_8_5_persistence_cpu_equivalence() {
     let mut t = Tensor::randn(&[4, 4], Device::CPU);
-    let before = t.data.clone();
+    let before = t.copy_to_cpu_vec();
 
     t.ensure_gpu_mirror();
     t.enable_gpu_persistence();
     t.note_gpu_use();
     t.sync_cpu();
 
-    let after = t.data.clone();
+    let after = t.copy_to_cpu_vec();
     assert_eq!(before, after);
 }
 
