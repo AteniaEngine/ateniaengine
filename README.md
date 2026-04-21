@@ -84,12 +84,37 @@ Architecture exists. Integration with real hardware signals is in progress:
 - **Predictive fallback** — Demonstrated in controlled test harnesses. Engine-native trigger pending.
 - **MNIST validation** — Structural pipeline runs with a synthetic model. Real MNIST dataset + trained weights pending.
 
-### ⏳ Roadmap (APX v18 → v25)
+### Roadmap (APX v18 → v25)
 
-- **v18** — Real external model loading (ONNX via `ModelLoader`)
-- **v19** — Runtime signal integration: VRAM / RAM / CPU → Guards / Policies / AMM
-- **v20** — Emergent policy decisions from real hardware telemetry
-- **v21–v25** — Multi-backend (ROCm, Metal, Vulkan), distributed execution, autonomous runtime
+**Completed:**
+
+- **v12** — Initial learning engine scaffolding (withdrawn paper)
+- **v13** — Hybrid Execution Engine (H.E.E.) — adaptive placement scaffolding
+- **v14** — Execution timeline + profile infrastructure
+- **v15** — Policy layer (5 built-in policies, evidence-driven evaluation)
+- **v16** — Execution contracts and guard framework
+- **v17** — Kernel normalization and symbolic GPU chain
+- **v18** — Memory telemetry foundation:
+  - Real VRAM probe via nvidia-smi
+  - Memory pressure detection (replaces the withdrawn predictive fallback test)
+  - System RAM telemetry via sysinfo
+- **v19** — SignalBus: integrated sensor-to-decision pipeline
+  - All 4 GuardConditions fields sourced from real telemetry
+  - 4 of 5 PolicySignalKind variants produced; FragmentationWarning deferred
+    pending a dedicated GPU allocator
+  - FailureCounter and LatencyMonitor as internal producers
+
+**Next:**
+
+- **v20** — Real external model loading (ONNX via ModelLoader)
+- **v21** — Emergent policy decisions from telemetry (real guard/policy 
+  effects on execution flow)
+- **v22** — Multi-backend foundation: abstraction layer for vendor-agnostic 
+  hardware probes and kernel compilation (NVIDIA + Intel iGPU as first
+  coexistence target)
+- **v23** — ROCm backend (AMD)
+- **v24** — Metal backend (Apple Silicon)
+- **v25** — Distributed execution, autonomous runtime
 
 ---
 
