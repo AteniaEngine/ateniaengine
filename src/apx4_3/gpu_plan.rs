@@ -46,9 +46,14 @@ impl GpuPlan {
 }
 
 pub fn is_cuda_available_for(node: &NodeType) -> bool {
+    // Linear queda fuera del segment por ahora. La razón original
+    // (backward CPU no se registraba cuando el segment interceptaba
+    // un nodo con tape activo) se resolvió: el intercept ahora hace
+    // skip si record_tape está activo. Reactivar Linear requiere
+    // validar exec_gpu_linear contra TensorStorage::Cuda, trabajo
+    // que pertenece a milestone futuro.
     matches!(
         node,
         NodeType::MatMul
-        // Linear desactivado temporalmente para que el backward CPU se registre correctamente
     )
 }

@@ -1382,30 +1382,28 @@ impl Graph {
             }
         }
 
-        // APX 4.3: if this node is the start of a GPU segment, execute the whole segment.
+        // APX 4.3: if this node is the start of a GPU segment, execute the
+        // whole segment — but only when no backward tape is being recorded.
         //
-        // TODO(M3-d.4): This path executes the forward pass through
-        // exec_gpu_segment but does not register a backward tape entry
-        // for the intercepted node. As a result, any node that is a
-        // segment-start in GpuPlan (e.g. MatMul with default build
-        // settings) will have no grad computed during backward, even
-        // if record_tape was requested. Tests that rely on grads from
-        // such nodes (see apx_4_18_self_attention_backward_test, which
-        // tolerates missing grads with unwrap_or_else) must work around
-        // this. The fix is part of the gpu_executor.rs refactor in
-        // M3-d.4, where segment execution will register appropriate
-        // tape entries or fall back to the non-segment dispatch when
-        // backward is requested.
-        if let Some(plan) = &self.gpu_plan {
-            if let Some(seg) = plan.segments.iter().find(|s| s.start == node_id).cloned() {
-                self.exec_gpu_segment(&seg);
-                if use_timing {
-                    if let Some(start) = t0 {
-                        let dt = start.elapsed().as_micros() as f64;
-                        crate::apx7::hpge_priority::record_node_time(node_id, dt, self.nodes.len());
+        // exec_gpu_segment is a forward-only optimization: it runs the
+        // kernels on GPU and does not register BackOp entries for the nodes
+        // it covers. When record_tape is true (training mode), skipping the
+        // intercept lets each node fall through to the regular NodeType
+        // match below, which computes forward on CPU and registers the
+        // appropriate tape entry. When record_tape is false (inference or
+        // forward-only execution), the segment runs for the GPU speedup.
+        if !record_tape {
+            if let Some(plan) = &self.gpu_plan {
+                if let Some(seg) = plan.segments.iter().find(|s| s.start == node_id).cloned() {
+                    self.exec_gpu_segment(&seg);
+                    if use_timing {
+                        if let Some(start) = t0 {
+                            let dt = start.elapsed().as_micros() as f64;
+                            crate::apx7::hpge_priority::record_node_time(node_id, dt, self.nodes.len());
+                        }
                     }
+                    return;
                 }
-                return;
             }
         }
 
