@@ -1,6 +1,7 @@
-﻿//! Note: this test file contains a test marked with `#[ignore]` pending
-//! recomputation of expected gradient values. See the test's doc
-//! comment for details.
+﻿//! Equivalence check: the same self-attention graph run under
+//! `ATENIA_APX_MODE=2.5` (no 4.x fusions) and `ATENIA_APX_MODE=4.18`
+//! (FusedSelfAttention forward) must produce bit-close gradients on
+//! `dX`, `dWq`, `dWk`, `dWv`.
 
 use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::tensor::{Tensor, Device, DType, Layout};
@@ -98,27 +99,31 @@ fn run_mode(mode: &str) -> (Tensor, Tensor, Tensor, Tensor) {
     (dx, dwq, dwk, dwv)
 }
 
-/// This test was constructed when the GPU segment intercept in
-/// `execute_single_inner` swallowed MatMul tape registration, causing
-/// backward to produce no grads for MatMul nodes. The test tolerated
-/// missing grads via `unwrap_or_else` fallback to a zero vector, and
-/// its hardcoded expected values implicitly compared against zeros on
-/// those nodes.
+/// Builds the self-attention graph twice and compares the resulting
+/// parameter gradients between the two APX modes:
 ///
-/// The tape registration gap was resolved: real gradients are now
-/// produced for MatMul backward in training mode. The hardcoded
-/// expected values in this test are incorrect because they were never
-/// computed analytically against a reference implementation.
-/// Re-enabling this test requires recomputing the expected gradients
-/// for dQ, dK, dV, dWq, dWk, dWv, and dX for the self-attention
-/// backward pass, validated against a reference framework (PyTorch or
-/// manual derivation).
+/// - `ATENIA_APX_MODE=2.5` ("naive"): no APX 4.x fusions; the eight
+///   individual nodes (three `Linear`s for Q/K/V, `Transpose`,
+///   `MatMul`, `Softmax`, `MatMul`) run their regular forward and
+///   register their regular backward BackOps.
+/// - `ATENIA_APX_MODE=4.18`: `FusedSelfAttention` materialises the
+///   final output in a single shot on the last MatMul node.
 ///
-/// Marked `#[ignore]` until the expected values are recomputed
-/// correctly. This is pre-existing test debt surfaced by the tape gap
-/// fix, not a regression of recent work.
+/// APX 4.18 is a forward-only fusion: backward still flows through
+/// the individual BackOps of the underlying nodes, so the two modes
+/// must produce numerically equivalent gradients.
+///
+/// History: this test previously failed because the Linear dispatch
+/// skipped BackOp registration on Q/K/V Linears under mode 4.18,
+/// expecting a fused BackOp to cover them. That fused BackOp was
+/// never implemented (see the "disabled for now" note on the
+/// `FusedSelfAttention` arm of `exec_fused` in `src/amg/graph.rs`),
+/// so the skip silently left the tape empty on those params and
+/// backward produced zeros for `dX`, `dWq`, `dWk`, `dWv`. Naive mode
+/// was fine because no fusion was active. The fix was to remove the
+/// skip: both modes now register the same BackOps and the test
+/// asserts their numeric equivalence.
 #[test]
-#[ignore]
 fn self_attention_backward_4_18_matches_naive() {
     let (dx_naive, dwq_naive, dwk_naive, dwv_naive) = run_mode("naive");
     let (dx_4_18, dwq_4_18, dwk_4_18, dwv_4_18) = run_mode("4.18");

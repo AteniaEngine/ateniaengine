@@ -1259,21 +1259,57 @@ impl Graph {
         let use_timing = crate::apx_mode_at_least("7.6");
         let t0 = if use_timing { Some(Instant::now()) } else { None };
 
+        // Backward tape invariants for the fused dispatch paths below:
+        //
+        // The `fused_ops` dispatch and the `fusion_plan.fused_pairs`
+        // dispatch skip when `record_tape` is true (except
+        // `FusedOp::FusedQKV`, which has a real BackOp registered
+        // inside `exec_fused`). This routes training to the per-node
+        // `match node_type` below, which registers one BackOp per node
+        // and gives backward a complete chain to walk. Same pattern as
+        // the `gpu_plan` intercept further down.
+        //
+        // `FusedLinearActivationChain` has an analogous tape gap (both
+        // its pre-match handler and the match-arm handler further down
+        // are forward-only) but is NOT guarded here — the two handler
+        // copies have drifted on input-count validation, so guarding
+        // the pre-match and falling through to the match arm breaks
+        // test graphs that exercise the 3-input path. Fixing this
+        // requires either consolidating the two duplicate handlers or
+        // implementing a fused BackOp; tracked as separate technical
+        // debt.
+
         // APX 4.13: if there is a fused op associated with this node, delegate
         // to the fused executor and return. We clone the FusedOp to avoid
         // holding an immutable borrow of self while using it.
         if let Some(fused) = self.fused_ops.get(&node_id).cloned() {
-            if use_timing {
-                if let Some(start) = t0 {
-                    let dt = start.elapsed().as_micros() as f64;
-                    crate::apx7::hpge_priority::record_node_time(node_id, dt, self.nodes.len());
+            let has_fused_backward = matches!(fused, FusedOp::FusedQKV { .. });
+            if has_fused_backward || !record_tape {
+                if use_timing {
+                    if let Some(start) = t0 {
+                        let dt = start.elapsed().as_micros() as f64;
+                        crate::apx7::hpge_priority::record_node_time(node_id, dt, self.nodes.len());
+                    }
                 }
+                return self.exec_fused(node_id, fused, record_tape);
             }
-            return self.exec_fused(node_id, fused, record_tape);
         }
 
         // APX 4.9: directly execute fused Linear→[Act...]→Linear chains,
         // without going through APX 4.7 hooks nor GPU for this node.
+        //
+        // This block is NOT guarded by !record_tape (unlike the fused_ops
+        // and fusion_plan dispatches below). Reason: there is a second
+        // copy of the same handler in the NodeType match further down
+        // (arm `NodeType::FusedLinearActivationChain` near L2789), and
+        // the two copies have drifted — this pre-match copy accepts
+        // 3/4/5 inputs while the match-arm copy accepts only 4/5.
+        // Adding a guard here routed the 3-input case to the stricter
+        // arm and broke `apx_2_5_fused_kernels_test`. Neither copy
+        // registers a BackOp, so the tape gap for this op is the same
+        // either way; fixing it requires consolidating the duplicate
+        // handlers or implementing a fused BackOp, which is tracked
+        // as separate technical debt.
         if let super::nodes::NodeType::FusedLinearActivationChain(acts) =
             self.nodes[node_id].node_type.clone()
         {
@@ -1370,15 +1406,20 @@ impl Graph {
         }
 
         // APX 4.7: if this node is the second of a fused Linear→Linear pair, execute the fusion.
-        if let Some(fplan) = &self.fusion_plan {
-            if let Some((a, b)) = fplan
-                .fused_pairs
-                .iter()
-                .find(|(_, b)| *b == node_id)
-                .cloned()
-            {
-                crate::apx4_7::exec_fused_linear_linear(self, a, b, record_tape);
-                return;
+        // Skip when recording tape: `exec_fused_linear_linear` does not
+        // register a BackOp (its `_record_tape` parameter is unused).
+        // See the "Backward tape invariants" note above.
+        if !record_tape {
+            if let Some(fplan) = &self.fusion_plan {
+                if let Some((a, b)) = fplan
+                    .fused_pairs
+                    .iter()
+                    .find(|(_, b)| *b == node_id)
+                    .cloned()
+                {
+                    crate::apx4_7::exec_fused_linear_linear(self, a, b, record_tape);
+                    return;
+                }
             }
         }
 
@@ -2622,14 +2663,16 @@ impl Graph {
                         }
                     }
 
-                    // APX 4.18: if this Linear is one of the Q/K/V of a fused
-                    // Self-Attention pattern, also delegate backward to the
-                    // fused BackOp.
-                    if mode == "4.18" {
-                        if self.is_sa_linear(node_id) {
-                            return;
-                        }
-                    }
+                    // APX 4.18 formerly skipped BackOp registration on Q/K/V
+                    // Linears of a FusedSelfAttention pattern, expecting a
+                    // fused BackOp to cover them. That fused BackOp was never
+                    // implemented (see the "disabled for now" comment on the
+                    // FusedSelfAttention arm of `exec_fused`), so the skip
+                    // left the tape empty on the params feeding attention and
+                    // backward produced no grads for dX/dWq/dWk/dWv. The skip
+                    // is removed: APX 4.18 fuses the forward only, and
+                    // backward flows through the individual BackOps, same as
+                    // naive mode.
 
                     let op_inputs = self.nodes[node_id].inputs.clone();
                     let ids = op_inputs.clone();
