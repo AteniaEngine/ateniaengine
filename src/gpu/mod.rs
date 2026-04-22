@@ -18,6 +18,7 @@ pub mod device;
 pub mod fingerprint;
 pub mod tags;
 pub mod utils;
+pub mod dispatch;
 
 pub use tags::*;
 
