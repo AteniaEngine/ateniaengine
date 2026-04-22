@@ -1,6 +1,7 @@
 use std::os::raw::c_int;
 
-use crate::tensor::Tensor;
+use crate::cuda::{cuda_device_ptr, cuda_device_ptr_mut};
+use crate::tensor::{Tensor, TensorStorage};
 
 #[link(name = "batch_matmul", kind = "static")]
 unsafe extern "C" {
@@ -14,11 +15,10 @@ unsafe extern "C" {
         n: c_int,
     );
 
-    // Device-pointer variant added in M3-d.4.D. See the doc comment on
+    // Device-pointer variant. See the doc comment on
     // `launch_linear_f32_device_ptrs` in `linear.rs` for the ownership
     // contract. Returns 0 on success, 2 on kernel launch error, 1 on
-    // sync error. `#[allow(dead_code)]` until M3-d.4.E wires it.
-    #[allow(dead_code)]
+    // sync error. Wired via the `all_cuda` dispatch in `cuda_batch_matmul`.
     pub(crate) fn launch_batch_matmul_f32_device_ptrs(
         d_a: *const f32,
         d_b: *const f32,
@@ -32,9 +32,9 @@ unsafe extern "C" {
 
 /// CUDA batched matmul: computes `out[i] = a[i] @ b[i]` for each batch `i`.
 ///
-/// Inputs and output are [`Tensor`]s on the CPU side. Panics via
-/// [`Tensor::as_cpu_slice`] if any is GPU-resident; see the note on
-/// [`cuda_linear`](super::linear::cuda_linear).
+/// Dispatches on storage just like [`super::linear::cuda_linear`]: all
+/// inputs Cuda → device-pointer variant; otherwise → host path, which
+/// panics on mixed/partial Cuda storage via `as_cpu_slice`.
 pub fn cuda_batch_matmul(
     a: &Tensor,
     b: &Tensor,
@@ -44,15 +44,51 @@ pub fn cuda_batch_matmul(
     k: usize,
     n: usize,
 ) {
-    cuda_batch_matmul_raw(
-        a.as_cpu_slice(),
-        b.as_cpu_slice(),
-        out.as_cpu_slice_mut(),
-        batch,
-        m,
-        k,
-        n,
+    let all_cuda = matches!(
+        (&a.storage, &b.storage, &out.storage),
+        (
+            TensorStorage::Cuda(_),
+            TensorStorage::Cuda(_),
+            TensorStorage::Cuda(_),
+        )
     );
+
+    if all_cuda {
+        let d_a = cuda_device_ptr(&a.storage);
+        let d_b = cuda_device_ptr(&b.storage);
+        let d_out = cuda_device_ptr_mut(&out.storage);
+
+        let rc = unsafe {
+            launch_batch_matmul_f32_device_ptrs(
+                d_a,
+                d_b,
+                d_out,
+                batch as c_int,
+                m as c_int,
+                k as c_int,
+                n as c_int,
+            )
+        };
+
+        if rc != 0 {
+            panic!(
+                "cuda_batch_matmul device_ptrs path failed with code {}: \
+                 1 = sync failure, 2 = launch failure. This indicates \
+                 a CUDA driver issue or an invalid kernel invocation.",
+                rc
+            );
+        }
+    } else {
+        cuda_batch_matmul_raw(
+            a.as_cpu_slice(),
+            b.as_cpu_slice(),
+            out.as_cpu_slice_mut(),
+            batch,
+            m,
+            k,
+            n,
+        );
+    }
 }
 
 fn cuda_batch_matmul_raw(

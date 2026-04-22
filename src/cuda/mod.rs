@@ -36,3 +36,31 @@ pub fn vec_add_gpu(a: &[f32], b: &[f32]) -> Vec<f32> {
 
     out
 }
+
+/// Returns the raw device pointer (read-only) backing a
+/// `TensorStorage::Cuda`. Panics with `unreachable!` on `Cpu` storage:
+/// callers must guard the invocation with a prior check that the
+/// storage variant is `Cuda` (typically an `all_cuda` match at the op
+/// entry point).
+pub(crate) fn cuda_device_ptr(
+    storage: &crate::tensor::TensorStorage,
+) -> *const f32 {
+    match storage {
+        crate::tensor::TensorStorage::Cuda(g) => g.device_ptr() as *const f32,
+        crate::tensor::TensorStorage::Cpu(_) => {
+            unreachable!("cuda_device_ptr called on Cpu storage")
+        }
+    }
+}
+
+/// Mutable counterpart of [`cuda_device_ptr`]. Same precondition.
+pub(crate) fn cuda_device_ptr_mut(
+    storage: &crate::tensor::TensorStorage,
+) -> *mut f32 {
+    match storage {
+        crate::tensor::TensorStorage::Cuda(g) => g.device_ptr() as *mut f32,
+        crate::tensor::TensorStorage::Cpu(_) => {
+            unreachable!("cuda_device_ptr_mut called on Cpu storage")
+        }
+    }
+}

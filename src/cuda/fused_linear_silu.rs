@@ -1,6 +1,7 @@
 use std::os::raw::c_int;
 
-use crate::tensor::Tensor;
+use crate::cuda::{cuda_device_ptr, cuda_device_ptr_mut};
+use crate::tensor::{Tensor, TensorStorage};
 
 #[link(name = "fused_linear_silu", kind = "static")]
 unsafe extern "C" {
@@ -14,11 +15,11 @@ unsafe extern "C" {
         n: c_int,
     );
 
-    // Device-pointer variant added in M3-d.4.D. See the doc comment on
+    // Device-pointer variant. See the doc comment on
     // `launch_linear_f32_device_ptrs` in `linear.rs` for the ownership
     // contract. Returns 0 on success, 2 on kernel launch error, 1 on
-    // sync error. `#[allow(dead_code)]` until M3-d.4.E wires it.
-    #[allow(dead_code)]
+    // sync error. Wired via the `all_cuda` dispatch in
+    // `cuda_fused_linear_silu`.
     pub(crate) fn launch_fused_linear_silu_f32_device_ptrs(
         d_x: *const f32,
         d_w: *const f32,
@@ -32,9 +33,9 @@ unsafe extern "C" {
 
 /// CUDA fused Linear + SiLU op: computes `out = silu(x @ w + b)`.
 ///
-/// Inputs and output are [`Tensor`]s on the CPU side. Panics via
-/// [`Tensor::as_cpu_slice`] if any is GPU-resident; see the note on
-/// [`cuda_linear`](super::linear::cuda_linear).
+/// Dispatches on storage just like [`super::linear::cuda_linear`]: all
+/// inputs Cuda → device-pointer variant; otherwise → host path, which
+/// panics on mixed/partial Cuda storage via `as_cpu_slice`.
 pub fn cuda_fused_linear_silu(
     x: &Tensor,
     w: &Tensor,
@@ -44,15 +45,53 @@ pub fn cuda_fused_linear_silu(
     k: usize,
     n: usize,
 ) {
-    cuda_fused_linear_silu_raw(
-        x.as_cpu_slice(),
-        w.as_cpu_slice(),
-        b.as_cpu_slice(),
-        out.as_cpu_slice_mut(),
-        m,
-        k,
-        n,
+    let all_cuda = matches!(
+        (&x.storage, &w.storage, &b.storage, &out.storage),
+        (
+            TensorStorage::Cuda(_),
+            TensorStorage::Cuda(_),
+            TensorStorage::Cuda(_),
+            TensorStorage::Cuda(_),
+        )
     );
+
+    if all_cuda {
+        let d_x = cuda_device_ptr(&x.storage);
+        let d_w = cuda_device_ptr(&w.storage);
+        let d_b = cuda_device_ptr(&b.storage);
+        let d_out = cuda_device_ptr_mut(&out.storage);
+
+        let rc = unsafe {
+            launch_fused_linear_silu_f32_device_ptrs(
+                d_x,
+                d_w,
+                d_b,
+                d_out,
+                m as c_int,
+                k as c_int,
+                n as c_int,
+            )
+        };
+
+        if rc != 0 {
+            panic!(
+                "cuda_fused_linear_silu device_ptrs path failed with code {}: \
+                 1 = sync failure, 2 = launch failure. This indicates \
+                 a CUDA driver issue or an invalid kernel invocation.",
+                rc
+            );
+        }
+    } else {
+        cuda_fused_linear_silu_raw(
+            x.as_cpu_slice(),
+            w.as_cpu_slice(),
+            b.as_cpu_slice(),
+            out.as_cpu_slice_mut(),
+            m,
+            k,
+            n,
+        );
+    }
 }
 
 fn cuda_fused_linear_silu_raw(
