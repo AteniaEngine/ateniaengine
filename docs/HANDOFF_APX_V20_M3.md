@@ -99,6 +99,35 @@ milestones extend them rather than re-litigate.
    prevented by boundary: the `_device_ptrs` variants never alloc or
    free — VRAM ownership stays entirely on the Rust side via `Arc`.
 
+9. **Vendor-neutrality at engine layer** — Code that lives on the
+   engine layer (`src/amg/`, `src/apx*_*/`) must not import
+   `crate::cuda::*` directly. The vendor-specific detail is contained
+   inside `src/gpu/` and `src/cuda/`; APX modules reach GPU
+   functionality through the abstractions in `src/gpu/` (wrappers,
+   dispatch hooks, utilities). Three categories are explicit
+   exceptions to the rule, because their reason to exist *is* to
+   exercise vendor-specific code:
+   - **Benchmark binaries** under `src/bin/*_bench.rs` that measure a
+     specific kernel (e.g., `apx_4_10_fused_linear_silu_bench.rs`,
+     `apx_4_11_hooks_bench.rs`, `apx_4_12_pool_bench.rs`) — they
+     import the kernel directly by design.
+   - **Kernel-level tests** under `tests/apx_4_*_*.rs` that validate
+     a specific `cuda_*` function numerically against a CPU
+     reference.
+   - **Internal developer tooling** (if any lands in the future).
+   Forcing abstraction on these would be cosmetic — the rule targets
+   production code, not the tools that measure or validate it.
+
+10. **Pass-through re-export as refactor path** — When a file that
+    lives on the engine layer accumulates direct `crate::cuda::*`
+    imports, the refactor pattern is: move the body to
+    `src/gpu/...`, leave the original file as a one-line
+    `pub use crate::gpu::...::*;` re-export. External callers keep
+    working unchanged; the `crate::cuda::*` dependency is absorbed
+    into the `src/gpu/` layer. This pattern is used by the four
+    files resolved in the M3-d.4 follow-up refactor (see the "Known
+    debts" section for the history).
+
 ---
 
 ## How M3-e fits
@@ -139,37 +168,52 @@ CUDA-leaked files. Those stay on the debt list.
 
 These are documented so they are not confused with regressions.
 
-1. **Five CUDA-leaked files** still import `crate::cuda::*` and live
-   under `apx*_*` module paths: `src/apx4/gpu_kernels.rs`,
-   `src/apx4_11/gpu_hooks.rs`, `src/apx4_3/gpu_utils.rs`,
-   `src/apx4_5/batch_matmul_cuda.rs`,
-   `src/bin/apx_4_10_fused_linear_silu_bench.rs`.
-   `src/apx4_3/gpu_executor.rs` was touched partially during M3-d.4
-   (segment execution still does not register tape; the fix was done
-   at the intercept level in `execute_single_inner` instead).
-   Refactoring these into `src/gpu/` is deferred.
+1. **CUDA-leaked files (follow-up refactor after M3-d.4)** — The
+   original list flagged five engine-layer files that imported
+   `crate::cuda::*` directly. Post-M3-d close, a dedicated refactor
+   reclassified and resolved them:
+   - **Resolved via pass-through re-export** (four files; body moved
+     to `src/gpu/`, original kept as `pub use`):
+     `src/apx4/gpu_kernels.rs` → `src/gpu/ops/matmul_wrapper.rs`;
+     `src/apx4_3/gpu_utils.rs` → `src/gpu/utils.rs`;
+     `src/apx4_5/batch_matmul_cuda.rs` →
+     `src/gpu/ops/batch_matmul_dispatch.rs`;
+     `src/apx4_11/gpu_hooks.rs` → `src/gpu/dispatch/hooks.rs`.
+   - **Reclassified as legitimate exception** (one file):
+     `src/bin/apx_4_10_fused_linear_silu_bench.rs` is a benchmark
+     binary; its purpose is to measure a specific CUDA kernel and
+     the direct import is allowed under invariant #9.
+   - **Separate, larger debt still open**: `src/apx4_3/gpu_executor.rs`
+     keeps three `crate::cuda::*` imports (`cuda_matmul`,
+     `cuda_linear`, `cuda_fused_linear_silu`). It was touched
+     partially during M3-d.4 (the tape-registration gap was fixed at
+     the intercept level in `execute_single_inner` instead of
+     inside the segment executor itself). Refactoring it requires
+     rethinking `exec_gpu_segment` end to end and is deferred to
+     its own milestone.
 
-2. **`tests/apx_4_18_self_attention_backward_test.rs::self_attention_backward_4_18_matches_naive`** is marked
-   `#[ignore]`. The test predated the M3-d.4 tape-gap fix and
-   tolerated missing MatMul grads via a zero-vector fallback, so its
-   hardcoded expected values implicitly compared against zeros. With
-   the fix, real grads are produced but the expectations were never
-   analytically derived. Re-enabling the test requires recomputing
-   dQ / dK / dV / dWq / dWk / dWv / dX against a reference framework.
-
-3. **APX 8.4 `GPUMirror`** (`Tensor.gpu: Option<GPUMirror>`) is a
+2. **APX 8.4 `GPUMirror`** (`Tensor.gpu: Option<GPUMirror>`) is a
    metadata-only mirror introduced long before `TensorStorage::Cuda`.
    It is still wired through `sync_cpu` / `sync_gpu` on `Tensor` but
    its arms for the new `Cuda` storage variant are no-ops.
    Reconciling the two paths is pending.
 
-4. **The C side of the 3 ops has minor quality debts**: silent
+3. **The C side of the 3 ops has minor quality debts**: silent
    allocation failures (`atenia_pool_alloc` returning null is only
    `printf`-reported, not propagated to Rust), ~210 lines of
    copy-paste across the 3 wrappers, sparse inline docs. The new
    `_device_ptrs` variants follow a stricter pattern (return `int`
    error codes, checked on the Rust side), but the legacy wrappers
    were not refactored.
+
+4. **`FusedLinearActivationChain` duplicate handler** — The op has
+   two copies of its forward handler in `src/amg/graph.rs`: a
+   pre-match shortcut (accepts 3/4/5 inputs) and a match-arm
+   fallback (accepts only 4/5). Neither registers a backward
+   BackOp, so the forward-only fusion is effectively shared between
+   the two. The duplication is a code smell inherited from earlier
+   milestones; consolidating the handlers (and deciding whether to
+   add a real fused BackOp) is open work.
 
 ---
 
