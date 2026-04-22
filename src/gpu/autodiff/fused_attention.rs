@@ -15,11 +15,12 @@ impl FusedAttentionGPU {
         k: &TensorGPU,
         v: &TensorGPU,
     ) -> Result<TensorGPU, ()> {
+        let _ = mgr;
         let m = q.rows as i32;
         let d = q.cols as i32;
 
         // output: [M, D]
-        let out = TensorGPU::empty(&mgr.mem, q.rows, q.cols)?;
+        let out = TensorGPU::empty(q.rows, q.cols)?;
 
         let kernel = r#"
         extern \"C\" __global__
@@ -101,10 +102,10 @@ impl FusedAttentionGPU {
         let grid = (1u32, m as u32, 1u32);
 
         let mut args: [*mut core::ffi::c_void; 6] = [
-            q.ptr.ptr as *mut core::ffi::c_void,
-            k.ptr.ptr as *mut core::ffi::c_void,
-            v.ptr.ptr as *mut core::ffi::c_void,
-            out.ptr.ptr as *mut core::ffi::c_void,
+            q.device_ptr() as *mut core::ffi::c_void,
+            k.device_ptr() as *mut core::ffi::c_void,
+            v.device_ptr() as *mut core::ffi::c_void,
+            out.device_ptr() as *mut core::ffi::c_void,
             &m as *const _ as *mut core::ffi::c_void,
             &d as *const _ as *mut core::ffi::c_void,
         ];

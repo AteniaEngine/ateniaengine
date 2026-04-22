@@ -52,7 +52,7 @@ impl GpuProfiler {
 
             for _ in 0..runs {
                 let start = Instant::now();
-                MatMulOp::run(&a_gpu.ptr, &b_gpu.ptr, &c_gpu.ptr, n, n, n);
+                MatMulOp::run(a_gpu.raw_ptr(), b_gpu.raw_ptr(), c_gpu.raw_ptr(), n, n, n);
                 let elapsed = start.elapsed();
                 acc_ms += elapsed.as_secs_f32() * 1000.0;
             }

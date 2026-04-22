@@ -106,11 +106,11 @@ fn bench_real_perf() {
         let name = format!("GPU MatMul {}x{}", n, n);
         println!("[BENCH] Running {} ...", name);
         benchmark(&name, 5, || {
-            let c_gpu = match TensorGPU::empty(&mgr.mem, n, n) {
+            let c_gpu = match TensorGPU::empty(n, n) {
                 Ok(t) => t,
                 Err(_) => return,
             };
-            MatMulOp::run(&a_gpu.ptr, &b_gpu.ptr, &c_gpu.ptr, n, n, n);
+            MatMulOp::run(a_gpu.raw_ptr(), b_gpu.raw_ptr(), c_gpu.raw_ptr(), n, n, n);
         });
 
         // LINEAR CPU
@@ -142,18 +142,18 @@ fn bench_real_perf() {
         let name = format!("GPU Linear {}x{}", n, n);
         println!("[BENCH] Running {} ...", name);
         benchmark(&name, 5, || {
-            let out_gpu = match TensorGPU::empty(&mgr.mem, n, n) {
+            let out_gpu = match TensorGPU::empty(n, n) {
                 Ok(t) => t,
                 Err(_) => return,
             };
-            LinearOp::run(&a_gpu.ptr, &w_gpu.ptr, &b_gpu.ptr, &out_gpu.ptr, n, n, n);
+            LinearOp::run(a_gpu.raw_ptr(), w_gpu.raw_ptr(), b_gpu.raw_ptr(), out_gpu.raw_ptr(), n, n, n);
         });
 
         // BACKWARD MATMUL GPU (real)
         let name = format!("GPU Backward MatMul {}x{}", n, n);
         println!("[BENCH] Running {} ...", name);
         benchmark(&name, 3, || {
-            let dout_gpu = match TensorGPU::empty(&mgr.mem, n, n) {
+            let dout_gpu = match TensorGPU::empty(n, n) {
                 Ok(t) => t,
                 Err(_) => return,
             };
@@ -164,7 +164,7 @@ fn bench_real_perf() {
         let name = format!("GPU Backward Linear {}x{}", n, n);
         println!("[BENCH] Running {} ...", name);
         benchmark(&name, 3, || {
-            let dout_gpu = match TensorGPU::empty(&mgr.mem, n, n) {
+            let dout_gpu = match TensorGPU::empty(n, n) {
                 Ok(t) => t,
                 Err(_) => return,
             };

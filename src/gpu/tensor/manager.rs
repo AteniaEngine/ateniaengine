@@ -19,22 +19,22 @@ impl GpuTensorManager {
     }
 
     pub fn linear(&self, x: &TensorGPU, w: &TensorGPU, b: &TensorGPU) -> Result<TensorGPU, ()> {
-        let out = match TensorGPU::empty(&self.mem, x.rows, w.rows) {
+        let out = match TensorGPU::empty(x.rows, w.rows) {
             Ok(t) => t,
             Err(_) => return Err(()),
         };
-        LinearOp::run(&x.ptr, &w.ptr, &b.ptr, &out.ptr, x.rows, x.cols, w.rows);
+        LinearOp::run(x.raw_ptr(), w.raw_ptr(), b.raw_ptr(), out.raw_ptr(), x.rows, x.cols, w.rows);
         Ok(out)
     }
 
     /// APX 11.5 — helper: subir datos CPU a un TensorGPU usando el engine interno.
     pub fn from_cpu_vec(&self, data: &[f32], rows: usize, cols: usize) -> Result<TensorGPU, ()> {
-        TensorGPU::new_from_cpu(&self.mem, data, rows, cols)
+        TensorGPU::new_from_cpu(data, rows, cols)
     }
 
     /// APX 11.5 — helper: bajar datos GPU a Vec<f32> usando el engine interno.
     pub fn to_cpu_vec(&self, t: &TensorGPU) -> Result<Vec<f32>, ()> {
-        t.to_cpu(&self.mem)
+        t.to_cpu()
     }
 
     /// APX 11.6 — bring GPU data back into a CPU Tensor.

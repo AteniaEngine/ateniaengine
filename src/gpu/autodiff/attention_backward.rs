@@ -18,13 +18,14 @@ impl AttentionBackwardGPU {
         _att: &TensorGPU,    // [M, M] (not used yet)
         dout: &TensorGPU,    // [M, D]
     ) -> Result<(TensorGPU, TensorGPU, TensorGPU), ()> {
+        let _ = mgr;
         let m = q.rows as i32;
         let d = q.cols as i32;
 
         // allocate outputs: same shapes as Q, K, V
-        let d_q = TensorGPU::empty(&mgr.mem, q.rows, q.cols)?;
-        let d_k = TensorGPU::empty(&mgr.mem, k.rows, k.cols)?;
-        let d_v = TensorGPU::empty(&mgr.mem, v.rows, v.cols)?;
+        let d_q = TensorGPU::empty(q.rows, q.cols)?;
+        let d_k = TensorGPU::empty(k.rows, k.cols)?;
+        let d_v = TensorGPU::empty(v.rows, v.cols)?;
 
         let kernel_code = r#"
         extern \"C\" __global__
@@ -76,13 +77,13 @@ impl AttentionBackwardGPU {
         );
 
         let mut args: [*mut core::ffi::c_void; 8] = [
-            q.ptr.ptr as *mut core::ffi::c_void,
-            k.ptr.ptr as *mut core::ffi::c_void,
-            v.ptr.ptr as *mut core::ffi::c_void,
-            dout.ptr.ptr as *mut core::ffi::c_void,
-            d_q.ptr.ptr as *mut core::ffi::c_void,
-            d_k.ptr.ptr as *mut core::ffi::c_void,
-            d_v.ptr.ptr as *mut core::ffi::c_void,
+            q.device_ptr() as *mut core::ffi::c_void,
+            k.device_ptr() as *mut core::ffi::c_void,
+            v.device_ptr() as *mut core::ffi::c_void,
+            dout.device_ptr() as *mut core::ffi::c_void,
+            d_q.device_ptr() as *mut core::ffi::c_void,
+            d_k.device_ptr() as *mut core::ffi::c_void,
+            d_v.device_ptr() as *mut core::ffi::c_void,
             &m as *const _ as *mut core::ffi::c_void, // M; D is computed in-kernel from idx
         ];
 

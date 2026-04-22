@@ -11,9 +11,26 @@ pub struct GpuPtr {
 
 pub struct GpuMemoryEngine {
     driver: Library,
+    ctx: *mut std::ffi::c_void,
 }
 
+// The CUDA primary context is a process-wide, thread-safe handle: it can
+// legally be sent between threads and shared by reference, provided each
+// thread calls `cuCtxSetCurrent(ctx)` before issuing driver API calls
+// (done in `set_current_on_this_thread`). The `*mut c_void` itself is an
+// opaque driver handle, not a raw Rust pointer into heap memory.
+unsafe impl Send for GpuMemoryEngine {}
+unsafe impl Sync for GpuMemoryEngine {}
+
 impl GpuMemoryEngine {
+    /// Creates a new `GpuMemoryEngine` with its own CUDA context.
+    ///
+    /// **Prefer [`crate::gpu::gpu_engine`] over this constructor.**
+    /// The singleton provides a process-wide shared engine and avoids
+    /// the issue of multiple coexisting CUDA contexts in the same
+    /// process. Direct construction via `new()` is retained as an
+    /// escape hatch for isolated tests but is not the recommended
+    /// path for production code.
     pub fn new() -> Result<Self, GpuMemoryError> {
         unsafe {
             let driver = Library::new("nvcuda.dll")
@@ -38,20 +55,52 @@ impl GpuMemoryEngine {
                 return Err(GpuMemoryError::DriverLoadFailed);
             }
 
-            let cu_ctx_create: Symbol<
-                unsafe extern "C" fn(*mut *mut std::ffi::c_void, u32, i32) -> i32,
+            // Use the primary context (thread-safe: every thread sees it
+            // as current without needing an explicit `cuCtxSetCurrent`),
+            // rather than `cuCtxCreate_v2` which binds to the calling
+            // thread and breaks cross-thread access through the singleton.
+            let cu_primary_ctx_retain: Symbol<
+                unsafe extern "C" fn(*mut *mut std::ffi::c_void, i32) -> i32,
             > = driver
-                .get(b"cuCtxCreate_v2\0")
-                .map_err(|_| GpuMemoryError::MissingSymbol("cuCtxCreate_v2".into()))?;
+                .get(b"cuDevicePrimaryCtxRetain\0")
+                .map_err(|_| {
+                    GpuMemoryError::MissingSymbol("cuDevicePrimaryCtxRetain".into())
+                })?;
 
-            // Create context
             let mut ctx: *mut std::ffi::c_void = std::ptr::null_mut();
-            let res = cu_ctx_create(&mut ctx, 0, device);
+            let res = cu_primary_ctx_retain(&mut ctx, device);
             if res != 0 || ctx.is_null() {
                 return Err(GpuMemoryError::DriverLoadFailed);
             }
 
-            Ok(Self { driver })
+            // Verify the symbol exists now so a missing-symbol error
+            // surfaces during init rather than at first allocation.
+            let _: Symbol<unsafe extern "C" fn(*mut std::ffi::c_void) -> i32> =
+                driver
+                    .get(b"cuCtxSetCurrent\0")
+                    .map_err(|_| GpuMemoryError::MissingSymbol("cuCtxSetCurrent".into()))?;
+
+            Ok(Self { driver, ctx })
+        }
+    }
+
+    /// Makes the retained primary context current for the calling thread.
+    ///
+    /// The CUDA driver API keeps the "current context" in thread-local
+    /// storage. Without this call, driver functions invoked from a thread
+    /// other than the one that retained the context fail with
+    /// `CUDA_ERROR_INVALID_CONTEXT`. `cuCtxSetCurrent` is idempotent and
+    /// cheap — safe to call at the start of every public operation.
+    unsafe fn set_current_on_this_thread(&self) -> Result<(), GpuMemoryError> {
+        unsafe {
+            let cu_ctx_set_current: Symbol<
+                unsafe extern "C" fn(*mut std::ffi::c_void) -> i32,
+            > = self.load(b"cuCtxSetCurrent\0")?;
+            let res = cu_ctx_set_current(self.ctx);
+            if res != 0 {
+                return Err(GpuMemoryError::DriverLoadFailed);
+            }
+            Ok(())
         }
     }
 
@@ -65,13 +114,10 @@ impl GpuMemoryEngine {
 
     pub fn alloc(&self, size: usize) -> Result<GpuPtr, GpuMemoryError> {
         unsafe {
-            let cu_init: Symbol<unsafe extern "C" fn(u32) -> i32> =
-                self.load(b"cuInit\0")?;
+            self.set_current_on_this_thread()?;
 
             let cu_mem_alloc: Symbol<unsafe extern "C" fn(*mut CUdeviceptr, usize) -> i32> =
                 self.load(b"cuMemAlloc_v2\0")?;
-
-            let _ = cu_init(0);
 
             let mut ptr: CUdeviceptr = 0;
             let res = cu_mem_alloc(&mut ptr, size);
@@ -86,6 +132,8 @@ impl GpuMemoryEngine {
 
     pub fn free(&self, gpu: &GpuPtr) -> Result<(), GpuMemoryError> {
         unsafe {
+            self.set_current_on_this_thread()?;
+
             let cu_free: Symbol<unsafe extern "C" fn(CUdeviceptr) -> i32> =
                 self.load(b"cuMemFree_v2\0")?;
 
@@ -100,6 +148,8 @@ impl GpuMemoryEngine {
 
     pub fn copy_htod(&self, dst: &GpuPtr, src: &[f32]) -> Result<(), GpuMemoryError> {
         unsafe {
+            self.set_current_on_this_thread()?;
+
             let cu_copy: Symbol<unsafe extern "C" fn(CUdeviceptr, *const std::os::raw::c_void, usize) -> i32> =
                 self.load(b"cuMemcpyHtoD_v2\0")?;
 
@@ -116,6 +166,8 @@ impl GpuMemoryEngine {
 
     pub fn copy_dtoh(&self, src: &GpuPtr, dst: &mut [f32]) -> Result<(), GpuMemoryError> {
         unsafe {
+            self.set_current_on_this_thread()?;
+
             let cu_copy: Symbol<unsafe extern "C" fn(*mut std::os::raw::c_void, CUdeviceptr, usize) -> i32> =
                 self.load(b"cuMemcpyDtoH_v2\0")?;
 

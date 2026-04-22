@@ -13,14 +13,15 @@ impl MatMulBackwardGPU {
         b: &TensorGPU,        // [K, N]
         dout: &TensorGPU,     // [M, N]
     ) -> Result<(TensorGPU, TensorGPU), ()> {
+        let _ = mgr;
         // shapes
         let m = a.rows as i32;
         let k = a.cols as i32;
         let n = b.cols as i32;
 
         // allocate outputs: dA [M, K] and dB [K, N]
-        let d_a = TensorGPU::empty(&mgr.mem, a.rows, a.cols)?;
-        let d_b = TensorGPU::empty(&mgr.mem, b.rows, b.cols)?;
+        let d_a = TensorGPU::empty(a.rows, a.cols)?;
+        let d_b = TensorGPU::empty(b.rows, b.cols)?;
 
         // CUDA kernel real (simple, no tiling for now)
         let kernel_code = r#"
@@ -79,11 +80,11 @@ impl MatMulBackwardGPU {
 
         // build args as *mut c_void (8 parameters)
         let mut args: [*mut core::ffi::c_void; 8] = [
-            a.ptr.ptr as *mut core::ffi::c_void,
-            b.ptr.ptr as *mut core::ffi::c_void,
-            dout.ptr.ptr as *mut core::ffi::c_void,
-            d_a.ptr.ptr as *mut core::ffi::c_void,
-            d_b.ptr.ptr as *mut core::ffi::c_void,
+            a.device_ptr() as *mut core::ffi::c_void,
+            b.device_ptr() as *mut core::ffi::c_void,
+            dout.device_ptr() as *mut core::ffi::c_void,
+            d_a.device_ptr() as *mut core::ffi::c_void,
+            d_b.device_ptr() as *mut core::ffi::c_void,
             &m as *const _ as *mut core::ffi::c_void,
             &k as *const _ as *mut core::ffi::c_void,
             &n as *const _ as *mut core::ffi::c_void,

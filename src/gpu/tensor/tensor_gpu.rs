@@ -1,44 +1,86 @@
-use crate::gpu::memory::{GpuPtr, GpuMemoryEngine};
+use std::sync::Arc;
+
+use crate::gpu::memory::GpuPtr;
+
+struct InnerGpuPtr {
+    gpu_ptr: GpuPtr,
+}
+
+impl Drop for InnerGpuPtr {
+    fn drop(&mut self) {
+        if let Some(engine) = crate::gpu::gpu_engine() {
+            let _ = engine.free(&self.gpu_ptr);
+        }
+    }
+}
+
+// `GpuPtr` holds an opaque device handle (u64) and a size (usize); both
+// are `Send + Sync`. Sharing `InnerGpuPtr` across threads is sound under
+// the shared CUDA context provided by the singleton engine.
+unsafe impl Send for InnerGpuPtr {}
+unsafe impl Sync for InnerGpuPtr {}
 
 pub struct TensorGPU {
-    pub ptr: GpuPtr,
+    inner: Arc<InnerGpuPtr>,
     pub rows: usize,
     pub cols: usize,
 }
 
+impl Clone for TensorGPU {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+            rows: self.rows,
+            cols: self.cols,
+        }
+    }
+}
+
 impl TensorGPU {
-    pub fn new_from_cpu(
-        mem: &GpuMemoryEngine,
-        data: &[f32],
-        rows: usize,
-        cols: usize,
-    ) -> Result<Self, ()> {
+    pub fn new_from_cpu(data: &[f32], rows: usize, cols: usize) -> Result<Self, ()> {
+        let engine = crate::gpu::gpu_engine().ok_or(())?;
         let size = rows * cols * 4;
-        let ptr = match mem.alloc(size) {
-            Ok(p) => p,
-            Err(_) => return Err(()),
-        };
-        if mem.copy_htod(&ptr, data).is_err() {
-            let _ = mem.free(&ptr);
+        let gpu_ptr = engine.alloc(size).map_err(|_| ())?;
+        if engine.copy_htod(&gpu_ptr, data).is_err() {
+            let _ = engine.free(&gpu_ptr);
             return Err(());
         }
-        Ok(Self { ptr, rows, cols })
+        Ok(Self {
+            inner: Arc::new(InnerGpuPtr { gpu_ptr }),
+            rows,
+            cols,
+        })
     }
 
-    pub fn empty(mem: &GpuMemoryEngine, rows: usize, cols: usize) -> Result<Self, ()> {
+    pub fn empty(rows: usize, cols: usize) -> Result<Self, ()> {
+        let engine = crate::gpu::gpu_engine().ok_or(())?;
         let size = rows * cols * 4;
-        let ptr = match mem.alloc(size) {
-            Ok(p) => p,
-            Err(_) => return Err(()),
-        };
-        Ok(Self { ptr, rows, cols })
+        let gpu_ptr = engine.alloc(size).map_err(|_| ())?;
+        Ok(Self {
+            inner: Arc::new(InnerGpuPtr { gpu_ptr }),
+            rows,
+            cols,
+        })
     }
 
-    pub fn to_cpu(&self, mem: &GpuMemoryEngine) -> Result<Vec<f32>, ()> {
+    pub fn to_cpu(&self) -> Result<Vec<f32>, ()> {
+        let engine = crate::gpu::gpu_engine().ok_or(())?;
         let mut out = vec![0.0f32; self.rows * self.cols];
-        if mem.copy_dtoh(&self.ptr, &mut out).is_err() {
+        if engine.copy_dtoh(&self.inner.gpu_ptr, &mut out).is_err() {
             return Err(());
         }
         Ok(out)
+    }
+
+    pub fn raw_ptr(&self) -> &GpuPtr {
+        &self.inner.gpu_ptr
+    }
+
+    pub fn device_ptr(&self) -> u64 {
+        self.inner.gpu_ptr.ptr
+    }
+
+    pub fn size_bytes(&self) -> usize {
+        self.inner.gpu_ptr.size
     }
 }

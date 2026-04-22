@@ -17,14 +17,15 @@ impl LinearBackwardGPU {
         w: &TensorGPU,      // [K, N]
         dout: &TensorGPU,   // [M, N]
     ) -> Result<(TensorGPU, TensorGPU, TensorGPU), ()> {
+        let _ = mgr;
         let m = x.rows as i32;
         let k = x.cols as i32;
         let n = w.cols as i32;
 
         // dX [M, K], dW [K, N], dB [1, N] (bias como fila)
-        let d_x = TensorGPU::empty(&mgr.mem, x.rows, x.cols)?;
-        let d_w = TensorGPU::empty(&mgr.mem, w.rows, w.cols)?;
-        let d_b = TensorGPU::empty(&mgr.mem, 1, w.cols)?;
+        let d_x = TensorGPU::empty(x.rows, x.cols)?;
+        let d_w = TensorGPU::empty(w.rows, w.cols)?;
+        let d_b = TensorGPU::empty(1, w.cols)?;
 
         let kernel_code = r#"
         extern \"C\" __global__
@@ -90,12 +91,12 @@ impl LinearBackwardGPU {
         let grid = (grid_xy, grid_xy, 1u32);
 
         let mut args: [*mut core::ffi::c_void; 9] = [
-            x.ptr.ptr as *mut core::ffi::c_void,
-            w.ptr.ptr as *mut core::ffi::c_void,
-            dout.ptr.ptr as *mut core::ffi::c_void,
-            d_x.ptr.ptr as *mut core::ffi::c_void,
-            d_w.ptr.ptr as *mut core::ffi::c_void,
-            d_b.ptr.ptr as *mut core::ffi::c_void,
+            x.device_ptr() as *mut core::ffi::c_void,
+            w.device_ptr() as *mut core::ffi::c_void,
+            dout.device_ptr() as *mut core::ffi::c_void,
+            d_x.device_ptr() as *mut core::ffi::c_void,
+            d_w.device_ptr() as *mut core::ffi::c_void,
+            d_b.device_ptr() as *mut core::ffi::c_void,
             &m as *const _ as *mut core::ffi::c_void,
             &k as *const _ as *mut core::ffi::c_void,
             &n as *const _ as *mut core::ffi::c_void,

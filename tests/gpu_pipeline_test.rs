@@ -37,13 +37,13 @@ fn test_gpu_pipeline_linear_relu_linear() {
 
     let attempt: Result<Vec<f32>, ()> = (|| {
         // Upload tensors to GPU
-        let gx = TensorGPU::new_from_cpu(&gpu.mem, &x, 1, 4)?;
-        let gw1 = TensorGPU::new_from_cpu(&gpu.mem, &w1, 1, 4)?;
-        let gb1 = TensorGPU::new_from_cpu(&gpu.mem, &b1, 1, 1)?;
+        let gx = TensorGPU::new_from_cpu(&x, 1, 4)?;
+        let gw1 = TensorGPU::new_from_cpu(&w1, 1, 4)?;
+        let gb1 = TensorGPU::new_from_cpu(&b1, 1, 1)?;
 
         // Actual GPU pipeline: Linear only, compatible with the existing API.
         let out = gpu.linear(&gx, &gw1, &gb1)?;
-        out.to_cpu(&gpu.mem)
+        out.to_cpu()
     })();
 
     match attempt {
