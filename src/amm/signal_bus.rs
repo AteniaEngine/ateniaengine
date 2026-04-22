@@ -25,8 +25,9 @@
 //! fails to collect. Callers that need explicit failure logging must do
 //! so themselves when `collect_guard_conditions` returns `None`.
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::amm::failure_counter::FailureCounter;
 use crate::amm::latency_monitor::LatencyMonitor;
@@ -36,19 +37,45 @@ use crate::v15::policy::evidence::signals::{PolicySignal, PolicySignalKind};
 use crate::v15::policy::evidence::snapshot::PolicyEvidenceSnapshot;
 use crate::v16::guards::guard_conditions::GuardConditions;
 
+/// Caching TTL for memory pressure probes. Balances subprocess
+/// overhead (~40ms per probe via `nvidia-smi`) against detection
+/// latency. Values under 100ms make caching ineffective on
+/// rapid-fire calls; values over 100ms delay reaction to genuine
+/// pressure spikes. 100ms is the empirical starting point; adjust
+/// based on observed workload behavior.
+pub const SIGNAL_BUS_CACHE_TTL: Duration = Duration::from_millis(100);
+
 /// Produces `GuardConditions` and `PolicyEvidenceSnapshot` from live
 /// memory telemetry and a per-instance failure counter.
 ///
-/// Pull-only for memory telemetry: each call to `collect_*` issues
-/// fresh probe reads with no caching.
+/// Memory-pressure probes are cached for
+/// [`SIGNAL_BUS_CACHE_TTL`] to amortize subprocess cost over
+/// rapid-fire calls (e.g. one `check_guard_before_node` per graph
+/// node). Other signals (`recent_failures`, `latency_spike`) are
+/// sourced fresh on every call — they are cheap memory reads of
+/// internal state and do not benefit from caching; caching them
+/// would delay reaction to injected/recorded events.
 ///
-/// Unlike earlier milestones, the bus now carries state: a
-/// [`FailureCounter`] wrapped in `Arc`, accessible via
-/// [`failure_counter`](Self::failure_counter) so callers can record
-/// failure events from anywhere in the engine.
+/// Unlike earlier milestones, the bus carries state: a
+/// [`FailureCounter`] and [`LatencyMonitor`] wrapped in `Arc`,
+/// accessible via their respective accessors so callers can record
+/// events from anywhere in the engine. The cache state lives as
+/// interior mutability (`Mutex`) so the bus's public methods stay
+/// `&self` and `Arc<SignalBus>` can be shared across threads.
 pub struct SignalBus {
     failure_counter: Arc<FailureCounter>,
     latency_monitor: Arc<LatencyMonitor>,
+    /// Cached `(memory_pressure, captured_at)`. Populated by
+    /// `collect_memory_pressure`; consulted first on every call and
+    /// refreshed only when the entry is absent or older than
+    /// [`SIGNAL_BUS_CACHE_TTL`]. Probe failures are not cached
+    /// (fail-open semantics preserved).
+    memory_pressure_cache: Mutex<Option<(f32, Instant)>>,
+    /// Number of real probe invocations served so far. Incremented
+    /// exclusively when a cache miss triggers the underlying probe;
+    /// cache hits leave this count unchanged. Exposed for tests and
+    /// operational telemetry via [`SignalBus::probe_calls_count`].
+    probe_calls_count: AtomicU64,
 }
 
 impl SignalBus {
@@ -56,7 +83,17 @@ impl SignalBus {
         Self {
             failure_counter: Arc::new(FailureCounter::new()),
             latency_monitor: Arc::new(LatencyMonitor::new()),
+            memory_pressure_cache: Mutex::new(None),
+            probe_calls_count: AtomicU64::new(0),
         }
+    }
+
+    /// Number of actual probe invocations (subprocess calls to
+    /// `nvidia-smi` plus the RAM probe) served by this bus since
+    /// creation. Cache hits are not counted. Useful for testing cache
+    /// behavior and for telemetry in production.
+    pub fn probe_calls_count(&self) -> u64 {
+        self.probe_calls_count.load(Ordering::Relaxed)
     }
 
     /// Returns a shared handle to the internal failure counter. Callers
@@ -174,9 +211,31 @@ impl SignalBus {
     /// of truth for both [`collect_guard_conditions`] and
     /// [`collect_policy_evidence`].
     ///
-    /// Returns `None` on probe failure or zero totals (which would
-    /// produce NaN).
+    /// The result is cached for [`SIGNAL_BUS_CACHE_TTL`]; cache hits
+    /// return in O(1) without spawning subprocesses and do not
+    /// increment `probe_calls_count`. A cache miss (no prior entry
+    /// or entry older than the TTL) runs the real probes, increments
+    /// `probe_calls_count`, and stores the fresh value. Probe
+    /// failures (returning `None`) are **not** cached, so the fail-
+    /// open semantics of `collect_guard_conditions` are preserved:
+    /// the next call retries the probe.
     fn collect_memory_pressure(&self) -> Option<f32> {
+        // Cache lookup. A stale or absent entry falls through to the
+        // probe path below.
+        if let Ok(guard) = self.memory_pressure_cache.lock() {
+            if let Some((value, captured_at)) = guard.as_ref() {
+                if captured_at.elapsed() < SIGNAL_BUS_CACHE_TTL {
+                    return Some(*value);
+                }
+            }
+        }
+
+        // Cache miss: run the real probes. Increment the counter
+        // exactly once per miss, regardless of whether the probe
+        // succeeds — the counter tracks "probe attempts", which is
+        // the quantity callers want for cost accounting.
+        self.probe_calls_count.fetch_add(1, Ordering::Relaxed);
+
         let vram_snap = vram_probe::read_nvidia_vram_snapshot().ok()?;
         let ram_snap = ram_probe::read_system_ram_snapshot().ok()?;
 
@@ -188,7 +247,18 @@ impl SignalBus {
             1.0 - (vram_snap.free_bytes as f32 / vram_snap.total_bytes as f32);
         let ram_pressure =
             1.0 - (ram_snap.available_bytes as f32 / ram_snap.total_bytes as f32);
-        Some(vram_pressure.max(ram_pressure))
+        let aggregate = vram_pressure.max(ram_pressure);
+
+        // Store the fresh value. Only reachable when both probes
+        // succeeded and totals are non-zero, so the cache never
+        // records a degraded result. If the lock is poisoned we
+        // simply skip the update — the value returned to the caller
+        // is still correct; the next call will re-probe.
+        if let Ok(mut guard) = self.memory_pressure_cache.lock() {
+            *guard = Some((aggregate, Instant::now()));
+        }
+
+        Some(aggregate)
     }
 }
 
