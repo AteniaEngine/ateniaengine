@@ -116,6 +116,13 @@ impl Graph {
         self.last_abort.as_ref()
     }
 
+    /// Borrow the attached `ReactiveExecutionContext`, if any. Lets
+    /// callers read runtime counters (e.g. `degrade_events_count`) and
+    /// inspect the signal bus without owning the context.
+    pub fn reactive_context(&self) -> Option<&ReactiveExecutionContext> {
+        self.reactive_context.as_ref()
+    }
+
     /// Consults the reactive context (if set) and returns `Err` when
     /// guards produce an `Abort` verdict or the manager rejects the
     /// verdict as illegal. Called by schedulers before each node.
@@ -173,10 +180,40 @@ impl Graph {
                 // have taken the GPU path now run on CPU, and the VRAM
                 // held by the migrated tensors is released as soon as
                 // their `Arc<InnerGpuPtr>` refcount reaches zero.
+                //
+                // M3-e.5: count the attempt (success or failure) and
+                // capture observability fields before migration runs,
+                // so logs and counters reflect the state that triggered
+                // the reaction, not post-migration state.
+                let memory_pressure = conditions.memory_pressure;
+                let probes_so_far = self
+                    .reactive_context
+                    .as_ref()
+                    .map(|ctx| ctx.signal_bus.probe_calls_count())
+                    .unwrap_or(0);
+                let timestamp_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0);
+                if let Some(ctx) = self.reactive_context.as_ref() {
+                    ctx.record_degrade_event();
+                }
                 match self.migrate_all_cuda_to_cpu() {
                     Ok(report) => {
                         if !crate::apx_is_silent() {
-                            eprintln!("[AMG Guard] {}", report);
+                            let mib = report.bytes_freed_estimate as f64
+                                / (1024.0 * 1024.0);
+                            eprintln!(
+                                "[AMG Guard][t_ms={}] Degrade triggered at node {}: \
+                                 memory_pressure={:.2}, probes_so_far={}. \
+                                 Migrated {} tensors, freed ~{:.2} MiB.",
+                                timestamp_ms,
+                                node_id,
+                                memory_pressure,
+                                probes_so_far,
+                                report.tensors_migrated,
+                                mib,
+                            );
                         }
                     }
                     Err(e) => {
@@ -186,9 +223,14 @@ impl Graph {
                         // cascade the transfer error out of the guard.
                         if !crate::apx_is_silent() {
                             eprintln!(
-                                "[AMG Guard] Degrade migration failed at node {}: \
-                                 {:?}. Continuing; subsequent nodes may still fail.",
-                                node_id, e
+                                "[AMG Guard][t_ms={}] Degrade migration FAILED at node {}: \
+                                 memory_pressure={:.2}, probes_so_far={}. Error: {:?}. \
+                                 Continuing; subsequent nodes may still fail.",
+                                timestamp_ms,
+                                node_id,
+                                memory_pressure,
+                                probes_so_far,
+                                e,
                             );
                         }
                     }

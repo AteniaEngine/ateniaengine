@@ -14,6 +14,7 @@
 //! checked execution path.
 
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::amm::signal_bus::SignalBus;
@@ -31,6 +32,12 @@ pub struct ReactiveExecutionContext {
     pub signal_bus: Arc<SignalBus>,
     pub contract: ExecutionContract,
     pub guard_manager: GuardManager,
+    /// M3-e.5: per-context counter of processed `GuardAction::Degrade`
+    /// verdicts. Incremented each time the guard-handling site observes
+    /// a `Degrade` action and initiates a migration, whether the
+    /// migration itself succeeds or fails. Readable via
+    /// [`degrade_events_count`](Self::degrade_events_count).
+    pub(crate) degrade_events_count: AtomicU64,
 }
 
 impl ReactiveExecutionContext {
@@ -43,7 +50,23 @@ impl ReactiveExecutionContext {
             signal_bus,
             contract,
             guard_manager,
+            degrade_events_count: AtomicU64::new(0),
         }
+    }
+
+    /// Number of times `GuardAction::Degrade` was processed by this
+    /// context, whether the resulting migration succeeded or failed.
+    /// Useful for monitoring how often reaction is triggered in a
+    /// given execution run.
+    pub fn degrade_events_count(&self) -> u64 {
+        self.degrade_events_count.load(Ordering::Relaxed)
+    }
+
+    /// Record that a Degrade verdict was processed. Called from the
+    /// graph's guard-handling site; not part of the public API because
+    /// external code has no business incrementing the counter.
+    pub(crate) fn record_degrade_event(&self) {
+        self.degrade_events_count.fetch_add(1, Ordering::Relaxed);
     }
 }
 
