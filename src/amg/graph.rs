@@ -10,7 +10,7 @@ use crate::apx4_13::fusion_engine::FusedOp;
 use crate::apx5::kernel_planner::{KernelPlanner, KernelTarget};
 use crate::apx5::apx_5_3_planner::{Planner5_3, NodeExecInfo};
 use crate::apx5_4::{Sample, DeviceTarget};
-use crate::tensor::{GpuTransferError, Layout, Tensor};
+use crate::tensor::{GpuTransferError, Layout, Tensor, TensorStorage};
 use crate::cpu_features::cpu_features;
 use super::chunking::{chunk_tensor, merge_chunks};
 use super::nodes::{Node, NodeType};
@@ -139,15 +139,25 @@ impl Graph {
         // cache this makes a 1000-node graph take minutes just on
         // probing. Must be resolved before APX v20 M5 (first real
         // model end-to-end). See ROADMAP.
-        let Some(ctx) = self.reactive_context.as_ref() else {
-            return Ok(());
-        };
-        let Some(conditions) = ctx.signal_bus.collect_guard_conditions() else {
-            // Fail-open: absence of telemetry doesn't block execution.
-            return Ok(());
+        //
+        // The verdict is collected in an inner block so the shared
+        // borrow of `self.reactive_context` ends before the arms below
+        // (notably the Degrade arm) take `&mut self` to migrate.
+        let (verdict, conditions) = {
+            let Some(ctx) = self.reactive_context.as_ref() else {
+                return Ok(());
+            };
+            let Some(conditions) = ctx.signal_bus.collect_guard_conditions() else {
+                // Fail-open: absence of telemetry doesn't block execution.
+                return Ok(());
+            };
+            (
+                ctx.guard_manager.evaluate(&ctx.contract, &conditions),
+                conditions,
+            )
         };
 
-        match ctx.guard_manager.evaluate(&ctx.contract, &conditions) {
+        match verdict {
             Ok(GuardAction::Abort) => {
                 let reason = ExecutionAbortReason::GuardAborted {
                     at_node: node_id,
@@ -157,14 +167,31 @@ impl Graph {
                 Err(reason)
             }
             Ok(GuardAction::Degrade) => {
-                // M2: treat Degrade as Continue. M3 will introduce
-                // strategy selection to act on Degrade.
-                if crate::apx_debug_enabled() && !crate::apx_is_silent() {
-                    eprintln!(
-                        "[AMG] Degrade verdict at node {} ignored in M2 \
-                         (strategies arrive in M3)",
-                        node_id
-                    );
+                // M3-e.1: act on Degrade by migrating every Cuda-resident
+                // `node.output` back to CPU. Execution continues with
+                // CPU storage after this; subsequent nodes that would
+                // have taken the GPU path now run on CPU, and the VRAM
+                // held by the migrated tensors is released as soon as
+                // their `Arc<InnerGpuPtr>` refcount reaches zero.
+                match self.migrate_all_cuda_to_cpu() {
+                    Ok(report) => {
+                        if !crate::apx_is_silent() {
+                            eprintln!("[AMG Guard] {}", report);
+                        }
+                    }
+                    Err(e) => {
+                        // Degrade itself failed (e.g. a D->H transfer
+                        // returned an error). Log and continue; the
+                        // next node may still fail, but we do not
+                        // cascade the transfer error out of the guard.
+                        if !crate::apx_is_silent() {
+                            eprintln!(
+                                "[AMG Guard] Degrade migration failed at node {}: \
+                                 {:?}. Continuing; subsequent nodes may still fail.",
+                                node_id, e
+                            );
+                        }
+                    }
                 }
                 Ok(())
             }
@@ -179,6 +206,47 @@ impl Graph {
                 Err(reason)
             }
         }
+    }
+
+    /// Migrate every `node.output` currently in `TensorStorage::Cuda`
+    /// back to `TensorStorage::Cpu` via `Tensor::ensure_cpu`. Used by
+    /// the `GuardAction::Degrade` reaction strategy introduced in M3-e.1;
+    /// also callable standalone for tests and future policies.
+    ///
+    /// Grads (`output.grad`) are left untouched — they are CPU-resident
+    /// by construction (M3-d.3 backward pre-pass contract) and do not
+    /// live in VRAM. Input and Parameter nodes are treated identically
+    /// to intermediate nodes: any cached output with Cuda storage is
+    /// migrated.
+    ///
+    /// `bytes_freed_estimate` is `numel * size_of::<f32>()` summed over
+    /// migrated tensors. It is a best-effort estimate; the real VRAM
+    /// release depends on the `Arc<InnerGpuPtr>` refcount at drop time.
+    ///
+    /// Returns `Err` on the first `ensure_cpu` failure and stops; earlier
+    /// migrations in the same call are not rolled back (the tensors that
+    /// already moved stay on CPU, which is the safe direction).
+    pub fn migrate_all_cuda_to_cpu(
+        &mut self,
+    ) -> Result<crate::amg::reactive::DegradeReport, GpuTransferError> {
+        let mut tensors_migrated = 0usize;
+        let mut bytes_freed_estimate = 0usize;
+
+        for node in &mut self.nodes {
+            if let Some(ref mut output) = node.output {
+                if matches!(output.storage, TensorStorage::Cuda(_)) {
+                    let numel = output.numel();
+                    output.ensure_cpu()?;
+                    tensors_migrated += 1;
+                    bytes_freed_estimate += numel * std::mem::size_of::<f32>();
+                }
+            }
+        }
+
+        Ok(crate::amg::reactive::DegradeReport {
+            tensors_migrated,
+            bytes_freed_estimate,
+        })
     }
 }
 

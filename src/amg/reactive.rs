@@ -13,6 +13,7 @@
 //! This module also defines the abort reason enum surfaced by the
 //! checked execution path.
 
+use std::fmt;
 use std::sync::Arc;
 
 use crate::amm::signal_bus::SignalBus;
@@ -43,6 +44,29 @@ impl ReactiveExecutionContext {
             contract,
             guard_manager,
         }
+    }
+}
+
+/// Report produced by a successful `Graph::migrate_all_cuda_to_cpu`
+/// call. Returned to `check_guard_before_node` so the guard-handling
+/// site can log what the Degrade action actually did. Bytes freed are
+/// an estimate based on `numel * size_of::<f32>()`; the actual VRAM
+/// release depends on the refcount of the underlying `Arc<InnerGpuPtr>`
+/// at drop time, which is not observable from the migration site.
+#[derive(Debug, Clone)]
+pub struct DegradeReport {
+    pub tensors_migrated: usize,
+    pub bytes_freed_estimate: usize,
+}
+
+impl fmt::Display for DegradeReport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mib = self.bytes_freed_estimate as f64 / (1024.0 * 1024.0);
+        write!(
+            f,
+            "Degrade: migrated {} tensors, freed ~{:.2} MiB (estimate)",
+            self.tensors_migrated, mib
+        )
     }
 }
 
