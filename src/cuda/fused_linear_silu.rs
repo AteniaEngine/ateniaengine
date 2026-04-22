@@ -13,6 +13,21 @@ unsafe extern "C" {
         k: c_int,
         n: c_int,
     );
+
+    // Device-pointer variant added in M3-d.4.D. See the doc comment on
+    // `launch_linear_f32_device_ptrs` in `linear.rs` for the ownership
+    // contract. Returns 0 on success, 2 on kernel launch error, 1 on
+    // sync error. `#[allow(dead_code)]` until M3-d.4.E wires it.
+    #[allow(dead_code)]
+    pub(crate) fn launch_fused_linear_silu_f32_device_ptrs(
+        d_x: *const f32,
+        d_w: *const f32,
+        d_b: *const f32,
+        d_out: *mut f32,
+        m: c_int,
+        k: c_int,
+        n: c_int,
+    ) -> i32;
 }
 
 /// CUDA fused Linear + SiLU op: computes `out = silu(x @ w + b)`.

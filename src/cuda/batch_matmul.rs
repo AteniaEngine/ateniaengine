@@ -13,6 +13,21 @@ unsafe extern "C" {
         k: c_int,
         n: c_int,
     );
+
+    // Device-pointer variant added in M3-d.4.D. See the doc comment on
+    // `launch_linear_f32_device_ptrs` in `linear.rs` for the ownership
+    // contract. Returns 0 on success, 2 on kernel launch error, 1 on
+    // sync error. `#[allow(dead_code)]` until M3-d.4.E wires it.
+    #[allow(dead_code)]
+    pub(crate) fn launch_batch_matmul_f32_device_ptrs(
+        d_a: *const f32,
+        d_b: *const f32,
+        d_out: *mut f32,
+        batch: c_int,
+        m: c_int,
+        k: c_int,
+        n: c_int,
+    ) -> i32;
 }
 
 /// CUDA batched matmul: computes `out[i] = a[i] @ b[i]` for each batch `i`.

@@ -14,6 +14,23 @@ unsafe extern "C" {
         k: c_int,
         n: c_int,
     );
+
+    // Device-pointer variant added in M3-d.4.D. Assumes the caller owns
+    // the VRAM backing every pointer; does not alloc or free. Returns
+    // 0 on success, 2 on kernel launch error, 1 on sync error.
+    // `#[allow(dead_code)]` until M3-d.4.E wires it into the public op
+    // dispatch; the symbol must still be declared so the linker pulls
+    // it in from the static library.
+    #[allow(dead_code)]
+    pub(crate) fn launch_linear_f32_device_ptrs(
+        d_a: *const f32,
+        d_b: *const f32,
+        d_bias: *const f32,
+        d_out: *mut f32,
+        m: c_int,
+        k: c_int,
+        n: c_int,
+    ) -> i32;
 }
 
 /// CUDA Linear op: computes `out = a @ b + bias`.

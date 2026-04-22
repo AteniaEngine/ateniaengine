@@ -120,3 +120,44 @@ cleanup:
     atenia_pool_free(dB, sizeB);
     atenia_pool_free(dOUT, sizeOUT);
 }
+
+// Device-pointer variant: launches the same fused kernel as
+// launch_fused_linear_silu_f32 but assumes the caller owns the device
+// memory and is responsible for freeing it. No pool_alloc / pool_free,
+// no H<->D memcpy.
+//
+// Shape contract:
+//   d_x  : [M, K]
+//   d_w  : [K, N]
+//   d_b  : [N]
+//   d_out: [M, N]
+//
+// Returns 0 on success, 2 on kernel launch error, 1 on sync error.
+extern "C"
+int launch_fused_linear_silu_f32_device_ptrs(
+    const float* d_x,
+    const float* d_w,
+    const float* d_b,
+    float* d_out,
+    int M,
+    int K,
+    int N
+) {
+    dim3 block(16, 16);
+    dim3 grid((N + 15) / 16, (M + 15) / 16);
+
+    fused_linear_silu_f32_kernel<<<grid, block>>>(d_x, d_w, d_b, d_out, M, K, N);
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("launch_fused_linear_silu_f32_device_ptrs launch failed: %s\n", cudaGetErrorString(err));
+        return 2;
+    }
+
+    err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {
+        printf("launch_fused_linear_silu_f32_device_ptrs sync failed: %s\n", cudaGetErrorString(err));
+        return 1;
+    }
+
+    return 0;
+}
