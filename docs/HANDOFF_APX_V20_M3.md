@@ -1,309 +1,205 @@
-# Handoff — APX v20 M3 (Real GPU Allocation for Tensor)
+# Handoff — APX v20 M3 (at M3-d close)
 
-**Status at handoff**: M3-a completed and tested. M3-b eliminated
-(absorbed into M3-a). M3-c, M3-d, M3-e pending. No code for later
-sub-milestones has been written.
+**Status at handoff**: M3-a, M3-c, and M3-d complete. M3-e (reaction
+strategy that moves real VRAM back to RAM under guard `Degrade`) is
+the next sub-milestone.
 
-This document is a snapshot of where M3 stands today — not a full
-history of how we got here. For the investigation trail see git
-log and the older version of this file.
-
----
-
-## Where we are in the project
-
-| Milestone | Status | Summary |
-|---|---|---|
-| v20 M1 | ✅ Completed and committed | Conv2D and MaxPool2D ported to AMG with forward, backward, autograd tape integration. 16 tests passing. |
-| v20 M2 | ✅ Completed and committed | SignalBus wired to AMG executor via `ReactiveExecutionContext`. `execute_checked` returns `Result<_, ExecutionAbortReason>`. 4 tests passing. |
-| v20 M3-a | ✅ **Completed, tests passing, ready to commit** | `TensorStorage` enum + `Tensor` migrated to storage-based representation + 132 files migrated to the new API + 8 storage tests passing. |
-| v20 M3-c | 🟡 Pending | Remove the `#[deprecated]` compatibility shims (`data`, `data_mut`, `num_elements`). Small, mechanical. |
-| v20 M3-d | 🟡 Pending | Implement `TensorStorage::Cuda` with real VRAM allocation, `Drop`, host↔device transfers; wire `ensure_gpu`/`ensure_cpu` to do real work. |
-| v20 M3-e | 🟡 Pending | Reaction strategy that moves real VRAM to RAM on guard `Degrade` — the original v20 M3 idea, now unblocked. |
-| v20 M4–M8 | Not started | Real model loading, v17 retirement. |
+This handoff documents the architectural state at M3-d close so the
+next person (or the same person after a long break) can resume on
+M3-e without re-deriving context from scratch. For the narrative of
+how M3-a landed first, see the historical snapshot in
+[HANDOFF_APX_V20_M3_a.md](./HANDOFF_APX_V20_M3_a.md); the decisions
+and invariants it records still hold.
 
 ---
 
-## What M3-a delivered
+## What is ready
 
-### `TensorStorage` enum
-
-Defined in `src/tensor/tensor.rs`, re-exported from `crate::tensor`:
-
-```rust
-pub enum TensorStorage {
-    Cpu(Vec<f32>),
-    // Cuda(TensorGPU) — added in M3-d.
-}
-```
-
-Enum, not trait, for three reasons documented in the doc comment:
-no `dyn` in the hot path, exhaustive `match` forces backend
-handling at every consumer, and CUDA / ROCm / Metal APIs diverge
-enough that a shared trait surface would be a useless lowest
-common denominator.
-
-### `Tensor` struct
-
-The `pub data: Vec<f32>` field is gone. Replaced by:
-
-```rust
-pub storage: TensorStorage,
-```
-
-All other fields (`shape`, `device`, `dtype`, `layout`, `strides`,
-`grad`, `gpu`, `persistence`, `op`) are unchanged.
-
-`#[derive(Clone)]` is preserved. When M3-d lands and
-`TensorStorage::Cuda` exists, `Clone` there will imply a VRAM→VRAM
-transfer — we will document the cost but not change the trait.
-
-### New accessor API
-
-All `pub`, all on `impl Tensor`, all with doc comments:
-
-| Method | Signature | Use |
-|---|---|---|
-| `new_cpu` | `fn new_cpu(shape: Vec<usize>, data: Vec<f32>) -> Tensor` | Canonical constructor for CPU tensors with known contents |
-| `new_cpu_with_layout` | `fn new_cpu_with_layout(shape, data, device, dtype, layout) -> Tensor` | Constructor preserving non-default device/dtype/layout |
-| `set_cpu_data` | `fn set_cpu_data(&mut self, Vec<f32>)` | Replace the storage in place; panics on length mismatch |
-| `as_cpu_slice` | `fn as_cpu_slice(&self) -> &[f32]` | Immutable view; panics if storage is not CPU |
-| `as_cpu_slice_mut` | `fn as_cpu_slice_mut(&mut self) -> &mut [f32]` | Mutable view; panics if storage is not CPU |
-| `copy_to_cpu_vec` | `fn copy_to_cpu_vec(&self) -> Vec<f32>` | Owned copy; triggers D→H transfer in M3-d for Cuda |
-| `ensure_cpu` | `fn ensure_cpu(&mut self) -> &mut Self` | No-op on CPU in M3-a; transfer in M3-d; returns `&mut Self` for chaining |
-| `numel` | `fn numel(&self) -> usize` | Element count from `shape`; independent of backend |
-| `storage` | `fn storage(&self) -> &TensorStorage` | Explicit match for backend-dispatch helpers |
-
-### Compatibility shims (kept for M3-c)
-
-Three `#[deprecated]` methods kept for parties that still rely on
-the pre-0.20 field-access surface:
-
-- `fn data(&self) -> &[f32]` — delegates to `as_cpu_slice`
-- `fn data_mut(&mut self) -> &mut [f32]` — delegates to `as_cpu_slice_mut`
-- `fn num_elements(&self) -> usize` — delegates to `numel`
-
-No call site inside this repo uses them (verified by grep and by
-zero `use of deprecated` warnings in both `cargo build --lib` and
-`cargo build --tests`). They exist solely as stability guarantees
-for downstream consumers and will be removed in M3-c.
-
-### Migration scale
-
-- **132 files touched**: 1 core rewrite (`src/tensor/tensor.rs`) +
-  24 source files + 1 binary + 88 test files + cleanup commits.
-- 5 sub-lotes for the migration, each with its own cargo build
-  verification:
-  - Lote 1: struct literals in `src/` (7 files, 10 sites).
-  - Lote 2: field assignments in `src/` + tests (14 files).
-  - Lote 3: all `src/amg/` reads via indexing/slice (4 files, ~153
-    sites — `graph.rs` alone held ~140).
-  - Lote 4: rest of `src/` (17 files + 1 bin, ~84 sites).
-  - Lote 5: rest of `tests/` (88 files, ~310 sites).
-- Final result: `cargo build --lib` and `cargo build --tests`
-  both clean, 0 errors, 0 warnings.
-
-### Tests
-
-`tests/tensor_storage_test.rs`:
-
-- `test_cpu_storage_roundtrip`
-- `test_numel`
-- `test_storage_accessor`
-- `test_set_cpu_data`
-- `test_ensure_cpu_noop`
-- `test_deprecated_data_still_works` (with `#[allow(deprecated)]`)
-- `test_deprecated_data_mut_still_works` (with `#[allow(deprecated)]`)
-- `test_clone_preserves_storage`
-
-All 8 pass. Run with `cargo test --test tensor_storage_test`.
-
-### What did not change in M3-a
-
-- `GPUMirror` and `GPUPersistenceInfo` fields on `Tensor` — still
-  there. Their elimination is a separate cleanup; removing them
-  touches `src/apx8/**` and associated tests.
-- `v15`, `v16`, `v17`, `v19` and the SignalBus module — not
-  modified (per standing milestone restrictions).
-- `src/cuda/matmul.rs` still takes CPU-resident tensors through
-  `as_cpu_slice()` / `as_cpu_slice_mut()`. A comment flags this as
-  the point to revisit in M3-d (either change the signature to
-  `&mut Tensor` and call `ensure_cpu` inside, or accept
-  `TensorStorage::Cuda` directly and skip H→D).
+| Sub-milestone | State | Summary |
+|---------------|-------|---------|
+| M3-a | ✅ | `TensorStorage` enum; `Tensor.data: Vec<f32>` → `Tensor.storage: TensorStorage`; canonical accessor API; 132-file migration. |
+| M3-c | ✅ | Deprecated shims (`data()`, `data_mut()`, `num_elements()`) removed; the two tests that exercised them retired. |
+| M3-d.1 | ✅ | `Arc`-refcounted VRAM ownership via `InnerGpuPtr`; thread-safe `gpu_engine()` singleton with primary-context retain and per-op `cuCtxSetCurrent`. |
+| M3-d.2 | ✅ | `TensorStorage::Cuda(TensorGPU)` variant; `ensure_gpu` / `ensure_cpu` with real H↔D transfers; `GpuTransferError` enum for structured error reporting. |
+| M3-d.3 | ✅ | `backward_checked` / `backward_sequential_checked` with `ensure_cpu` pre-pass on every `node.output`; 15 `ensure_cpu().expect(...)` guards inside 8 backward closures whose body produces intermediate tensors that are then consumed as host slices. |
+| M3-d.4 | ✅ | GPU-plan tape-registration gap closed (intercept skips when `record_tape` is active); 3 CUDA ops (`cuda_linear`, `cuda_batch_matmul`, `cuda_fused_linear_silu`) migrated to `&Tensor` signatures with storage-based dispatch; new `launch_*_f32_device_ptrs` C variants that skip the H↔D roundtrip when every operand is already VRAM-resident. |
+| M3-e | 🟡 | Not started. This handoff's main purpose is to brief it. |
 
 ---
 
-## Decisions locked during M3 (do NOT re-ask)
+## Architectural decisions that now govern the code
 
-1. **Enum, not trait, for storage**. Reasons in the doc comment
-   of `TensorStorage` in `src/tensor/tensor.rs`. When ROCm / Metal
-   land they become additional enum variants.
+These were locked as M3-d progressed. Treat them as invariants; future
+milestones extend them rather than re-litigate.
 
-2. **Vendor-neutral from day 1**. The engine consumes
-   `TensorStorage` and the accessor methods. No file outside
-   `src/cuda/` or `src/gpu/` may `use crate::cuda::…` directly.
-   Specific kernels (`cuda_matmul` et al.) stay CUDA-only; the
-   vendor-neutrality is enforced at the Tensor API layer, not at
-   kernel granularity (kernels remain vendor-specific; v22+ will
-   introduce a higher-level dispatch if needed).
+1. **Single GPU-engine singleton** — `crate::gpu::gpu_engine()` returns
+   `Option<&'static GpuMemoryEngine>`. The engine retains the device's
+   **primary CUDA context** (`cuDevicePrimaryCtxRetain`) and every
+   public operation calls `cuCtxSetCurrent(ctx)` on the current thread
+   before issuing driver calls. This is what makes the singleton safe
+   across Rust's test-thread workers.
 
-3. **Backward always on CPU in M3-d**. `TensorStorage::Cuda`
-   appears in M3-d but backward closures will still `ensure_cpu()`
-   on their inputs. Running backward on GPU when inputs are
-   already there is a v21+ optimization.
+2. **VRAM ownership by `Arc<InnerGpuPtr>`** — `TensorGPU` holds
+   `inner: Arc<InnerGpuPtr>`. `InnerGpuPtr` has a `Drop` that calls
+   `engine.free` when the last clone drops. `TensorGPU::clone` is an
+   `Arc::clone` (cheap, shares VRAM); dropping one clone never frees
+   the region as long as another clone exists.
 
-4. **API breaking at the Tensor layer**. `tensor.data` (field) is
-   gone. Call sites migrate to `as_cpu_slice()`, `copy_to_cpu_vec()`,
-   `new_cpu()`, `set_cpu_data()`, etc. This was done in M3-a across
-   132 files.
+3. **Storage enum, not trait object** — `TensorStorage` is a concrete
+   enum with `Cpu(Vec<f32>)` and `Cuda(TensorGPU)`. Dispatch happens
+   through exhaustive `match`, not through `dyn Storage`. The compiler
+   forces every consumer to handle both variants explicitly.
 
-5. **`GPUMirror` and `GPUPersistenceInfo` stay for now**. They are
-   APX 8.4/8.5 stubs and their elimination touches ~15 files. It
-   is a separate, later commit — not part of M3.
+4. **Explicit transfers, no implicit ones** — `Tensor::as_cpu_slice`
+   (and its mutable twin) panic on `Cuda` storage with a message
+   pointing the caller to `ensure_cpu()`. Every op in the project that
+   needs host-side access obeys this rule; no op silently D→H copies
+   a Cuda tensor as a convenience. `ensure_gpu` / `ensure_cpu` /
+   `copy_to_cpu_vec` are the only surfaces where transfers happen, and
+   they are explicit in the call site.
 
-6. **`new_cpu_with_layout` helper**. Introduced during Lote 1
-   after seeing ≥4 sites with the "new_cpu + 4 overrides" pattern.
-   Signature is fixed (shape, data, device, dtype, layout);
-   callers that need non-default strides assign `t.strides = …`
-   after construction.
+5. **Backward always on CPU, guaranteed by pre-pass** —
+   `Graph::backward_checked` walks every `node.output` before any
+   closure runs and calls `ensure_cpu()?`; it returns
+   `Err(GpuTransferError)` on transfer failure. The unchecked
+   `Graph::backward` wraps this and panics on `Err`. The 8 backward
+   closures that build intermediate tensors inside their body (MatMul,
+   FusedQKV, Linear full/raw, Transpose2D, Reshape, TransposeLastTwo,
+   Softmax AVX2) also call `ensure_cpu().expect(...)` on each
+   intermediate before consuming it as a slice. This is a defensive
+   layer: today the ops those closures call are all CPU-resident, so
+   the `ensure_cpu` is a no-op, but if an op is later rewired to
+   produce `Cuda` storage the guard already catches it.
 
-7. **`TensorStorage` is re-exported** from `crate::tensor` (in
-   `src/tensor/mod.rs`) — needed for the split-borrow trick in
-   `src/optim/adamw.rs`, where reading `param.grad` and writing
-   `param.storage` disjointly requires direct field pattern
-   matching rather than a method call.
+6. **`cuda_*_raw` private + `cuda_*` public dispatch** — The 3 CUDA
+   ops expose a `pub fn cuda_*(..., &Tensor, ...)` that inspects the
+   storage of every operand. If all operands are `Cuda`, the wrapper
+   extracts device pointers via `cuda_device_ptr` /
+   `cuda_device_ptr_mut` (helpers in `src/cuda/mod.rs`) and calls the
+   C variant `launch_*_f32_device_ptrs` which skips alloc / memcpy /
+   free entirely. Otherwise it falls through to a private
+   `cuda_*_raw(&[f32], ..., &mut [f32], ...)` that contains the
+   original host-path body. Mixed storage falls into the host path,
+   which panics through `as_cpu_slice`, surfacing the inconsistency
+   as a setup bug.
 
----
+7. **GPU-plan intercept is forward-only** — The `exec_gpu_segment`
+   intercept in `execute_single_inner` runs only when `record_tape` is
+   false. In training mode, every node falls through to its regular
+   `NodeType` handler, which registers the backward tape entry. The
+   tape-registration gap that caused MatMul grads to silently be zero
+   is closed this way; no new GPU-side backward was introduced.
 
-## M3-c (next sub-milestone) — what to do
-
-**Scope**: remove the three `#[deprecated]` compatibility shims
-(`fn data`, `fn data_mut`, `fn num_elements`) from
-`src/tensor/tensor.rs`.
-
-**Expected blast radius**: zero. At M3-a close, grep across the
-full repo found zero callers of these methods (the migration was
-exhaustive). The removal should be a 3-method deletion + one
-doc-comment update + `cargo build --lib && cargo build --tests`
-green.
-
-**Risks**: downstream consumers outside this repo that were
-relying on the shims. Since this is a pre-release engine
-(APX v20 in a tagged `0.1.0` crate), we are free to break them
-now. The stubs exist only to keep this repo's own migration
-traceable across the intermediate commits.
-
-**Deliverable**: single small commit removing the shims + updating
-this handoff to drop M3-c from the pending list.
-
----
-
-## M3-d (later sub-milestone) — what to design first
-
-Before writing code for M3-d:
-
-1. **Decide `cuda_matmul` and friends' signatures**. The comment
-   at the top of `src/cuda/matmul.rs` lists three options:
-   (a) change to `&mut Tensor` and call `ensure_cpu` internally;
-   (b) accept `TensorStorage::Cuda` directly and skip H→D;
-   (c) keep the current signature and require callers to
-   `ensure_cpu` upstream. This is the first real design choice for
-   M3-d.
-
-2. **`TensorGPU` replacement**. The existing struct in
-   `src/gpu/tensor/tensor_gpu.rs` is 2D-only, F32-only, no `Drop`,
-   tightly coupled to `GpuMemoryEngine`. M3-d will either rebuild
-   it or define a new type that `TensorStorage::Cuda` wraps.
-
-3. **Error handling contract**. `ensure_gpu()` must decide: panic
-   on VRAM allocation failure, or `Result<(), StorageError>`?
-   Current `GpuMemoryEngine` returns `Result`; propagating it
-   would force many call sites to handle errors they currently
-   assume away.
-
-4. **The 6 CUDA-leaked files outside `src/cuda/` and `src/gpu/`**
-   (`apx4/gpu_kernels.rs`, `apx4_11/gpu_hooks.rs`,
-   `apx4_3/gpu_executor.rs`, `apx4_3/gpu_utils.rs`,
-   `apx4_5/batch_matmul_cuda.rs`,
-   `src/bin/apx_4_10_fused_linear_silu_bench.rs`) all compile
-   clean against the new Tensor API but still `use crate::cuda::…`
-   directly. Whether to refactor them under an abstraction is
-   **M3-d decision**, not M3-a.
+8. **Pool and engine coexist with documented boundaries** — The
+   legacy `apx4_12` 64 MB block pool remains the allocator for the
+   temp buffers inside the classic `launch_*_f32` wrappers (host-path
+   CUDA ops that alloc / copy / launch / copy / free in a single
+   call). The engine singleton owns VRAM for long-lived
+   `TensorStorage::Cuda` regions. Cross-free was not observed and is
+   prevented by boundary: the `_device_ptrs` variants never alloc or
+   free — VRAM ownership stays entirely on the Rust side via `Arc`.
 
 ---
 
-## M3-e (the original v20 M3) — what it becomes
+## How M3-e fits
 
-Original M3 was "reaction strategy: when guard returns `Degrade`,
-move dormant tensors from GPU to CPU". It was redefined after the
-M3.1 investigation because `Tensor.device` was a logical label.
+The original v20 M3 idea — "when a guard signals `Degrade` due to VRAM
+pressure, move Cuda-resident tensors back to RAM and keep executing" —
+is now straightforward to implement:
 
-After M3-d, that capability is finally achievable: a strategy can
-`ensure_cpu()` a `Tensor` and the engine will free VRAM for real.
+- `ensure_cpu()` on a Cuda tensor already performs a real D→H copy and
+  swaps the storage variant. It returns `Result`, so callers can act
+  on transfer failure.
+- Dropping the original `Arc<InnerGpuPtr>` releases VRAM automatically
+  when the last clone goes out of scope.
+- Guard signals arrive through `ReactiveExecutionContext` (M2); the
+  reaction strategy needs a place to hook in, inspect tensors in the
+  graph, and call `ensure_cpu()` on the subset chosen by the policy.
 
-M3-e therefore becomes:
+What M3-e must decide before code:
 
-1. A new `StrategyAction::MoveToCpu(Vec<TensorRef>)` (or similar
-   name) handled by the graph executor.
-2. A reaction strategy that returns this action when a guard
-   fires.
-3. Integration tests that validate the VRAM residency change.
+- **Which tensors move?** Parameters, activations, or both? A simple
+  first cut might migrate everything in `self.nodes[_].output` whose
+  storage is `Cuda` when the guard fires, mirroring the backward
+  pre-pass.
+- **Which guard and policy drive the decision?** The `Degrade` path
+  is agreed; the specific `GuardCondition` and `PolicySignal` that
+  trigger the migration need to be wired.
+- **Observability**: the migration should emit something the test
+  harness and benchmarks can see (bytes moved, tensors touched,
+  latency of the migration) so its effect is measurable.
 
-Nothing to do here until M3-d is in.
-
----
-
-## Files and modules that would be heavily touched by M3-d
-
-If helpful for planning M3-d:
-
-- `src/tensor/tensor.rs` — add `Cuda(TensorGPU)` variant and
-  implement `ensure_cpu` / `ensure_gpu` with real transfers. Plus
-  `copy_to_cpu_vec` must grow a D→H path.
-- `src/gpu/tensor/tensor_gpu.rs` — either replaced or extended
-  (support >2D, non-F32 dtypes, `Drop` that frees VRAM).
-- `src/cuda/{matmul, linear, batch_matmul, fused_linear_silu}.rs`
-  — signatures revisited per the decision above.
-- The 6 CUDA-leaked files listed above.
-
-## Environment state at time of handoff
-
-- Host: Windows 11, Intel i7-14650HX
-- GPU: NVIDIA RTX 4070 Laptop + Intel UHD Graphics (integrated)
-- CUDA Toolkit: v13.2
-- MSVC BuildTools: 14.50.35717
-- `build.rs` auto-detects CUDA and MSVC paths; respects
-  `CUDA_PATH` and `MSVC_TOOLS_PATH` overrides.
+M3-e does **not** need to add GPU backward, does **not** need to
+unify the pool and the engine, and does **not** need to refactor the
+CUDA-leaked files. Those stay on the debt list.
 
 ---
 
-## How to resume after compact
+## Known debts carried into M3-e
 
-1. `git status` — confirm whether M3-a is committed or still staged.
-2. Read this file (`docs/HANDOFF_APX_V20_M3.md`).
-3. Read `ROADMAP.md` for the broader plan.
-4. If the user wants to continue M3, the natural next step is
-   **M3-c** (remove the deprecated shims). It is small, mechanical,
-   and unblocks M3-d's clean-surface state.
-5. If the user pivots: M3-a is self-contained and shippable; the
-   rest of v20 can be paused here without losing anything. The
-   deprecated shims keep the surface stable for any downstream
-   consumer that was mid-migration.
+These are documented so they are not confused with regressions.
+
+1. **Five CUDA-leaked files** still import `crate::cuda::*` and live
+   under `apx*_*` module paths: `src/apx4/gpu_kernels.rs`,
+   `src/apx4_11/gpu_hooks.rs`, `src/apx4_3/gpu_utils.rs`,
+   `src/apx4_5/batch_matmul_cuda.rs`,
+   `src/bin/apx_4_10_fused_linear_silu_bench.rs`.
+   `src/apx4_3/gpu_executor.rs` was touched partially during M3-d.4
+   (segment execution still does not register tape; the fix was done
+   at the intercept level in `execute_single_inner` instead).
+   Refactoring these into `src/gpu/` is deferred.
+
+2. **`tests/apx_4_18_self_attention_backward_test.rs::self_attention_backward_4_18_matches_naive`** is marked
+   `#[ignore]`. The test predated the M3-d.4 tape-gap fix and
+   tolerated missing MatMul grads via a zero-vector fallback, so its
+   hardcoded expected values implicitly compared against zeros. With
+   the fix, real grads are produced but the expectations were never
+   analytically derived. Re-enabling the test requires recomputing
+   dQ / dK / dV / dWq / dWk / dWv / dX against a reference framework.
+
+3. **APX 8.4 `GPUMirror`** (`Tensor.gpu: Option<GPUMirror>`) is a
+   metadata-only mirror introduced long before `TensorStorage::Cuda`.
+   It is still wired through `sync_cpu` / `sync_gpu` on `Tensor` but
+   its arms for the new `Cuda` storage variant are no-ops.
+   Reconciling the two paths is pending.
+
+4. **The C side of the 3 ops has minor quality debts**: silent
+   allocation failures (`atenia_pool_alloc` returning null is only
+   `printf`-reported, not propagated to Rust), ~210 lines of
+   copy-paste across the 3 wrappers, sparse inline docs. The new
+   `_device_ptrs` variants follow a stricter pattern (return `int`
+   error codes, checked on the Rust side), but the legacy wrappers
+   were not refactored.
 
 ---
 
-## What NOT to do
+## Files that M3-e will likely touch
 
-- Do not start M3-d implementation before at least M3-c is
-  closed. The deprecated shims complicate any future change to
-  `Tensor`'s method surface.
-- Do not modify `src/v15/`, `src/v16/`, `src/v17/`, `src/v19/`
-  (the SignalBus module, `src/amm/signal_bus.rs`), or
-  `src/apx4_3/`, `src/apx4_7/` outside the migrations already
-  landed in M3-a. Their semantics are frozen for later milestones.
-- Do not extend scope into real migration strategies (original M3
-  idea). That is M3-e and depends on M3-d.
-- Do not add new fields to `Tensor` unless strictly required.
-- Do not panic on probe failures, mutex poisoning, or missing
-  VRAM. Follow the fail-open / recover-defaults convention
-  established in v18 and v19.
+A rough expected blast radius, for planning:
+
+- `src/amm/` — Reaction strategy code, integration with existing
+  `AmmForecaster` / `SignalBus`.
+- `src/amg/graph.rs` — Hook for the migration to run in response to
+  a guard signal during execution.
+- `src/tensor/tensor.rs` — Possibly a helper to "migrate the
+  reachable subgraph to CPU" (analogous to the backward pre-pass).
+- New tests under `tests/` — end-to-end: build a graph with VRAM
+  pressure injected, fire `Degrade`, assert tensors migrated and
+  execution continues with correct numerics.
+
+---
+
+## How to resume
+
+1. Read this file and the **Architectural decisions that now govern
+   the code** section.
+2. Skim [HANDOFF_APX_V20_M3_a.md](./HANDOFF_APX_V20_M3_a.md) only if
+   you need historical context (e.g., why `TensorStorage` was chosen
+   as an enum instead of a trait).
+3. Check `cargo build --lib` and `cargo build --tests` compile clean;
+   confirm `tests/cuda_ops_device_ptrs_dispatch_test` and
+   `tests/backward_after_ensure_gpu_test` pass on a GPU-equipped
+   machine before starting M3-e.
+4. Start M3-e with design questions, not code — the three decisions
+   listed under **How M3-e fits** above should be answered before
+   implementation.

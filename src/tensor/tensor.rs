@@ -671,8 +671,9 @@ impl Tensor {
                 TensorStorage::Cpu(v) => {
                     m.download_to_cpu(v.as_mut_ptr(), bytes);
                 }
-                // APX 8.4 mirror is a metadata stub independent of real
-                // VRAM; M3-d.4 will wire the GPU-resident path properly.
+                // APX 8.4 mirror is metadata-only and independent of the
+                // real VRAM path introduced via TensorStorage::Cuda.
+                // Reconciliation of the two paths is pending.
                 TensorStorage::Cuda(_) => {}
             }
             m.mark_synced();
@@ -687,8 +688,9 @@ impl Tensor {
                 TensorStorage::Cpu(v) => {
                     m.upload_from_cpu(v.as_ptr(), bytes);
                 }
-                // APX 8.4 mirror is a metadata stub independent of real
-                // VRAM; M3-d.4 will wire the GPU-resident path properly.
+                // APX 8.4 mirror is metadata-only and independent of the
+                // real VRAM path introduced via TensorStorage::Cuda.
+                // Reconciliation of the two paths is pending.
                 TensorStorage::Cuda(_) => {}
             }
             m.mark_synced();
