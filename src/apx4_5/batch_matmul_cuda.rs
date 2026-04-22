@@ -1,14 +1,10 @@
-use crate::cuda::batch_matmul::cuda_batch_matmul;
-use crate::tensor::Tensor;
+//! Pass-through to the vendor-neutral home of the batch MatMul
+//! dispatch wrapper.
+//!
+//! The implementation lives in [`crate::gpu::ops::batch_matmul_dispatch`].
+//! This file is kept as a re-export so existing
+//! `use crate::apx4_5::batch_matmul_cuda::batch_matmul_cuda` imports
+//! continue to compile without changes. New code should import from
+//! `crate::gpu::ops::batch_matmul_dispatch` directly.
 
-pub fn batch_matmul_cuda(
-    a: &Tensor,
-    b: &Tensor,
-    out: &mut Tensor,
-    batch: usize,
-    m: usize,
-    k: usize,
-    n: usize,
-) {
-    cuda_batch_matmul(a, b, out, batch, m, k, n);
-}
+pub use crate::gpu::ops::batch_matmul_dispatch::*;

@@ -1,11 +1,9 @@
-use crate::cuda::cuda_available;
+//! Pass-through to the vendor-neutral home of these helpers.
+//!
+//! The implementation lives in [`crate::gpu::utils`]. This file is
+//! kept as a re-export so existing `crate::apx4_3::{gpu_enabled,
+//! log_gpu}` / `use crate::apx4_3::gpu_utils::*` imports continue to
+//! compile without changes. New code should import from
+//! `crate::gpu::utils` directly.
 
-pub fn gpu_enabled() -> bool {
-    cuda_available()
-}
-
-pub fn log_gpu(msg: &str) {
-    if !crate::apx_is_silent() && std::env::var("APX_TRACE").is_ok() {
-        eprintln!("[APX 4.3 GPU] {msg}");
-    }
-}
+pub use crate::gpu::utils::*;

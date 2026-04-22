@@ -17,6 +17,7 @@ pub mod autotuner;
 pub mod device;
 pub mod fingerprint;
 pub mod tags;
+pub mod utils;
 
 pub use tags::*;
 
