@@ -10,7 +10,7 @@ use crate::apx4_13::fusion_engine::FusedOp;
 use crate::apx5::kernel_planner::{KernelPlanner, KernelTarget};
 use crate::apx5::apx_5_3_planner::{Planner5_3, NodeExecInfo};
 use crate::apx5_4::{Sample, DeviceTarget};
-use crate::tensor::{Layout, Tensor};
+use crate::tensor::{GpuTransferError, Layout, Tensor};
 use crate::cpu_features::cpu_features;
 use super::chunking::{chunk_tensor, merge_chunks};
 use super::nodes::{Node, NodeType};
@@ -977,8 +977,18 @@ impl Graph {
                             let wv_t = transpose_2d(wv_f);
 
                             let dx_q = nn_linear::matmul(&gq, &wq_t);
-                            let dx_k = nn_linear::matmul(&gk, &wk_t);
-                            let dx_v = nn_linear::matmul(&gv, &wv_t);
+                            let mut dx_k = nn_linear::matmul(&gk, &wk_t);
+                            let mut dx_v = nn_linear::matmul(&gv, &wv_t);
+                            dx_k.ensure_cpu().expect(
+                                "backward intermediate: GPU->CPU transfer failed \
+                                 (this indicates a CUDA driver issue during backward; \
+                                 see GpuTransferError variants)",
+                            );
+                            dx_v.ensure_cpu().expect(
+                                "backward intermediate: GPU->CPU transfer failed \
+                                 (this indicates a CUDA driver issue during backward; \
+                                 see GpuTransferError variants)",
+                            );
 
                             let mut dx_total = dx_q.copy_to_cpu_vec();
                             {
@@ -993,13 +1003,28 @@ impl Graph {
                             // dWq, dWk, dWv: X^T · g
                             let x_t = transpose_2d(x_f);
 
-                            let dwq = nn_linear::matmul(&x_t, &gq);
+                            let mut dwq = nn_linear::matmul(&x_t, &gq);
+                            dwq.ensure_cpu().expect(
+                                "backward intermediate: GPU->CPU transfer failed \
+                                 (this indicates a CUDA driver issue during backward; \
+                                 see GpuTransferError variants)",
+                            );
                             add_to_grad_slice(store, wq, dwq.as_cpu_slice());
 
-                            let dwk = nn_linear::matmul(&x_t, &gk);
+                            let mut dwk = nn_linear::matmul(&x_t, &gk);
+                            dwk.ensure_cpu().expect(
+                                "backward intermediate: GPU->CPU transfer failed \
+                                 (this indicates a CUDA driver issue during backward; \
+                                 see GpuTransferError variants)",
+                            );
                             add_to_grad_slice(store, wk, dwk.as_cpu_slice());
 
-                            let dwv = nn_linear::matmul(&x_t, &gv);
+                            let mut dwv = nn_linear::matmul(&x_t, &gv);
+                            dwv.ensure_cpu().expect(
+                                "backward intermediate: GPU->CPU transfer failed \
+                                 (this indicates a CUDA driver issue during backward; \
+                                 see GpuTransferError variants)",
+                            );
                             add_to_grad_slice(store, wv, dwv.as_cpu_slice());
 
                             // Biases opcionales: sumar filas de gQ,gK,gV
@@ -1358,6 +1383,19 @@ impl Graph {
         }
 
         // APX 4.3: if this node is the start of a GPU segment, execute the whole segment.
+        //
+        // TODO(M3-d.4): This path executes the forward pass through
+        // exec_gpu_segment but does not register a backward tape entry
+        // for the intercepted node. As a result, any node that is a
+        // segment-start in GpuPlan (e.g. MatMul with default build
+        // settings) will have no grad computed during backward, even
+        // if record_tape was requested. Tests that rely on grads from
+        // such nodes (see apx_4_18_self_attention_backward_test, which
+        // tolerates missing grads with unwrap_or_else) must work around
+        // this. The fix is part of the gpu_executor.rs refactor in
+        // M3-d.4, where segment execution will register appropriate
+        // tape entries or fall back to the non-segment dispatch when
+        // backward is requested.
         if let Some(plan) = &self.gpu_plan {
             if let Some(seg) = plan.segments.iter().find(|s| s.start == node_id).cloned() {
                 self.exec_gpu_segment(&seg);
@@ -1786,11 +1824,21 @@ impl Graph {
                                 let a = forward_inputs[0];
                                 let b = forward_inputs[1];
                                 let b_t = transpose_2d(b);
-                                let grad_a = nn_linear::matmul(out_grad, &b_t);
+                                let mut grad_a = nn_linear::matmul(out_grad, &b_t);
+                                grad_a.ensure_cpu().expect(
+                                    "backward intermediate: GPU->CPU transfer failed \
+                                     (this indicates a CUDA driver issue during backward; \
+                                     see GpuTransferError variants)",
+                                );
                                 add_to_grad_slice(store, ids[0], grad_a.as_cpu_slice());
 
                                 let a_t = transpose_2d(a);
-                                let grad_b = nn_linear::matmul(&a_t, out_grad);
+                                let mut grad_b = nn_linear::matmul(&a_t, out_grad);
+                                grad_b.ensure_cpu().expect(
+                                    "backward intermediate: GPU->CPU transfer failed \
+                                     (this indicates a CUDA driver issue during backward; \
+                                     see GpuTransferError variants)",
+                                );
                                 add_to_grad_slice(store, ids[1], grad_b.as_cpu_slice());
                             }),
                         });
@@ -1930,11 +1978,21 @@ impl Graph {
                             let a = forward_inputs[0];
                             let b = forward_inputs[1];
                             let b_t = transpose_2d(b);
-                            let grad_a = nn_linear::matmul(out_grad, &b_t);
+                            let mut grad_a = nn_linear::matmul(out_grad, &b_t);
+                            grad_a.ensure_cpu().expect(
+                                "backward intermediate: GPU->CPU transfer failed \
+                                 (this indicates a CUDA driver issue during backward; \
+                                 see GpuTransferError variants)",
+                            );
                             add_to_grad_slice(store, ids[0], grad_a.as_cpu_slice());
 
                             let a_t = transpose_2d(a);
-                            let grad_b = nn_linear::matmul(&a_t, out_grad);
+                            let mut grad_b = nn_linear::matmul(&a_t, out_grad);
+                            grad_b.ensure_cpu().expect(
+                                "backward intermediate: GPU->CPU transfer failed \
+                                 (this indicates a CUDA driver issue during backward; \
+                                 see GpuTransferError variants)",
+                            );
                             add_to_grad_slice(store, ids[1], grad_b.as_cpu_slice());
                         }),
                     });
@@ -1956,7 +2014,12 @@ impl Graph {
                         inputs: op_inputs.clone(),
                         output: node_id,
                         backward: Box::new(move |store, _forward_inputs, out_grad| {
-                            let grad_x = transpose_2d(out_grad);
+                            let mut grad_x = transpose_2d(out_grad);
+                            grad_x.ensure_cpu().expect(
+                                "backward intermediate: GPU->CPU transfer failed \
+                                 (this indicates a CUDA driver issue during backward; \
+                                 see GpuTransferError variants)",
+                            );
                             add_to_grad_slice(store, op_inputs[0], grad_x.as_cpu_slice());
                         }),
                     });
@@ -2021,7 +2084,12 @@ impl Graph {
                             inputs: op_inputs.clone(),
                             output: node_id,
                             backward: Box::new(move |store, _forward_inputs, out_grad| {
-                                let reshaped_back = reshape_back(out_grad, &original_shape);
+                                let mut reshaped_back = reshape_back(out_grad, &original_shape);
+                                reshaped_back.ensure_cpu().expect(
+                                    "backward intermediate: GPU->CPU transfer failed \
+                                     (this indicates a CUDA driver issue during backward; \
+                                     see GpuTransferError variants)",
+                                );
                                 add_to_grad_slice(store, op_inputs[0], reshaped_back.as_cpu_slice());
                             }),
                         });
@@ -2044,7 +2112,12 @@ impl Graph {
                         inputs: op_inputs.clone(),
                         output: node_id,
                         backward: Box::new(move |store, _forward_inputs, out_grad| {
-                            let back = transpose_last_two(out_grad);
+                            let mut back = transpose_last_two(out_grad);
+                            back.ensure_cpu().expect(
+                                "backward intermediate: GPU->CPU transfer failed \
+                                 (this indicates a CUDA driver issue during backward; \
+                                 see GpuTransferError variants)",
+                            );
                             add_to_grad_slice(store, op_inputs[0], back.as_cpu_slice());
                         }),
                     });
@@ -2586,11 +2659,21 @@ impl Graph {
                             let w = forward_inputs[1];
 
                             let w_t = transpose_2d(w);
-                            let grad_x = nn_linear::matmul(out_grad, &w_t);
+                            let mut grad_x = nn_linear::matmul(out_grad, &w_t);
+                            grad_x.ensure_cpu().expect(
+                                "backward intermediate: GPU->CPU transfer failed \
+                                 (this indicates a CUDA driver issue during backward; \
+                                 see GpuTransferError variants)",
+                            );
                             add_to_grad_slice(store, ids[0], grad_x.as_cpu_slice());
 
                             let x_t = transpose_2d(x);
-                            let grad_w = nn_linear::matmul(&x_t, out_grad);
+                            let mut grad_w = nn_linear::matmul(&x_t, out_grad);
+                            grad_w.ensure_cpu().expect(
+                                "backward intermediate: GPU->CPU transfer failed \
+                                 (this indicates a CUDA driver issue during backward; \
+                                 see GpuTransferError variants)",
+                            );
                             add_to_grad_slice(store, ids[1], grad_w.as_cpu_slice());
 
                             if has_bias {
@@ -2814,7 +2897,12 @@ impl Graph {
                             output: node_id,
                             backward: Box::new(move |store, _forward_inputs, out_grad| {
                                 if cpu_features().avx2 {
-                                    let grad_x = nn_softmax::softmax_backward_parallel(&softmax_out, out_grad);
+                                    let mut grad_x = nn_softmax::softmax_backward_parallel(&softmax_out, out_grad);
+                                    grad_x.ensure_cpu().expect(
+                                        "backward intermediate: GPU->CPU transfer failed \
+                                         (this indicates a CUDA driver issue during backward; \
+                                         see GpuTransferError variants)",
+                                    );
                                     add_to_grad_slice(store, ids[0], grad_x.as_cpu_slice());
                                 } else {
                                     let cols = *serial_shape
@@ -2985,9 +3073,40 @@ impl Graph {
         }
     }
 
+    /// Parallel backward pass.
+    ///
+    /// Panics if a GPU→CPU pre-transfer fails. For structured error
+    /// handling, use [`Graph::backward_checked`].
     pub fn backward(&mut self, loss_node_id: usize) {
+        self.backward_checked(loss_node_id).expect(
+            "Graph::backward: GPU->CPU pre-pass failed (call backward_checked \
+             for structured error handling)",
+        );
+    }
+
+    /// Parallel backward pass with structured error propagation.
+    ///
+    /// Before running any backward closure, migrates every `node.output`
+    /// tensor to CPU storage via [`Tensor::ensure_cpu`]. This guarantees
+    /// that the closures — which consume tensors through `as_cpu_slice`
+    /// and friends — never encounter a GPU-resident input. Any transfer
+    /// failure is returned as [`GpuTransferError`] rather than panicking.
+    pub fn backward_checked(
+        &mut self,
+        loss_node_id: usize,
+    ) -> Result<(), GpuTransferError> {
         // Reset gradient store for this backward pass.
         self.grad_store = GradStore::new();
+
+        // Ensure every cached forward output is CPU-resident before any
+        // backward closure runs. Backward closures assume CPU storage and
+        // call `as_cpu_slice()` without checks, which panics on
+        // `TensorStorage::Cuda`.
+        for node in &mut self.nodes {
+            if let Some(ref mut output) = node.output {
+                output.ensure_cpu()?;
+            }
+        }
 
         // Seed gradient at the loss node.
         let loss = self.nodes[loss_node_id]
@@ -3028,13 +3147,36 @@ impl Graph {
                 output.grad = Some(buffer);
             }
         }
+
+        Ok(())
     }
 
     /// Sequential backward variant used for APX 2.0 regression tests.
     /// Executes the same level order as `backward` but without rayon parallelism.
+    ///
+    /// Panics if a GPU→CPU pre-transfer fails. For structured error
+    /// handling, use [`Graph::backward_sequential_checked`].
     pub fn backward_sequential(&mut self, loss_node_id: usize) {
+        self.backward_sequential_checked(loss_node_id).expect(
+            "Graph::backward_sequential: GPU->CPU pre-pass failed (call \
+             backward_sequential_checked for structured error handling)",
+        );
+    }
+
+    /// Sequential analog of [`Graph::backward_checked`].
+    pub fn backward_sequential_checked(
+        &mut self,
+        loss_node_id: usize,
+    ) -> Result<(), GpuTransferError> {
         // Reset gradient store for this backward pass.
         self.grad_store = GradStore::new();
+
+        // Same pre-pass as `backward_checked`; see the comment there.
+        for node in &mut self.nodes {
+            if let Some(ref mut output) = node.output {
+                output.ensure_cpu()?;
+            }
+        }
 
         // Seed gradient at the loss node.
         let loss = self.nodes[loss_node_id]
@@ -3069,6 +3211,8 @@ impl Graph {
                 output.grad = Some(buffer);
             }
         }
+
+        Ok(())
     }
 
     fn execute_backward_single(&self, node_id: usize) {
