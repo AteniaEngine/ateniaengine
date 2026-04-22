@@ -16,13 +16,13 @@ fn main() {
 
     // Warm-up
     for _ in 0..10 {
-        cuda_fused_linear_silu(x.as_cpu_slice(), w.as_cpu_slice(), b0.as_cpu_slice(), out.as_cpu_slice_mut(), m, k, n);
+        cuda_fused_linear_silu(&x, &w, &b0, &mut out, m, k, n);
     }
 
     let iters = 1000u32;
     let start = Instant::now();
     for _ in 0..iters {
-        cuda_fused_linear_silu(x.as_cpu_slice(), w.as_cpu_slice(), b0.as_cpu_slice(), out.as_cpu_slice_mut(), m, k, n);
+        cuda_fused_linear_silu(&x, &w, &b0, &mut out, m, k, n);
     }
     let elapsed = start.elapsed();
 

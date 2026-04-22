@@ -137,10 +137,10 @@ pub unsafe fn fused_linear_silu_gpu(
             .clone();
 
         cuda_fused_linear_silu(
-            x.as_cpu_slice(),
-            w.as_cpu_slice(),
-            b.as_cpu_slice(),
-            out.as_cpu_slice_mut(),
+            &x,
+            &w,
+            &b,
+            &mut out,
             m,
             k,
             n,

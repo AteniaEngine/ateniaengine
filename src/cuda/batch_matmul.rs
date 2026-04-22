@@ -1,5 +1,7 @@
 use std::os::raw::c_int;
 
+use crate::tensor::Tensor;
+
 #[link(name = "batch_matmul", kind = "static")]
 unsafe extern "C" {
     fn launch_batch_matmul_f32(
@@ -13,7 +15,32 @@ unsafe extern "C" {
     );
 }
 
+/// CUDA batched matmul: computes `out[i] = a[i] @ b[i]` for each batch `i`.
+///
+/// Inputs and output are [`Tensor`]s on the CPU side. Panics via
+/// [`Tensor::as_cpu_slice`] if any is GPU-resident; see the note on
+/// [`cuda_linear`](super::linear::cuda_linear).
 pub fn cuda_batch_matmul(
+    a: &Tensor,
+    b: &Tensor,
+    out: &mut Tensor,
+    batch: usize,
+    m: usize,
+    k: usize,
+    n: usize,
+) {
+    cuda_batch_matmul_raw(
+        a.as_cpu_slice(),
+        b.as_cpu_slice(),
+        out.as_cpu_slice_mut(),
+        batch,
+        m,
+        k,
+        n,
+    );
+}
+
+fn cuda_batch_matmul_raw(
     a: &[f32],
     b: &[f32],
     out: &mut [f32],

@@ -1,5 +1,7 @@
 use std::os::raw::c_int;
 
+use crate::tensor::Tensor;
+
 #[link(name = "fused_linear_silu", kind = "static")]
 unsafe extern "C" {
     fn launch_fused_linear_silu_f32(
@@ -13,11 +15,32 @@ unsafe extern "C" {
     );
 }
 
-/// CUDA fused Linear + SiLU kernel wrapper.
+/// CUDA fused Linear + SiLU op: computes `out = silu(x @ w + b)`.
 ///
-/// For now this operates on host slices (same model as cuda_linear),
-/// using Device::CPU in a logical way.
+/// Inputs and output are [`Tensor`]s on the CPU side. Panics via
+/// [`Tensor::as_cpu_slice`] if any is GPU-resident; see the note on
+/// [`cuda_linear`](super::linear::cuda_linear).
 pub fn cuda_fused_linear_silu(
+    x: &Tensor,
+    w: &Tensor,
+    b: &Tensor,
+    out: &mut Tensor,
+    m: usize,
+    k: usize,
+    n: usize,
+) {
+    cuda_fused_linear_silu_raw(
+        x.as_cpu_slice(),
+        w.as_cpu_slice(),
+        b.as_cpu_slice(),
+        out.as_cpu_slice_mut(),
+        m,
+        k,
+        n,
+    );
+}
+
+fn cuda_fused_linear_silu_raw(
     x: &[f32],
     w: &[f32],
     b: &[f32],

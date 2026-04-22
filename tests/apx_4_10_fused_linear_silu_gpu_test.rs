@@ -15,7 +15,7 @@ fn test_fused_linear_silu_gpu_matches_cpu() {
 
     let mut out_gpu = Tensor::zeros_new(&[m, n], Device::CPU);
 
-    cuda_fused_linear_silu(x.as_cpu_slice(), w.as_cpu_slice(), b.as_cpu_slice(), out_gpu.as_cpu_slice_mut(), m, k, n);
+    cuda_fused_linear_silu(&x, &w, &b, &mut out_gpu, m, k, n);
 
     // CPU reference using the existing fused implementation.
     let out_cpu = exec_fused_linear_silu(&x, &w, Some(&b));
@@ -30,4 +30,46 @@ fn test_fused_linear_silu_gpu_matches_cpu() {
 
     println!("[APX 4.10] max_diff = {}", max_diff);
     assert!(max_diff < 1e-3);
+}
+
+#[test]
+fn cuda_fused_linear_silu_panics_on_cuda_input() {
+    // See apx_4_4_linear_test::cuda_linear_panics_on_cuda_input for rationale.
+    if atenia_engine::gpu::gpu_engine().is_none() {
+        println!(
+            "[TEST:cuda_fused_linear_silu_panics_on_cuda_input] no GPU available -> graceful skip"
+        );
+        return;
+    }
+
+    let m = 4usize;
+    let k = 8usize;
+    let n = 16usize;
+
+    let mut x = Tensor::randn(&[m, k], Device::CPU);
+    x.ensure_gpu().expect("test setup: ensure_gpu must succeed");
+    let w = Tensor::randn(&[k, n], Device::CPU);
+    let b = Tensor::randn(&[n], Device::CPU);
+    let mut out = Tensor::zeros_new(&[m, n], Device::CPU);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        cuda_fused_linear_silu(&x, &w, &b, &mut out, m, k, n);
+    }));
+
+    let err = result.expect_err("cuda_fused_linear_silu must panic on GPU-resident input");
+    let msg = err
+        .downcast_ref::<String>()
+        .map(|s| s.as_str())
+        .or_else(|| err.downcast_ref::<&'static str>().copied())
+        .unwrap_or("");
+    assert!(
+        msg.contains("GPU-resident"),
+        "panic message must mention 'GPU-resident'; got: {}",
+        msg
+    );
+    assert!(
+        msg.contains("ensure_cpu"),
+        "panic message must mention 'ensure_cpu'; got: {}",
+        msg
+    );
 }

@@ -2181,9 +2181,9 @@ impl Graph {
                         // CPU path as fallback.
                         if crate::cuda::cuda_available() {
                             dispatch_batch_matmul_cuda(
-                                a.as_cpu_slice(),
-                                b.as_cpu_slice(),
-                                out.as_cpu_slice_mut(),
+                                &a,
+                                &b,
+                                &mut out,
                                 batch,
                                 m,
                                 k,

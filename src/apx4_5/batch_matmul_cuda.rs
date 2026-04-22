@@ -1,9 +1,10 @@
 use crate::cuda::batch_matmul::cuda_batch_matmul;
+use crate::tensor::Tensor;
 
 pub fn batch_matmul_cuda(
-    a: &[f32],
-    b: &[f32],
-    out: &mut [f32],
+    a: &Tensor,
+    b: &Tensor,
+    out: &mut Tensor,
     batch: usize,
     m: usize,
     k: usize,

@@ -1,6 +1,7 @@
 use std::os::raw::c_int;
 
 use crate::amg::nodes::NodeType;
+use crate::tensor::Tensor;
 
 #[link(name = "linear_cuda", kind = "static")]
 unsafe extern "C" {
@@ -15,7 +16,35 @@ unsafe extern "C" {
     );
 }
 
+/// CUDA Linear op: computes `out = a @ b + bias`.
+///
+/// Inputs and output are [`Tensor`]s on the CPU side. The call will
+/// panic via [`Tensor::as_cpu_slice`] if any of them is GPU-resident
+/// (`TensorStorage::Cuda`); callers that hold GPU-resident tensors
+/// must invoke `ensure_cpu()` first. A future milestone (M3-d.4.D/E)
+/// will add a device-pointer path that consumes `Cuda` storage
+/// directly without the host roundtrip.
 pub fn cuda_linear(
+    a: &Tensor,
+    b: &Tensor,
+    bias: &Tensor,
+    out: &mut Tensor,
+    m: usize,
+    k: usize,
+    n: usize,
+) {
+    cuda_linear_raw(
+        a.as_cpu_slice(),
+        b.as_cpu_slice(),
+        bias.as_cpu_slice(),
+        out.as_cpu_slice_mut(),
+        m,
+        k,
+        n,
+    );
+}
+
+fn cuda_linear_raw(
     a: &[f32],
     b: &[f32],
     bias: &[f32],
