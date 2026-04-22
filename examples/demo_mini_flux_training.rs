@@ -59,7 +59,7 @@ fn main() {
     for step in 0..TRAIN_STEPS {
         let (inputs, targets) = &batches[step % batches.len()];
         let outputs = trainer.train_step(vec![inputs.clone(), targets.clone()]);
-        let loss = outputs[0].data[0];
+        let loss = outputs[0].as_cpu_slice()[0];
         if step % 20 == 0 {
             println!("Step {:3}: loss = {:.6}", step, loss);
         }
@@ -94,7 +94,9 @@ fn copy_parameters(src: &Graph, src_ids: &[usize], dst: &mut Graph, dst_ids: &[u
             .output
             .as_mut()
             .expect("destination parameter missing output");
-        dst_tensor.data.copy_from_slice(&src_tensor.data);
+        dst_tensor
+            .as_cpu_slice_mut()
+            .copy_from_slice(src_tensor.as_cpu_slice());
     }
 }
 
@@ -143,7 +145,7 @@ fn build_inference_input(row_tokens: &[usize], cfg: &MiniFluxConfig) -> Tensor {
     for row in 0..cfg.batch_size {
         for col in 0..cfg.seq_len {
             let idx = row * cfg.seq_len + col;
-            tensor.data[idx] = row_tokens[col] as f32;
+            tensor.as_cpu_slice_mut()[idx] = row_tokens[col] as f32;
         }
     }
     tensor
@@ -154,7 +156,7 @@ fn extract_last_position<'a>(logits: &'a Tensor, cfg: &MiniFluxConfig) -> &'a [f
     let row = cfg.seq_len - 1;
     let start = row * vocab;
     let end = start + vocab;
-    &logits.data[start..end]
+    &logits.as_cpu_slice()[start..end]
 }
 
 fn argmax(slice: &[f32]) -> usize {

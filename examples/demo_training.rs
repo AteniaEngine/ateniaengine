@@ -13,7 +13,7 @@ fn tensor_from_vec(values: &[f32]) -> Tensor {
         DType::F32,
     );
     for (i, v) in values.iter().enumerate() {
-        t.data[i] = *v;
+        t.as_cpu_slice_mut()[i] = *v;
     }
     t
 }
@@ -26,7 +26,7 @@ fn filled_tensor(shape: &[usize], value: f32) -> Tensor {
         Layout::Contiguous,
         DType::F32,
     );
-    for v in t.data.iter_mut() {
+    for v in t.as_cpu_slice_mut().iter_mut() {
         *v = value;
     }
     t
@@ -38,7 +38,7 @@ fn build_graph(x: &Tensor) -> (GraphBuilder, usize, usize) {
     let w_id = gb.parameter(filled_tensor(&[1, 1], 0.5));
     let b_id = gb.parameter(filled_tensor(&[1], -0.5));
 
-    let y_true_values: Vec<f32> = x.data.iter().map(|v| 2.0 * v + 3.0).collect();
+    let y_true_values: Vec<f32> = x.as_cpu_slice().iter().map(|v| 2.0 * v + 3.0).collect();
     let y_true_id = gb.parameter(tensor_from_vec(&y_true_values));
 
     let pred_id = gb.linear(x_id, w_id, Some(b_id));
@@ -61,7 +61,7 @@ fn main() {
 
     for step in 0..200 {
         let outputs = trainer.train_step(vec![x.clone()]);
-        let loss = outputs[0].data[0];
+        let loss = outputs[0].as_cpu_slice()[0];
         if step % 10 == 0 {
             println!("Paso {:3}: pérdida = {:.6}", step, loss);
         }
@@ -71,12 +71,12 @@ fn main() {
         .output
         .as_ref()
         .expect("falta tensor w")
-        .data[0];
+        .as_cpu_slice()[0];
     let final_b = trainer.graph.nodes[param_ids[1]]
         .output
         .as_ref()
         .expect("falta tensor b")
-        .data[0];
+        .as_cpu_slice()[0];
 
     println!("Entrenamiento terminado. w ≈ {:.4}, b ≈ {:.4}", final_w, final_b);
 }

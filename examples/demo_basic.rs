@@ -30,7 +30,7 @@ fn main() {
             Layout::Contiguous,
             DType::F32,
         );
-        for v in t.data.iter_mut() {
+        for v in t.as_cpu_slice_mut().iter_mut() {
             *v = i as f32;
         }
         dataset.push(t);

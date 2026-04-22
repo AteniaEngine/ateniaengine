@@ -20,7 +20,7 @@ fn main() {
         let tokens = sample_tokens(&cfg, step);
         let targets = tokens_to_one_hot(&tokens, cfg.vocab_size);
         let outputs = trainer.train_step(vec![tokens.clone(), targets]);
-        let loss = outputs[0].data[0];
+        let loss = outputs[0].as_cpu_slice()[0];
         if step % 20 == 0 {
             println!("Step {:3}: loss = {:.6}", step, loss);
         }

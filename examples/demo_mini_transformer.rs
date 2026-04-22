@@ -16,7 +16,7 @@ fn sample_input(cfg: &TransformerConfig) -> Tensor {
     for i in 0..cfg.seq_len {
         for j in 0..cfg.d_model {
             let idx = i * cfg.d_model + j;
-            t.data[idx] = (idx as f32) * 0.1;
+            t.as_cpu_slice_mut()[idx] = (idx as f32) * 0.1;
         }
     }
     t
@@ -73,7 +73,7 @@ fn main() {
     let mut final_loss = 0.0;
     for step in 0..200 {
         let outputs = trainer.train_step(vec![input_tensor.clone(), input_tensor.clone()]);
-        let loss = outputs[0].data[0];
+        let loss = outputs[0].as_cpu_slice()[0];
         final_loss = loss;
         if step % 10 == 0 {
             println!("Paso {:3}: pérdida = {:.6}", step, loss);
