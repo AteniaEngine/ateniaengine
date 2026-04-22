@@ -28,11 +28,13 @@
 //!   either today. Coverage will be added alongside such infrastructure
 //!   in a future milestone.
 //!
-//! - The simple-case test uses Linear instead of MatMul due to a
-//!   pre-existing limitation in the GPU planner
-//!   (`execute_single_inner` intercepts MatMul as segment-start
-//!   without registering backward tape). MatMul + ensure_gpu +
-//!   backward coverage will be added once M3-d.4 resolves that gap.
+//! Both MatMul and Linear are covered: `test_matmul_backward_now_works`
+//! and `test_matmul_backward_with_ensure_gpu` exercise the MatMul path
+//! after the tape-registration gap was closed (the GPU-plan intercept
+//! now skips when `record_tape` is active, letting MatMul fall through
+//! to the dispatch that registers a backward entry).
+//! `test_backward_works_after_ensure_gpu_with_linear` exercises Linear.
+//! `test_backward_works_with_problematic_closure` exercises Reshape.
 //!
 //! Every test graceful-skips if the singleton engine is unavailable,
 //! matching the pattern used by M3-d.1 and M3-d.2 tests.
@@ -191,4 +193,108 @@ fn test_backward_works_with_problematic_closure() {
             g
         );
     }
+}
+
+#[test]
+fn test_matmul_backward_now_works() {
+    if !require_gpu("test_matmul_backward_now_works") {
+        return;
+    }
+
+    // Graph: out = matmul(x, w), with x [1x2] and w [2x1] → out [1x1].
+    // Analytic gradients (grad_out seeded to ones by default):
+    //   grad_x = grad_out @ w^T = [[1*3, 1*4]]             = [3.0, 4.0]
+    //   grad_w = x^T @ grad_out = [[1*1], [2*1]]           = [1.0, 2.0]
+    //
+    // Before M3-d.4.B this failed because the GPU-plan intercept ran
+    // exec_gpu_segment for the MatMul node without registering a
+    // backward tape entry, leaving grads at None. The fix makes the
+    // intercept skip when record_tape is active.
+    let mut gb = GraphBuilder::new();
+    let x_id = gb.input();
+    let w_id = gb.input();
+    let mm_id = gb.matmul(x_id, w_id);
+    let out_id = gb.output(mm_id);
+
+    let mut graph = gb.build();
+
+    let x = tensor_from(vec![1, 2], vec![1.0, 2.0]);
+    let w = tensor_from(vec![2, 1], vec![3.0, 4.0]);
+
+    let outputs = graph.execute(vec![x, w]);
+    assert_eq!(outputs.len(), 1);
+    // Forward sanity: x @ w = 1*3 + 2*4 = 11.
+    assert!((outputs[0].as_cpu_slice()[0] - 11.0).abs() < 1e-5);
+
+    graph.backward(out_id);
+
+    let x_grad = graph.nodes[x_id]
+        .output
+        .as_ref()
+        .and_then(|t| t.grad.as_ref())
+        .expect("x grad missing — tape was not registered for MatMul");
+    let w_grad = graph.nodes[w_id]
+        .output
+        .as_ref()
+        .and_then(|t| t.grad.as_ref())
+        .expect("w grad missing — tape was not registered for MatMul");
+
+    assert_eq!(x_grad.len(), 2);
+    assert!((x_grad[0] - 3.0).abs() < 1e-5, "x_grad[0] = {}", x_grad[0]);
+    assert!((x_grad[1] - 4.0).abs() < 1e-5, "x_grad[1] = {}", x_grad[1]);
+
+    assert_eq!(w_grad.len(), 2);
+    assert!((w_grad[0] - 1.0).abs() < 1e-5, "w_grad[0] = {}", w_grad[0]);
+    assert!((w_grad[1] - 2.0).abs() < 1e-5, "w_grad[1] = {}", w_grad[1]);
+}
+
+#[test]
+fn test_matmul_backward_with_ensure_gpu() {
+    if !require_gpu("test_matmul_backward_with_ensure_gpu") {
+        return;
+    }
+
+    // Same graph and analytic gradients as test_matmul_backward_now_works,
+    // but with every cached forward output migrated to VRAM between
+    // forward and backward. This exercises both the tape gap fix from
+    // M3-d.4.B and the backward pre-pass from M3-d.3 in a single path.
+    let mut gb = GraphBuilder::new();
+    let x_id = gb.input();
+    let w_id = gb.input();
+    let mm_id = gb.matmul(x_id, w_id);
+    let out_id = gb.output(mm_id);
+
+    let mut graph = gb.build();
+
+    let x = tensor_from(vec![1, 2], vec![1.0, 2.0]);
+    let w = tensor_from(vec![2, 1], vec![3.0, 4.0]);
+
+    let outputs = graph.execute(vec![x, w]);
+    assert_eq!(outputs.len(), 1);
+    assert!((outputs[0].as_cpu_slice()[0] - 11.0).abs() < 1e-5);
+
+    // Force every cached node.output onto VRAM. backward's pre-pass
+    // must migrate them back before the backward closures run.
+    migrate_all_outputs_to_gpu(&mut graph);
+
+    graph.backward(out_id);
+
+    let x_grad = graph.nodes[x_id]
+        .output
+        .as_ref()
+        .and_then(|t| t.grad.as_ref())
+        .expect("x grad missing after ensure_gpu + backward");
+    let w_grad = graph.nodes[w_id]
+        .output
+        .as_ref()
+        .and_then(|t| t.grad.as_ref())
+        .expect("w grad missing after ensure_gpu + backward");
+
+    assert_eq!(x_grad.len(), 2);
+    assert!((x_grad[0] - 3.0).abs() < 1e-5, "x_grad[0] = {}", x_grad[0]);
+    assert!((x_grad[1] - 4.0).abs() < 1e-5, "x_grad[1] = {}", x_grad[1]);
+
+    assert_eq!(w_grad.len(), 2);
+    assert!((w_grad[0] - 1.0).abs() < 1e-5, "w_grad[0] = {}", w_grad[0]);
+    assert!((w_grad[1] - 2.0).abs() < 1e-5, "w_grad[1] = {}", w_grad[1]);
 }
