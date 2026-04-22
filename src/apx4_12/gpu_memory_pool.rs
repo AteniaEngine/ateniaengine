@@ -34,7 +34,20 @@ impl GpuMemoryPool {
 
     /// Generic kernel variant: try to serve any size less than or equal to the
     /// block size from the pool.
-    pub unsafe fn alloc_device(&mut self, _bytes: usize) -> *mut u8 {
+    ///
+    /// The request is rounded up to a full block (the pool does not
+    /// sub-allocate), so any request larger than `block_size` cannot
+    /// be served and would silently return a too-small buffer. The
+    /// assertion catches that case early rather than letting the
+    /// caller overwrite VRAM past the end of the block.
+    pub unsafe fn alloc_device(&mut self, bytes: usize) -> *mut u8 {
+        assert!(
+            bytes <= self.block_size,
+            "pool alloc_device request of {} bytes exceeds block size {}; \
+             the pool does not sub-allocate, so larger requests cannot be served",
+            bytes,
+            self.block_size
+        );
         self.alloc() as *mut u8
     }
 

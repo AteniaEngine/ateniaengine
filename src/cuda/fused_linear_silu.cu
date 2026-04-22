@@ -27,8 +27,15 @@ __global__ void fused_linear_silu_f32_kernel(
     // Add bias
     acc += B[col];
 
-    // SiLU activation: x * sigmoid(x)
-    float sig = 1.0f / (1.0f + expf(-acc));
+    // SiLU activation: x * sigmoid(x). Clamp the exponent argument to
+    // the safe range of expf for float32 (|x| > ~88 overflows to inf
+    // or underflows to zero). Without the clamp, very negative acc
+    // silently produces sig = 0 and loses all gradient signal; very
+    // positive acc saturates sig = 1 without issue but we clamp both
+    // sides for symmetry.
+    float neg_acc = -acc;
+    float clamped = fmaxf(fminf(neg_acc, 88.0f), -88.0f);
+    float sig = 1.0f / (1.0f + expf(clamped));
     OUT[row*N + col] = acc * sig;
 }
 
