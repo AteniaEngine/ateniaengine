@@ -43,11 +43,12 @@ fn test_numel() {
 fn test_storage_accessor() {
     let t = Tensor::new_cpu(vec![3], vec![7.0, 8.0, 9.0]);
 
-    // In M3-a only `Cpu` exists; the match is exhaustive.
+    // This test uses CPU storage only; the Cuda arm is unreachable.
     match t.storage() {
         TensorStorage::Cpu(v) => {
             assert_eq!(v, &vec![7.0, 8.0, 9.0]);
         }
+        TensorStorage::Cuda(_) => unreachable!("test uses CPU storage only"),
     }
 }
 
@@ -66,13 +67,13 @@ fn test_set_cpu_data() {
 fn test_ensure_cpu_noop() {
     let mut t = Tensor::new_cpu(vec![4], vec![1.0, 2.0, 3.0, 4.0]);
 
-    // ensure_cpu on a CPU-resident tensor is a no-op in M3-a.
-    t.ensure_cpu();
+    // ensure_cpu on a CPU-resident tensor is a no-op; Result is always Ok.
+    t.ensure_cpu().unwrap();
 
     // Contents are preserved bit-for-bit.
     assert_eq!(t.as_cpu_slice(), &[1.0, 2.0, 3.0, 4.0]);
     // And chaining returns &mut Self for fluent usage.
-    t.ensure_cpu().as_cpu_slice_mut()[0] = 99.0;
+    t.ensure_cpu().unwrap().as_cpu_slice_mut()[0] = 99.0;
     assert_eq!(t.as_cpu_slice()[0], 99.0);
 }
 
@@ -86,6 +87,7 @@ fn test_clone_preserves_storage() {
         TensorStorage::Cpu(v) => {
             assert_eq!(v, &vec![1.0, 2.0, 3.0, 4.0]);
         }
+        TensorStorage::Cuda(_) => unreachable!("test uses CPU storage only"),
     }
 
     // And the clone is independent: mutating it does not touch the

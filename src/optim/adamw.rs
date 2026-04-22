@@ -59,6 +59,11 @@ impl AdamW {
             // conflict with the `grad` borrow held across this loop.
             let param_data = match &mut param.storage {
                 crate::tensor::TensorStorage::Cpu(v) => v,
+                crate::tensor::TensorStorage::Cuda(_) => panic!(
+                    "AdamW: parameter is GPU-resident; call ensure_cpu() \
+                     before the optimizer step. Native GPU optimizer is \
+                     scheduled for M3-d.4+."
+                ),
             };
             for i in 0..grad.len() {
                 let g = grad[i];

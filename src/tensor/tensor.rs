@@ -64,9 +64,13 @@ pub enum Layout {
 ///
 /// # Variants
 ///
-/// Only `Cpu` is available today. Additional backends (`Cuda`, `Rocm`,
-/// `Metal`) are introduced by later sub-milestones together with their
-/// allocation, `Drop`, and cross-backend transfer logic.
+/// - `Cpu(Vec<f32>)` — host-resident dense storage; the canonical backend.
+/// - `Cuda(TensorGPU)` — VRAM-resident storage owned through the refcounted
+///   `Arc<InnerGpuPtr>` introduced in M3-d.1. Cloning a `Tensor` whose
+///   storage is `Cuda` shares the same VRAM region; VRAM is released when
+///   the last clone is dropped.
+///
+/// Additional backends (`Rocm`, `Metal`) are left for future milestones.
 #[derive(Clone, Debug)]
 pub enum TensorStorage {
     /// Host-resident dense `f32` storage.
@@ -75,9 +79,28 @@ pub enum TensorStorage {
     /// by the owning [`Tensor`]'s `shape` and `layout` fields. The storage
     /// variant itself is layout-agnostic.
     Cpu(Vec<f32>),
-    // Cuda(TensorGPU) — added in a later sub-milestone (M3-d). Do not add
-    // variants here until the corresponding backend lands with real
-    // allocation, Drop semantics, and cross-backend transfers.
+    /// Device-resident storage backed by a refcounted [`TensorGPU`].
+    ///
+    /// Entered via [`Tensor::ensure_gpu`] and exited via
+    /// [`Tensor::ensure_cpu`]. Ownership of the VRAM region is shared
+    /// between all clones of the owning `Tensor`; the region is freed when
+    /// the last clone drops.
+    Cuda(TensorGPU),
+}
+
+/// Failure modes for host⇄device transfers in
+/// [`Tensor::ensure_gpu`] / [`Tensor::ensure_cpu`].
+#[derive(Debug, Clone)]
+pub enum GpuTransferError {
+    /// `crate::gpu::gpu_engine()` returned `None` — no CUDA driver or
+    /// compatible device is available in this process.
+    EngineUnavailable,
+    /// VRAM allocation or host→device copy failed. Both paths collapse to
+    /// the same variant because `TensorGPU::new_from_cpu` does not
+    /// distinguish the sub-step.
+    AllocationFailed,
+    /// Device→host copy failed on an already-resident GPU tensor.
+    TransferFailed,
 }
 
 /// Minimal tensor container backing data with owned storage.
@@ -365,6 +388,10 @@ impl Tensor {
     pub fn as_cpu_slice(&self) -> &[f32] {
         match &self.storage {
             TensorStorage::Cpu(v) => v.as_slice(),
+            TensorStorage::Cuda(_) => panic!(
+                "Tensor::as_cpu_slice called on a GPU-resident tensor. \
+                 Call ensure_cpu() first to transfer data to host memory."
+            ),
         }
     }
 
@@ -375,30 +402,91 @@ impl Tensor {
     pub fn as_cpu_slice_mut(&mut self) -> &mut [f32] {
         match &mut self.storage {
             TensorStorage::Cpu(v) => v.as_mut_slice(),
+            TensorStorage::Cuda(_) => panic!(
+                "Tensor::as_cpu_slice_mut called on a GPU-resident tensor. \
+                 Call ensure_cpu() first to transfer data to host memory."
+            ),
         }
     }
 
     /// Returns an owned `Vec<f32>` copy of the element buffer.
     ///
-    /// For CPU storage this is an O(n) clone. For non-CPU backends added in
-    /// later milestones this performs a device → host transfer and returns
-    /// a newly allocated vector.
+    /// For CPU storage this is an O(n) clone. For `Cuda` storage this
+    /// performs a device → host copy and returns a newly allocated vector;
+    /// the tensor's storage variant is **not** changed.
+    ///
+    /// # Panics
+    /// Panics if the device → host copy fails catastrophically (driver
+    /// error). Callers that need structured error handling should call
+    /// [`Tensor::ensure_cpu`] first and then [`Tensor::as_cpu_slice`].
     pub fn copy_to_cpu_vec(&self) -> Vec<f32> {
         match &self.storage {
             TensorStorage::Cpu(v) => v.clone(),
+            TensorStorage::Cuda(g) => g
+                .to_cpu()
+                .expect("copy_to_cpu_vec: device->host copy failed (driver error)"),
         }
     }
 
     /// Ensures the storage is CPU-resident after this call.
     ///
-    /// No-op for tensors already on the CPU. For non-CPU backends added in
-    /// later milestones this triggers a device → host transfer. Returns
-    /// `&mut Self` to allow chaining.
-    pub fn ensure_cpu(&mut self) -> &mut Self {
-        match &self.storage {
-            TensorStorage::Cpu(_) => {}
+    /// - `Cpu` storage: no-op, returns `Ok`.
+    /// - `Cuda` storage: performs a device → host copy, replaces the
+    ///   storage with `TensorStorage::Cpu`, dropping the `Arc<InnerGpuPtr>`
+    ///   (which frees the VRAM if this was the last clone).
+    ///
+    /// Returns `&mut Self` on success to allow chaining.
+    pub fn ensure_cpu(&mut self) -> Result<&mut Self, GpuTransferError> {
+        if matches!(self.storage, TensorStorage::Cpu(_)) {
+            return Ok(self);
         }
-        self
+
+        let gpu = match &self.storage {
+            TensorStorage::Cuda(g) => g,
+            TensorStorage::Cpu(_) => unreachable!(),
+        };
+        let cpu_vec = gpu
+            .to_cpu()
+            .map_err(|_| GpuTransferError::TransferFailed)?;
+
+        self.storage = TensorStorage::Cpu(cpu_vec);
+        Ok(self)
+    }
+
+    /// Ensures the storage is GPU-resident after this call.
+    ///
+    /// - `Cuda` storage: no-op, returns `Ok`.
+    /// - `Cpu` storage: allocates VRAM, performs a host → device copy, and
+    ///   replaces the storage with `TensorStorage::Cuda(TensorGPU)`. The
+    ///   `TensorGPU` uses a flat `(1, numel)` view of the buffer; the
+    ///   `Tensor`'s `shape` field remains authoritative.
+    ///
+    /// Does not touch `self.grad` (which remains CPU-resident per the M3
+    /// contract that backward runs on CPU), `self.device` (logical flag
+    /// remains decoupled from physical storage in M3-d.2), nor `self.gpu`
+    /// (the APX 8.4 mirror stub is independent of this storage).
+    ///
+    /// Returns `&mut Self` on success to allow chaining.
+    pub fn ensure_gpu(&mut self) -> Result<&mut Self, GpuTransferError> {
+        if matches!(self.storage, TensorStorage::Cuda(_)) {
+            return Ok(self);
+        }
+
+        if crate::gpu::gpu_engine().is_none() {
+            return Err(GpuTransferError::EngineUnavailable);
+        }
+
+        let cpu_data: &[f32] = match &self.storage {
+            TensorStorage::Cpu(v) => v.as_slice(),
+            TensorStorage::Cuda(_) => unreachable!(),
+        };
+
+        let numel = self.numel();
+        let gpu = TensorGPU::new_from_cpu(cpu_data, 1, numel)
+            .map_err(|_| GpuTransferError::AllocationFailed)?;
+
+        self.storage = TensorStorage::Cuda(gpu);
+        Ok(self)
     }
 
     /// Total number of elements in the tensor, computed from `shape`.
@@ -583,6 +671,9 @@ impl Tensor {
                 TensorStorage::Cpu(v) => {
                     m.download_to_cpu(v.as_mut_ptr(), bytes);
                 }
+                // APX 8.4 mirror is a metadata stub independent of real
+                // VRAM; M3-d.4 will wire the GPU-resident path properly.
+                TensorStorage::Cuda(_) => {}
             }
             m.mark_synced();
         }
@@ -596,6 +687,9 @@ impl Tensor {
                 TensorStorage::Cpu(v) => {
                     m.upload_from_cpu(v.as_ptr(), bytes);
                 }
+                // APX 8.4 mirror is a metadata stub independent of real
+                // VRAM; M3-d.4 will wire the GPU-resident path properly.
+                TensorStorage::Cuda(_) => {}
             }
             m.mark_synced();
         }

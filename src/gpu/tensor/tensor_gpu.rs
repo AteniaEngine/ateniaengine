@@ -1,3 +1,4 @@
+use std::fmt;
 use std::sync::Arc;
 
 use crate::gpu::memory::GpuPtr;
@@ -33,6 +34,17 @@ impl Clone for TensorGPU {
             rows: self.rows,
             cols: self.cols,
         }
+    }
+}
+
+impl fmt::Debug for TensorGPU {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TensorGPU")
+            .field("rows", &self.rows)
+            .field("cols", &self.cols)
+            .field("device_ptr", &format_args!("0x{:x}", self.device_ptr()))
+            .field("size_bytes", &self.size_bytes())
+            .finish()
     }
 }
 

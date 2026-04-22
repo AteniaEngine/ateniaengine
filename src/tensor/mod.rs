@@ -5,4 +5,4 @@ pub mod ops;
 pub mod fp8;
 pub mod memory;
 
-pub use tensor::{DType, Device, Layout, Tensor, TensorRef, TensorStorage};
+pub use tensor::{DType, Device, GpuTransferError, Layout, Tensor, TensorRef, TensorStorage};
