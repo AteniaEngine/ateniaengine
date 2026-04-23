@@ -3,7 +3,18 @@
 //! Parallel to `vram_probe` but targets system memory (not GPU VRAM).
 //! Intentionally narrow: read-only, single-call semantics, no integration
 //! with forecasters/guards/policies (that lives in `forecaster.rs`).
+//!
+//! ## Trait-based injection (M3-e.11.3)
+//!
+//! Since M3-e.11.3 the production path is exposed through the
+//! [`RamProbeApi`] trait so `SignalBus` can carry the probe as
+//! `Option<Arc<dyn RamProbeApi>>` and tests can inject mocks. The
+//! pre-existing [`read_system_ram_snapshot`] free function is kept
+//! verbatim; the trait's production struct [`RamProbe`] delegates
+//! to it. Normalizes VRAM and RAM probes to the same pattern used
+//! by all probes added in M3-e.6+.
 
+use std::sync::Mutex;
 use sysinfo::System;
 
 /// Snapshot of system RAM state at a single point in time. All fields in bytes.
@@ -49,6 +60,48 @@ pub fn read_system_ram_snapshot() -> Result<RamSnapshot, RamProbeError> {
         available_bytes: available,
         used_bytes: total - available,
     })
+}
+
+// =========================================================================
+// M3-e.11.3 — trait-based injection surface
+// =========================================================================
+
+/// Abstract interface over a RAM probe. Mirror of [`VramProbeApi`]
+/// from the sibling module — tests inject fakes that return canned
+/// snapshots; production uses [`RamProbe`], which delegates to
+/// [`read_system_ram_snapshot`].
+pub trait RamProbeApi: Send + Sync {
+    fn snapshot(&self) -> Result<RamSnapshot, RamProbeError>;
+}
+
+/// Production RAM probe. Stateless; construction is free (no
+/// subprocess, no warmup).
+pub struct RamProbe {
+    /// Serializes sysinfo instantiation across threads, for the
+    /// same reason the other probes hold a `Mutex<()>` — keeps
+    /// parallel tests from racing on the sysinfo init path.
+    lock: Mutex<()>,
+}
+
+impl RamProbe {
+    pub fn new() -> Self {
+        Self {
+            lock: Mutex::new(()),
+        }
+    }
+}
+
+impl Default for RamProbe {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RamProbeApi for RamProbe {
+    fn snapshot(&self) -> Result<RamSnapshot, RamProbeError> {
+        let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+        read_system_ram_snapshot()
+    }
 }
 
 #[cfg(test)]

@@ -35,8 +35,8 @@ use crate::amm::failure_counter::FailureCounter;
 use crate::amm::foreground_probe::{ForegroundProbe, ForegroundProbeApi};
 use crate::amm::gpu_util_probe::{GpuUtilProbe, GpuUtilProbeApi};
 use crate::amm::latency_monitor::LatencyMonitor;
-use crate::amm::ram_probe;
-use crate::amm::vram_probe;
+use crate::amm::ram_probe::{RamProbe, RamProbeApi};
+use crate::amm::vram_probe::{VramProbe, VramProbeApi};
 use crate::v15::policy::evidence::signals::{PolicySignal, PolicySignalKind};
 use crate::v15::policy::evidence::snapshot::PolicyEvidenceSnapshot;
 use crate::v16::guards::guard_conditions::GuardConditions;
@@ -97,6 +97,15 @@ pub struct SignalBus {
     /// Desktop systems (no battery) similarly produce a `(None,
     /// None)` snapshot — not an error.
     battery_probe: Option<Arc<dyn BatteryProbeApi>>,
+    /// M3-e.11.3: VRAM probe behind a trait so tests can inject
+    /// fakes. Introduced together with `ram_probe` as the last
+    /// tier-specific signals to be normalized onto the
+    /// `Arc<dyn ...>` pattern used by every probe since M3-e.6.
+    /// `None` only if the bus was explicitly built without one.
+    vram_probe: Option<Arc<dyn VramProbeApi>>,
+    /// M3-e.11.3: RAM probe, sibling of `vram_probe`. Same
+    /// injection / absence semantics.
+    ram_probe: Option<Arc<dyn RamProbeApi>>,
     /// Cached `(ProbeValues, captured_at)`. Populated whenever the
     /// probe path runs (a cache miss); consulted first on every call
     /// and refreshed only when the entry is absent or older than
@@ -121,7 +130,18 @@ pub struct SignalBus {
 /// downstream consumer reads a self-consistent snapshot.
 #[derive(Debug, Clone, Copy)]
 struct ProbeValues {
+    /// Legacy aggregate `max(vram_pressure, ram_pressure)`, or the
+    /// single available tier when only one probe succeeded.
+    /// Preserved in M3-e.11.3 for backwards compatibility with every
+    /// consumer that was reading it before the per-tier split.
     memory_pressure: f32,
+    /// M3-e.11.3: VRAM pressure if the VRAM probe succeeded on this
+    /// cycle, `None` if it failed (or was absent). Independent of
+    /// `ram_pressure`.
+    vram_pressure: Option<f32>,
+    /// M3-e.11.3: RAM pressure if the RAM probe succeeded on this
+    /// cycle. Independent of `vram_pressure`.
+    ram_pressure: Option<f32>,
     /// CPU readings, or `None` if the probe was unavailable or
     /// returned an error on this cycle. Memory is still usable in
     /// that case — hence the independent `Option`.
@@ -182,14 +202,30 @@ impl SignalBus {
         // to `(None, None)`.
         let battery_probe: Option<Arc<dyn BatteryProbeApi>> =
             Some(Arc::new(BatteryProbe::new()));
-        Self::with_probes(cpu_probe, gpu_util_probe, foreground_probe, battery_probe)
+        // M3-e.11.3: VRAM and RAM probes behind traits. The
+        // production implementations delegate to the pre-existing
+        // `read_nvidia_vram_snapshot` / `read_system_ram_snapshot`
+        // free functions — no behavior change vs pre-e.11.3, only
+        // injection surface.
+        let vram_probe: Option<Arc<dyn VramProbeApi>> =
+            Some(Arc::new(VramProbe::new()));
+        let ram_probe: Option<Arc<dyn RamProbeApi>> =
+            Some(Arc::new(RamProbe::new()));
+        Self::with_probes(
+            cpu_probe,
+            gpu_util_probe,
+            foreground_probe,
+            battery_probe,
+            vram_probe,
+            ram_probe,
+        )
     }
 
     /// Test / advanced constructor: build a bus with a caller-
     /// provided CPU probe and the default production GPU,
-    /// foreground and battery probes. Preserved from M3-e.6 for
-    /// ergonomic test setups that only need to control the CPU
-    /// signal.
+    /// foreground, battery, VRAM and RAM probes. Preserved from
+    /// M3-e.6 for ergonomic test setups that only need to control
+    /// the CPU signal.
     pub fn with_cpu_probe(cpu_probe: Arc<dyn CpuProbeApi>) -> Self {
         let gpu_util_probe: Option<Arc<dyn GpuUtilProbeApi>> =
             Some(Arc::new(GpuUtilProbe::new()));
@@ -197,29 +233,44 @@ impl SignalBus {
             Some(Arc::new(ForegroundProbe::new()));
         let battery_probe: Option<Arc<dyn BatteryProbeApi>> =
             Some(Arc::new(BatteryProbe::new()));
+        let vram_probe: Option<Arc<dyn VramProbeApi>> =
+            Some(Arc::new(VramProbe::new()));
+        let ram_probe: Option<Arc<dyn RamProbeApi>> =
+            Some(Arc::new(RamProbe::new()));
         Self::with_probes(
             Some(cpu_probe),
             gpu_util_probe,
             foreground_probe,
             battery_probe,
+            vram_probe,
+            ram_probe,
         )
     }
 
     /// Test / advanced constructor: build a bus with caller-provided
-    /// CPU, GPU, foreground and battery probes. Any may be `None`
-    /// to disable the corresponding signal entirely — useful for
-    /// isolating one probe under test from the others.
+    /// probes across all six signals. Any may be `None` to disable
+    /// the corresponding signal entirely — useful for isolating
+    /// probes under test from the others.
     ///
-    /// **Signature change in M3-e.9**: the three-probe variant was
-    /// expanded to four. The old name is kept because every call
-    /// site lived in test code. If a fifth probe is added in a
-    /// future milestone (e.g. M3-e.10 self-latency signal), evaluate
-    /// switching to a builder pattern.
+    /// **Signature change in M3-e.11.3**: the four-probe variant
+    /// expanded to six with `vram_probe` and `ram_probe`. This is
+    /// the fourth expansion (2 → 3 → 4 → 6); if a seventh probe is
+    /// added in a future milestone, evaluate switching to a
+    /// builder-pattern constructor. The positional signature stays
+    /// manageable at six with explicit `None` placeholders for
+    /// unused probes.
+    ///
+    /// The argument order follows the chronological order probes
+    /// were added to the bus:
+    /// CPU (e.6) → GPU-util (e.7) → foreground (e.8) →
+    /// battery (e.9) → VRAM (e.11.3) → RAM (e.11.3).
     pub fn with_probes(
         cpu_probe: Option<Arc<dyn CpuProbeApi>>,
         gpu_util_probe: Option<Arc<dyn GpuUtilProbeApi>>,
         foreground_probe: Option<Arc<dyn ForegroundProbeApi>>,
         battery_probe: Option<Arc<dyn BatteryProbeApi>>,
+        vram_probe: Option<Arc<dyn VramProbeApi>>,
+        ram_probe: Option<Arc<dyn RamProbeApi>>,
     ) -> Self {
         Self {
             failure_counter: Arc::new(FailureCounter::new()),
@@ -228,6 +279,8 @@ impl SignalBus {
             gpu_util_probe,
             foreground_probe,
             battery_probe,
+            vram_probe,
+            ram_probe,
             probe_cache: Mutex::new(None),
             probe_calls_count: AtomicU64::new(0),
         }
@@ -284,6 +337,17 @@ impl SignalBus {
             self.latency_monitor.has_recent_spike(),
             pre_oom_signal,
         );
+        // M3-e.11.3: per-tier pressure fields populated
+        // independently. Partial readings are permitted — the
+        // dual-pressure detector in M3-e.11.5 will require both to
+        // be `Some(_)` before triggering `DeepDegrade`, matching
+        // the same cautious fail-open stance the CPU-veto uses.
+        if let Some(v) = probes.vram_pressure {
+            conditions = conditions.with_vram_pressure(v);
+        }
+        if let Some(r) = probes.ram_pressure {
+            conditions = conditions.with_ram_pressure(r);
+        }
         // Populate CPU fields only when both readings are available.
         // A partial reading (e.g. `total` present but `self` missing)
         // is suppressed entirely — the skip logic in
@@ -451,18 +515,41 @@ impl SignalBus {
         // the quantity callers want for cost accounting.
         self.probe_calls_count.fetch_add(1, Ordering::Relaxed);
 
-        let vram_snap = vram_probe::read_nvidia_vram_snapshot().ok()?;
-        let ram_snap = ram_probe::read_system_ram_snapshot().ok()?;
+        // M3-e.11.3: per-tier independence. Previously either probe
+        // failing forced the whole `collect_probes` call to return
+        // `None` (fail-open of the aggregate signal). Now each tier
+        // is handled independently so a partial reading (one tier
+        // OK, other failed) still produces a usable
+        // `memory_pressure` from the surviving tier. Both failing
+        // still returns `None` — the reaction path remains fully
+        // fail-open when memory telemetry is entirely unavailable.
+        let vram_pressure: Option<f32> = self.vram_probe.as_ref().and_then(|p| {
+            match p.snapshot() {
+                Ok(snap) if snap.total_bytes > 0 => {
+                    Some(1.0 - (snap.free_bytes as f32 / snap.total_bytes as f32))
+                }
+                _ => None,
+            }
+        });
+        let ram_pressure: Option<f32> = self.ram_probe.as_ref().and_then(|p| {
+            match p.snapshot() {
+                Ok(snap) if snap.total_bytes > 0 => {
+                    Some(1.0 - (snap.available_bytes as f32 / snap.total_bytes as f32))
+                }
+                _ => None,
+            }
+        });
 
-        if vram_snap.total_bytes == 0 || ram_snap.total_bytes == 0 {
-            return None;
-        }
-
-        let vram_pressure =
-            1.0 - (vram_snap.free_bytes as f32 / vram_snap.total_bytes as f32);
-        let ram_pressure =
-            1.0 - (ram_snap.available_bytes as f32 / ram_snap.total_bytes as f32);
-        let memory_pressure = vram_pressure.max(ram_pressure);
+        // Aggregate `memory_pressure` is `max` when both present,
+        // the single survivor when only one present, or we bail
+        // with `None` when both are absent (both probes failed or
+        // both were disabled at construction time).
+        let memory_pressure = match (vram_pressure, ram_pressure) {
+            (Some(v), Some(r)) => v.max(r),
+            (Some(v), None) => v,
+            (None, Some(r)) => r,
+            (None, None) => return None,
+        };
 
         // CPU probe runs independently. Its success or failure does
         // not affect the memory path — a failed CPU read only nulls
@@ -517,6 +604,8 @@ impl SignalBus {
 
         let values = ProbeValues {
             memory_pressure,
+            vram_pressure,
+            ram_pressure,
             cpu_total,
             cpu_self,
             gpu_util_total,

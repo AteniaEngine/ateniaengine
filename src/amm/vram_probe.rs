@@ -4,9 +4,24 @@
 //! NVIDIA GPU through the `nvidia-smi` CLI. It does not integrate with the
 //! AMM forecaster, guards, or policies. Multi-GPU, AMD/Intel/Apple, and
 //! NVML-based paths are out of scope.
+//!
+//! ## Trait-based injection (M3-e.11.3)
+//!
+//! Since M3-e.11.3 the production path is exposed through the
+//! [`VramProbeApi`] trait: [`SignalBus`][crate::amm::signal_bus::SignalBus]
+//! holds an `Option<Arc<dyn VramProbeApi>>` and tests inject mock
+//! implementations that return canned snapshots. This matches the
+//! pattern established by `CpuProbeApi` / `GpuUtilProbeApi` /
+//! `ForegroundProbeApi` / `BatteryProbeApi` in earlier M3-e
+//! sub-milestones.
+//!
+//! The pre-existing free function [`read_nvidia_vram_snapshot`] is
+//! preserved verbatim — the trait's production struct [`VramProbe`]
+//! delegates to it. No duplication of logic.
 
 use std::io;
 use std::process::Command;
+use std::sync::Mutex;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VramProbeError {
@@ -151,6 +166,56 @@ fn parse_snapshot_csv_output(s: &str) -> Result<VramSnapshot, VramProbeError> {
         free_bytes: parse_mib(parts[1])?,
         used_bytes: parse_mib(parts[2])?,
     })
+}
+
+// =========================================================================
+// M3-e.11.3 — trait-based injection surface
+// =========================================================================
+
+/// Abstract interface over a VRAM probe. Production code instantiates
+/// [`VramProbe`]; tests inject fakes (see
+/// `tests/m3_e_11_3_memory_signals_test.rs`) that return canned
+/// [`VramSnapshot`]s or forced errors.
+///
+/// `Send + Sync` so `SignalBus` can carry it behind
+/// `Arc<dyn VramProbeApi>` across threads — same contract as the
+/// other probe traits introduced in M3-e.6 through M3-e.9.
+pub trait VramProbeApi: Send + Sync {
+    fn snapshot(&self) -> Result<VramSnapshot, VramProbeError>;
+}
+
+/// Production VRAM probe. Stateless from the caller's perspective
+/// and delegates to the pre-existing [`read_nvidia_vram_snapshot`]
+/// free function — no duplicated logic, no behavior change relative
+/// to pre-M3-e.11.3 callers.
+pub struct VramProbe {
+    /// Serializes nvidia-smi subprocess spawns across threads. The
+    /// underlying CLI is thread-safe but keeping this consistent
+    /// with the other probes (`CpuProbe`, `GpuUtilProbe`, etc.)
+    /// avoids surprises in tests that touch multiple probes from
+    /// parallel workers.
+    lock: Mutex<()>,
+}
+
+impl VramProbe {
+    pub fn new() -> Self {
+        Self {
+            lock: Mutex::new(()),
+        }
+    }
+}
+
+impl Default for VramProbe {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl VramProbeApi for VramProbe {
+    fn snapshot(&self) -> Result<VramSnapshot, VramProbeError> {
+        let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+        read_nvidia_vram_snapshot()
+    }
 }
 
 #[cfg(test)]

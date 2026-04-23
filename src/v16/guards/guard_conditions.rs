@@ -83,6 +83,21 @@ pub struct GuardConditions {
     /// decisions on this field; future milestones (M3-e.12 behavior
     /// modes) can consume it as a primary trigger.
     pub latency_ratio: Option<f32>,
+    /// M3-e.11.3: VRAM pressure as a fraction in `[0.0, 1.0]` on the
+    /// single NVIDIA GPU detected. `None` when the probe failed
+    /// (nvidia-smi missing, driver error, parse failure) or was
+    /// disabled at bus construction time. The legacy aggregate
+    /// `memory_pressure` field is preserved as `max(vram, ram)` for
+    /// backwards compatibility; consumers that need the
+    /// discrimination (M3-e.11.5 dual-pressure promotion logic) read
+    /// this field directly.
+    pub vram_pressure: Option<f32>,
+    /// M3-e.11.3: system RAM pressure as a fraction in `[0.0, 1.0]`.
+    /// Same `None` semantics as `vram_pressure`: probe failure or
+    /// disabled. Independent of `vram_pressure` — a partial reading
+    /// where only one tier's probe works is representable and
+    /// propagates to downstream consumers.
+    pub ram_pressure: Option<f32>,
 }
 
 impl GuardConditions {
@@ -111,6 +126,8 @@ impl GuardConditions {
             latency_baseline_ms: None,
             latency_current_ms: None,
             latency_ratio: None,
+            vram_pressure: None,
+            ram_pressure: None,
         }
     }
 
@@ -183,6 +200,23 @@ impl GuardConditions {
         self.latency_baseline_ms = Some(baseline_ms);
         self.latency_current_ms = Some(current_ms);
         self.latency_ratio = Some(ratio);
+        self
+    }
+
+    /// Builder-style setter for the VRAM pressure (M3-e.11.3).
+    /// Independent from [`Self::with_ram_pressure`] — the two tiers
+    /// can be populated in any combination. Input clamped to
+    /// `[0.0, 1.0]`.
+    pub fn with_vram_pressure(mut self, pressure: f32) -> Self {
+        self.vram_pressure = Some(pressure.clamp(0.0, 1.0));
+        self
+    }
+
+    /// Builder-style setter for the system-RAM pressure (M3-e.11.3).
+    /// Independent from [`Self::with_vram_pressure`]. Input clamped
+    /// to `[0.0, 1.0]`.
+    pub fn with_ram_pressure(mut self, pressure: f32) -> Self {
+        self.ram_pressure = Some(pressure.clamp(0.0, 1.0));
         self
     }
 }

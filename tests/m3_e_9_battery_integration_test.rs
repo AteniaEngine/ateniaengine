@@ -177,7 +177,7 @@ fn test_battery_fields_populated_full_signal() {
     // Laptop on battery at 15%: both fields present.
     let cpu = Arc::new(FixedCpuProbe::new(0.10, 0.05));
     let bat = Arc::new(FixedBatteryProbe::new(Some(true), Some(0.15)));
-    let bus = SignalBus::with_probes(Some(cpu.clone()), None, None, Some(bat.clone()));
+    let bus = SignalBus::with_probes(Some(cpu.clone()), None, None, Some(bat.clone()), None, None);
 
     let Some(c) = bus.collect_guard_conditions() else {
         println!(
@@ -198,7 +198,7 @@ fn test_battery_fields_populated_plugged_high_charge() {
     // Laptop plugged in at 85% — common everyday case.
     let cpu = Arc::new(FixedCpuProbe::new(0.20, 0.10));
     let bat = Arc::new(FixedBatteryProbe::new(Some(false), Some(0.85)));
-    let bus = SignalBus::with_probes(Some(cpu.clone()), None, None, Some(bat.clone()));
+    let bus = SignalBus::with_probes(Some(cpu.clone()), None, None, Some(bat.clone()), None, None);
 
     let Some(c) = bus.collect_guard_conditions() else {
         println!(
@@ -219,7 +219,7 @@ fn test_battery_fields_partial_on_battery_only() {
     // the other stays None.
     let cpu = Arc::new(FixedCpuProbe::new(0.10, 0.05));
     let bat = Arc::new(FixedBatteryProbe::new(Some(true), None));
-    let bus = SignalBus::with_probes(Some(cpu.clone()), None, None, Some(bat.clone()));
+    let bus = SignalBus::with_probes(Some(cpu.clone()), None, None, Some(bat.clone()), None, None);
 
     let Some(c) = bus.collect_guard_conditions() else {
         println!(
@@ -238,7 +238,7 @@ fn test_battery_fields_partial_level_only() {
     // Inverse: level known but AC state unknown.
     let cpu = Arc::new(FixedCpuProbe::new(0.10, 0.05));
     let bat = Arc::new(FixedBatteryProbe::new(None, Some(0.42)));
-    let bus = SignalBus::with_probes(Some(cpu.clone()), None, None, Some(bat.clone()));
+    let bus = SignalBus::with_probes(Some(cpu.clone()), None, None, Some(bat.clone()), None, None);
 
     let Some(c) = bus.collect_guard_conditions() else {
         println!(
@@ -257,7 +257,7 @@ fn test_battery_fields_none_when_probe_says_none() {
     // Desktop scenario — probe ran, returned (None, None).
     let cpu = Arc::new(FixedCpuProbe::new(0.10, 0.05));
     let bat = Arc::new(FixedBatteryProbe::new(None, None));
-    let bus = SignalBus::with_probes(Some(cpu.clone()), None, None, Some(bat.clone()));
+    let bus = SignalBus::with_probes(Some(cpu.clone()), None, None, Some(bat.clone()), None, None);
 
     let Some(c) = bus.collect_guard_conditions() else {
         println!(
@@ -276,7 +276,7 @@ fn test_battery_fields_none_when_probe_says_none() {
 fn test_battery_fields_none_when_no_probe_attached() {
     // Bus explicitly built without a battery probe.
     let cpu = Arc::new(FixedCpuProbe::new(0.10, 0.05));
-    let bus = SignalBus::with_probes(Some(cpu.clone()), None, None, None);
+    let bus = SignalBus::with_probes(Some(cpu.clone()), None, None, None, None, None);
 
     let Some(c) = bus.collect_guard_conditions() else {
         println!(
@@ -305,6 +305,8 @@ fn test_battery_failure_does_not_contaminate_other_signals() {
         Some(gpu.clone()),
         Some(fg.clone()),
         Some(bat.clone()),
+        None,
+        None,
     );
 
     let Some(c) = bus.collect_guard_conditions() else {
@@ -337,6 +339,8 @@ fn test_cache_monotonicity_with_four_probes() {
         Some(gpu.clone()),
         Some(fg.clone()),
         Some(bat.clone()),
+        None,
+        None,
     );
 
     // First call: populates the cache (if memory probe works).
