@@ -259,6 +259,38 @@ GAAIA Labs — Independent Research Initiative
 
 ---
 
+## About this project's development
+
+Atenia Engine is developed by Guillermo Alonso Albella with significant use of AI code generation tools — primarily Claude and Claude Code from Anthropic. This section exists because I think transparency about how a project is built matters, and because "made with AI assistance" tends to be either hidden or oversold in most projects.
+
+Here's how it actually works:
+
+**What I decide:**
+- Architecture and design choices
+- Trade-offs between approaches
+- What gets implemented and in what order
+- Which ideas are worth pursuing and which aren't
+- Code review of every change before merge
+
+**What the AI tools execute:**
+- Implementation of approved designs
+- Routine refactors and test writing
+- Research into specific technical options
+- Pattern-matching across existing codebases
+
+**What we do together:**
+- Reasoning about complex trade-offs
+- Debugging specific issues
+- Evaluating alternatives when the path isn't clear
+
+Every commit on this repo passes through my review. The AI tools don't merge autonomously. If you see a questionable decision, it's mine, not the AI's.
+
+This workflow lets one person work at the scope this project requires. The architectural thinking, user-facing decisions, and quality standards are human. The volume of boilerplate and research that would otherwise block progress is handled by tools.
+
+If you have thoughts about this approach, open an issue. I'm more interested in honest feedback than in pretending this was written by hand.
+
+---
+
 ## 🧠 Final Note
 
 This README does not try to sell.
