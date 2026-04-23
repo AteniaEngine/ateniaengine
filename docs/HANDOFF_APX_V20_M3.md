@@ -444,6 +444,33 @@ These are documented so they are not confused with regressions.
    dependencies. Tracked as separate cleanup; does not block other
    work.
 
+8. **`FusedLinearActivationChain` — backward pass does not register
+   a `BackOp`** — The helper `exec_fused_linear_activation_chain`
+   (introduced in commit 8c328bd as part of debt #5 cleanup)
+   computes forward correctly but does not register a `BackOp`
+   for gradient tracking. Consequences: backward pass through a
+   `FusedLinearActivationChain` node produces zero or incorrect
+   gradients for the fused inputs.
+
+   Existing tests that exercise backward on this node
+   (`apx_2_5_fused_kernels_test`) pass because they validate
+   seq-vs-par equivalence (both use the same broken fused
+   backward), not correctness against a non-fused reference.
+   Any production use of this fused node for training would
+   produce silently wrong gradients.
+
+   This was known conceptually as a "fused backward optimization"
+   debt, but the actual impact — gradients are wrong, not just
+   non-optimized — became clear during investigation of debt #5.
+   Tracked separately from debt #3 (`FusedSelfAttention` fused
+   backward) because the contexts differ: #3 is optimization-only,
+   #8 is correctness.
+
+   Resolution requires implementing the analytical backward for
+   the chain: grad for `w2`, `b2` (if present), `w1`, `b1` (if
+   present), and `x`, given grad flowing in. Complex but bounded
+   scope.
+
 ---
 
 ## Files actually touched in M3-e.1–e.5
