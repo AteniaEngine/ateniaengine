@@ -25,7 +25,7 @@ and invariants it records still hold.
 | M3-d.2 | ✅ | `TensorStorage::Cuda(TensorGPU)` variant; `ensure_gpu` / `ensure_cpu` with real H↔D transfers; `GpuTransferError` enum for structured error reporting. |
 | M3-d.3 | ✅ | `backward_checked` / `backward_sequential_checked` with `ensure_cpu` pre-pass on every `node.output`; 15 `ensure_cpu().expect(...)` guards inside 8 backward closures whose body produces intermediate tensors that are then consumed as host slices. |
 | M3-d.4 | ✅ | GPU-plan tape-registration gap closed (intercept skips when `record_tape` is active); 3 CUDA ops (`cuda_linear`, `cuda_batch_matmul`, `cuda_fused_linear_silu`) migrated to `&Tensor` signatures with storage-based dispatch; new `launch_*_f32_device_ptrs` C variants that skip the H↔D roundtrip when every operand is already VRAM-resident. |
-| M3-e.1 | ✅ | `Graph::migrate_all_cuda_to_cpu` primitive + `DegradeReport`; Degrade arm in `check_guard_before_node` wired to call it. **First-pass reaction: memory pressure with implicit CPU availability assumption. Expansion pending in sub-milestones e.6–e.10.** |
+| M3-e.1 | ✅ | `Graph::migrate_all_cuda_to_cpu` primitive + `DegradeReport`; Degrade arm in `check_guard_before_node` wired to call it. **First-pass reaction: memory pressure with implicit CPU availability assumption. Expansion pending in sub-milestones e.6–e.11.** |
 | M3-e.2 | ✅ | `SimpleMemoryPressureGuard` with configurable threshold (default 0.65, strict `>`). Emits `Degrade` above threshold, `Continue` otherwise. |
 | M3-e.3 | ✅ | End-to-end integration tests wiring `ReactiveExecutionContext` → `GuardManager` → `GuardAction::Degrade` → migration → continued execution. Positive/negative pair using a `DegradeIfFailuresGuard` fixture. |
 | M3-e.4 | ✅ | `SignalBus` memory-pressure probe caching with `SIGNAL_BUS_CACHE_TTL = 100ms`; `probe_calls_count()` accessor for telemetry. Preserves freshness of injectable signals (`recent_failures`, `latency_spike`). |
@@ -35,7 +35,8 @@ and invariants it records still hold.
 | M3-e.8 | ⏳ | Foreground application detection. |
 | M3-e.9 | ⏳ | Battery state monitoring. |
 | M3-e.10 | ⏳ | Self-latency as primary decision signal. |
-| M3-e.11 | 🕓 | Deferred — behavior modes, evaluated post-e.10 once real measurements inform mode boundaries. |
+| M3-e.11 | ⏳ | **CRITICAL.** `TensorStorage::Disk` tier + cascade migration (`Cuda → Cpu → Disk`) and dual-pressure guard variant. Eliminates `Abort` as the only fallback when both VRAM and RAM are saturated. |
+| M3-e.12 | 🕓 | Deferred — behavior modes, evaluated post-e.11 once real measurements inform mode boundaries. |
 
 ---
 
@@ -150,7 +151,7 @@ was implemented across five sub-fases. This section documents the
 decisions taken during that first pass so future maintainers do not
 have to re-derive them. **All decisions here scope to memory pressure
 only**; the CPU-availability assumption they make implicit is the
-reason the plan was expanded to e.6–e.11 (see the next section).
+reason the plan was expanded to e.6–e.12 (see the next section).
 
 - **Which tensors move?** Decision: every `node.output` whose storage
   is `TensorStorage::Cuda` at the moment the guard fires, mirroring
@@ -188,7 +189,7 @@ reason the plan was expanded to e.6–e.11 (see the next section).
 
 ---
 
-## Remaining M3-e sub-milestones (e.6–e.11)
+## Remaining M3-e sub-milestones (e.6–e.12)
 
 The first-pass reaction (e.1–e.5) assumes CPU is always available to
 absorb a migration and does not distinguish "Atenia is saturating my
@@ -275,9 +276,38 @@ most reliable signal because it captures "am I actually running slow?"
 directly, bypassing any probe misreadings. Arguably the single most
 honest signal in the set because it measures impact, not cause.
 
-### M3-e.11 — Behavior modes (evaluate post-e.10)
+### M3-e.11 — `TensorStorage::Disk` tier + cascade migration
 
-**Status**: DEFERRED — evaluate after e.6–e.10 are complete with real
+**Status**: PENDING (planned after e.6–e.10 complete). **CRITICAL**:
+without this, the only safe outcome in dual-pressure scenarios (VRAM
+and RAM both saturated) is `Abort`.
+
+**Scope**: Add `TensorStorage::Disk(DiskTensorHandle)` variant to the
+`TensorStorage` enum. Implement serialize / deserialize for RAM → Disk
+migration. Extend the migration primitive from
+`migrate_all_cuda_to_cpu` to `migrate_all_to_next_tier` with cascade
+logic (`Cuda → Cpu`, `Cpu → Disk`). Add a guard variant (tentatively
+`DeepDegrade`) that triggers when dual-pressure is detected — both
+VRAM and RAM above threshold. Mechanism to bring tensors back from
+disk when resources free up. Cleanup of temporary disk files on
+`Drop`.
+
+**Rationale**: The current 2-tier design (VRAM + RAM) has no safe
+migration target in dual-pressure scenarios, forcing `Abort` as the
+only outcome. Adding disk as a third tier eliminates this case:
+workloads can continue with reduced throughput rather than fail.
+Aligns with Atenia's "good citizen" design principle — slow but
+functional is infinitely better than crashed.
+
+**Technical notes**: First implementation uses a simple
+serialize-to-file approach (Option 1 from the design discussion)
+rather than `mmap` or chunked paging. Simpler semantics, predictable
+behavior; can be refined later with measurement once real workloads
+exercise the cascade.
+
+### M3-e.12 — Behavior modes (evaluate post-e.11)
+
+**Status**: DEFERRED — evaluate after e.6–e.11 are complete with real
 measurements.
 
 **Tentative scope**: Four discrete operating modes —
@@ -289,7 +319,7 @@ measurements.
   this mode's trigger is likely battery-only).
 
 Transitions between modes would be driven by the signals from
-e.6–e.10. Discrete modes are easier to understand and debug than
+e.6–e.11. Discrete modes are easier to understand and debug than
 continuous optimization.
 
 **Rationale for deferral**: Designing the mode structure before
@@ -381,6 +411,17 @@ These are documented so they are not confused with regressions.
    that need the `ensure_cpu` pre-pass guard. Low priority until a
    real model shows it in the profile.
 
+6. **Incomplete storage tier hierarchy (dual-pressure blind spot)** —
+   The current storage tier hierarchy (VRAM + RAM) is incomplete.
+   Dual-pressure scenarios where both tiers are saturated currently
+   resolve to `Abort` via `GuardAction::Abort`. This is a known
+   limitation, not a final design. The M3-e.11 sub-milestone
+   introduces a third tier (Disk) and cascade migration logic that
+   eliminates `Abort` as the only option in these cases. Disk tier
+   represents continuity at reduced throughput — aligned with
+   Atenia's good-citizen design principle that favors slow correct
+   execution over fast failure.
+
 ---
 
 ## Files actually touched in M3-e.1–e.5
@@ -421,9 +462,13 @@ reference:
 - M3-e.8: Foreground application detection.
 - M3-e.9: Battery state monitoring.
 - M3-e.10: Self-latency as primary decision signal.
-- M3-e.11: Behavior modes (only if e.6–e.10 measurements justify it).
+- **M3-e.11**: `TensorStorage::Disk` tier + cascade migration
+  (**CRITICAL** — eliminates `Abort` as the only fallback in
+  dual-pressure scenarios; see debt #6).
+- M3-e.12: Behavior modes (only if e.6–e.11 measurements justify it;
+  evaluate post-e.11).
 
-**After M3-e is truly complete (post e.10)**:
+**After M3-e is truly complete (post e.11)**:
 
 - Pay M3 technical debts:
   - `src/apx4_3/gpu_executor.rs` refactor (debt #1, remaining item).
@@ -433,7 +478,7 @@ reference:
     optimization).
 - Rename this document to `at M3-e close`.
 - Resync `README.md` with the full M3 plan (intentionally left
-  stale for e.6–e.10 during this sprint).
+  stale for e.6–e.11 during this sprint).
 
 **Then**:
 
