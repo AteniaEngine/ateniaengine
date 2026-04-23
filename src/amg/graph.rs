@@ -221,11 +221,13 @@ impl Graph {
                         };
                         let gpu_frag =
                             crate::amg::reactive::format_gpu_util_fragment(&conditions);
+                        let fg_frag =
+                            crate::amg::reactive::format_foreground_fragment(&conditions);
                         eprintln!(
                             "[AMG Guard][t_ms={}] Degrade VETOED at node {} \
                              (external CPU pressure): memory_pressure={:.2}, \
                              cpu_total={:.2}, cpu_self={:.2}, self_share={:.2},\
-                             {} thresholds total>{}, share<{}. \
+                             {}{} thresholds total>{}, share<{}. \
                              Skipping migration; execution continues on VRAM.",
                             timestamp_ms,
                             node_id,
@@ -234,6 +236,7 @@ impl Graph {
                             cpu_self,
                             share,
                             gpu_frag,
+                            fg_frag,
                             crate::amg::reactive::CPU_PRESSURE_TOTAL_THRESHOLD,
                             crate::amg::reactive::CPU_SELF_CONTRIBUTION_MIN,
                         );
@@ -251,15 +254,18 @@ impl Graph {
                                 / (1024.0 * 1024.0);
                             let gpu_frag =
                                 crate::amg::reactive::format_gpu_util_fragment(&conditions);
+                            let fg_frag =
+                                crate::amg::reactive::format_foreground_fragment(&conditions);
                             eprintln!(
                                 "[AMG Guard][t_ms={}] Degrade triggered at node {}: \
                                  memory_pressure={:.2}, probes_so_far={},\
-                                 {} migrated {} tensors, freed ~{:.2} MiB.",
+                                 {}{} migrated {} tensors, freed ~{:.2} MiB.",
                                 timestamp_ms,
                                 node_id,
                                 memory_pressure,
                                 probes_so_far,
                                 gpu_frag,
+                                fg_frag,
                                 report.tensors_migrated,
                                 mib,
                             );
@@ -273,16 +279,19 @@ impl Graph {
                         if !crate::apx_is_silent() {
                             let gpu_frag =
                                 crate::amg::reactive::format_gpu_util_fragment(&conditions);
+                            let fg_frag =
+                                crate::amg::reactive::format_foreground_fragment(&conditions);
                             eprintln!(
                                 "[AMG Guard][t_ms={}] Degrade migration FAILED at node {}: \
                                  memory_pressure={:.2}, probes_so_far={},\
-                                 {} error: {:?}. \
+                                 {}{} error: {:?}. \
                                  Continuing; subsequent nodes may still fail.",
                                 timestamp_ms,
                                 node_id,
                                 memory_pressure,
                                 probes_so_far,
                                 gpu_frag,
+                                fg_frag,
                                 e,
                             );
                         }

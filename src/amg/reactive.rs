@@ -81,6 +81,24 @@ pub fn format_gpu_util_fragment(conditions: &GuardConditions) -> String {
     }
 }
 
+/// M3-e.8: format a compact fragment describing the foreground-app
+/// indicator for inclusion in `[AMG Guard]` log lines. Returns one
+/// of three strings:
+/// - `" foreground=atenia,"`  — the OS foreground is this process.
+/// - `" foreground=other,"`   — the OS foreground is a different process.
+/// - `" foreground=n/a,"`     — the probe could not determine (unsupported
+///   platform, screen locked, etc.).
+///
+/// Same leading-space / trailing-comma conventions as the other
+/// fragments. Observability-only; no behavior changes.
+pub fn format_foreground_fragment(conditions: &GuardConditions) -> String {
+    match conditions.foreground_is_atenia {
+        Some(true) => " foreground=atenia,".to_string(),
+        Some(false) => " foreground=other,".to_string(),
+        None => " foreground=n/a,".to_string(),
+    }
+}
+
 /// Decide whether a `Degrade` verdict should be vetoed because the
 /// CPU is saturated by *external* processes rather than by Atenia.
 ///

@@ -42,6 +42,15 @@ pub struct GuardConditions {
     /// `gpu_util_total` — if the probe failed entirely, both fields
     /// are `None`.
     pub gpu_util_self: Option<f32>,
+    /// M3-e.8: foreground-application indicator. `Some(true)` when
+    /// the OS foreground window belongs to this process;
+    /// `Some(false)` when it belongs to another process; `None`
+    /// when the probe cannot determine (non-supported platform,
+    /// screen locked, no foreground). **Observability-only in
+    /// M3-e.8**: no reaction site gates decisions on this field
+    /// today. Future milestones (M3-e.12 behavior modes) will
+    /// consume it to distinguish `UserActive` from `SoloMachine`.
+    pub foreground_is_atenia: Option<bool>,
 }
 
 impl GuardConditions {
@@ -64,6 +73,7 @@ impl GuardConditions {
             cpu_pressure_self: None,
             gpu_util_total: None,
             gpu_util_self: None,
+            foreground_is_atenia: None,
         }
     }
 
@@ -87,6 +97,16 @@ impl GuardConditions {
     pub fn with_gpu_util(mut self, total: f32, self_: f32) -> Self {
         self.gpu_util_total = Some(total);
         self.gpu_util_self = Some(self_);
+        self
+    }
+
+    /// Builder-style setter for the foreground indicator (M3-e.8).
+    /// Takes a concrete `bool`; callers that want to leave the
+    /// field `None` simply do not call this method. This matches
+    /// the semantics of `with_cpu_pressure` / `with_gpu_util`,
+    /// where absence is the default.
+    pub fn with_foreground(mut self, is_atenia: bool) -> Self {
+        self.foreground_is_atenia = Some(is_atenia);
         self
     }
 }

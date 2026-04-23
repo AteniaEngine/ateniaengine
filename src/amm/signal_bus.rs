@@ -31,6 +31,7 @@ use std::time::{Duration, Instant};
 
 use crate::amm::cpu_probe::{CpuProbe, CpuProbeApi};
 use crate::amm::failure_counter::FailureCounter;
+use crate::amm::foreground_probe::{ForegroundProbe, ForegroundProbeApi};
 use crate::amm::gpu_util_probe::{GpuUtilProbe, GpuUtilProbeApi};
 use crate::amm::latency_monitor::LatencyMonitor;
 use crate::amm::ram_probe;
@@ -84,6 +85,12 @@ pub struct SignalBus {
     /// surfaced per-call as a `GpuUtilProbeError` that gets turned
     /// into `None` on the corresponding `GuardConditions` fields.
     gpu_util_probe: Option<Arc<dyn GpuUtilProbeApi>>,
+    /// M3-e.8: foreground-application probe. Same shape as the GPU
+    /// probe: `None` only if the bus was built without one. The
+    /// default `SignalBus::new()` attaches a production
+    /// [`ForegroundProbe`], which on non-Windows platforms returns
+    /// `Ok(None)` on every call — fail-open by construction.
+    foreground_probe: Option<Arc<dyn ForegroundProbeApi>>,
     /// Cached `(ProbeValues, captured_at)`. Populated whenever the
     /// probe path runs (a cache miss); consulted first on every call
     /// and refreshed only when the entry is absent or older than
@@ -104,8 +111,8 @@ pub struct SignalBus {
 }
 
 /// Bundle of probe readings captured on a single cache-miss cycle.
-/// Keeps memory, CPU and GPU-util aligned in time so a downstream
-/// consumer reads a self-consistent snapshot.
+/// Keeps memory, CPU, GPU-util and foreground aligned in time so a
+/// downstream consumer reads a self-consistent snapshot.
 #[derive(Debug, Clone, Copy)]
 struct ProbeValues {
     memory_pressure: f32,
@@ -122,6 +129,12 @@ struct ProbeValues {
     /// absence.
     gpu_util_total: Option<f32>,
     gpu_util_self: Option<f32>,
+    /// M3-e.8: foreground-application indicator. `None` when the
+    /// probe was absent, failed, or ran on a platform that does
+    /// not implement foreground detection in the current pass
+    /// (everything but Windows). Independent of the other fields
+    /// by the same failure-isolation contract.
+    foreground_is_atenia: Option<bool>,
 }
 
 impl SignalBus {
@@ -145,32 +158,48 @@ impl SignalBus {
         // surface as `None` on `GuardConditions`.
         let gpu_util_probe: Option<Arc<dyn GpuUtilProbeApi>> =
             Some(Arc::new(GpuUtilProbe::new()));
-        Self::with_probes(cpu_probe, gpu_util_probe)
+        // M3-e.8: foreground probe is also infallible to construct;
+        // on non-Windows platforms `snapshot` just returns
+        // `Ok(None)` (platform stub).
+        let foreground_probe: Option<Arc<dyn ForegroundProbeApi>> =
+            Some(Arc::new(ForegroundProbe::new()));
+        Self::with_probes(cpu_probe, gpu_util_probe, foreground_probe)
     }
 
     /// Test / advanced constructor: build a bus with a caller-
-    /// provided CPU probe and the default production GPU probe.
-    /// Preserved from M3-e.6 as a convenience; most new tests should
-    /// prefer [`SignalBus::with_probes`] to control both probes.
+    /// provided CPU probe and the default production GPU +
+    /// foreground probes. Preserved from M3-e.6 for ergonomic test
+    /// setups that only need to control the CPU signal.
     pub fn with_cpu_probe(cpu_probe: Arc<dyn CpuProbeApi>) -> Self {
         let gpu_util_probe: Option<Arc<dyn GpuUtilProbeApi>> =
             Some(Arc::new(GpuUtilProbe::new()));
-        Self::with_probes(Some(cpu_probe), gpu_util_probe)
+        let foreground_probe: Option<Arc<dyn ForegroundProbeApi>> =
+            Some(Arc::new(ForegroundProbe::new()));
+        Self::with_probes(Some(cpu_probe), gpu_util_probe, foreground_probe)
     }
 
     /// Test / advanced constructor: build a bus with caller-provided
-    /// CPU and GPU probes. Either may be `None` to disable the
-    /// corresponding signal entirely — useful for isolating one
-    /// probe under test from the other.
+    /// CPU, GPU and foreground probes. Any may be `None` to disable
+    /// the corresponding signal entirely — useful for isolating one
+    /// probe under test from the others.
+    ///
+    /// **Signature change in M3-e.8**: the two-probe variant was
+    /// expanded to three. The old name is kept because every call
+    /// site lived in test code. If a fourth probe is added in a
+    /// future milestone, evaluate switching to a builder pattern;
+    /// with three probes the positional signature is still
+    /// manageable.
     pub fn with_probes(
         cpu_probe: Option<Arc<dyn CpuProbeApi>>,
         gpu_util_probe: Option<Arc<dyn GpuUtilProbeApi>>,
+        foreground_probe: Option<Arc<dyn ForegroundProbeApi>>,
     ) -> Self {
         Self {
             failure_counter: Arc::new(FailureCounter::new()),
             latency_monitor: Arc::new(LatencyMonitor::new()),
             cpu_probe,
             gpu_util_probe,
+            foreground_probe,
             probe_cache: Mutex::new(None),
             probe_calls_count: AtomicU64::new(0),
         }
@@ -242,6 +271,15 @@ impl SignalBus {
         // both-or-neither invariant.
         if let (Some(total), Some(self_)) = (probes.gpu_util_total, probes.gpu_util_self) {
             conditions = conditions.with_gpu_util(total, self_);
+        }
+        // M3-e.8: foreground indicator. Single field, so there is
+        // no half-populated state to guard against; populate iff
+        // the probe returned `Some(_)`. Observability-only in the
+        // current milestone; future consumers (M3-e.12 behavior
+        // modes) can distinguish `UserActive` from `SoloMachine`
+        // using this signal.
+        if let Some(is_atenia) = probes.foreground_is_atenia {
+            conditions = conditions.with_foreground(is_atenia);
         }
         Some(conditions)
     }
@@ -387,12 +425,26 @@ impl SignalBus {
             None => (None, None),
         };
 
+        // Foreground probe (M3-e.8) — sub-millisecond FFI call on
+        // Windows, `Ok(None)` on other platforms. Same independence
+        // contract. Note that the probe itself can legitimately
+        // return `Ok(None)` (screen locked, no foreground), so
+        // `None` here does not imply probe failure.
+        let foreground_is_atenia = match self.foreground_probe.as_ref() {
+            Some(probe) => match probe.snapshot() {
+                Ok(snap) => snap.foreground_is_atenia,
+                Err(_) => None,
+            },
+            None => None,
+        };
+
         let values = ProbeValues {
             memory_pressure,
             cpu_total,
             cpu_self,
             gpu_util_total,
             gpu_util_self,
+            foreground_is_atenia,
         };
 
         // Store the fresh value. Only reachable when both memory

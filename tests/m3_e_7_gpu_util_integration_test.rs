@@ -123,7 +123,7 @@ impl GpuUtilProbeApi for FailingGpuUtilProbe {
 fn test_gpu_util_fields_populated_when_probe_attached() {
     let cpu = Arc::new(FixedCpuProbe::new(0.30, 0.20));
     let gpu = Arc::new(FixedGpuUtilProbe::new(0.77, 0.22));
-    let bus = SignalBus::with_probes(Some(cpu.clone()), Some(gpu.clone()));
+    let bus = SignalBus::with_probes(Some(cpu.clone()), Some(gpu.clone()), None);
 
     let Some(c) = bus.collect_guard_conditions() else {
         println!(
@@ -144,7 +144,7 @@ fn test_gpu_util_fields_none_when_no_probe() {
     // Explicit "no GPU probe" construction. Memory and CPU paths
     // must keep working; GPU fields must be None.
     let cpu = Arc::new(FixedCpuProbe::new(0.10, 0.05));
-    let bus = SignalBus::with_probes(Some(cpu.clone()), None);
+    let bus = SignalBus::with_probes(Some(cpu.clone()), None, None);
 
     let Some(c) = bus.collect_guard_conditions() else {
         println!(
@@ -165,7 +165,7 @@ fn test_gpu_probe_failure_does_not_contaminate_other_signals() {
     // the GPU fields, never the memory or CPU ones.
     let cpu = Arc::new(FixedCpuProbe::new(0.40, 0.25));
     let gpu = Arc::new(FailingGpuUtilProbe::new());
-    let bus = SignalBus::with_probes(Some(cpu.clone()), Some(gpu.clone()));
+    let bus = SignalBus::with_probes(Some(cpu.clone()), Some(gpu.clone()), None);
 
     let Some(c) = bus.collect_guard_conditions() else {
         println!(
@@ -193,7 +193,7 @@ fn test_cache_monotonicity_with_both_probes() {
     // be called at most once during the burst.
     let cpu = Arc::new(FixedCpuProbe::new(0.20, 0.10));
     let gpu = Arc::new(FixedGpuUtilProbe::new(0.33, 0.11));
-    let bus = SignalBus::with_probes(Some(cpu.clone()), Some(gpu.clone()));
+    let bus = SignalBus::with_probes(Some(cpu.clone()), Some(gpu.clone()), None);
 
     // First call: populates the cache (if memory probe works).
     let first = bus.collect_guard_conditions();
