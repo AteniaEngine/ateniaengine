@@ -51,6 +51,9 @@ impl ExplanationBuilder {
             let description = match action {
                 GuardAction::Continue => "step executed under normal conditions".to_string(),
                 GuardAction::Degrade => "step executed in degraded mode".to_string(),
+                GuardAction::DeepDegrade => {
+                    "step executed in deep-degraded mode (disk spillover)".to_string()
+                }
                 GuardAction::Abort => "step associated with abort decision".to_string(),
             };
 

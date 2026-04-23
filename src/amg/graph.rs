@@ -164,6 +164,26 @@ impl Graph {
             )
         };
 
+        // M3-e.11.5: dual-pressure promotion. If the guard manager
+        // returned `Degrade` but both VRAM and RAM are saturated
+        // beyond the deep-spill thresholds, promote to
+        // `DeepDegrade` so the reaction site will spill tensors
+        // all the way to disk instead of only moving them from
+        // VRAM to RAM (which would not help when RAM is already
+        // saturated). The policy lives here rather than inside a
+        // guard to keep guards single-responsibility — the guard
+        // answers "is the pressure high?", the reaction site
+        // decides "what to do about it?", same pattern as the
+        // M3-e.6 CPU veto.
+        let verdict = match verdict {
+            Ok(GuardAction::Degrade)
+                if crate::amg::reactive::dual_memory_pressure(&conditions) =>
+            {
+                Ok(GuardAction::DeepDegrade)
+            }
+            other => other,
+        };
+
         match verdict {
             Ok(GuardAction::Abort) => {
                 let reason = ExecutionAbortReason::GuardAborted {
@@ -172,6 +192,103 @@ impl Graph {
                 };
                 self.last_abort = Some(reason.clone());
                 Err(reason)
+            }
+            Ok(GuardAction::DeepDegrade) => {
+                // M3-e.11.5: spill every eligible tensor to disk
+                // via `migrate_all_to_disk` (composite that first
+                // brings Cuda → Cpu via the pre-existing shallow
+                // migration, then spills Cpu → Disk). Reached
+                // either via direct guard emission or via promotion
+                // from `Degrade` on the preceding line. The CPU-
+                // veto of M3-e.6 intentionally does NOT apply here:
+                // disk migration does not add CPU load the way Cpu-
+                // tier migration does, so the argument for vetoing
+                // (other processes saturating CPU) does not
+                // translate.
+                let memory_pressure = conditions.memory_pressure;
+                let probes_so_far = self
+                    .reactive_context
+                    .as_ref()
+                    .map(|ctx| ctx.signal_bus.probe_calls_count())
+                    .unwrap_or(0);
+                let timestamp_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0);
+
+                // Capture the cache dir before the reactive-context
+                // borrow ends, so the mutable borrow for the
+                // migration below does not conflict.
+                let cache_dir = self
+                    .reactive_context
+                    .as_ref()
+                    .map(|ctx| ctx.cache_dir.clone())
+                    .unwrap_or_else(
+                        || crate::tensor::disk_tier::default_cache_dir(),
+                    );
+
+                if let Some(ctx) = self.reactive_context.as_ref() {
+                    ctx.record_deep_degrade_event();
+                }
+
+                let migrate_result = self.migrate_all_to_disk(&cache_dir);
+
+                if !crate::apx_is_silent() {
+                    let mem_frag =
+                        crate::amg::reactive::format_memory_fragment(&conditions);
+                    let gpu_frag =
+                        crate::amg::reactive::format_gpu_util_fragment(&conditions);
+                    let fg_frag =
+                        crate::amg::reactive::format_foreground_fragment(&conditions);
+                    let bat_frag =
+                        crate::amg::reactive::format_battery_fragment(&conditions);
+                    let lat_frag =
+                        crate::amg::reactive::format_latency_fragment(&conditions);
+                    match &migrate_result {
+                        Ok(report) => {
+                            eprintln!(
+                                "[AMG Guard][t_ms={}] DeepDegrade triggered at node {}: \
+                                 memory_pressure={:.2}, probes_so_far={},\
+                                 {}{}{}{}{} {}",
+                                timestamp_ms,
+                                node_id,
+                                memory_pressure,
+                                probes_so_far,
+                                mem_frag,
+                                gpu_frag,
+                                fg_frag,
+                                bat_frag,
+                                lat_frag,
+                                report,
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "[AMG Guard][t_ms={}] DeepDegrade migration FAILED at node {}: \
+                                 memory_pressure={:.2}, probes_so_far={},\
+                                 {}{}{}{}{} error: {:?}. \
+                                 Continuing; subsequent nodes may still fail.",
+                                timestamp_ms,
+                                node_id,
+                                memory_pressure,
+                                probes_so_far,
+                                mem_frag,
+                                gpu_frag,
+                                fg_frag,
+                                bat_frag,
+                                lat_frag,
+                                e,
+                            );
+                        }
+                    }
+                }
+                // A migration failure here does NOT abort the
+                // graph — the CPU/Disk state may be inconsistent
+                // across nodes after a partial migrate, but the
+                // subsequent execution will lazily pull data via
+                // `ensure_cpu` on access. Same policy as the
+                // Degrade arm above.
+                Ok(())
             }
             Ok(GuardAction::Degrade) => {
                 // M3-e.1: act on Degrade by migrating every Cuda-resident

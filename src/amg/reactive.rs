@@ -14,10 +14,12 @@
 //! checked execution path.
 
 use std::fmt;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::amm::signal_bus::SignalBus;
+use crate::tensor::disk_tier;
 use crate::v16::contract::execution_contract::ExecutionContract;
 use crate::v16::guards::guard_conditions::GuardConditions;
 use crate::v16::guards::guard_manager::GuardManager;
@@ -47,6 +49,23 @@ pub struct ReactiveExecutionContext {
     /// reached the migration site. Readable via
     /// [`degrade_vetoed_by_cpu_count`](Self::degrade_vetoed_by_cpu_count).
     pub(crate) degrade_vetoed_by_cpu_count: AtomicU64,
+    /// M3-e.11.5: per-context counter of processed
+    /// `GuardAction::DeepDegrade` verdicts — whether the verdict
+    /// originated directly from a guard or was promoted from
+    /// `Degrade` by the `dual_memory_pressure` check at the
+    /// reaction site. Disjoint from `degrade_events_count`:
+    /// promoted verdicts count as DeepDegrade, not Degrade. The
+    /// counter is incremented even when `migrate_all_to_disk`
+    /// fails, matching the "count the attempt" policy established
+    /// in M3-e.5.
+    pub(crate) deep_degrade_events_count: AtomicU64,
+    /// M3-e.11.5: directory under which `DeepDegrade` migrations
+    /// write their spillover files. Populated with
+    /// [`disk_tier::default_cache_dir`] by [`Self::new`]; tests
+    /// and advanced consumers override via
+    /// [`Self::with_cache_dir`] to place the files in a
+    /// deterministic location (typically a unique temp dir).
+    pub cache_dir: PathBuf,
 }
 
 /// M3-e.6: system-wide CPU utilization threshold above which the
@@ -177,6 +196,85 @@ pub fn cpu_saturated_externally(conditions: &GuardConditions) -> bool {
     share < CPU_SELF_CONTRIBUTION_MIN
 }
 
+/// M3-e.11.5: VRAM pressure threshold above which the reaction
+/// site considers the GPU memory tier "saturated enough to
+/// warrant disk spillover". Strictly above this value (`>`) is
+/// required to match the semantics of `memory_pressure` in the
+/// existing `SimpleMemoryPressureGuard`. Paired with
+/// [`DEEP_DEGRADE_RAM_THRESHOLD`] in [`dual_memory_pressure`];
+/// the conjunction ("both tiers saturated") is what distinguishes
+/// `DeepDegrade` from plain `Degrade`.
+///
+/// The value 0.85 is **deliberately more conservative** than the
+/// 0.65 threshold of `SimpleMemoryPressureGuard`: reaching this
+/// level means regular `Degrade` migration is insufficient
+/// (because RAM is also pressured), and the cost of disk I/O
+/// justifies a stricter trigger.
+pub const DEEP_DEGRADE_VRAM_THRESHOLD: f32 = 0.85;
+
+/// M3-e.11.5: RAM pressure threshold, sibling of
+/// [`DEEP_DEGRADE_VRAM_THRESHOLD`]. Same value (0.85) because
+/// the signal we care about is symmetric: either tier alone
+/// above 0.85 does **not** trigger promotion (plain `Degrade`
+/// can free VRAM to RAM or just live with RAM pressure), only
+/// both simultaneously. The stricter-than-Degrade rationale
+/// above applies to both.
+pub const DEEP_DEGRADE_RAM_THRESHOLD: f32 = 0.85;
+
+/// M3-e.11.5: decide whether a `Degrade` verdict should be
+/// **promoted** to `DeepDegrade` because both VRAM and RAM are
+/// saturated simultaneously. Called by the reaction site BEFORE
+/// the CPU-veto check — promotion to DeepDegrade bypasses the
+/// CPU veto entirely because disk spillover does not add CPU
+/// load the way Cpu-tier migration does.
+///
+/// Returns `true` (promote) only when **all** of the following
+/// hold:
+/// - `vram_pressure` is `Some(_)`.
+/// - `ram_pressure` is `Some(_)`.
+/// - `vram_pressure > DEEP_DEGRADE_VRAM_THRESHOLD`.
+/// - `ram_pressure > DEEP_DEGRADE_RAM_THRESHOLD`.
+///
+/// Returns `false` in every other case — fail-open when either
+/// signal is missing (the reaction site falls back to plain
+/// `Degrade` behavior, which is the pre-M3-e.11.5 path and
+/// always safe).
+pub fn dual_memory_pressure(conditions: &GuardConditions) -> bool {
+    match (conditions.vram_pressure, conditions.ram_pressure) {
+        (Some(v), Some(r)) => {
+            v > DEEP_DEGRADE_VRAM_THRESHOLD && r > DEEP_DEGRADE_RAM_THRESHOLD
+        }
+        _ => false,
+    }
+}
+
+/// M3-e.11.5: format a compact fragment describing the memory
+/// tiers for inclusion in `[AMG Guard]` log lines. Combines the
+/// aggregate `memory_pressure` with the per-tier breakdown
+/// introduced in M3-e.11.3:
+///
+/// - `" memory=vram=0.92,ram=0.87,total=0.92,"` when both tiers
+///   and the aggregate are populated.
+/// - `" memory=vram=0.72,total=0.72,"` when only VRAM probed.
+/// - `" memory=ram=0.50,total=0.50,"` when only RAM probed.
+/// - `" memory=n/a,"` when nothing is available.
+///
+/// Leading space and trailing comma match the convention of
+/// the other log fragments (GPU util, foreground, battery,
+/// latency). Observability-only.
+pub fn format_memory_fragment(conditions: &GuardConditions) -> String {
+    let total = conditions.memory_pressure;
+    match (conditions.vram_pressure, conditions.ram_pressure) {
+        (Some(v), Some(r)) => format!(
+            " memory=vram={:.2},ram={:.2},total={:.2},",
+            v, r, total
+        ),
+        (Some(v), None) => format!(" memory=vram={:.2},total={:.2},", v, total),
+        (None, Some(r)) => format!(" memory=ram={:.2},total={:.2},", r, total),
+        (None, None) => " memory=n/a,".to_string(),
+    }
+}
+
 impl ReactiveExecutionContext {
     pub fn new(
         signal_bus: Arc<SignalBus>,
@@ -189,7 +287,19 @@ impl ReactiveExecutionContext {
             guard_manager,
             degrade_events_count: AtomicU64::new(0),
             degrade_vetoed_by_cpu_count: AtomicU64::new(0),
+            deep_degrade_events_count: AtomicU64::new(0),
+            cache_dir: disk_tier::default_cache_dir(),
         }
+    }
+
+    /// M3-e.11.5: builder-style override for the disk-spill cache
+    /// directory. Intended primarily for tests that want a
+    /// deterministic, unique location (usually a per-test temp
+    /// dir generated via `uuid::Uuid`). Production code typically
+    /// accepts the default from [`disk_tier::default_cache_dir`].
+    pub fn with_cache_dir(mut self, cache_dir: PathBuf) -> Self {
+        self.cache_dir = cache_dir;
+        self
     }
 
     /// Number of times `GuardAction::Degrade` was processed by this
@@ -208,6 +318,15 @@ impl ReactiveExecutionContext {
         self.degrade_vetoed_by_cpu_count.load(Ordering::Relaxed)
     }
 
+    /// M3-e.11.5: number of times `GuardAction::DeepDegrade` was
+    /// processed by this context — whether the verdict came
+    /// directly from a guard or via promotion from `Degrade`,
+    /// and whether the resulting `migrate_all_to_disk` succeeded
+    /// or failed. Disjoint from `degrade_events_count`.
+    pub fn deep_degrade_events_count(&self) -> u64 {
+        self.deep_degrade_events_count.load(Ordering::Relaxed)
+    }
+
     /// Record that a Degrade verdict was processed. Called from the
     /// graph's guard-handling site; not part of the public API because
     /// external code has no business incrementing the counter.
@@ -220,6 +339,13 @@ impl ReactiveExecutionContext {
     /// `Degrade` arm's migration body runs.
     pub(crate) fn record_degrade_veto_by_cpu(&self) {
         self.degrade_vetoed_by_cpu_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// M3-e.11.5: record that a DeepDegrade verdict was processed.
+    /// Same "count the attempt" semantics as `record_degrade_event`.
+    pub(crate) fn record_deep_degrade_event(&self) {
+        self.deep_degrade_events_count
             .fetch_add(1, Ordering::Relaxed);
     }
 }

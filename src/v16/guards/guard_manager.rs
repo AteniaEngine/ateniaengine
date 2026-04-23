@@ -18,36 +18,50 @@ impl GuardManager {
 
     /// Evaluate all guards and produce a single recommended action.
     ///
-    /// Abort dominates over Degrade, which dominates over Continue. The
-    /// resulting recommendation is also checked against the execution contract
-    /// for basic legal constraints.
+    /// Dominance ordering (M3-e.11.5):
+    ///
+    ///   Abort > DeepDegrade > Degrade > Continue
+    ///
+    /// where each level wins over the ones to its right. The
+    /// combination rule is "highest-severity across the guards":
+    /// if any guard emits `Abort`, the verdict is `Abort`;
+    /// otherwise if any emits `DeepDegrade`, the verdict is
+    /// `DeepDegrade`; otherwise if any emits `Degrade`, the verdict
+    /// is `Degrade`; otherwise `Continue`.
+    ///
+    /// The resulting recommendation is also checked against the
+    /// execution contract for basic legal constraints.
     pub fn evaluate(
         &self,
         contract: &ExecutionContract,
         conditions: &GuardConditions,
     ) -> Result<GuardAction, GuardError> {
-        let mut final_action = GuardAction::Continue;
+        // Rank-based aggregation: compute the severity of every
+        // guard's action as an integer and keep the maximum. This
+        // replaces the cascading matches! pattern that was hard to
+        // extend when `DeepDegrade` landed between `Degrade` and
+        // `Abort`.
+        //
+        // Ranks (higher = more severe):
+        //   Continue     = 0
+        //   Degrade      = 1
+        //   DeepDegrade  = 2
+        //   Abort        = 3
+        fn rank(a: &GuardAction) -> u8 {
+            match a {
+                GuardAction::Continue => 0,
+                GuardAction::Degrade => 1,
+                GuardAction::DeepDegrade => 2,
+                GuardAction::Abort => 3,
+            }
+        }
 
+        let mut final_action = GuardAction::Continue;
         for guard in &self.guards {
             let action = guard.evaluate(contract, conditions);
-
-            // Abort dominates everything.
-            if matches!(final_action, GuardAction::Abort) || matches!(action, GuardAction::Abort)
-            {
-                final_action = GuardAction::Abort;
-                continue;
+            if rank(&action) > rank(&final_action) {
+                final_action = action;
             }
-
-            // Degrade dominates Continue.
-            if matches!(final_action, GuardAction::Degrade)
-                || matches!(action, GuardAction::Degrade)
-            {
-                final_action = GuardAction::Degrade;
-                continue;
-            }
-
-            // Otherwise both are Continue; keep Continue.
-            final_action = GuardAction::Continue;
         }
 
         // Basic legality check: continuing under a clear pre-OOM signal while
