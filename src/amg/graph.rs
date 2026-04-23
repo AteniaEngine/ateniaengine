@@ -225,11 +225,13 @@ impl Graph {
                             crate::amg::reactive::format_foreground_fragment(&conditions);
                         let bat_frag =
                             crate::amg::reactive::format_battery_fragment(&conditions);
+                        let lat_frag =
+                            crate::amg::reactive::format_latency_fragment(&conditions);
                         eprintln!(
                             "[AMG Guard][t_ms={}] Degrade VETOED at node {} \
                              (external CPU pressure): memory_pressure={:.2}, \
                              cpu_total={:.2}, cpu_self={:.2}, self_share={:.2},\
-                             {}{}{} thresholds total>{}, share<{}. \
+                             {}{}{}{} thresholds total>{}, share<{}. \
                              Skipping migration; execution continues on VRAM.",
                             timestamp_ms,
                             node_id,
@@ -240,6 +242,7 @@ impl Graph {
                             gpu_frag,
                             fg_frag,
                             bat_frag,
+                            lat_frag,
                             crate::amg::reactive::CPU_PRESSURE_TOTAL_THRESHOLD,
                             crate::amg::reactive::CPU_SELF_CONTRIBUTION_MIN,
                         );
@@ -261,10 +264,12 @@ impl Graph {
                                 crate::amg::reactive::format_foreground_fragment(&conditions);
                             let bat_frag =
                                 crate::amg::reactive::format_battery_fragment(&conditions);
+                            let lat_frag =
+                                crate::amg::reactive::format_latency_fragment(&conditions);
                             eprintln!(
                                 "[AMG Guard][t_ms={}] Degrade triggered at node {}: \
                                  memory_pressure={:.2}, probes_so_far={},\
-                                 {}{}{} migrated {} tensors, freed ~{:.2} MiB.",
+                                 {}{}{}{} migrated {} tensors, freed ~{:.2} MiB.",
                                 timestamp_ms,
                                 node_id,
                                 memory_pressure,
@@ -272,6 +277,7 @@ impl Graph {
                                 gpu_frag,
                                 fg_frag,
                                 bat_frag,
+                                lat_frag,
                                 report.tensors_migrated,
                                 mib,
                             );
@@ -289,10 +295,12 @@ impl Graph {
                                 crate::amg::reactive::format_foreground_fragment(&conditions);
                             let bat_frag =
                                 crate::amg::reactive::format_battery_fragment(&conditions);
+                            let lat_frag =
+                                crate::amg::reactive::format_latency_fragment(&conditions);
                             eprintln!(
                                 "[AMG Guard][t_ms={}] Degrade migration FAILED at node {}: \
                                  memory_pressure={:.2}, probes_so_far={},\
-                                 {}{}{} error: {:?}. \
+                                 {}{}{}{} error: {:?}. \
                                  Continuing; subsequent nodes may still fail.",
                                 timestamp_ms,
                                 node_id,
@@ -301,6 +309,7 @@ impl Graph {
                                 gpu_frag,
                                 fg_frag,
                                 bat_frag,
+                                lat_frag,
                                 e,
                             );
                         }
@@ -360,6 +369,52 @@ impl Graph {
             tensors_migrated,
             bytes_freed_estimate,
         })
+    }
+}
+
+/// M3-e.10: RAII-style timer that records each node's execution
+/// time to both the reaction-loop's `LatencyMonitor` (feeding
+/// `GuardConditions::latency_spike` / `latency_ewma` / `latency_ratio`)
+/// and the APX 7.6+ per-node EWMA history consumed by the HPGE
+/// priority scheduler.
+///
+/// A single `Instant::now()` at construction and a single `.elapsed()`
+/// at Drop cover all exit paths from `Graph::execute_single_inner` —
+/// the 4 early-return branches (fused_ops, FusedLinearActivationChain,
+/// fusion_plan pair, gpu_plan segment) and the default
+/// `match node_type` tail. Before M3-e.10 the hpge timing was
+/// scattered across three of the branches with varying placement
+/// (one fired *before* the actual `exec_fused` call, measuring
+/// dispatch time rather than execution time); this unification
+/// fixes that incidentally.
+///
+/// Recording to `LatencyMonitor` requires a live `SignalBus`; the
+/// recorder captures an `Option<Arc<SignalBus>>` at construction
+/// time so the Drop path only visits the monitor when a
+/// `reactive_context` is attached. `reactive_context: None` runs
+/// the graph exactly as before M3-e.10, modulo the hpge timing
+/// coverage improvement.
+struct NodeTimingRecorder {
+    start: std::time::Instant,
+    node_id: usize,
+    node_count: usize,
+    bus: Option<std::sync::Arc<crate::amm::signal_bus::SignalBus>>,
+    record_hpge: bool,
+}
+
+impl Drop for NodeTimingRecorder {
+    fn drop(&mut self) {
+        let dt = self.start.elapsed();
+        if let Some(bus) = self.bus.as_ref() {
+            bus.latency_monitor().record_latency(dt);
+        }
+        if self.record_hpge {
+            crate::apx7::hpge_priority::record_node_time(
+                self.node_id,
+                dt.as_micros() as f64,
+                self.node_count,
+            );
+        }
     }
 }
 
@@ -1437,8 +1492,22 @@ impl Graph {
     }
 
     pub(crate) fn execute_single_inner(&mut self, node_id: usize, record_tape: bool) {
-        let use_timing = crate::apx_mode_at_least("7.6");
-        let t0 = if use_timing { Some(Instant::now()) } else { None };
+        // M3-e.10: single timer covers every exit path via Drop. See
+        // the `NodeTimingRecorder` docstring for the unification
+        // rationale. Pre-M3-e.10 the hpge timing lived as three
+        // scattered `if use_timing { ... record_node_time(...) }`
+        // blocks at specific returns; those are gone, the Drop does
+        // it all.
+        let _timer = NodeTimingRecorder {
+            start: Instant::now(),
+            node_id,
+            node_count: self.nodes.len(),
+            bus: self
+                .reactive_context
+                .as_ref()
+                .map(|c| std::sync::Arc::clone(&c.signal_bus)),
+            record_hpge: crate::apx_mode_at_least("7.6"),
+        };
 
         // Backward tape invariants for the fused dispatch paths below:
         //
@@ -1466,12 +1535,9 @@ impl Graph {
         if let Some(fused) = self.fused_ops.get(&node_id).cloned() {
             let has_fused_backward = matches!(fused, FusedOp::FusedQKV { .. });
             if has_fused_backward || !record_tape {
-                if use_timing {
-                    if let Some(start) = t0 {
-                        let dt = start.elapsed().as_micros() as f64;
-                        crate::apx7::hpge_priority::record_node_time(node_id, dt, self.nodes.len());
-                    }
-                }
+                // Timing handled by `NodeTimingRecorder` at function
+                // exit (M3-e.10). Pre-M3-e.10 a pre-call record here
+                // measured dispatch time rather than execution time.
                 return self.exec_fused(node_id, fused, record_tape);
             }
         }
@@ -1577,12 +1643,7 @@ impl Graph {
             }
 
             self.nodes[node_id].set_output(out);
-            if use_timing {
-                if let Some(start) = t0 {
-                    let dt = start.elapsed().as_micros() as f64;
-                    crate::apx7::hpge_priority::record_node_time(node_id, dt, self.nodes.len());
-                }
-            }
+            // Timing handled by `NodeTimingRecorder` at function exit (M3-e.10).
             return;
         }
 
@@ -1618,12 +1679,7 @@ impl Graph {
             if let Some(plan) = &self.gpu_plan {
                 if let Some(seg) = plan.segments.iter().find(|s| s.start == node_id).cloned() {
                     self.exec_gpu_segment(&seg);
-                    if use_timing {
-                        if let Some(start) = t0 {
-                            let dt = start.elapsed().as_micros() as f64;
-                            crate::apx7::hpge_priority::record_node_time(node_id, dt, self.nodes.len());
-                        }
-                    }
+                    // Timing handled by `NodeTimingRecorder` at function exit (M3-e.10).
                     return;
                 }
             }

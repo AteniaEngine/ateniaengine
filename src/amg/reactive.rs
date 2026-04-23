@@ -99,6 +99,31 @@ pub fn format_foreground_fragment(conditions: &GuardConditions) -> String {
     }
 }
 
+/// M3-e.10: format a compact fragment describing self-latency
+/// state for inclusion in `[AMG Guard]` log lines.
+///
+/// Returns one of:
+/// - `" latency=5.2ms→7.8ms (1.50x),"` — baseline and EWMA both
+///   known; ratio above 1 means Atenia is running slower than its
+///   own recent baseline.
+/// - `" latency=n/a,"` — monitor has fewer than `min_samples`
+///   measurements (cold baseline), or either field is missing.
+///
+/// Same leading-space / trailing-comma convention as the other
+/// fragments. Observability-only.
+pub fn format_latency_fragment(conditions: &GuardConditions) -> String {
+    match (
+        conditions.latency_baseline_ms,
+        conditions.latency_current_ms,
+        conditions.latency_ratio,
+    ) {
+        (Some(b), Some(c), Some(r)) => {
+            format!(" latency={:.2}ms→{:.2}ms ({:.2}x),", b, c, r)
+        }
+        _ => " latency=n/a,".to_string(),
+    }
+}
+
 /// M3-e.9: format a compact fragment describing battery state for
 /// inclusion in `[AMG Guard]` log lines. The two `GuardConditions`
 /// fields (`on_battery` and `battery_level`) can vary independently,

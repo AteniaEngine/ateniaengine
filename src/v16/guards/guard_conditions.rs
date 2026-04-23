@@ -66,6 +66,23 @@ pub struct GuardConditions {
     /// M3-e.12 `Conservation` mode will be the first consumer
     /// that gates decisions on it.
     pub battery_level: Option<f32>,
+    /// M3-e.10: P50 baseline of recent node execution latencies,
+    /// in milliseconds. `None` when the `LatencyMonitor` has fewer
+    /// than `min_samples` measurements in window (cold baseline).
+    pub latency_baseline_ms: Option<f32>,
+    /// M3-e.10: EWMA of recent node execution latencies, in
+    /// milliseconds. `None` with the same cold-baseline criterion
+    /// as `latency_baseline_ms`.
+    pub latency_current_ms: Option<f32>,
+    /// M3-e.10: derived ratio `latency_current_ms / latency_baseline_ms`.
+    /// Values above 1.0 indicate Atenia is running slower than its
+    /// own recent baseline — the most honest signal that *something*
+    /// is applying pressure, regardless of which probe would
+    /// otherwise report it. `None` when either input is `None`.
+    /// **Observability-only in M3-e.10**: no reaction site gates
+    /// decisions on this field; future milestones (M3-e.12 behavior
+    /// modes) can consume it as a primary trigger.
+    pub latency_ratio: Option<f32>,
 }
 
 impl GuardConditions {
@@ -91,6 +108,9 @@ impl GuardConditions {
             foreground_is_atenia: None,
             on_battery: None,
             battery_level: None,
+            latency_baseline_ms: None,
+            latency_current_ms: None,
+            latency_ratio: None,
         }
     }
 
@@ -141,6 +161,28 @@ impl GuardConditions {
     /// clamped defensively to `[0.0, 1.0]`.
     pub fn with_battery_level(mut self, level: f32) -> Self {
         self.battery_level = Some(level.clamp(0.0, 1.0));
+        self
+    }
+
+    /// Builder-style setter for the three latency-context fields
+    /// (M3-e.10). The three fields come from the same
+    /// `LatencyMonitor` snapshot and always travel together — a
+    /// single setter prevents half-populated states where baseline
+    /// is known but current is not, or vice versa.
+    ///
+    /// The `ratio` parameter is computed by the caller so the
+    /// formula (`current / baseline` vs alternatives such as
+    /// `(current - baseline) / baseline`) stays centralized at the
+    /// call site that knows the semantics.
+    pub fn with_latency_context(
+        mut self,
+        baseline_ms: f32,
+        current_ms: f32,
+        ratio: f32,
+    ) -> Self {
+        self.latency_baseline_ms = Some(baseline_ms);
+        self.latency_current_ms = Some(current_ms);
+        self.latency_ratio = Some(ratio);
         self
     }
 }

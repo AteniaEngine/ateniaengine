@@ -319,6 +319,32 @@ impl SignalBus {
         if let Some(level) = probes.battery_level {
             conditions = conditions.with_battery_level(level);
         }
+        // M3-e.10: self-latency context. Read FRESH every call —
+        // latency measurements are accumulated continuously by
+        // `execute_single_inner` and cost sub-microsecond to
+        // consult, so caching them would only delay reaction to
+        // a genuine slowdown. `recent_failures` and `latency_spike`
+        // follow the same fresh-read policy.
+        //
+        // The three fields (baseline / current / ratio) come from
+        // the same monitor snapshot; we populate them as a group
+        // so the invariant `ratio == current / baseline` always
+        // holds downstream, and we only do so when both underlying
+        // values are available (monitor has >= min_samples).
+        let baseline = self.latency_monitor.baseline_p50();
+        let current = self.latency_monitor.latency_ewma();
+        if let (Some(b), Some(c)) = (baseline, current) {
+            let baseline_ms = b.as_secs_f64() as f32 * 1000.0;
+            let current_ms = c.as_secs_f64() as f32 * 1000.0;
+            // Guard against baseline_ms == 0 (extremely unlikely
+            // with real measurements, but possible if every sample
+            // rounded to sub-nanosecond on a fast path).
+            if baseline_ms > 0.0 {
+                let ratio = current_ms / baseline_ms;
+                conditions =
+                    conditions.with_latency_context(baseline_ms, current_ms, ratio);
+            }
+        }
         Some(conditions)
     }
 

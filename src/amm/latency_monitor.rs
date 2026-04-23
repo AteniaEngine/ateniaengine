@@ -146,6 +146,48 @@ impl LatencyMonitor {
         purge_events(&mut events, self.baseline_window, now);
         events.len() as u32
     }
+
+    /// M3-e.10: exponentially-weighted moving average of in-window
+    /// latency measurements. Returns `None` when there are fewer
+    /// than `min_samples` events (cold baseline).
+    ///
+    /// The weighting factor (`alpha = 0.2`) matches the one used by
+    /// `apx7::hpge_priority::record_node_time` for the per-node
+    /// EWMA so that consumers reading either pipeline see the same
+    /// smoothing behavior. A larger alpha (closer to 1.0) would
+    /// react faster but amplify single-sample noise; 0.2 is the
+    /// empirical middle ground.
+    ///
+    /// Iteration order follows the VecDeque's oldest-first
+    /// traversal so newer samples dominate the final value. The
+    /// first in-window sample seeds the EWMA; subsequent samples
+    /// are blended as `ewma = (1 - alpha) * prev + alpha * sample`.
+    pub fn latency_ewma(&self) -> Option<Duration> {
+        const ALPHA: f64 = 0.2;
+        let Ok(mut events) = self.events.lock() else {
+            return None;
+        };
+        let now = Instant::now();
+        purge_events(&mut events, self.baseline_window, now);
+        if (events.len() as u32) < self.min_samples {
+            return None;
+        }
+        let mut iter = events.iter();
+        let first = iter.next()?;
+        let mut ewma_secs = first.duration.as_secs_f64();
+        for ev in iter {
+            let s = ev.duration.as_secs_f64();
+            ewma_secs = (1.0 - ALPHA) * ewma_secs + ALPHA * s;
+        }
+        // Clamp defensively — the arithmetic above should always
+        // yield a non-negative finite value, but if something about
+        // the input is malformed we prefer `None` over a bogus
+        // Duration.
+        if !ewma_secs.is_finite() || ewma_secs < 0.0 {
+            return None;
+        }
+        Some(Duration::from_secs_f64(ewma_secs))
+    }
 }
 
 impl Default for LatencyMonitor {
@@ -281,6 +323,63 @@ mod tests {
         assert!(m.has_recent_spike(), "spike must be present immediately");
         thread::sleep(Duration::from_millis(120));
         assert!(!m.has_recent_spike(), "spike must expire after window");
+    }
+
+    #[test]
+    fn test_latency_ewma_none_below_min_samples() {
+        let m = LatencyMonitor::new();
+        for _ in 0..5 {
+            m.record_latency(Duration::from_millis(50));
+        }
+        assert!(m.latency_ewma().is_none());
+    }
+
+    #[test]
+    fn test_latency_ewma_some_above_min_samples() {
+        let m = LatencyMonitor::new();
+        for _ in 0..15 {
+            m.record_latency(Duration::from_millis(50));
+        }
+        let ewma = m.latency_ewma().expect("EWMA must be Some with >=min_samples");
+        // Uniform 50ms samples: EWMA converges to 50ms regardless
+        // of alpha. Allow 1ms tolerance for float arithmetic.
+        let ms = ewma.as_secs_f64() * 1000.0;
+        assert!(
+            (ms - 50.0).abs() < 1.0,
+            "uniform 50ms samples must produce EWMA near 50ms, got {}ms",
+            ms
+        );
+    }
+
+    #[test]
+    fn test_latency_ewma_responds_to_recent_samples() {
+        // EWMA weights recent samples more heavily than old ones
+        // (alpha=0.2 per the implementation). After 15 samples of
+        // 50ms followed by 15 of 100ms, the final EWMA should lie
+        // closer to 100ms than to 50ms — but not exactly 100ms
+        // because the old samples still contribute.
+        let m = LatencyMonitor::new();
+        for _ in 0..15 {
+            m.record_latency(Duration::from_millis(50));
+        }
+        for _ in 0..15 {
+            m.record_latency(Duration::from_millis(100));
+        }
+        let ewma_ms = m
+            .latency_ewma()
+            .expect("EWMA must be Some")
+            .as_secs_f64()
+            * 1000.0;
+        assert!(
+            ewma_ms > 60.0,
+            "EWMA should have moved above the initial baseline, got {}ms",
+            ewma_ms
+        );
+        assert!(
+            ewma_ms < 100.0,
+            "EWMA should not yet match the new regime exactly, got {}ms",
+            ewma_ms
+        );
     }
 
     #[test]
