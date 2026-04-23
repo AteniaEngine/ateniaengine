@@ -31,6 +31,7 @@ use std::time::{Duration, Instant};
 
 use crate::amm::cpu_probe::{CpuProbe, CpuProbeApi};
 use crate::amm::failure_counter::FailureCounter;
+use crate::amm::gpu_util_probe::{GpuUtilProbe, GpuUtilProbeApi};
 use crate::amm::latency_monitor::LatencyMonitor;
 use crate::amm::ram_probe;
 use crate::amm::vram_probe;
@@ -74,6 +75,15 @@ pub struct SignalBus {
     /// unconditionally `None` and the reaction path falls back to
     /// memory-only decisions.
     cpu_probe: Option<Arc<dyn CpuProbeApi>>,
+    /// M3-e.7: GPU compute-utilization probe. `None` only when the
+    /// bus was explicitly constructed without one
+    /// (via [`SignalBus::with_probes`] passing `None`). The default
+    /// constructor always attaches a production [`GpuUtilProbe`];
+    /// the probe itself is stateless and free to construct, and
+    /// platform unavailability (no nvidia-smi, no NVIDIA GPU) is
+    /// surfaced per-call as a `GpuUtilProbeError` that gets turned
+    /// into `None` on the corresponding `GuardConditions` fields.
+    gpu_util_probe: Option<Arc<dyn GpuUtilProbeApi>>,
     /// Cached `(ProbeValues, captured_at)`. Populated whenever the
     /// probe path runs (a cache miss); consulted first on every call
     /// and refreshed only when the entry is absent or older than
@@ -94,8 +104,8 @@ pub struct SignalBus {
 }
 
 /// Bundle of probe readings captured on a single cache-miss cycle.
-/// Keeps memory and CPU aligned in time so a downstream consumer
-/// reads a self-consistent snapshot.
+/// Keeps memory, CPU and GPU-util aligned in time so a downstream
+/// consumer reads a self-consistent snapshot.
 #[derive(Debug, Clone, Copy)]
 struct ProbeValues {
     memory_pressure: f32,
@@ -104,6 +114,14 @@ struct ProbeValues {
     /// that case — hence the independent `Option`.
     cpu_total: Option<f32>,
     cpu_self: Option<f32>,
+    /// M3-e.7: GPU-compute readings, or `None` if the probe was
+    /// unavailable (no nvidia-smi) or failed on this cycle. Both
+    /// GPU fields track each other: either both `Some` or both
+    /// `None`. This mirrors the CPU pair and preserves the M3-e.7
+    /// "observability-only" contract — callers must tolerate
+    /// absence.
+    gpu_util_total: Option<f32>,
+    gpu_util_self: Option<f32>,
 }
 
 impl SignalBus {
@@ -121,23 +139,38 @@ impl SignalBus {
             Ok(probe) => Some(Arc::new(probe)),
             Err(_) => None,
         };
-        Self::with_cpu_probe_opt(cpu_probe)
+        // GPU-util probe construction is infallible by design (no
+        // warmup, no subprocess until `snapshot` is called). Per-
+        // call failures are handled inside `collect_probes` and
+        // surface as `None` on `GuardConditions`.
+        let gpu_util_probe: Option<Arc<dyn GpuUtilProbeApi>> =
+            Some(Arc::new(GpuUtilProbe::new()));
+        Self::with_probes(cpu_probe, gpu_util_probe)
     }
 
     /// Test / advanced constructor: build a bus with a caller-
-    /// provided CPU probe. Used by integration tests to inject a
-    /// deterministic fake that implements [`CpuProbeApi`] and returns
-    /// canned snapshots, so the reaction path can be exercised
-    /// without depending on real host CPU state.
+    /// provided CPU probe and the default production GPU probe.
+    /// Preserved from M3-e.6 as a convenience; most new tests should
+    /// prefer [`SignalBus::with_probes`] to control both probes.
     pub fn with_cpu_probe(cpu_probe: Arc<dyn CpuProbeApi>) -> Self {
-        Self::with_cpu_probe_opt(Some(cpu_probe))
+        let gpu_util_probe: Option<Arc<dyn GpuUtilProbeApi>> =
+            Some(Arc::new(GpuUtilProbe::new()));
+        Self::with_probes(Some(cpu_probe), gpu_util_probe)
     }
 
-    fn with_cpu_probe_opt(cpu_probe: Option<Arc<dyn CpuProbeApi>>) -> Self {
+    /// Test / advanced constructor: build a bus with caller-provided
+    /// CPU and GPU probes. Either may be `None` to disable the
+    /// corresponding signal entirely — useful for isolating one
+    /// probe under test from the other.
+    pub fn with_probes(
+        cpu_probe: Option<Arc<dyn CpuProbeApi>>,
+        gpu_util_probe: Option<Arc<dyn GpuUtilProbeApi>>,
+    ) -> Self {
         Self {
             failure_counter: Arc::new(FailureCounter::new()),
             latency_monitor: Arc::new(LatencyMonitor::new()),
             cpu_probe,
+            gpu_util_probe,
             probe_cache: Mutex::new(None),
             probe_calls_count: AtomicU64::new(0),
         }
@@ -202,6 +235,13 @@ impl SignalBus {
         // decision site.
         if let (Some(total), Some(self_)) = (probes.cpu_total, probes.cpu_self) {
             conditions = conditions.with_cpu_pressure(total, self_);
+        }
+        // Same policy for GPU-util (M3-e.7): both fields or neither.
+        // Observability-only today — no downstream logic gates on
+        // these, but future consumers (M3-e.11) can rely on the
+        // both-or-neither invariant.
+        if let (Some(total), Some(self_)) = (probes.gpu_util_total, probes.gpu_util_self) {
+            conditions = conditions.with_gpu_util(total, self_);
         }
         Some(conditions)
     }
@@ -333,10 +373,26 @@ impl SignalBus {
             None => (None, None),
         };
 
+        // GPU-util probe (M3-e.7) — same independence contract: its
+        // failure only nulls out the GPU fields. On non-NVIDIA hosts
+        // the probe returns `NvidiaSmiNotFound` on every call and
+        // the signal is effectively always `None`. The cost of the
+        // probe (~75 ms subprocess, measured) fits well within the
+        // 100 ms cache TTL.
+        let (gpu_util_total, gpu_util_self) = match self.gpu_util_probe.as_ref() {
+            Some(probe) => match probe.snapshot() {
+                Ok(snap) => (Some(snap.total_fraction), Some(snap.self_fraction)),
+                Err(_) => (None, None),
+            },
+            None => (None, None),
+        };
+
         let values = ProbeValues {
             memory_pressure,
             cpu_total,
             cpu_self,
+            gpu_util_total,
+            gpu_util_self,
         };
 
         // Store the fresh value. Only reachable when both memory

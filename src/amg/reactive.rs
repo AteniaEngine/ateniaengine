@@ -62,6 +62,25 @@ pub const CPU_PRESSURE_TOTAL_THRESHOLD: f32 = 0.80;
 /// skips the migration.
 pub const CPU_SELF_CONTRIBUTION_MIN: f32 = 0.50;
 
+/// M3-e.7: format a compact fragment describing the GPU compute
+/// utilization for inclusion in `[AMG Guard]` log lines. Returns
+/// `" gpu_util_total=0.XX, gpu_util_self=0.XX,"` when both fields
+/// are populated, or `" gpu_util=n/a,"` when either is absent.
+///
+/// The leading space and trailing comma let the caller inline the
+/// fragment into an existing log format string without rebuilding
+/// the whole message. Observability-only: the fragment never
+/// changes behavior, it only adds diagnostic context to the log.
+pub fn format_gpu_util_fragment(conditions: &GuardConditions) -> String {
+    match (conditions.gpu_util_total, conditions.gpu_util_self) {
+        (Some(total), Some(self_)) => format!(
+            " gpu_util_total={:.2}, gpu_util_self={:.2},",
+            total, self_
+        ),
+        _ => " gpu_util=n/a,".to_string(),
+    }
+}
+
 /// Decide whether a `Degrade` verdict should be vetoed because the
 /// CPU is saturated by *external* processes rather than by Atenia.
 ///
