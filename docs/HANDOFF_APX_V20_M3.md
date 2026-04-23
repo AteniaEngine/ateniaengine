@@ -422,6 +422,28 @@ These are documented so they are not confused with regressions.
    Atenia's good-citizen design principle that favors slow correct
    execution over fast failure.
 
+7. **`src/apx7/dynamic_load.rs` — silently broken CPU load sampling** —
+   The `sample_system_load` function creates a fresh `sysinfo::System`
+   instance per call and reads `cpu_usage()` from it. Because sysinfo
+   calculates CPU usage as a delta between two refresh calls, a fresh
+   `System` always reports 0.0% CPU usage on its first read. The
+   function has therefore been returning a constant near-zero CPU
+   load since its introduction. The downstream strategy selector in
+   `choose_strategy` uses this value as a heuristic input, meaning
+   its "high CPU" branch has never been exercised in practice. This
+   was discovered during M3-e.6 investigation when the same pattern
+   was identified as incorrect for the new `CpuProbe`, which
+   explicitly maintains a stateful `System` instance across calls to
+   avoid this bug.
+
+   Resolution requires either (a) making `sample_system_load`
+   stateful like the new `CpuProbe`, or (b) refactoring
+   `choose_strategy` to use the new `CpuProbe` directly instead of
+   maintaining a separate code path. Option (b) is architecturally
+   cleaner but requires understanding the strategy selector's
+   dependencies. Tracked as separate cleanup; does not block other
+   work.
+
 ---
 
 ## Files actually touched in M3-e.1–e.5
