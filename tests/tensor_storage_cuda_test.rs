@@ -16,7 +16,7 @@
 //! Every test graceful-skips if the singleton engine is unavailable.
 
 use atenia_engine::gpu::gpu_engine;
-use atenia_engine::tensor::{GpuTransferError, Tensor, TensorStorage};
+use atenia_engine::tensor::{StorageTransferError, Tensor, TensorStorage};
 
 /// Skip the rest of a test if no GPU is available in this environment.
 /// Returns `true` when the caller should proceed.
@@ -74,6 +74,7 @@ fn test_ensure_gpu_on_gpu_is_noop() {
     let ptr_before = match t.storage() {
         TensorStorage::Cuda(g) => g.device_ptr(),
         TensorStorage::Cpu(_) => unreachable!("storage should be Cuda here"),
+        TensorStorage::Disk(_) => unreachable!("test never places tensor on Disk"),
     };
 
     t.ensure_gpu()
@@ -82,6 +83,7 @@ fn test_ensure_gpu_on_gpu_is_noop() {
     let ptr_after = match t.storage() {
         TensorStorage::Cuda(g) => g.device_ptr(),
         TensorStorage::Cpu(_) => unreachable!("storage should still be Cuda"),
+        TensorStorage::Disk(_) => unreachable!("test never places tensor on Disk"),
     };
 
     assert_eq!(
@@ -180,7 +182,7 @@ fn test_graceful_skip_no_gpu() {
     // rather than panicking, so callers can fall back to CPU execution.
     let mut t = Tensor::new_cpu(vec![2], vec![1.0f32, 2.0]);
     match t.ensure_gpu() {
-        Err(GpuTransferError::EngineUnavailable) => {}
+        Err(StorageTransferError::EngineUnavailable) => {}
         Err(other) => panic!(
             "expected EngineUnavailable, got {:?}",
             other

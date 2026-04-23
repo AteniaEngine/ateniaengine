@@ -43,12 +43,14 @@ fn test_numel() {
 fn test_storage_accessor() {
     let t = Tensor::new_cpu(vec![3], vec![7.0, 8.0, 9.0]);
 
-    // This test uses CPU storage only; the Cuda arm is unreachable.
+    // This test uses CPU storage only; the Cuda and Disk arms are
+    // unreachable.
     match t.storage() {
         TensorStorage::Cpu(v) => {
             assert_eq!(v, &vec![7.0, 8.0, 9.0]);
         }
         TensorStorage::Cuda(_) => unreachable!("test uses CPU storage only"),
+        TensorStorage::Disk(_) => unreachable!("test uses CPU storage only"),
     }
 }
 
@@ -88,6 +90,7 @@ fn test_clone_preserves_storage() {
             assert_eq!(v, &vec![1.0, 2.0, 3.0, 4.0]);
         }
         TensorStorage::Cuda(_) => unreachable!("test uses CPU storage only"),
+        TensorStorage::Disk(_) => unreachable!("test uses CPU storage only"),
     }
 
     // And the clone is independent: mutating it does not touch the

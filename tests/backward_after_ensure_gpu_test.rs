@@ -22,7 +22,7 @@
 //! # Limitations
 //!
 //! - The error path of `backward_checked` (returning
-//!   `Err(GpuTransferError::...)`) is not covered here. Exercising it
+//!   `Err(StorageTransferError::...)`) is not covered here. Exercising it
 //!   requires injecting a failure into `gpu_engine()` or into a
 //!   `TensorGPU::to_cpu` call, and no mock infrastructure exists for
 //!   either today. Coverage will be added alongside such infrastructure

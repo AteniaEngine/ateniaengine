@@ -64,6 +64,13 @@ impl AdamW {
                      before the optimizer step. Native GPU optimizer is \
                      scheduled for M3-d.4+."
                 ),
+                crate::tensor::TensorStorage::Disk(_) => panic!(
+                    "AdamW: parameter is Disk-resident; call ensure_cpu() \
+                     before the optimizer step to materialize data back in \
+                     host memory. Disk-spilled parameters are M3-e.11 \
+                     reactive-path territory, not a training-loop steady \
+                     state."
+                ),
             };
             for i in 0..grad.len() {
                 let g = grad[i];

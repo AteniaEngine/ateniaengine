@@ -10,7 +10,7 @@ use crate::apx4_13::fusion_engine::FusedOp;
 use crate::apx5::kernel_planner::{KernelPlanner, KernelTarget};
 use crate::apx5::apx_5_3_planner::{Planner5_3, NodeExecInfo};
 use crate::apx5_4::{Sample, DeviceTarget};
-use crate::tensor::{GpuTransferError, Layout, Tensor, TensorStorage};
+use crate::tensor::{StorageTransferError, Layout, Tensor, TensorStorage};
 use crate::cpu_features::cpu_features;
 use super::chunking::{chunk_tensor, merge_chunks};
 use super::nodes::{Node, NodeType};
@@ -350,7 +350,7 @@ impl Graph {
     /// already moved stay on CPU, which is the safe direction).
     pub fn migrate_all_cuda_to_cpu(
         &mut self,
-    ) -> Result<crate::amg::reactive::DegradeReport, GpuTransferError> {
+    ) -> Result<crate::amg::reactive::DegradeReport, StorageTransferError> {
         let mut tensors_migrated = 0usize;
         let mut bytes_freed_estimate = 0usize;
 
@@ -1218,12 +1218,12 @@ impl Graph {
                             dx_k.ensure_cpu().expect(
                                 "backward intermediate: GPU->CPU transfer failed \
                                  (this indicates a CUDA driver issue during backward; \
-                                 see GpuTransferError variants)",
+                                 see StorageTransferError variants)",
                             );
                             dx_v.ensure_cpu().expect(
                                 "backward intermediate: GPU->CPU transfer failed \
                                  (this indicates a CUDA driver issue during backward; \
-                                 see GpuTransferError variants)",
+                                 see StorageTransferError variants)",
                             );
 
                             let mut dx_total = dx_q.copy_to_cpu_vec();
@@ -1243,7 +1243,7 @@ impl Graph {
                             dwq.ensure_cpu().expect(
                                 "backward intermediate: GPU->CPU transfer failed \
                                  (this indicates a CUDA driver issue during backward; \
-                                 see GpuTransferError variants)",
+                                 see StorageTransferError variants)",
                             );
                             add_to_grad_slice(store, wq, dwq.as_cpu_slice());
 
@@ -1251,7 +1251,7 @@ impl Graph {
                             dwk.ensure_cpu().expect(
                                 "backward intermediate: GPU->CPU transfer failed \
                                  (this indicates a CUDA driver issue during backward; \
-                                 see GpuTransferError variants)",
+                                 see StorageTransferError variants)",
                             );
                             add_to_grad_slice(store, wk, dwk.as_cpu_slice());
 
@@ -1259,7 +1259,7 @@ impl Graph {
                             dwv.ensure_cpu().expect(
                                 "backward intermediate: GPU->CPU transfer failed \
                                  (this indicates a CUDA driver issue during backward; \
-                                 see GpuTransferError variants)",
+                                 see StorageTransferError variants)",
                             );
                             add_to_grad_slice(store, wv, dwv.as_cpu_slice());
 
@@ -2104,7 +2104,7 @@ impl Graph {
                                 grad_a.ensure_cpu().expect(
                                     "backward intermediate: GPU->CPU transfer failed \
                                      (this indicates a CUDA driver issue during backward; \
-                                     see GpuTransferError variants)",
+                                     see StorageTransferError variants)",
                                 );
                                 add_to_grad_slice(store, ids[0], grad_a.as_cpu_slice());
 
@@ -2113,7 +2113,7 @@ impl Graph {
                                 grad_b.ensure_cpu().expect(
                                     "backward intermediate: GPU->CPU transfer failed \
                                      (this indicates a CUDA driver issue during backward; \
-                                     see GpuTransferError variants)",
+                                     see StorageTransferError variants)",
                                 );
                                 add_to_grad_slice(store, ids[1], grad_b.as_cpu_slice());
                             }),
@@ -2258,7 +2258,7 @@ impl Graph {
                             grad_a.ensure_cpu().expect(
                                 "backward intermediate: GPU->CPU transfer failed \
                                  (this indicates a CUDA driver issue during backward; \
-                                 see GpuTransferError variants)",
+                                 see StorageTransferError variants)",
                             );
                             add_to_grad_slice(store, ids[0], grad_a.as_cpu_slice());
 
@@ -2267,7 +2267,7 @@ impl Graph {
                             grad_b.ensure_cpu().expect(
                                 "backward intermediate: GPU->CPU transfer failed \
                                  (this indicates a CUDA driver issue during backward; \
-                                 see GpuTransferError variants)",
+                                 see StorageTransferError variants)",
                             );
                             add_to_grad_slice(store, ids[1], grad_b.as_cpu_slice());
                         }),
@@ -2294,7 +2294,7 @@ impl Graph {
                             grad_x.ensure_cpu().expect(
                                 "backward intermediate: GPU->CPU transfer failed \
                                  (this indicates a CUDA driver issue during backward; \
-                                 see GpuTransferError variants)",
+                                 see StorageTransferError variants)",
                             );
                             add_to_grad_slice(store, op_inputs[0], grad_x.as_cpu_slice());
                         }),
@@ -2364,7 +2364,7 @@ impl Graph {
                                 reshaped_back.ensure_cpu().expect(
                                     "backward intermediate: GPU->CPU transfer failed \
                                      (this indicates a CUDA driver issue during backward; \
-                                     see GpuTransferError variants)",
+                                     see StorageTransferError variants)",
                                 );
                                 add_to_grad_slice(store, op_inputs[0], reshaped_back.as_cpu_slice());
                             }),
@@ -2392,7 +2392,7 @@ impl Graph {
                             back.ensure_cpu().expect(
                                 "backward intermediate: GPU->CPU transfer failed \
                                  (this indicates a CUDA driver issue during backward; \
-                                 see GpuTransferError variants)",
+                                 see StorageTransferError variants)",
                             );
                             add_to_grad_slice(store, op_inputs[0], back.as_cpu_slice());
                         }),
@@ -2941,7 +2941,7 @@ impl Graph {
                             grad_x.ensure_cpu().expect(
                                 "backward intermediate: GPU->CPU transfer failed \
                                  (this indicates a CUDA driver issue during backward; \
-                                 see GpuTransferError variants)",
+                                 see StorageTransferError variants)",
                             );
                             add_to_grad_slice(store, ids[0], grad_x.as_cpu_slice());
 
@@ -2950,7 +2950,7 @@ impl Graph {
                             grad_w.ensure_cpu().expect(
                                 "backward intermediate: GPU->CPU transfer failed \
                                  (this indicates a CUDA driver issue during backward; \
-                                 see GpuTransferError variants)",
+                                 see StorageTransferError variants)",
                             );
                             add_to_grad_slice(store, ids[1], grad_w.as_cpu_slice());
 
@@ -3179,7 +3179,7 @@ impl Graph {
                                     grad_x.ensure_cpu().expect(
                                         "backward intermediate: GPU->CPU transfer failed \
                                          (this indicates a CUDA driver issue during backward; \
-                                         see GpuTransferError variants)",
+                                         see StorageTransferError variants)",
                                     );
                                     add_to_grad_slice(store, ids[0], grad_x.as_cpu_slice());
                                 } else {
@@ -3368,11 +3368,11 @@ impl Graph {
     /// tensor to CPU storage via [`Tensor::ensure_cpu`]. This guarantees
     /// that the closures — which consume tensors through `as_cpu_slice`
     /// and friends — never encounter a GPU-resident input. Any transfer
-    /// failure is returned as [`GpuTransferError`] rather than panicking.
+    /// failure is returned as [`StorageTransferError`] rather than panicking.
     pub fn backward_checked(
         &mut self,
         loss_node_id: usize,
-    ) -> Result<(), GpuTransferError> {
+    ) -> Result<(), StorageTransferError> {
         // Reset gradient store for this backward pass.
         self.grad_store = GradStore::new();
 
@@ -3445,7 +3445,7 @@ impl Graph {
     pub fn backward_sequential_checked(
         &mut self,
         loss_node_id: usize,
-    ) -> Result<(), GpuTransferError> {
+    ) -> Result<(), StorageTransferError> {
         // Reset gradient store for this backward pass.
         self.grad_store = GradStore::new();
 

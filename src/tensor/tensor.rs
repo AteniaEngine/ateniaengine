@@ -7,6 +7,7 @@ use crate::apx8::mirror::GPUMirror;
 use crate::apx8::persistent::{GPUPersistenceInfo, next_global_step};
 use crate::gpu::tensor::manager::GpuTensorManager;
 use crate::gpu::tensor::TensorGPU;
+use crate::tensor::disk_tier::{self, DiskTensorHandle};
 
 /// Supported data types for Atenia tensors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,9 +50,9 @@ pub enum Layout {
 /// Physical storage backend for a [`Tensor`]'s element data.
 ///
 /// `TensorStorage` encapsulates *where* the raw numeric bytes live (host RAM,
-/// device VRAM, eventually ROCm / Metal buffers) independent of the tensor's
-/// logical shape, dtype, or layout — those are properties of the [`Tensor`]
-/// wrapper, not of the storage.
+/// device VRAM, on-disk spillover, eventually ROCm / Metal buffers)
+/// independent of the tensor's logical shape, dtype, or layout — those are
+/// properties of the [`Tensor`] wrapper, not of the storage.
 ///
 /// # Why an enum instead of a trait
 ///
@@ -69,6 +70,15 @@ pub enum Layout {
 ///   `Arc<InnerGpuPtr>` introduced in M3-d.1. Cloning a `Tensor` whose
 ///   storage is `Cuda` shares the same VRAM region; VRAM is released when
 ///   the last clone is dropped.
+/// - `Disk(DiskTensorHandle)` — on-disk spillover introduced in M3-e.11.2
+///   for the dual-pressure (VRAM + RAM saturated) reaction path. The
+///   handle refcounts an on-disk file via `Arc<InnerDiskFile>`; the file
+///   is removed best-effort when the last clone drops. Disk tensors are
+///   opaque to ops — every consumer that reaches a `Disk` variant must
+///   call [`Tensor::ensure_cpu`] first to materialize the data back in
+///   host memory. In M3-e.11.2 the variant is **only produced by
+///   external code** (none of the engine's current migration paths
+///   produces it yet); bring-back via `ensure_cpu` is lazy and tested.
 ///
 /// Additional backends (`Rocm`, `Metal`) are left for future milestones.
 #[derive(Clone, Debug)]
@@ -86,12 +96,25 @@ pub enum TensorStorage {
     /// between all clones of the owning `Tensor`; the region is freed when
     /// the last clone drops.
     Cuda(TensorGPU),
+    /// Disk-spilled storage backed by a refcounted [`DiskTensorHandle`].
+    ///
+    /// Introduced in M3-e.11.2. Hot-path ops panic when encountering this
+    /// variant via `as_cpu_slice` / `as_cpu_slice_mut`; callers must call
+    /// [`Tensor::ensure_cpu`] first to bring the bytes back to host
+    /// memory. `ensure_gpu` from `Disk` is a two-hop (disk → cpu → gpu)
+    /// that reuses `ensure_cpu` and then the pre-existing CPU → VRAM
+    /// path.
+    Disk(DiskTensorHandle),
 }
 
-/// Failure modes for host⇄device transfers in
-/// [`Tensor::ensure_gpu`] / [`Tensor::ensure_cpu`].
+/// Failure modes for storage transitions (Cpu ↔ Cuda, Cpu ↔ Disk) in
+/// [`Tensor::ensure_cpu`] / [`Tensor::ensure_gpu`] / disk spill APIs.
+///
+/// Renamed from `GpuTransferError` in M3-e.11.2 because the addition of
+/// `TensorStorage::Disk` makes the old name inaccurate — the error is no
+/// longer GPU-specific.
 #[derive(Debug, Clone)]
-pub enum GpuTransferError {
+pub enum StorageTransferError {
     /// `crate::gpu::gpu_engine()` returned `None` — no CUDA driver or
     /// compatible device is available in this process.
     EngineUnavailable,
@@ -101,6 +124,20 @@ pub enum GpuTransferError {
     AllocationFailed,
     /// Device→host copy failed on an already-resident GPU tensor.
     TransferFailed,
+    /// M3-e.11.2: writing a tensor to disk failed. Typical causes are
+    /// full disk, permission denied, or fs-level corruption. Produced by
+    /// the disk-spill migration path (lands in M3-e.11.4) but defined
+    /// here to give the error enum its final shape early.
+    DiskWriteFailed(String),
+    /// M3-e.11.2: reading a tensor back from disk failed during
+    /// [`Tensor::ensure_cpu`] on a `TensorStorage::Disk` variant. The
+    /// inner string carries the underlying [`std::io::Error`] message.
+    DiskReadFailed(String),
+    /// M3-e.11.2: the file on disk did not have the expected byte
+    /// count — usually indicates a crash mid-write in a prior process
+    /// that left a truncated file, or a shape mismatch between the
+    /// handle and the owning [`Tensor`].
+    DiskSizeMismatch { expected: usize, got: usize },
 }
 
 /// Minimal tensor container backing data with owned storage.
@@ -392,6 +429,10 @@ impl Tensor {
                 "Tensor::as_cpu_slice called on a GPU-resident tensor. \
                  Call ensure_cpu() first to transfer data to host memory."
             ),
+            TensorStorage::Disk(_) => panic!(
+                "Tensor::as_cpu_slice called on a Disk-resident tensor. \
+                 Call ensure_cpu() first to materialize data back in host memory."
+            ),
         }
     }
 
@@ -405,6 +446,10 @@ impl Tensor {
             TensorStorage::Cuda(_) => panic!(
                 "Tensor::as_cpu_slice_mut called on a GPU-resident tensor. \
                  Call ensure_cpu() first to transfer data to host memory."
+            ),
+            TensorStorage::Disk(_) => panic!(
+                "Tensor::as_cpu_slice_mut called on a Disk-resident tensor. \
+                 Call ensure_cpu() first to materialize data back in host memory."
             ),
         }
     }
@@ -425,6 +470,18 @@ impl Tensor {
             TensorStorage::Cuda(g) => g
                 .to_cpu()
                 .expect("copy_to_cpu_vec: device->host copy failed (driver error)"),
+            TensorStorage::Disk(handle) => {
+                // Read the tensor bytes from disk without mutating
+                // the storage variant — `copy_to_cpu_vec` is a
+                // non-mutating accessor by contract. Callers that
+                // want the storage transitioned should call
+                // `ensure_cpu` instead.
+                disk_tier::read_f32_tensor(handle).expect(
+                    "copy_to_cpu_vec: disk read failed — use ensure_cpu for \
+                     structured error handling, or verify that the underlying \
+                     file still exists and the handle's numel is accurate.",
+                )
+            }
         }
     }
 
@@ -434,23 +491,46 @@ impl Tensor {
     /// - `Cuda` storage: performs a device → host copy, replaces the
     ///   storage with `TensorStorage::Cpu`, dropping the `Arc<InnerGpuPtr>`
     ///   (which frees the VRAM if this was the last clone).
+    /// - `Disk` storage (M3-e.11.2): reads the file referenced by the
+    ///   `DiskTensorHandle`, validates the byte count against the
+    ///   tensor's `numel`, and replaces the storage with
+    ///   `TensorStorage::Cpu`. Dropping the `Arc<InnerDiskFile>` from
+    ///   the old storage variant triggers the file's best-effort
+    ///   deletion via `InnerDiskFile::Drop`.
     ///
-    /// Returns `&mut Self` on success to allow chaining.
-    pub fn ensure_cpu(&mut self) -> Result<&mut Self, GpuTransferError> {
-        if matches!(self.storage, TensorStorage::Cpu(_)) {
-            return Ok(self);
+    /// Returns `&mut Self` on success to allow chaining. Disk size
+    /// mismatches (file corrupted / truncated by a prior crash)
+    /// produce [`StorageTransferError::DiskSizeMismatch`]; generic
+    /// I/O errors produce [`StorageTransferError::DiskReadFailed`]
+    /// with the underlying message.
+    pub fn ensure_cpu(&mut self) -> Result<&mut Self, StorageTransferError> {
+        match &self.storage {
+            TensorStorage::Cpu(_) => Ok(self),
+            TensorStorage::Cuda(g) => {
+                let cpu_vec = g
+                    .to_cpu()
+                    .map_err(|_| StorageTransferError::TransferFailed)?;
+                self.storage = TensorStorage::Cpu(cpu_vec);
+                Ok(self)
+            }
+            TensorStorage::Disk(handle) => {
+                let expected = self.numel();
+                let data = disk_tier::read_f32_tensor(handle)
+                    .map_err(|e| StorageTransferError::DiskReadFailed(e.to_string()))?;
+                if data.len() != expected {
+                    return Err(StorageTransferError::DiskSizeMismatch {
+                        expected,
+                        got: data.len(),
+                    });
+                }
+                // Assigning a new `storage` drops the previous
+                // `TensorStorage::Disk(handle)`, which drops the
+                // `Arc<InnerDiskFile>`. If this was the last clone,
+                // `InnerDiskFile::Drop` removes the file from disk.
+                self.storage = TensorStorage::Cpu(data);
+                Ok(self)
+            }
         }
-
-        let gpu = match &self.storage {
-            TensorStorage::Cuda(g) => g,
-            TensorStorage::Cpu(_) => unreachable!(),
-        };
-        let cpu_vec = gpu
-            .to_cpu()
-            .map_err(|_| GpuTransferError::TransferFailed)?;
-
-        self.storage = TensorStorage::Cpu(cpu_vec);
-        Ok(self)
     }
 
     /// Ensures the storage is GPU-resident after this call.
@@ -467,23 +547,40 @@ impl Tensor {
     /// (the APX 8.4 mirror stub is independent of this storage).
     ///
     /// Returns `&mut Self` on success to allow chaining.
-    pub fn ensure_gpu(&mut self) -> Result<&mut Self, GpuTransferError> {
+    pub fn ensure_gpu(&mut self) -> Result<&mut Self, StorageTransferError> {
         if matches!(self.storage, TensorStorage::Cuda(_)) {
             return Ok(self);
         }
 
+        // M3-e.11.2: Disk → Cuda is a two-hop (Disk → Cpu → Cuda).
+        // We delegate to `ensure_cpu` to read the file back and
+        // then fall through to the Cpu → Cuda path below. No
+        // direct disk→device copy: the data has to pass through a
+        // host buffer anyway for the H→D memcpy, so the extra hop
+        // is cost-free in wall time and keeps the paths orthogonal.
+        if matches!(self.storage, TensorStorage::Disk(_)) {
+            self.ensure_cpu()?;
+            // Fall through to the Cpu branch below.
+        }
+
         if crate::gpu::gpu_engine().is_none() {
-            return Err(GpuTransferError::EngineUnavailable);
+            return Err(StorageTransferError::EngineUnavailable);
         }
 
         let cpu_data: &[f32] = match &self.storage {
             TensorStorage::Cpu(v) => v.as_slice(),
-            TensorStorage::Cuda(_) => unreachable!(),
+            // After the Disk → Cpu hop above, we are guaranteed
+            // Cpu here. Cuda was already handled by the early
+            // return at the top of the function.
+            TensorStorage::Cuda(_) | TensorStorage::Disk(_) => unreachable!(
+                "ensure_gpu reached a non-Cpu variant after the normalization step; \
+                 this is a bug"
+            ),
         };
 
         let numel = self.numel();
         let gpu = TensorGPU::new_from_cpu(cpu_data, 1, numel)
-            .map_err(|_| GpuTransferError::AllocationFailed)?;
+            .map_err(|_| StorageTransferError::AllocationFailed)?;
 
         self.storage = TensorStorage::Cuda(gpu);
         Ok(self)
@@ -675,6 +772,11 @@ impl Tensor {
                 // real VRAM path introduced via TensorStorage::Cuda.
                 // Reconciliation of the two paths is pending.
                 TensorStorage::Cuda(_) => {}
+                // Disk storage (M3-e.11.2): the APX 8.4 mirror does
+                // not have meaningful semantics against an on-disk
+                // buffer, so sync is a no-op. Consumers that need
+                // the data must call `ensure_cpu` first.
+                TensorStorage::Disk(_) => {}
             }
             m.mark_synced();
         }
@@ -692,6 +794,9 @@ impl Tensor {
                 // real VRAM path introduced via TensorStorage::Cuda.
                 // Reconciliation of the two paths is pending.
                 TensorStorage::Cuda(_) => {}
+                // Disk storage (M3-e.11.2): no meaningful sync
+                // semantics. No-op.
+                TensorStorage::Disk(_) => {}
             }
             m.mark_synced();
         }

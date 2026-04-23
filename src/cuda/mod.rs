@@ -50,6 +50,13 @@ pub(crate) fn cuda_device_ptr(
         crate::tensor::TensorStorage::Cpu(_) => {
             unreachable!("cuda_device_ptr called on Cpu storage")
         }
+        crate::tensor::TensorStorage::Disk(_) => {
+            unreachable!(
+                "cuda_device_ptr called on Disk storage — the caller must \
+                 verify via matches!(_, TensorStorage::Cuda(_)) before \
+                 extracting the device pointer"
+            )
+        }
     }
 }
 
@@ -61,6 +68,13 @@ pub(crate) fn cuda_device_ptr_mut(
         crate::tensor::TensorStorage::Cuda(g) => g.device_ptr() as *mut f32,
         crate::tensor::TensorStorage::Cpu(_) => {
             unreachable!("cuda_device_ptr_mut called on Cpu storage")
+        }
+        crate::tensor::TensorStorage::Disk(_) => {
+            unreachable!(
+                "cuda_device_ptr_mut called on Disk storage — the caller must \
+                 verify via matches!(_, TensorStorage::Cuda(_)) before \
+                 extracting the device pointer"
+            )
         }
     }
 }

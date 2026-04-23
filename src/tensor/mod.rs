@@ -6,4 +6,6 @@ pub mod fp8;
 pub mod memory;
 pub mod disk_tier;
 
-pub use tensor::{DType, Device, GpuTransferError, Layout, Tensor, TensorRef, TensorStorage};
+pub use tensor::{
+    DType, Device, Layout, StorageTransferError, Tensor, TensorRef, TensorStorage,
+};
