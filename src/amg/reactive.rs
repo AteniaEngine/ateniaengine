@@ -99,6 +99,30 @@ pub fn format_foreground_fragment(conditions: &GuardConditions) -> String {
     }
 }
 
+/// M3-e.9: format a compact fragment describing battery state for
+/// inclusion in `[AMG Guard]` log lines. The two `GuardConditions`
+/// fields (`on_battery` and `battery_level`) can vary independently,
+/// so the fragment is built from both:
+/// - `" battery=plugged_0.85,"` — plugged in at 85% charge.
+/// - `" battery=plugged,"`      — plugged in, level unknown.
+/// - `" battery=on_0.15,"`      — on battery at 15% charge.
+/// - `" battery=on,"`           — on battery, level unknown.
+/// - `" battery=0.50,"`         — level known but AC state unknown (rare driver state).
+/// - `" battery=n/a,"`          — neither field present (desktop or stub platform).
+///
+/// Same leading-space / trailing-comma convention as the other
+/// fragments. Observability-only.
+pub fn format_battery_fragment(conditions: &GuardConditions) -> String {
+    match (conditions.on_battery, conditions.battery_level) {
+        (Some(true), Some(level)) => format!(" battery=on_{:.2},", level),
+        (Some(true), None) => " battery=on,".to_string(),
+        (Some(false), Some(level)) => format!(" battery=plugged_{:.2},", level),
+        (Some(false), None) => " battery=plugged,".to_string(),
+        (None, Some(level)) => format!(" battery={:.2},", level),
+        (None, None) => " battery=n/a,".to_string(),
+    }
+}
+
 /// Decide whether a `Degrade` verdict should be vetoed because the
 /// CPU is saturated by *external* processes rather than by Atenia.
 ///

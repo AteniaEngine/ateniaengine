@@ -8,6 +8,7 @@ pub mod batch_manager;
 pub mod memory_manager;
 pub mod vram_probe;
 pub mod ram_probe;
+pub mod battery_probe;
 pub mod cpu_probe;
 pub mod foreground_probe;
 pub mod gpu_util_probe;

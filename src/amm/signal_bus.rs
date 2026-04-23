@@ -29,6 +29,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::amm::battery_probe::{BatteryProbe, BatteryProbeApi};
 use crate::amm::cpu_probe::{CpuProbe, CpuProbeApi};
 use crate::amm::failure_counter::FailureCounter;
 use crate::amm::foreground_probe::{ForegroundProbe, ForegroundProbeApi};
@@ -91,6 +92,11 @@ pub struct SignalBus {
     /// [`ForegroundProbe`], which on non-Windows platforms returns
     /// `Ok(None)` on every call — fail-open by construction.
     foreground_probe: Option<Arc<dyn ForegroundProbeApi>>,
+    /// M3-e.9: battery state probe. Windows + Linux implemented;
+    /// macOS / other platforms return `(None, None)` on every call.
+    /// Desktop systems (no battery) similarly produce a `(None,
+    /// None)` snapshot — not an error.
+    battery_probe: Option<Arc<dyn BatteryProbeApi>>,
     /// Cached `(ProbeValues, captured_at)`. Populated whenever the
     /// probe path runs (a cache miss); consulted first on every call
     /// and refreshed only when the entry is absent or older than
@@ -135,6 +141,14 @@ struct ProbeValues {
     /// (everything but Windows). Independent of the other fields
     /// by the same failure-isolation contract.
     foreground_is_atenia: Option<bool>,
+    /// M3-e.9: battery on/off-AC. Independent of `battery_level` —
+    /// a partial reading (one `Some`, the other `None`) is
+    /// possible, e.g. when a driver exposes AC status but not
+    /// charge level.
+    on_battery: Option<bool>,
+    /// M3-e.9: battery charge level (0.0-1.0). See note on
+    /// `on_battery` regarding independence.
+    battery_level: Option<f32>,
 }
 
 impl SignalBus {
@@ -163,36 +177,49 @@ impl SignalBus {
         // `Ok(None)` (platform stub).
         let foreground_probe: Option<Arc<dyn ForegroundProbeApi>> =
             Some(Arc::new(ForegroundProbe::new()));
-        Self::with_probes(cpu_probe, gpu_util_probe, foreground_probe)
+        // M3-e.9: battery probe likewise infallible. Windows +
+        // Linux have real implementations; other platforms stub
+        // to `(None, None)`.
+        let battery_probe: Option<Arc<dyn BatteryProbeApi>> =
+            Some(Arc::new(BatteryProbe::new()));
+        Self::with_probes(cpu_probe, gpu_util_probe, foreground_probe, battery_probe)
     }
 
     /// Test / advanced constructor: build a bus with a caller-
-    /// provided CPU probe and the default production GPU +
-    /// foreground probes. Preserved from M3-e.6 for ergonomic test
-    /// setups that only need to control the CPU signal.
+    /// provided CPU probe and the default production GPU,
+    /// foreground and battery probes. Preserved from M3-e.6 for
+    /// ergonomic test setups that only need to control the CPU
+    /// signal.
     pub fn with_cpu_probe(cpu_probe: Arc<dyn CpuProbeApi>) -> Self {
         let gpu_util_probe: Option<Arc<dyn GpuUtilProbeApi>> =
             Some(Arc::new(GpuUtilProbe::new()));
         let foreground_probe: Option<Arc<dyn ForegroundProbeApi>> =
             Some(Arc::new(ForegroundProbe::new()));
-        Self::with_probes(Some(cpu_probe), gpu_util_probe, foreground_probe)
+        let battery_probe: Option<Arc<dyn BatteryProbeApi>> =
+            Some(Arc::new(BatteryProbe::new()));
+        Self::with_probes(
+            Some(cpu_probe),
+            gpu_util_probe,
+            foreground_probe,
+            battery_probe,
+        )
     }
 
     /// Test / advanced constructor: build a bus with caller-provided
-    /// CPU, GPU and foreground probes. Any may be `None` to disable
-    /// the corresponding signal entirely — useful for isolating one
-    /// probe under test from the others.
+    /// CPU, GPU, foreground and battery probes. Any may be `None`
+    /// to disable the corresponding signal entirely — useful for
+    /// isolating one probe under test from the others.
     ///
-    /// **Signature change in M3-e.8**: the two-probe variant was
-    /// expanded to three. The old name is kept because every call
-    /// site lived in test code. If a fourth probe is added in a
-    /// future milestone, evaluate switching to a builder pattern;
-    /// with three probes the positional signature is still
-    /// manageable.
+    /// **Signature change in M3-e.9**: the three-probe variant was
+    /// expanded to four. The old name is kept because every call
+    /// site lived in test code. If a fifth probe is added in a
+    /// future milestone (e.g. M3-e.10 self-latency signal), evaluate
+    /// switching to a builder pattern.
     pub fn with_probes(
         cpu_probe: Option<Arc<dyn CpuProbeApi>>,
         gpu_util_probe: Option<Arc<dyn GpuUtilProbeApi>>,
         foreground_probe: Option<Arc<dyn ForegroundProbeApi>>,
+        battery_probe: Option<Arc<dyn BatteryProbeApi>>,
     ) -> Self {
         Self {
             failure_counter: Arc::new(FailureCounter::new()),
@@ -200,6 +227,7 @@ impl SignalBus {
             cpu_probe,
             gpu_util_probe,
             foreground_probe,
+            battery_probe,
             probe_cache: Mutex::new(None),
             probe_calls_count: AtomicU64::new(0),
         }
@@ -280,6 +308,16 @@ impl SignalBus {
         // using this signal.
         if let Some(is_atenia) = probes.foreground_is_atenia {
             conditions = conditions.with_foreground(is_atenia);
+        }
+        // M3-e.9: battery fields populated independently — a driver
+        // exposing AC status without level (or vice versa) still
+        // contributes the field it has. Observability-only; M3-e.12
+        // `Conservation` mode is the intended first consumer.
+        if let Some(on_bat) = probes.on_battery {
+            conditions = conditions.with_on_battery(on_bat);
+        }
+        if let Some(level) = probes.battery_level {
+            conditions = conditions.with_battery_level(level);
         }
         Some(conditions)
     }
@@ -438,6 +476,19 @@ impl SignalBus {
             None => None,
         };
 
+        // Battery probe (M3-e.9) — FFI on Windows, sysfs reads on
+        // Linux, stub on other platforms. Desktop systems return
+        // `(None, None)` legitimately. Independence contract same
+        // as the others: partial readings are OK and reach
+        // `GuardConditions` without coupling the fields.
+        let (on_battery, battery_level) = match self.battery_probe.as_ref() {
+            Some(probe) => match probe.snapshot() {
+                Ok(snap) => (snap.on_battery, snap.battery_level),
+                Err(_) => (None, None),
+            },
+            None => (None, None),
+        };
+
         let values = ProbeValues {
             memory_pressure,
             cpu_total,
@@ -445,6 +496,8 @@ impl SignalBus {
             gpu_util_total,
             gpu_util_self,
             foreground_is_atenia,
+            on_battery,
+            battery_level,
         };
 
         // Store the fresh value. Only reachable when both memory

@@ -51,6 +51,21 @@ pub struct GuardConditions {
     /// today. Future milestones (M3-e.12 behavior modes) will
     /// consume it to distinguish `UserActive` from `SoloMachine`.
     pub foreground_is_atenia: Option<bool>,
+    /// M3-e.9: `Some(true)` when the system is running on battery
+    /// (unplugged); `Some(false)` when plugged into AC; `None`
+    /// when no battery is present (desktop) or the probe cannot
+    /// determine AC state. Independent of `battery_level` — some
+    /// drivers expose one but not the other.
+    pub on_battery: Option<bool>,
+    /// M3-e.9: battery charge level as a fraction in `[0.0, 1.0]`.
+    /// `None` when no battery is present or the probe cannot
+    /// determine the level. Can be `Some(_)` even when
+    /// `on_battery` is `Some(false)` — "plugged in at 15%"
+    /// remains useful policy input. **Observability-only in
+    /// M3-e.9**: the signal feeds `GuardConditions` and logs;
+    /// M3-e.12 `Conservation` mode will be the first consumer
+    /// that gates decisions on it.
+    pub battery_level: Option<f32>,
 }
 
 impl GuardConditions {
@@ -74,6 +89,8 @@ impl GuardConditions {
             gpu_util_total: None,
             gpu_util_self: None,
             foreground_is_atenia: None,
+            on_battery: None,
+            battery_level: None,
         }
     }
 
@@ -107,6 +124,23 @@ impl GuardConditions {
     /// where absence is the default.
     pub fn with_foreground(mut self, is_atenia: bool) -> Self {
         self.foreground_is_atenia = Some(is_atenia);
+        self
+    }
+
+    /// Builder-style setter for the battery on/off-AC indicator
+    /// (M3-e.9). Independent of `with_battery_level` — the two
+    /// fields are granular by design so `SignalBus` can populate
+    /// whichever it observed without forcing a fabricated value
+    /// for the other.
+    pub fn with_on_battery(mut self, on_battery: bool) -> Self {
+        self.on_battery = Some(on_battery);
+        self
+    }
+
+    /// Builder-style setter for the battery level (M3-e.9). Input
+    /// clamped defensively to `[0.0, 1.0]`.
+    pub fn with_battery_level(mut self, level: f32) -> Self {
+        self.battery_level = Some(level.clamp(0.0, 1.0));
         self
     }
 }

@@ -146,7 +146,7 @@ fn test_foreground_field_populated_as_atenia() {
     let gpu = Arc::new(FixedGpuUtilProbe::new(0.20, 0.10));
     let fg = Arc::new(FixedForegroundProbe::new(Some(true)));
     let bus =
-        SignalBus::with_probes(Some(cpu.clone()), Some(gpu.clone()), Some(fg.clone()));
+        SignalBus::with_probes(Some(cpu.clone()), Some(gpu.clone()), Some(fg.clone()), None);
 
     let Some(c) = bus.collect_guard_conditions() else {
         println!(
@@ -167,7 +167,7 @@ fn test_foreground_field_populated_as_atenia() {
 fn test_foreground_field_populated_as_other() {
     let cpu = Arc::new(FixedCpuProbe::new(0.10, 0.05));
     let fg = Arc::new(FixedForegroundProbe::new(Some(false)));
-    let bus = SignalBus::with_probes(Some(cpu.clone()), None, Some(fg.clone()));
+    let bus = SignalBus::with_probes(Some(cpu.clone()), None, Some(fg.clone()), None);
 
     let Some(c) = bus.collect_guard_conditions() else {
         println!(
@@ -188,7 +188,7 @@ fn test_foreground_field_none_when_probe_says_none() {
     // called (to exercise the stub path).
     let cpu = Arc::new(FixedCpuProbe::new(0.10, 0.05));
     let fg = Arc::new(FixedForegroundProbe::new(None));
-    let bus = SignalBus::with_probes(Some(cpu.clone()), None, Some(fg.clone()));
+    let bus = SignalBus::with_probes(Some(cpu.clone()), None, Some(fg.clone()), None);
 
     let Some(c) = bus.collect_guard_conditions() else {
         println!(
@@ -207,7 +207,7 @@ fn test_foreground_field_none_when_no_probe_attached() {
     // Explicit "no foreground probe" construction. The other
     // signals must still flow correctly.
     let cpu = Arc::new(FixedCpuProbe::new(0.40, 0.30));
-    let bus = SignalBus::with_probes(Some(cpu.clone()), None, None);
+    let bus = SignalBus::with_probes(Some(cpu.clone()), None, None, None);
 
     let Some(c) = bus.collect_guard_conditions() else {
         println!(
@@ -229,7 +229,7 @@ fn test_foreground_failure_does_not_contaminate_other_signals() {
     let gpu = Arc::new(FixedGpuUtilProbe::new(0.33, 0.11));
     let fg = Arc::new(FailingForegroundProbe::new());
     let bus =
-        SignalBus::with_probes(Some(cpu.clone()), Some(gpu.clone()), Some(fg.clone()));
+        SignalBus::with_probes(Some(cpu.clone()), Some(gpu.clone()), Some(fg.clone()), None);
 
     let Some(c) = bus.collect_guard_conditions() else {
         println!(
@@ -259,7 +259,7 @@ fn test_cache_monotonicity_with_all_three_probes() {
     let gpu = Arc::new(FixedGpuUtilProbe::new(0.33, 0.11));
     let fg = Arc::new(FixedForegroundProbe::new(Some(true)));
     let bus =
-        SignalBus::with_probes(Some(cpu.clone()), Some(gpu.clone()), Some(fg.clone()));
+        SignalBus::with_probes(Some(cpu.clone()), Some(gpu.clone()), Some(fg.clone()), None);
 
     // First call: populates the cache (if memory probe works).
     let first = bus.collect_guard_conditions();
