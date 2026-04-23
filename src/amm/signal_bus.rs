@@ -29,6 +29,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::amm::cpu_probe::{CpuProbe, CpuProbeApi};
 use crate::amm::failure_counter::FailureCounter;
 use crate::amm::latency_monitor::LatencyMonitor;
 use crate::amm::ram_probe;
@@ -65,25 +66,79 @@ pub const SIGNAL_BUS_CACHE_TTL: Duration = Duration::from_millis(100);
 pub struct SignalBus {
     failure_counter: Arc<FailureCounter>,
     latency_monitor: Arc<LatencyMonitor>,
-    /// Cached `(memory_pressure, captured_at)`. Populated by
-    /// `collect_memory_pressure`; consulted first on every call and
-    /// refreshed only when the entry is absent or older than
-    /// [`SIGNAL_BUS_CACHE_TTL`]. Probe failures are not cached
-    /// (fail-open semantics preserved).
-    memory_pressure_cache: Mutex<Option<(f32, Instant)>>,
+    /// M3-e.6: CPU probe behind a trait object so tests can inject
+    /// deterministic fakes via [`SignalBus::with_cpu_probe`]. `None`
+    /// when the production probe could not be constructed (rare —
+    /// only happens if the platform cannot resolve the current PID);
+    /// in that case the CPU fields on `GuardConditions` are
+    /// unconditionally `None` and the reaction path falls back to
+    /// memory-only decisions.
+    cpu_probe: Option<Arc<dyn CpuProbeApi>>,
+    /// Cached `(ProbeValues, captured_at)`. Populated whenever the
+    /// probe path runs (a cache miss); consulted first on every call
+    /// and refreshed only when the entry is absent or older than
+    /// [`SIGNAL_BUS_CACHE_TTL`]. Probe failures on memory are not
+    /// cached (fail-open for the aggregate signal). CPU probe
+    /// failures are recorded as `None` inside the cached entry,
+    /// because a failed CPU probe should not discard an otherwise
+    /// valid memory probe.
+    probe_cache: Mutex<Option<(ProbeValues, Instant)>>,
     /// Number of real probe invocations served so far. Incremented
-    /// exclusively when a cache miss triggers the underlying probe;
-    /// cache hits leave this count unchanged. Exposed for tests and
-    /// operational telemetry via [`SignalBus::probe_calls_count`].
+    /// exclusively when a cache miss triggers the memory probes;
+    /// cache hits leave this count unchanged. CPU probe calls do not
+    /// carry a separate counter — they run within the same cache
+    /// miss as the memory probe and their cost is amortized by the
+    /// same TTL. Exposed for tests and operational telemetry via
+    /// [`SignalBus::probe_calls_count`].
     probe_calls_count: AtomicU64,
 }
 
+/// Bundle of probe readings captured on a single cache-miss cycle.
+/// Keeps memory and CPU aligned in time so a downstream consumer
+/// reads a self-consistent snapshot.
+#[derive(Debug, Clone, Copy)]
+struct ProbeValues {
+    memory_pressure: f32,
+    /// CPU readings, or `None` if the probe was unavailable or
+    /// returned an error on this cycle. Memory is still usable in
+    /// that case — hence the independent `Option`.
+    cpu_total: Option<f32>,
+    cpu_self: Option<f32>,
+}
+
 impl SignalBus {
+    /// Build a bus with the production CPU probe attached.
+    ///
+    /// **Warmup cost**: instantiating [`CpuProbe::new`] pays a
+    /// one-time cost of ~200 ms to establish the sysinfo baseline
+    /// (see `cpu_probe` module docs). Call this during engine bring-
+    /// up, not on the hot path. If the CPU probe cannot be
+    /// constructed (rare; platform cannot resolve the current PID),
+    /// the bus is still built — memory-pressure signals work as
+    /// before, and CPU fields on `GuardConditions` are `None`.
     pub fn new() -> Self {
+        let cpu_probe: Option<Arc<dyn CpuProbeApi>> = match CpuProbe::new() {
+            Ok(probe) => Some(Arc::new(probe)),
+            Err(_) => None,
+        };
+        Self::with_cpu_probe_opt(cpu_probe)
+    }
+
+    /// Test / advanced constructor: build a bus with a caller-
+    /// provided CPU probe. Used by integration tests to inject a
+    /// deterministic fake that implements [`CpuProbeApi`] and returns
+    /// canned snapshots, so the reaction path can be exercised
+    /// without depending on real host CPU state.
+    pub fn with_cpu_probe(cpu_probe: Arc<dyn CpuProbeApi>) -> Self {
+        Self::with_cpu_probe_opt(Some(cpu_probe))
+    }
+
+    fn with_cpu_probe_opt(cpu_probe: Option<Arc<dyn CpuProbeApi>>) -> Self {
         Self {
             failure_counter: Arc::new(FailureCounter::new()),
             latency_monitor: Arc::new(LatencyMonitor::new()),
-            memory_pressure_cache: Mutex::new(None),
+            cpu_probe,
+            probe_cache: Mutex::new(None),
             probe_calls_count: AtomicU64::new(0),
         }
     }
@@ -130,15 +185,25 @@ impl SignalBus {
     /// growth patterns. Parameterization will be introduced in a later
     /// APX version.
     pub fn collect_guard_conditions(&self) -> Option<GuardConditions> {
-        let memory_pressure = self.collect_memory_pressure()?;
-        let pre_oom_signal = memory_pressure > 0.9;
+        let probes = self.collect_probes()?;
+        let pre_oom_signal = probes.memory_pressure > 0.9;
 
-        Some(GuardConditions::new(
-            memory_pressure,
+        let mut conditions = GuardConditions::new(
+            probes.memory_pressure,
             self.failure_counter.recent_count(),
             self.latency_monitor.has_recent_spike(),
             pre_oom_signal,
-        ))
+        );
+        // Populate CPU fields only when both readings are available.
+        // A partial reading (e.g. `total` present but `self` missing)
+        // is suppressed entirely — the skip logic in
+        // `check_guard_before_node` needs both or neither, and a
+        // half-populated struct would invite subtle bugs at the
+        // decision site.
+        if let (Some(total), Some(self_)) = (probes.cpu_total, probes.cpu_self) {
+            conditions = conditions.with_cpu_pressure(total, self_);
+        }
+        Some(conditions)
     }
 
     /// Collects current policy evidence from live memory telemetry
@@ -171,7 +236,7 @@ impl SignalBus {
     /// means "we don't know"; `Some(empty)` means "we checked and there
     /// is nothing to report".
     pub fn collect_policy_evidence(&self) -> Option<PolicyEvidenceSnapshot> {
-        let memory_pressure = self.collect_memory_pressure()?;
+        let memory_pressure = self.collect_probes()?.memory_pressure;
 
         let mut signals: Vec<PolicySignal> = Vec::new();
 
@@ -206,33 +271,41 @@ impl SignalBus {
         Some(PolicyEvidenceSnapshot::new(signals))
     }
 
-    /// Internal: reads both tier snapshots and returns the aggregate
-    /// memory pressure (max across tiers) in [0.0, 1.0]. Single source
-    /// of truth for both [`collect_guard_conditions`] and
+    /// Internal: reads memory tiers and the CPU probe, returning a
+    /// `ProbeValues` bundle aligned in time. Single source of truth
+    /// for both [`collect_guard_conditions`] and
     /// [`collect_policy_evidence`].
     ///
-    /// The result is cached for [`SIGNAL_BUS_CACHE_TTL`]; cache hits
-    /// return in O(1) without spawning subprocesses and do not
-    /// increment `probe_calls_count`. A cache miss (no prior entry
-    /// or entry older than the TTL) runs the real probes, increments
-    /// `probe_calls_count`, and stores the fresh value. Probe
-    /// failures (returning `None`) are **not** cached, so the fail-
-    /// open semantics of `collect_guard_conditions` are preserved:
-    /// the next call retries the probe.
-    fn collect_memory_pressure(&self) -> Option<f32> {
+    /// Cache behavior (unchanged from M3-e.4):
+    /// - Cache hit within [`SIGNAL_BUS_CACHE_TTL`]: returns the stored
+    ///   `ProbeValues` in O(1), leaves `probe_calls_count`
+    ///   **unchanged**. This is what gives the monotonicity property
+    ///   the caching tests rely on.
+    /// - Cache miss (entry absent or stale): runs the real probes,
+    ///   increments `probe_calls_count` by exactly 1, and on success
+    ///   stores the fresh bundle.
+    ///
+    /// Failure semantics:
+    /// - Memory probe failure: the whole call returns `None` (fail-
+    ///   open for `collect_guard_conditions`). No cache write.
+    /// - CPU probe failure: the call still returns `Some(...)` with
+    ///   `cpu_total`/`cpu_self` as `None`. The skip logic downstream
+    ///   treats absent CPU signals as "unknown" and does not veto
+    ///   migration.
+    fn collect_probes(&self) -> Option<ProbeValues> {
         // Cache lookup. A stale or absent entry falls through to the
         // probe path below.
-        if let Ok(guard) = self.memory_pressure_cache.lock() {
-            if let Some((value, captured_at)) = guard.as_ref() {
+        if let Ok(guard) = self.probe_cache.lock() {
+            if let Some((values, captured_at)) = guard.as_ref() {
                 if captured_at.elapsed() < SIGNAL_BUS_CACHE_TTL {
-                    return Some(*value);
+                    return Some(*values);
                 }
             }
         }
 
         // Cache miss: run the real probes. Increment the counter
-        // exactly once per miss, regardless of whether the probe
-        // succeeds — the counter tracks "probe attempts", which is
+        // exactly once per miss, regardless of whether the probes
+        // succeed — the counter tracks "probe attempts", which is
         // the quantity callers want for cost accounting.
         self.probe_calls_count.fetch_add(1, Ordering::Relaxed);
 
@@ -247,18 +320,36 @@ impl SignalBus {
             1.0 - (vram_snap.free_bytes as f32 / vram_snap.total_bytes as f32);
         let ram_pressure =
             1.0 - (ram_snap.available_bytes as f32 / ram_snap.total_bytes as f32);
-        let aggregate = vram_pressure.max(ram_pressure);
+        let memory_pressure = vram_pressure.max(ram_pressure);
 
-        // Store the fresh value. Only reachable when both probes
-        // succeeded and totals are non-zero, so the cache never
-        // records a degraded result. If the lock is poisoned we
-        // simply skip the update — the value returned to the caller
-        // is still correct; the next call will re-probe.
-        if let Ok(mut guard) = self.memory_pressure_cache.lock() {
-            *guard = Some((aggregate, Instant::now()));
+        // CPU probe runs independently. Its success or failure does
+        // not affect the memory path — a failed CPU read only nulls
+        // out the CPU fields.
+        let (cpu_total, cpu_self) = match self.cpu_probe.as_ref() {
+            Some(probe) => match probe.snapshot() {
+                Ok(snap) => (Some(snap.total_fraction), Some(snap.self_fraction)),
+                Err(_) => (None, None),
+            },
+            None => (None, None),
+        };
+
+        let values = ProbeValues {
+            memory_pressure,
+            cpu_total,
+            cpu_self,
+        };
+
+        // Store the fresh value. Only reachable when both memory
+        // probes succeeded and totals were non-zero, so the cache
+        // never records a degraded memory result. If the lock is
+        // poisoned we simply skip the update — the value returned
+        // to the caller is still correct; the next call will re-
+        // probe.
+        if let Ok(mut guard) = self.probe_cache.lock() {
+            *guard = Some((values, Instant::now()));
         }
 
-        Some(aggregate)
+        Some(values)
     }
 }
 

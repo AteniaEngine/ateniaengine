@@ -195,6 +195,49 @@ impl Graph {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis())
                     .unwrap_or(0);
+
+                // M3-e.6: CPU-availability precondition. If the
+                // system is under CPU pressure caused by external
+                // processes (not Atenia), migrating more work to the
+                // CPU would worsen the external pressure and likely
+                // hurt both the user's foreground workload and
+                // Atenia itself. Skip the migration in that case and
+                // record the veto. Decision lives here (not in the
+                // guard) so the guard remains single-responsibility
+                // ("is memory pressure high?") while policy
+                // ("what do we do about it?") stays at the reaction
+                // site — see the M3-e.6 handoff Option (c).
+                if crate::amg::reactive::cpu_saturated_externally(&conditions) {
+                    if let Some(ctx) = self.reactive_context.as_ref() {
+                        ctx.record_degrade_veto_by_cpu();
+                    }
+                    if !crate::apx_is_silent() {
+                        let cpu_total = conditions.cpu_pressure_total.unwrap_or(f32::NAN);
+                        let cpu_self = conditions.cpu_pressure_self.unwrap_or(f32::NAN);
+                        let share = if cpu_total > 0.0 {
+                            cpu_self / cpu_total
+                        } else {
+                            f32::NAN
+                        };
+                        eprintln!(
+                            "[AMG Guard][t_ms={}] Degrade VETOED at node {} \
+                             (external CPU pressure): memory_pressure={:.2}, \
+                             cpu_total={:.2}, cpu_self={:.2}, self_share={:.2} \
+                             (thresholds total>{}, share<{}). \
+                             Skipping migration; execution continues on VRAM.",
+                            timestamp_ms,
+                            node_id,
+                            memory_pressure,
+                            cpu_total,
+                            cpu_self,
+                            share,
+                            crate::amg::reactive::CPU_PRESSURE_TOTAL_THRESHOLD,
+                            crate::amg::reactive::CPU_SELF_CONTRIBUTION_MIN,
+                        );
+                    }
+                    return Ok(());
+                }
+
                 if let Some(ctx) = self.reactive_context.as_ref() {
                     ctx.record_degrade_event();
                 }

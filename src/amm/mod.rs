@@ -8,6 +8,7 @@ pub mod batch_manager;
 pub mod memory_manager;
 pub mod vram_probe;
 pub mod ram_probe;
+pub mod cpu_probe;
 pub mod signal_bus;
 pub mod failure_counter;
 pub mod latency_monitor;
