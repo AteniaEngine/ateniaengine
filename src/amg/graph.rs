@@ -940,7 +940,12 @@ impl Graph {
                 NodeType::Linear => in_len == 2 || in_len == 3,
                 NodeType::Activation(_) => in_len == 1,
                 NodeType::FusedLinearActivation(_) => in_len == 2 || in_len == 3,
-                NodeType::FusedLinearActivationChain(_) => in_len == 4 || in_len == 5,
+                // M3 debt cleanup: accept 3, 4 or 5 inputs. The APX 4.9
+                // fusion detector produces 3-input chains for
+                // Linear→acts→Linear patterns without biases; the
+                // previous `in_len == 4 || 5` validator was
+                // inconsistent with the executor's actual behavior.
+                NodeType::FusedLinearActivationChain(_) => (3..=5).contains(&in_len),
                 NodeType::Conv2D(_) => in_len == 2 || in_len == 3,
                 NodeType::MaxPool2D(_) => in_len == 1,
                 NodeType::NoOp => in_len == 1,
@@ -1792,6 +1797,159 @@ impl Graph {
         self.execute_single_inner(node_id, record_tape);
     }
 
+    /// M3 debt cleanup: centralized dispatch for
+    /// `NodeType::FusedLinearActivationChain`. Before this helper
+    /// existed, the logic lived duplicated in two places in
+    /// `execute_single_inner` — a pre-match early-return handler
+    /// (accepting 3/4/5 inputs) and a match-arm (stricter, accepting
+    /// only 4/5). The duplicates had drifted on input validation;
+    /// the match-arm was dead code (the pre-match always returned
+    /// first) but invited accidental reactivation on future refactors
+    /// that might try to gate the pre-match by `!record_tape`.
+    ///
+    /// The only caller is the pre-match early-return site in
+    /// `execute_single_inner`. The match-arm was removed and
+    /// replaced with an `unreachable!()` guard for exhaustivity.
+    ///
+    /// Accepts 3 (no biases), 4 (one bias), or 5 (both biases)
+    /// inputs — matching what the APX 4.9 fusion detector
+    /// legitimately produces in `apx4_9::patterns::fuse_linear_activation_linear`.
+    ///
+    /// **Note**: this helper still does NOT register a BackOp
+    /// entry. The fused node is forward-only, same as before the
+    /// cleanup. Implementing a real fused backward is a separate
+    /// debt (tracked independently).
+    fn exec_fused_linear_activation_chain(
+        &mut self,
+        node_id: usize,
+        acts: Vec<super::nodes::ActType>,
+    ) {
+        if crate::apx_debug_enabled() && !crate::apx_is_silent() {
+            eprintln!(
+                "[APX4.9 DEBUG] Executing FusedLinearActivationChain node_id={} | inputs={:?}",
+                node_id,
+                self.nodes[node_id].inputs
+            );
+        }
+
+        let inputs = self.nodes[node_id].inputs.clone();
+        assert!(
+            inputs.len() == 3 || inputs.len() == 4 || inputs.len() == 5,
+            "FusedLinearActivationChain expects 3, 4 or 5 inputs",
+        );
+
+        let x = self.nodes[inputs[0]]
+            .output
+            .as_ref()
+            .expect("FusedLinearActivationChain missing x")
+            .clone();
+        let w1 = self.nodes[inputs[1]]
+            .output
+            .as_ref()
+            .expect("FusedLinearActivationChain missing w1")
+            .clone();
+
+        // M3 debt cleanup — parser disambiguation fix:
+        //
+        // `apx4_9::patterns::fuse_linear_activation_linear` produces
+        // `fused_inputs` in the order `[x, w1, (b1?), w2, (b2?)]`, so
+        // the four valid layouts are:
+        //   len == 3: [x, w1, w2]            (no biases)
+        //   len == 4: [x, w1, b1, w2]        (bias on first linear only)
+        //   len == 4: [x, w1, w2, b2]        (bias on second linear only)
+        //   len == 5: [x, w1, b1, w2, b2]    (both biases)
+        //
+        // Pre-cleanup the parser only inspected `inputs.len()` and
+        // blindly assumed that a 4-input chain was always
+        // `[x, w1, w2, b2]` (bias on second), which caused a panic
+        // `"weight must be 2D"` whenever a 4-input chain actually
+        // had the bias on the *first* linear — a common
+        // transformer feed-forward pattern.
+        //
+        // The fix distinguishes via the tensor's shape: a bias is
+        // 1D (`shape.len() == 1`); a weight is 2D
+        // (`shape.len() == 2`). We apply the shape check only when
+        // `inputs.len() == 4` — the ambiguous case. Lengths 3 and
+        // 5 remain unambiguous and keep their pre-fix handling.
+        let mut idx = 2;
+        let b1_opt = if inputs.len() == 5 {
+            // Unambiguous: [x, w1, b1, w2, b2].
+            let b1 = self.nodes[inputs[idx]]
+                .output
+                .as_ref()
+                .expect("FusedLinearActivationChain missing b1")
+                .clone();
+            idx += 1;
+            Some(b1)
+        } else if inputs.len() == 4
+            && self.nodes[inputs[idx]]
+                .output
+                .as_ref()
+                .map(|t| t.shape.len() == 1)
+                .unwrap_or(false)
+        {
+            // 4-input layout with bias on first linear:
+            // [x, w1, b1, w2]. The tensor at idx=2 is 1D → it's b1.
+            let b1 = self.nodes[inputs[idx]]
+                .output
+                .as_ref()
+                .expect("FusedLinearActivationChain missing b1")
+                .clone();
+            idx += 1;
+            Some(b1)
+        } else {
+            // 3-input [x, w1, w2] or 4-input [x, w1, w2, b2] —
+            // the tensor at idx=2 is the 2D weight w2.
+            None
+        };
+
+        let w2 = self.nodes[inputs[idx]]
+            .output
+            .as_ref()
+            .expect("FusedLinearActivationChain missing w2")
+            .clone();
+        idx += 1;
+
+        let b2_opt = if idx < inputs.len() {
+            let b2 = self.nodes[inputs[idx]]
+                .output
+                .as_ref()
+                .expect("FusedLinearActivationChain missing b2")
+                .clone();
+            Some(b2)
+        } else {
+            None
+        };
+
+        let mut h = match b1_opt.as_ref() {
+            Some(b1) => nn_linear::linear(&x, &w1, Some(b1)),
+            None => nn_linear::linear(&x, &w1, None),
+        };
+
+        for act in acts {
+            h = match act {
+                super::nodes::ActType::ReLU => nn_act::relu(&h),
+                super::nodes::ActType::SiLU => nn_act::silu(&h),
+                super::nodes::ActType::GELU => nn_act::gelu(&h),
+            };
+        }
+
+        let out = match b2_opt.as_ref() {
+            Some(b2) => nn_linear::linear(&h, &w2, Some(b2)),
+            None => nn_linear::linear(&h, &w2, None),
+        };
+
+        if crate::apx_debug_enabled() && !crate::apx_is_silent() {
+            eprintln!(
+                "[APX4.9 DEBUG] FusedLinearActivationChain node_id={} produced output len={}",
+                node_id,
+                out.numel()
+            );
+        }
+
+        self.nodes[node_id].set_output(out);
+    }
+
     pub(crate) fn execute_single_inner(&mut self, node_id: usize, record_tape: bool) {
         // M3-e.10: single timer covers every exit path via Drop. See
         // the `NodeTimingRecorder` docstring for the unification
@@ -1846,104 +2004,24 @@ impl Graph {
         // APX 4.9: directly execute fused Linear→[Act...]→Linear chains,
         // without going through APX 4.7 hooks nor GPU for this node.
         //
-        // This block is NOT guarded by !record_tape (unlike the fused_ops
-        // and fusion_plan dispatches below). Reason: there is a second
-        // copy of the same handler in the NodeType match further down
-        // (arm `NodeType::FusedLinearActivationChain` near L2789), and
-        // the two copies have drifted — this pre-match copy accepts
-        // 3/4/5 inputs while the match-arm copy accepts only 4/5.
-        // Adding a guard here routed the 3-input case to the stricter
-        // arm and broke `apx_2_5_fused_kernels_test`. Neither copy
-        // registers a BackOp, so the tape gap for this op is the same
-        // either way; fixing it requires consolidating the duplicate
-        // handlers or implementing a fused BackOp, which is tracked
-        // as separate technical debt.
+        // The helper `exec_fused_linear_activation_chain` centralizes
+        // dispatch for this NodeType. It accepts 3, 4, or 5 inputs
+        // depending on whether biases are present — matching what the
+        // APX 4.9 fusion detector legitimately produces. This early-
+        // return intercepts the NodeType BEFORE the `fused_ops`,
+        // `fusion_plan`, `gpu_plan`, and generic `match node_type`
+        // dispatches below. The match-arm copy that previously
+        // duplicated this logic was removed as part of M3 debt
+        // cleanup — it was dead code (always intercepted by this
+        // early-return) and had stricter input validation (4/5 only)
+        // that would break `apx_2_5_fused_kernels_test` if ever
+        // reached. Neither handler registered a BackOp, so the
+        // backward gap remains — that's a separate debt tracked
+        // independently.
         if let super::nodes::NodeType::FusedLinearActivationChain(acts) =
             self.nodes[node_id].node_type.clone()
         {
-            if crate::apx_debug_enabled() && !crate::apx_is_silent() {
-                eprintln!(
-                    "[APX4.9 DEBUG] Executing FusedLinearActivationChain node_id={} | inputs={:?}",
-                    node_id,
-                    self.nodes[node_id].inputs
-                );
-            }
-
-            let inputs = self.nodes[node_id].inputs.clone();
-            assert!(
-                inputs.len() == 3 || inputs.len() == 4 || inputs.len() == 5,
-                "FusedLinearActivationChain expects 3, 4 or 5 inputs",
-            );
-
-            let x = self.nodes[inputs[0]]
-                .output
-                .as_ref()
-                .expect("FusedLinearActivationChain missing x")
-                .clone();
-            let w1 = self.nodes[inputs[1]]
-                .output
-                .as_ref()
-                .expect("FusedLinearActivationChain missing w1")
-                .clone();
-
-            let mut idx = 2;
-            let b1_opt = if inputs.len() == 5 {
-                let b1 = self.nodes[inputs[idx]]
-                    .output
-                    .as_ref()
-                    .expect("FusedLinearActivationChain missing b1")
-                    .clone();
-                idx += 1;
-                Some(b1)
-            } else {
-                None
-            };
-
-            let w2 = self.nodes[inputs[idx]]
-                .output
-                .as_ref()
-                .expect("FusedLinearActivationChain missing w2")
-                .clone();
-            idx += 1;
-
-            let b2_opt = if idx < inputs.len() {
-                let b2 = self.nodes[inputs[idx]]
-                    .output
-                    .as_ref()
-                    .expect("FusedLinearActivationChain missing b2")
-                    .clone();
-                Some(b2)
-            } else {
-                None
-            };
-
-            let mut h = match b1_opt.as_ref() {
-                Some(b1) => nn_linear::linear(&x, &w1, Some(b1)),
-                None => nn_linear::linear(&x, &w1, None),
-            };
-
-            for act in acts {
-                h = match act {
-                    super::nodes::ActType::ReLU => nn_act::relu(&h),
-                    super::nodes::ActType::SiLU => nn_act::silu(&h),
-                    super::nodes::ActType::GELU => nn_act::gelu(&h),
-                };
-            }
-
-            let out = match b2_opt.as_ref() {
-                Some(b2) => nn_linear::linear(&h, &w2, Some(b2)),
-                None => nn_linear::linear(&h, &w2, None),
-            };
-
-            if crate::apx_debug_enabled() && !crate::apx_is_silent() {
-                eprintln!(
-                    "[APX4.9 DEBUG] FusedLinearActivationChain node_id={} produced output len={}",
-                    node_id,
-                    out.numel()
-                );
-            }
-
-            self.nodes[node_id].set_output(out);
+            self.exec_fused_linear_activation_chain(node_id, acts);
             // Timing handled by `NodeTimingRecorder` at function exit (M3-e.10).
             return;
         }
@@ -3330,74 +3408,24 @@ impl Graph {
 
                 // Fused-node-specific backward is not implemented in APX 4.8.
             }
-            NodeType::FusedLinearActivationChain(acts) => {
-                let inputs = self.nodes[node_id].inputs.clone();
-                assert!(
-                    inputs.len() == 5 || inputs.len() == 4,
-                    "FusedLinearActivationChain expects 4 or 5 inputs",
-                );
-
-                let x = self.nodes[inputs[0]]
-                    .output
-                    .as_ref()
-                    .expect("FusedLinearActivationChain missing x")
-                    .clone();
-                let w1 = self.nodes[inputs[1]]
-                    .output
-                    .as_ref()
-                    .expect("FusedLinearActivationChain missing w1")
-                    .clone();
-
-                let mut idx = 2;
-                let b1_opt = if inputs.len() == 5 {
-                    let b1 = self.nodes[inputs[idx]]
-                        .output
-                        .as_ref()
-                        .expect("FusedLinearActivationChain missing b1")
-                        .clone();
-                    idx += 1;
-                    Some(b1)
-                } else {
-                    None
-                };
-
-                let w2 = self.nodes[inputs[idx]]
-                    .output
-                    .as_ref()
-                    .expect("FusedLinearActivationChain missing w2")
-                    .clone();
-                idx += 1;
-
-                let b2_opt = if idx < inputs.len() {
-                    let b2 = self.nodes[inputs[idx]]
-                        .output
-                        .as_ref()
-                        .expect("FusedLinearActivationChain missing b2")
-                        .clone();
-                    Some(b2)
-                } else {
-                    None
-                };
-
-                let mut h = match b1_opt.as_ref() {
-                    Some(b1) => nn_linear::linear(&x, &w1, Some(b1)),
-                    None => nn_linear::linear(&x, &w1, None),
-                };
-
-                for act in acts {
-                    h = match act {
-                        crate::amg::nodes::ActType::ReLU => nn_act::relu(&h),
-                        crate::amg::nodes::ActType::SiLU => nn_act::silu(&h),
-                        crate::amg::nodes::ActType::GELU => nn_act::gelu(&h),
-                    };
-                }
-
-                let out = match b2_opt.as_ref() {
-                    Some(b2) => nn_linear::linear(&h, &w2, Some(b2)),
-                    None => nn_linear::linear(&h, &w2, None),
-                };
-
-                self.nodes[node_id].set_output(out);
+            // M3 debt cleanup: `FusedLinearActivationChain` is
+            // intercepted by the early-return handler higher up in
+            // this function (see the
+            // `exec_fused_linear_activation_chain` call site), so
+            // reaching this arm is a control-flow bug. The arm that
+            // previously duplicated the dispatch here was removed —
+            // it was dead code with stricter-than-necessary input
+            // validation (4/5 only), inconsistent with the APX 4.9
+            // fusion detector's 3/4/5 output. Kept as
+            // `unreachable!()` only to satisfy the compiler's
+            // exhaustivity check on `NodeType`.
+            NodeType::FusedLinearActivationChain(_) => {
+                unreachable!(
+                    "FusedLinearActivationChain must be handled by the \
+                     early-return helper `exec_fused_linear_activation_chain`; \
+                     reaching the match arm implies the early-return was \
+                     accidentally gated or skipped"
+                )
             }
             NodeType::RmsNorm => {
                 let inputs = self.nodes[node_id].inputs.clone();
