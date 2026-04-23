@@ -370,6 +370,190 @@ impl Graph {
             bytes_freed_estimate,
         })
     }
+
+    /// M3-e.11.4: migrate every `node.output` currently in
+    /// `TensorStorage::Cpu` to `TensorStorage::Disk` via the disk
+    /// tier introduced in M3-e.11.1. Used by the `DeepDegrade`
+    /// reaction strategy that lands in M3-e.11.5; also callable
+    /// standalone for tests and future policies.
+    ///
+    /// # Atomicity
+    ///
+    /// Per-tensor **write-before-swap**: the data is written to
+    /// disk first, and only after `write_f32_tensor` returns
+    /// `Ok(handle)` is the tensor's `storage` swapped to
+    /// `TensorStorage::Disk(handle)`. If the write fails the
+    /// storage is left untouched — the tensor stays fully in
+    /// `Cpu` and remains usable. Other tensors already migrated
+    /// in the same call are **not rolled back** (consistent with
+    /// `migrate_all_cuda_to_cpu`: the safe direction is "away
+    /// from the pressured tier", so preserving earlier progress
+    /// is always the right call).
+    ///
+    /// # Orphan files
+    ///
+    /// A crash in the narrow window between a successful
+    /// `write_f32_tensor` and the `storage = ...` assignment
+    /// below leaves an orphan file in `cache_dir`. That file
+    /// cannot be cleaned up via Arc-Drop because the handle
+    /// never reached its owner. The disk tier's periodic GC
+    /// (`disk_tier::gc_orphan_disk_tensors`, wired in a later
+    /// sub-milestone) sweeps these files on the next process
+    /// start. The window is on the order of nanoseconds, so
+    /// orphans are rare in practice.
+    ///
+    /// # Return policy
+    ///
+    /// - All tensors migrated (or nothing to do): `Ok(report)`
+    ///   with `report.is_complete() == true`.
+    /// - First tensor failed, none migrated: `Err(error)`. No
+    ///   side effects on graph state.
+    /// - Partial: at least one tensor migrated, then a later one
+    ///   failed: `Ok(report)` with `report.is_partial() == true`.
+    ///   The migrated tensors stay in `Disk`; the caller can
+    ///   inspect `report.failure` to log the snag or retry.
+    ///
+    /// # What is not touched
+    ///
+    /// - `TensorStorage::Cuda(_)` nodes are **skipped** (counted in
+    ///   `report.tensors_skipped`). Callers that want to migrate
+    ///   Cuda tensors to disk should use
+    ///   [`Graph::migrate_all_to_disk`], which chains Cuda → Cpu
+    ///   → Disk via the pre-existing
+    ///   [`Graph::migrate_all_cuda_to_cpu`].
+    /// - `TensorStorage::Disk(_)` nodes are skipped (already in
+    ///   the target tier).
+    /// - `node.output == None` nodes are skipped (never a tensor
+    ///   to migrate).
+    /// - `output.grad` is untouched — grads are CPU-resident by
+    ///   construction under the M3-d.3 backward pre-pass
+    ///   contract.
+    pub fn migrate_all_cpu_to_disk(
+        &mut self,
+        cache_dir: &std::path::Path,
+    ) -> Result<crate::amg::reactive::MigrationReport, StorageTransferError> {
+        use crate::amg::reactive::MigrationReport;
+
+        let mut report = MigrationReport::new();
+
+        // Ensure the cache dir exists up front. A failure here is
+        // a total failure — no tensor has been touched.
+        if let Err(e) = std::fs::create_dir_all(cache_dir) {
+            return Err(StorageTransferError::DiskWriteFailed(format!(
+                "cannot create cache dir {:?}: {}",
+                cache_dir, e
+            )));
+        }
+
+        for (idx, node) in self.nodes.iter_mut().enumerate() {
+            let Some(tensor) = node.output.as_mut() else {
+                continue;
+            };
+
+            // Only Cpu tensors are migration candidates. Cuda gets
+            // skipped (caller should compose with
+            // migrate_all_cuda_to_cpu first via migrate_all_to_disk).
+            // Disk is already in the target tier.
+            if !matches!(tensor.storage, TensorStorage::Cpu(_)) {
+                report.tensors_skipped += 1;
+                continue;
+            }
+
+            // Extract a copy of the Cpu data WITHOUT mutating the
+            // storage yet. If the write below fails, the tensor
+            // must remain fully readable.
+            let data: Vec<f32> = match &tensor.storage {
+                TensorStorage::Cpu(v) => v.clone(),
+                _ => unreachable!("matches! above rules out non-Cpu"),
+            };
+
+            // Write-before-swap: the disk file is created first;
+            // only after we have a valid handle do we replace
+            // `tensor.storage`. If the write errors, the tensor
+            // stays in Cpu and the report either becomes partial
+            // (if earlier tensors migrated) or we return Err (if
+            // nothing migrated yet).
+            let handle = match crate::tensor::disk_tier::write_f32_tensor(
+                cache_dir, &data,
+            ) {
+                Ok(h) => h,
+                Err(e) => {
+                    let err = StorageTransferError::DiskWriteFailed(e.to_string());
+                    if report.tensors_migrated > 0 {
+                        // Partial progress — preserve what we have,
+                        // surface the failure inside the report.
+                        report.failure = Some((idx, err));
+                        return Ok(report);
+                    } else {
+                        // Nothing done — zero side effects.
+                        return Err(err);
+                    }
+                }
+            };
+
+            // Atomic swap: the Arc<InnerDiskFile> from `handle`
+            // becomes the owner. The previous Cpu Vec<f32> drops
+            // (its memory is released as usual).
+            tensor.storage = TensorStorage::Disk(handle);
+            report.tensors_migrated += 1;
+        }
+
+        Ok(report)
+    }
+
+    /// M3-e.11.4: composite migration for the dual-pressure case.
+    /// Chains the pre-existing Cuda → Cpu migration (from M3-e.1)
+    /// with the new Cpu → Disk migration (above), producing a
+    /// unified [`MigrationReport`] that accounts for both steps.
+    ///
+    /// Intended as the migration primitive behind
+    /// `GuardAction::DeepDegrade` (landing in M3-e.11.5). Two-step
+    /// structure:
+    ///
+    /// 1. [`Graph::migrate_all_cuda_to_cpu`] — brings every VRAM-
+    ///    resident output back to host memory. Returns a
+    ///    [`DegradeReport`](crate::amg::reactive::DegradeReport)
+    ///    whose `tensors_migrated` field contributes to the
+    ///    composite report's count.
+    /// 2. [`Graph::migrate_all_cpu_to_disk`] — spills the now-
+    ///    coalesced Cpu pool (which includes the ones we just
+    ///    brought back from Cuda AND any tensors that were
+    ///    already Cpu before this call) to disk.
+    ///
+    /// # Accounting
+    ///
+    /// The returned report's `tensors_migrated` counts **disk
+    /// writes**, not tier transitions. A tensor that starts as
+    /// Cuda and ends as Disk contributes 1 (the disk write); a
+    /// tensor that was already Cpu and ends as Disk also
+    /// contributes 1. A tensor already on Disk contributes to
+    /// `tensors_skipped`.
+    ///
+    /// # Error propagation
+    ///
+    /// Failures in step 1 propagate unchanged — the disk step
+    /// never runs and no files are written. Failures in step 2
+    /// follow the policy documented on `migrate_all_cpu_to_disk`
+    /// (partial-progress via `Ok(_)`, total-failure via `Err`).
+    pub fn migrate_all_to_disk(
+        &mut self,
+        cache_dir: &std::path::Path,
+    ) -> Result<crate::amg::reactive::MigrationReport, StorageTransferError> {
+        // Step 1: Cuda → Cpu. The DegradeReport contains the
+        // per-call count but no failure surface (this method
+        // propagates errors by `?` — if Cuda → Cpu fails, the
+        // disk step never runs and we bail with zero side
+        // effects on disk).
+        let _cuda_report = self.migrate_all_cuda_to_cpu()?;
+
+        // Step 2: Cpu → Disk. The returned report already
+        // includes the ones we just brought back from Cuda in
+        // its `tensors_migrated` (they're Cpu now, so
+        // `migrate_all_cpu_to_disk` will migrate them). Return
+        // as-is — the composite semantics match the caller's
+        // intent ("everything that could reach disk did").
+        self.migrate_all_cpu_to_disk(cache_dir)
+    }
 }
 
 /// M3-e.10: RAII-style timer that records each node's execution

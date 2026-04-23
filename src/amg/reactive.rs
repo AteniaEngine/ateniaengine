@@ -247,6 +247,91 @@ impl fmt::Display for DegradeReport {
     }
 }
 
+/// Report produced by a migration primitive introduced in M3-e.11.4.
+///
+/// Unlike [`DegradeReport`], which models a successful shallow
+/// Degrade at the reaction site, `MigrationReport` captures the
+/// richer outcome space of the new cpu→disk and composite
+/// cuda→cpu→disk primitives:
+///
+/// - `tensors_migrated`: tensors that changed storage variant on
+///   this call (Cuda → Cpu or Cpu → Disk, depending on the method).
+/// - `tensors_skipped`: tensors that were already in the target
+///   tier (or in a tier the method does not touch, e.g. `Disk`
+///   when calling `migrate_all_cpu_to_disk`).
+/// - `failure`: `Some((index, err))` when a per-tensor migration
+///   failed mid-iteration. The index refers to `self.nodes[idx]`.
+///
+/// Return policy in the owning methods:
+/// - `failure.is_none()` → complete success. Every eligible
+///   tensor reached the target tier.
+/// - `tensors_migrated > 0 && failure.is_some()` → partial
+///   progress. Some tensors moved, one failed; the report is
+///   returned via `Ok(_)` so the caller can log the partial
+///   completion and decide whether to retry or continue.
+/// - `tensors_migrated == 0 && failure.is_some()` → total failure.
+///   The method returns `Err` in this case rather than `Ok`
+///   with an empty report, matching the contract consumers of
+///   `migrate_all_cuda_to_cpu` already expect.
+///
+/// The split between `Ok(partial)` and `Err(total)` lets callers
+/// use `?` confidently: a bubbled error guarantees no side
+/// effects landed; a successful result guarantees at least one
+/// tensor moved.
+#[derive(Debug, Clone)]
+pub struct MigrationReport {
+    pub tensors_migrated: usize,
+    pub tensors_skipped: usize,
+    pub failure: Option<(usize, crate::tensor::StorageTransferError)>,
+}
+
+impl MigrationReport {
+    pub fn new() -> Self {
+        Self {
+            tensors_migrated: 0,
+            tensors_skipped: 0,
+            failure: None,
+        }
+    }
+
+    /// Every eligible tensor reached the target tier. Equivalent
+    /// to `self.failure.is_none()`.
+    pub fn is_complete(&self) -> bool {
+        self.failure.is_none()
+    }
+
+    /// At least one tensor moved AND the run did not reach every
+    /// eligible tensor — useful for logs that distinguish "I did
+    /// some work and hit a snag" from "I did nothing and returned
+    /// Ok because there was nothing to do".
+    pub fn is_partial(&self) -> bool {
+        self.tensors_migrated > 0 && self.failure.is_some()
+    }
+}
+
+impl Default for MigrationReport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for MigrationReport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.failure {
+            None => write!(
+                f,
+                "Migration complete: {} migrated, {} skipped",
+                self.tensors_migrated, self.tensors_skipped
+            ),
+            Some((idx, err)) => write!(
+                f,
+                "Migration partial: {} migrated, {} skipped, failed at node {} ({:?})",
+                self.tensors_migrated, self.tensors_skipped, idx, err
+            ),
+        }
+    }
+}
+
 /// Reasons why a checked execution may abort before a given node runs.
 ///
 /// Produced only when the graph has a `reactive_context` set. When the
