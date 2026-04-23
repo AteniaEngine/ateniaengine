@@ -276,7 +276,52 @@ pub fn format_memory_fragment(conditions: &GuardConditions) -> String {
 }
 
 impl ReactiveExecutionContext {
+    /// Construct a reactive context with GC-on-init enabled.
+    ///
+    /// On creation, [`disk_tier::gc_orphan_disk_tensors`] is
+    /// invoked on the default cache dir with a 10-minute
+    /// threshold. This sweeps files left behind by a previous
+    /// process that crashed before its `Arc<InnerDiskFile>` drops
+    /// could remove them (e.g. SIGKILL, power loss, panic=abort).
+    /// The GC is **best-effort** — any error from sweep is
+    /// silently ignored so startup never blocks on a GC hiccup.
+    ///
+    /// # Known limitation of the 10-minute threshold
+    ///
+    /// If a workload takes longer than 10 minutes between
+    /// successive migrations of the same tensor, an otherwise-
+    /// valid disk file older than 10 minutes could be swept by
+    /// a sibling process's GC at startup. This is unlikely in
+    /// practice — ML workloads touch tensors far more frequently
+    /// than that — but the risk is real. Future improvements
+    /// (lockfile pattern, mtime-touching by the live process)
+    /// are tracked as follow-up work.
+    ///
+    /// Tests that want a deterministic cache dir should combine
+    /// [`Self::new_without_gc`] with [`Self::with_cache_dir`] —
+    /// that pair lets the test set the dir AND skip GC on a
+    /// location it doesn't control. Use
+    /// [`Self::run_startup_gc`] when the test **does** want to
+    /// exercise the GC on its own dir.
     pub fn new(
+        signal_bus: Arc<SignalBus>,
+        contract: ExecutionContract,
+        guard_manager: GuardManager,
+    ) -> Self {
+        let ctx = Self::new_without_gc(signal_bus, contract, guard_manager);
+        let _ = disk_tier::gc_orphan_disk_tensors(&ctx.cache_dir, 10);
+        ctx
+    }
+
+    /// M3-e.11.6: construct the context **without** running GC
+    /// at init. The primary consumer is tests — the GC in
+    /// [`Self::new`] touches whatever `default_cache_dir`
+    /// resolves to on the host, which may perturb concurrent
+    /// test runs or a real Atenia process's cache. Tests that
+    /// pin `cache_dir` via [`Self::with_cache_dir`] and do not
+    /// care about exercising GC should always prefer this
+    /// constructor.
+    pub fn new_without_gc(
         signal_bus: Arc<SignalBus>,
         contract: ExecutionContract,
         guard_manager: GuardManager,
@@ -292,11 +337,33 @@ impl ReactiveExecutionContext {
         }
     }
 
+    /// M3-e.11.6: manually run the orphan-file GC on
+    /// `self.cache_dir`. Returns `self` for builder chaining.
+    /// Typical test usage:
+    ///
+    /// ```ignore
+    /// let ctx = ReactiveExecutionContext::new_without_gc(...)
+    ///     .with_cache_dir(test_dir)
+    ///     .run_startup_gc();
+    /// ```
+    ///
+    /// Equivalent to `ReactiveExecutionContext::new(...)` but
+    /// lets the caller control both `cache_dir` and whether GC
+    /// fires at all.
+    pub fn run_startup_gc(self) -> Self {
+        let _ = disk_tier::gc_orphan_disk_tensors(&self.cache_dir, 10);
+        self
+    }
+
     /// M3-e.11.5: builder-style override for the disk-spill cache
     /// directory. Intended primarily for tests that want a
     /// deterministic, unique location (usually a per-test temp
     /// dir generated via `uuid::Uuid`). Production code typically
     /// accepts the default from [`disk_tier::default_cache_dir`].
+    ///
+    /// Note: this does NOT re-run the startup GC on the new
+    /// directory. To invoke GC on a custom `cache_dir`, chain
+    /// `with_cache_dir(_).run_startup_gc()`.
     pub fn with_cache_dir(mut self, cache_dir: PathBuf) -> Self {
         self.cache_dir = cache_dir;
         self

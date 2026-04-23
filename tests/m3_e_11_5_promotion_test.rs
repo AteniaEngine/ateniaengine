@@ -224,7 +224,7 @@ fn make_context(
     let guards: Vec<Box<dyn ExecutionGuard>> =
         vec![Box::new(SimpleMemoryPressureGuard::new())];
     let gm = GuardManager::new(guards);
-    ReactiveExecutionContext::new(bus, permissive_contract(), gm)
+    ReactiveExecutionContext::new_without_gc(bus, permissive_contract(), gm)
         .with_cache_dir(cache_dir)
 }
 
