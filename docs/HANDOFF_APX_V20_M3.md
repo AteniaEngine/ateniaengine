@@ -448,7 +448,7 @@ These are documented so they are not confused with regressions.
 
 8. **`FusedLinearActivationChain` — backward pass does not register
    a `BackOp`** — The helper `exec_fused_linear_activation_chain`
-   (introduced in commit 8c328bd as part of debt #5 cleanup)
+   (introduced in commit 8c328bd as part of debt #4 cleanup)
    computes forward correctly but does not register a `BackOp`
    for gradient tracking. Consequences: backward pass through a
    `FusedLinearActivationChain` node produces zero or incorrect
@@ -464,8 +464,8 @@ These are documented so they are not confused with regressions.
    This was known conceptually as a "fused backward optimization"
    debt, but the actual impact — gradients are wrong, not just
    non-optimized — became clear during investigation of debt #5.
-   Tracked separately from debt #3 (`FusedSelfAttention` fused
-   backward) because the contexts differ: #3 is optimization-only,
+   Tracked separately from debt #5 (`FusedSelfAttention` fused
+   backward) because the contexts differ: #5 is optimization-only,
    #8 is correctness.
 
    Resolution requires implementing the analytical backward for
