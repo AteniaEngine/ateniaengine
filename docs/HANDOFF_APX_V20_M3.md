@@ -30,12 +30,12 @@ and invariants it records still hold.
 | M3-e.3 | ✅ | End-to-end integration tests wiring `ReactiveExecutionContext` → `GuardManager` → `GuardAction::Degrade` → migration → continued execution. Positive/negative pair using a `DegradeIfFailuresGuard` fixture. |
 | M3-e.4 | ✅ | `SignalBus` memory-pressure probe caching with `SIGNAL_BUS_CACHE_TTL = 100ms`; `probe_calls_count()` accessor for telemetry. Preserves freshness of injectable signals (`recent_failures`, `latency_spike`). |
 | M3-e.5 | ✅ | Observability: enriched `[AMG Guard]` logs (timestamp + node_id + memory_pressure + probes_so_far) and `ReactiveExecutionContext::degrade_events_count()` counter. |
-| M3-e.6 | ⏳ | **NEXT.** CPU pressure probe with process attribution (see "Remaining M3-e sub-milestones"). |
-| M3-e.7 | ⏳ | GPU compute utilization with process attribution. |
-| M3-e.8 | ⏳ | Foreground application detection. |
-| M3-e.9 | ⏳ | Battery state monitoring. |
-| M3-e.10 | ⏳ | Self-latency as primary decision signal. |
-| M3-e.11 | ⏳ | **CRITICAL.** `TensorStorage::Disk` tier + cascade migration (`Cuda → Cpu → Disk`) and dual-pressure guard variant. Eliminates `Abort` as the only fallback when both VRAM and RAM are saturated. |
+| M3-e.6 | ✅ | CPU pressure probe with process attribution (`CpuProbe` stateful `System`; self vs. system-wide fields on `GuardConditions`). |
+| M3-e.7 | ✅ | GPU compute utilization probe with process attribution. |
+| M3-e.8 | ✅ | Foreground application detection. |
+| M3-e.9 | ✅ | Battery state monitoring. |
+| M3-e.10 | ✅ | Self-latency as primary decision signal (`NodeTimingRecorder`). |
+| M3-e.11 | ✅ | `TensorStorage::Disk` tier + cascade migration (`Cuda → Cpu → Disk`), `GuardAction::DeepDegrade` with rank-based dominance, dual-pressure promotion at reaction site, automatic GC of orphan disk files at `ReactiveExecutionContext::new`. Eliminates `Abort` as the only fallback in dual-pressure scenarios. |
 | M3-e.12 | 🕓 | Deferred — behavior modes, evaluated post-e.11 once real measurements inform mode boundaries. |
 
 ---
@@ -137,9 +137,11 @@ milestones extend them rather than re-litigate.
     `src/gpu/...`, leave the original file as a one-line
     `pub use crate::gpu::...::*;` re-export. External callers keep
     working unchanged; the `crate::cuda::*` dependency is absorbed
-    into the `src/gpu/` layer. This pattern is used by the four
-    files resolved in the M3-d.4 follow-up refactor (see the "Known
-    debts" section for the history).
+    into the `src/gpu/` layer. This pattern is used by the five
+    files that moved cuda-leaked code into `src/gpu/` — four in the
+    M3-d.4 follow-up refactor and `src/apx4_3/gpu_executor.rs` in
+    commit 80417af, which closed the vendor-neutrality invariant end
+    to end (see the "Known debts" section for the history).
 
 ---
 
@@ -522,34 +524,45 @@ reference:
 
 ## Next steps
 
-**Immediate (next session)**:
+**M3-e is complete**. Sub-milestones e.1–e.11 all closed. e.12
+(behavior modes) remains explicitly deferred, pending real workload
+measurements to inform mode boundaries.
 
-- **M3-e.6**: CPU pressure with process attribution (PRIORITY —
-  fixes the most dangerous blind spot of the first-pass reaction).
+**Remaining M3 technical debts to pay** (in no forced order — pick
+by priority and context):
 
-**Then in order**:
+- **Debt #8** — `FusedLinearActivationChain` backward does not
+  register a `BackOp`. Correctness bug: training through this fused
+  node produces silently wrong gradients.
+- **Debt #5** — `FusedSelfAttention` fused backward (optimization,
+  low priority until a real model shows it in the profile).
+- **Debt #9** — `exec_gpu_add` / `exec_gpu_mul` misleading naming
+  (they execute on CPU despite the `gpu` prefix). Low priority —
+  functional correctness preserved.
+- **Debt #2** — APX 8.4 `GPUMirror` reconciliation with
+  `TensorStorage::Cuda` (metadata-only mirror, still no-op on new
+  storage arms).
+- **Debt #3** — C-side quality on the 3 CUDA ops (silent alloc
+  failures, ~210 lines of copy-paste, sparse docs).
 
-- M3-e.7: GPU compute utilization with process attribution.
-- M3-e.8: Foreground application detection.
-- M3-e.9: Battery state monitoring.
-- M3-e.10: Self-latency as primary decision signal.
-- **M3-e.11**: `TensorStorage::Disk` tier + cascade migration
-  (**CRITICAL** — eliminates `Abort` as the only fallback in
-  dual-pressure scenarios; see debt #6).
-- M3-e.12: Behavior modes (only if e.6–e.11 measurements justify it;
-  evaluate post-e.11).
+**Closed during M3-e and follow-up cleanup** (for reference):
 
-**After M3-e is truly complete (post e.11)**:
+- **Debt #1** — Vendor-neutrality invariant fully closed: last
+  cuda-leaked file (`src/apx4_3/gpu_executor.rs`) moved to
+  `src/gpu/dispatch/executor.rs` in commit 80417af.
+- **Debt #4** — `FusedLinearActivationChain` duplicate handlers
+  consolidated into `exec_fused_linear_activation_chain`; validator
+  relaxed to accept 3/4/5 inputs (commit 8c328bd).
+- **Debt #6** — Storage tier hierarchy completed by M3-e.11 (Disk
+  tier + cascade + dual-pressure handling).
+- **Debt #7** — `src/apx7/dynamic_load.rs` stateful CPU sampling
+  (commit 2a83ee8).
 
-- Pay M3 technical debts:
-  - `src/apx4_3/gpu_executor.rs` refactor (debt #1, remaining item).
-  - `FusedLinearActivationChain` duplicate handler consolidation
-    (debt #4).
-  - `FusedSelfAttention` fused backward (debt #5, optional
-    optimization).
+**Admin**:
+
 - Rename this document to `at M3-e close`.
-- Resync `README.md` with the full M3 plan (intentionally left
-  stale for e.6–e.11 during this sprint).
+- Resync `README.md` with the full M3 plan (intentionally left stale
+  for e.6–e.11 during this sprint).
 
 **Then**:
 
