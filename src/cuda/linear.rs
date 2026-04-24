@@ -1,25 +1,17 @@
 use std::os::raw::c_int;
 
 use crate::amg::nodes::NodeType;
+use crate::cuda::pool_helpers::with_pooled_device_buffers;
 use crate::cuda::{cuda_device_ptr, cuda_device_ptr_mut};
 use crate::tensor::{Tensor, TensorStorage};
 
 #[link(name = "linear_cuda", kind = "static")]
 unsafe extern "C" {
-    fn launch_linear_f32(
-        a: *const f32,
-        b: *const f32,
-        bias: *const f32,
-        c: *mut f32,
-        m: c_int,
-        k: c_int,
-        n: c_int,
-    );
-
     // Device-pointer variant: assumes the caller owns the VRAM backing
     // every pointer; does not alloc or free. Returns 0 on success,
     // 2 on kernel launch error, 1 on sync error. Wired into the public
-    // `cuda_linear` wrapper via an `all_cuda` dispatch.
+    // `cuda_linear` wrapper via an `all_cuda` dispatch AND reused by
+    // the CPU-path through `with_pooled_device_buffers`.
     pub(crate) fn launch_linear_f32_device_ptrs(
         d_a: *const f32,
         d_b: *const f32,
@@ -112,16 +104,18 @@ fn cuda_linear_raw(
     assert_eq!(bias.len(), n);
     assert_eq!(out.len(), m * n);
 
-    unsafe {
-        launch_linear_f32(
-            a.as_ptr(),
-            b.as_ptr(),
-            bias.as_ptr(),
-            out.as_mut_ptr(),
-            m as c_int,
-            k as c_int,
-            n as c_int,
-        );
+    let m_ci = m as c_int;
+    let k_ci = k as c_int;
+    let n_ci = n as c_int;
+
+    let result = unsafe {
+        with_pooled_device_buffers(&[a, b, bias], out, |d_in, d_out| {
+            launch_linear_f32_device_ptrs(d_in[0], d_in[1], d_in[2], d_out, m_ci, k_ci, n_ci)
+        })
+    };
+
+    if let Err(e) = result {
+        panic!("cuda_linear_raw failed: {:?}", e);
     }
 }
 

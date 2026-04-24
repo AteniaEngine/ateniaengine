@@ -1,24 +1,16 @@
 use std::os::raw::c_int;
 
+use crate::cuda::pool_helpers::with_pooled_device_buffers;
 use crate::cuda::{cuda_device_ptr, cuda_device_ptr_mut};
 use crate::tensor::{Tensor, TensorStorage};
 
 #[link(name = "batch_matmul", kind = "static")]
 unsafe extern "C" {
-    fn launch_batch_matmul_f32(
-        a: *const f32,
-        b: *const f32,
-        c: *mut f32,
-        batch: c_int,
-        m: c_int,
-        k: c_int,
-        n: c_int,
-    );
-
     // Device-pointer variant. See the doc comment on
     // `launch_linear_f32_device_ptrs` in `linear.rs` for the ownership
     // contract. Returns 0 on success, 2 on kernel launch error, 1 on
-    // sync error. Wired via the `all_cuda` dispatch in `cuda_batch_matmul`.
+    // sync error. Wired via the `all_cuda` dispatch in `cuda_batch_matmul`
+    // AND reused by the CPU-path through `with_pooled_device_buffers`.
     pub(crate) fn launch_batch_matmul_f32_device_ptrs(
         d_a: *const f32,
         d_b: *const f32,
@@ -108,15 +100,18 @@ fn cuda_batch_matmul_raw(
     assert_eq!(b.len(), batch * stride_b);
     assert_eq!(out.len(), batch * stride_out);
 
-    unsafe {
-        launch_batch_matmul_f32(
-            a.as_ptr(),
-            b.as_ptr(),
-            out.as_mut_ptr(),
-            batch as c_int,
-            m as c_int,
-            k as c_int,
-            n as c_int,
-        );
+    let b_ci = batch as c_int;
+    let m_ci = m as c_int;
+    let k_ci = k as c_int;
+    let n_ci = n as c_int;
+
+    let result = unsafe {
+        with_pooled_device_buffers(&[a, b], out, |d_in, d_out| {
+            launch_batch_matmul_f32_device_ptrs(d_in[0], d_in[1], d_out, b_ci, m_ci, k_ci, n_ci)
+        })
+    };
+
+    if let Err(e) = result {
+        panic!("cuda_batch_matmul_raw failed: {:?}", e);
     }
 }

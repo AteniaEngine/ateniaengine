@@ -4,6 +4,7 @@ pub mod matmul;
 pub mod linear;
 pub mod batch_matmul;
 pub mod fused_linear_silu;
+pub(crate) mod pool_helpers;
 
 #[link(name = "atenia_kernels", kind = "static")]
 unsafe extern "C" {

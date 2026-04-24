@@ -136,6 +136,14 @@ pub enum StorageTransferError {
     /// that left a truncated file, or a shape mismatch between the
     /// handle and the owning [`Tensor`].
     DiskSizeMismatch { expected: usize, got: usize },
+    /// Debt #3 Fase 3.2: the APX 4.12 pool has no block available to
+    /// serve a request of `size_bytes`. Produced by
+    /// `src/cuda/pool_helpers::with_pooled_device_buffers` when any
+    /// `pool_alloc` call returns null. Before this variant existed,
+    /// pool exhaustion surfaced as `cudaErrorInvalidDevicePointer`
+    /// (code 11) because a null pointer would flow into `cudaMemcpy`
+    /// — an actionable root cause masked as a CUDA-driver error.
+    PoolExhausted { size_bytes: usize },
 }
 
 /// Minimal tensor container backing data with owned storage.

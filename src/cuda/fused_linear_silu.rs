@@ -1,25 +1,17 @@
 use std::os::raw::c_int;
 
+use crate::cuda::pool_helpers::with_pooled_device_buffers;
 use crate::cuda::{cuda_device_ptr, cuda_device_ptr_mut};
 use crate::tensor::{Tensor, TensorStorage};
 
 #[link(name = "fused_linear_silu", kind = "static")]
 unsafe extern "C" {
-    fn launch_fused_linear_silu_f32(
-        x: *const f32,
-        w: *const f32,
-        b: *const f32,
-        out: *mut f32,
-        m: c_int,
-        k: c_int,
-        n: c_int,
-    );
-
     // Device-pointer variant. See the doc comment on
     // `launch_linear_f32_device_ptrs` in `linear.rs` for the ownership
     // contract. Returns 0 on success, 2 on kernel launch error, 1 on
     // sync error. Wired via the `all_cuda` dispatch in
-    // `cuda_fused_linear_silu`.
+    // `cuda_fused_linear_silu` AND reused by the CPU-path through
+    // `with_pooled_device_buffers`.
     pub(crate) fn launch_fused_linear_silu_f32_device_ptrs(
         d_x: *const f32,
         d_w: *const f32,
@@ -108,15 +100,19 @@ fn cuda_fused_linear_silu_raw(
     assert_eq!(b.len(), n, "cuda_fused_linear_silu: bad B size");
     assert_eq!(out.len(), m * n, "cuda_fused_linear_silu: bad OUT size");
 
-    unsafe {
-        launch_fused_linear_silu_f32(
-            x.as_ptr(),
-            w.as_ptr(),
-            b.as_ptr(),
-            out.as_mut_ptr(),
-            m as c_int,
-            k as c_int,
-            n as c_int,
-        );
+    let m_ci = m as c_int;
+    let k_ci = k as c_int;
+    let n_ci = n as c_int;
+
+    let result = unsafe {
+        with_pooled_device_buffers(&[x, w, b], out, |d_in, d_out| {
+            launch_fused_linear_silu_f32_device_ptrs(
+                d_in[0], d_in[1], d_in[2], d_out, m_ci, k_ci, n_ci,
+            )
+        })
+    };
+
+    if let Err(e) = result {
+        panic!("cuda_fused_linear_silu_raw failed: {:?}", e);
     }
 }
