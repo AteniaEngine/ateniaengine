@@ -202,7 +202,7 @@ fn evaluate_candidate_virtual(plan: &atenia_engine::apx9::gpu_execution_planner:
 fn build_mini_flux_graph(cfg: &MiniFluxConfig) -> Graph {
     let mut gb = GraphBuilder::new();
     let tokens_id = gb.input();
-    let (logits_id, _param_ids) = build_mini_flux_language_model(&mut gb, cfg, tokens_id);
+    let (logits_id, _param_ids, _param_names) = build_mini_flux_language_model(&mut gb, cfg, tokens_id);
     gb.output(logits_id);
     gb.build()
 }

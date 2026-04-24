@@ -148,7 +148,7 @@ pub fn build_trainer(cfg: &MiniFluxConfig) -> TrainerV2 {
 
 #[allow(dead_code)]
 pub fn build_language_trainer(cfg: &MiniFluxConfig) -> TrainerV2 {
-    let (graph, param_ids) = build_language_training_graph(cfg);
+    let (graph, param_ids, _param_names) = build_language_training_graph(cfg);
     let optim = AdamW::new(param_ids.len(), 0.015, 0.9, 0.999, 1e-8, 0.0);
     TrainerV2::new(graph, param_ids, optim)
 }
