@@ -151,7 +151,6 @@ fn main() {
     println!("cargo:rerun-if-changed=src/cuda/atenia_kernels.cu");
     println!("cargo:rerun-if-changed=src/cuda/atenia_kernels.h");
     println!("cargo:rerun-if-changed=src/cuda/matmul_kernel.cu");
-    println!("cargo:rerun-if-changed=src/cuda/matmul_kernel.h");
     println!("cargo:rerun-if-changed=src/cuda/linear_cuda.cu");
     println!("cargo:rerun-if-changed=src/cuda/batch_matmul.cu");
     println!("cargo:rerun-if-changed=src/cuda/fused_linear_silu.cu");

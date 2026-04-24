@@ -46,9 +46,47 @@ pub fn cuda_matmul(a: &Tensor, b: &Tensor, m: usize, k: usize, n: usize) -> Tens
 
     unsafe {
         // Allocate device buffers from the global pool (APX 4.12).
+        //
+        // `pool_alloc` returns null when the pool is exhausted or
+        // fragmented enough that no block can serve the request. Before
+        // this null-check was added, the null pointer flowed into
+        // `cudaMemcpy` below and produced a cryptic
+        // `cudaErrorInvalidDevicePointer` (code 11) that did not point
+        // at the real cause. We now fail fast with an actionable
+        // message and free any partial allocation first so the pool
+        // can recover.
+        //
+        // The panic is consistent with the rest of this function, which
+        // already panics on `cudaMemcpy` / `cudaDeviceSynchronize`
+        // errors. Debt #3 Fase 3.2 will migrate this whole alloc/copy
+        // cycle into a shared Rust helper with uniform error handling.
         let d_a = pool_alloc() as *mut f32;
+        if d_a.is_null() {
+            panic!(
+                "cuda_matmul: pool_alloc returned null for buffer A \
+                 ({} bytes) — pool exhausted or fragmented",
+                size_a_bytes
+            );
+        }
         let d_b = pool_alloc() as *mut f32;
+        if d_b.is_null() {
+            pool_free(d_a.cast());
+            panic!(
+                "cuda_matmul: pool_alloc returned null for buffer B \
+                 ({} bytes) — pool exhausted or fragmented",
+                size_b_bytes
+            );
+        }
         let d_c = pool_alloc() as *mut f32;
+        if d_c.is_null() {
+            pool_free(d_a.cast());
+            pool_free(d_b.cast());
+            panic!(
+                "cuda_matmul: pool_alloc returned null for buffer C \
+                 ({} bytes) — pool exhausted or fragmented",
+                size_c_bytes
+            );
+        }
 
         // Copy host -> device.
         // M3-a: `as_cpu_slice()` panics if the storage is not CPU-resident.
