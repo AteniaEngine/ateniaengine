@@ -390,7 +390,7 @@ These are documented so they are not confused with regressions.
    but its arms for the `Cuda` and `Disk` storage variants were
    no-ops. Reconciling the two paths was pending.
 
-   **Resolved in commit <pending>**: `GPUMirror` and `MirrorState`
+   **Resolved in commit b95e8bc**: `GPUMirror` and `MirrorState`
    (APX 8.4) plus the unused `GPUPersistenceInfo` eviction heuristic
    (APX 8.5) were removed entirely. `Tensor` no longer carries
    `gpu: Option<GPUMirror>` or `persistence: Option<GPUPersistenceInfo>`
@@ -587,7 +587,7 @@ by priority and context):
   Closes the highest-impact correctness gap of the M3 debt list —
   APX 4.9 fused patterns can now be trained correctly.
 - **Debt #2** — APX 8.4 `GPUMirror` and APX 8.5 `GPUPersistenceInfo`
-  removed entirely (commit <pending>). Metadata-only stubs that
+  removed entirely (commit b95e8bc). Metadata-only stubs that
   pre-dated `TensorStorage::Cuda` (M3-d) and became redundant;
   eliminated cleanly because they had no `Drop`, no device pointer,
   and zero production consumers outside `tensor.rs` itself. Real
