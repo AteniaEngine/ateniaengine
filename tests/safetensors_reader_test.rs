@@ -87,32 +87,208 @@ fn to_vec_f32_roundtrips_values_bit_exact() {
 }
 
 #[test]
-fn bf16_tensor_reports_unsupported_dtype_on_conversion() {
-    // safetensors BF16: 2 bytes per element. Construct 4 dummy BF16
-    // values (we do not care about their numeric meaning — we only
-    // assert on the error path for to_vec_f32).
-    let bf16_bytes: Vec<u8> = vec![0x3f, 0x80, 0xbf, 0x00, 0x40, 0x49, 0x00, 0x00];
-    let shape = vec![4usize];
-    let view = TensorView::new(StDtype::BF16, shape, &bf16_bytes).unwrap();
+fn bf16_conversion_matches_known_bit_patterns() {
+    // Every BF16 value is IEEE 754 single-precision truncated to the
+    // top 16 bits. The decode path shifts the u16 pattern left 16
+    // bits and reinterprets as f32; these are the canonical checks.
+    //
+    // Little-endian body layout: byte0 = low-byte of u16, byte1 = high.
+    let cases: &[(u16, f32)] = &[
+        (0x3F80, 1.0),
+        (0xBF80, -1.0),
+        (0x4000, 2.0),
+        (0x4040, 3.0),
+        (0x0000, 0.0),
+        (0x8000, -0.0),
+        (0x7F80, f32::INFINITY),
+        (0xFF80, f32::NEG_INFINITY),
+    ];
 
+    let mut body: Vec<u8> = Vec::with_capacity(cases.len() * 2);
+    for (bits, _) in cases {
+        body.extend_from_slice(&bits.to_le_bytes());
+    }
+
+    let view = TensorView::new(StDtype::BF16, vec![cases.len()], &body).unwrap();
     let mut tensors: HashMap<String, TensorView> = HashMap::new();
-    tensors.insert("bf16_tensor".to_string(), view);
+    tensors.insert("bf16_cases".to_string(), view);
     let serialized = safetensors::serialize(&tensors, &None).unwrap();
 
     let reader = SafetensorsReader::from_bytes(serialized).unwrap();
-    let entry = reader.get("bf16_tensor").unwrap();
+    let entry = reader.get("bf16_cases").unwrap();
     assert_eq!(entry.dtype, DType::BF16);
 
-    let err = entry.to_vec_f32().expect_err("BF16 decode must error");
-    match err {
-        LoaderError::UnsupportedDType(msg) => {
-            assert!(
-                msg.contains("BF16") && msg.contains("M4-d"),
-                "error message should reference BF16 and M4-d: got {}",
-                msg
-            );
-        }
-        other => panic!("expected UnsupportedDType, got {:?}", other),
+    let decoded = entry
+        .to_vec_f32()
+        .expect("BF16 decode must succeed in M4-d");
+    assert_eq!(decoded.len(), cases.len());
+
+    for (i, ((bits, expected), got)) in cases.iter().zip(decoded.iter()).enumerate() {
+        // +0.0 and -0.0 compare equal under PartialEq but differ in
+        // bit pattern — use `to_bits` for an unambiguous assertion.
+        // NaN is deliberately excluded from the test cases because
+        // BF16 has multiple NaN encodings; exhaustive NaN validation
+        // is out of scope for M4-d.
+        assert_eq!(
+            got.to_bits(),
+            expected.to_bits(),
+            "BF16 case {} (bits=0x{:04X}): expected {} (bits=0x{:08X}), got {} (bits=0x{:08X})",
+            i,
+            bits,
+            expected,
+            expected.to_bits(),
+            got,
+            got.to_bits()
+        );
+    }
+}
+
+#[test]
+fn f16_conversion_matches_known_bit_patterns() {
+    // IEEE 754 binary16: 1 sign + 5 exponent (bias 15) + 10 mantissa.
+    // Delegates to `half::f16` for the actual conversion; this test
+    // guards the integration, not the math.
+    let cases: &[(u16, f32)] = &[
+        (0x3C00, 1.0),
+        (0xBC00, -1.0),
+        (0x4000, 2.0),
+        (0x4200, 3.0),
+        (0x0000, 0.0),
+        (0x8000, -0.0),
+        (0x7C00, f32::INFINITY),
+        (0xFC00, f32::NEG_INFINITY),
+    ];
+
+    let mut body: Vec<u8> = Vec::with_capacity(cases.len() * 2);
+    for (bits, _) in cases {
+        body.extend_from_slice(&bits.to_le_bytes());
+    }
+
+    let view = TensorView::new(StDtype::F16, vec![cases.len()], &body).unwrap();
+    let mut tensors: HashMap<String, TensorView> = HashMap::new();
+    tensors.insert("f16_cases".to_string(), view);
+    let serialized = safetensors::serialize(&tensors, &None).unwrap();
+
+    let reader = SafetensorsReader::from_bytes(serialized).unwrap();
+    let entry = reader.get("f16_cases").unwrap();
+    assert_eq!(entry.dtype, DType::F16);
+
+    let decoded = entry
+        .to_vec_f32()
+        .expect("F16 decode must succeed in M4-d");
+    assert_eq!(decoded.len(), cases.len());
+
+    for (i, ((bits, expected), got)) in cases.iter().zip(decoded.iter()).enumerate() {
+        assert_eq!(
+            got.to_bits(),
+            expected.to_bits(),
+            "F16 case {} (bits=0x{:04X}): expected {} (bits=0x{:08X}), got {} (bits=0x{:08X})",
+            i,
+            bits,
+            expected,
+            expected.to_bits(),
+            got,
+            got.to_bits()
+        );
+    }
+}
+
+#[test]
+fn bf16_roundtrip_preserves_values_within_bf16_precision() {
+    // Generate 100 deterministic f32 values, round-trip them through
+    // BF16 by truncating the low 16 bits of their bit representation,
+    // feed that to the reader, and verify that decode matches the
+    // truncation exactly.
+    //
+    // This is NOT asserting that BF16 round-trip preserves the
+    // original f32 — BF16 has only ~2-3 decimal digits of precision,
+    // so arbitrary f32 values lose bits. The test asserts that the
+    // decode is the deterministic inverse of the truncation.
+    let count = 100usize;
+    let mut f32_values: Vec<f32> = Vec::with_capacity(count);
+    for i in 0..count {
+        let x = (i as f32) * 0.37;
+        f32_values.push(x.sin() * 12.5);
+    }
+
+    // Simulate a checkpoint that stored these values as BF16:
+    // truncate each f32 to its top 16 bits.
+    let mut bf16_body: Vec<u8> = Vec::with_capacity(count * 2);
+    let mut expected_after_truncate: Vec<f32> = Vec::with_capacity(count);
+    for v in &f32_values {
+        let bits = v.to_bits();
+        let top16 = (bits >> 16) as u16;
+        bf16_body.extend_from_slice(&top16.to_le_bytes());
+        // Expected decoded value: low 16 bits forced to zero.
+        expected_after_truncate.push(f32::from_bits((top16 as u32) << 16));
+    }
+
+    let view = TensorView::new(StDtype::BF16, vec![count], &bf16_body).unwrap();
+    let mut tensors: HashMap<String, TensorView> = HashMap::new();
+    tensors.insert("bf16_pseudo_real".to_string(), view);
+    let serialized = safetensors::serialize(&tensors, &None).unwrap();
+
+    let reader = SafetensorsReader::from_bytes(serialized).unwrap();
+    let decoded = reader
+        .get("bf16_pseudo_real")
+        .unwrap()
+        .to_vec_f32()
+        .unwrap();
+
+    for (i, (got, expected)) in decoded.iter().zip(expected_after_truncate.iter()).enumerate() {
+        assert_eq!(
+            got.to_bits(),
+            expected.to_bits(),
+            "BF16 roundtrip element {}: got 0x{:08X}, expected 0x{:08X}",
+            i,
+            got.to_bits(),
+            expected.to_bits()
+        );
+    }
+}
+
+#[test]
+fn f16_roundtrip_preserves_values_within_f16_precision() {
+    // Like the BF16 roundtrip, but through `half::f16::from_f32` →
+    // `to_f32`. Verifies that the reader's decode path is the exact
+    // inverse of `half`'s encode path.
+    let count = 100usize;
+    let mut f32_values: Vec<f32> = Vec::with_capacity(count);
+    for i in 0..count {
+        let x = (i as f32) * 0.13;
+        // Keep values in the F16 normal range (|x| well under 65504).
+        f32_values.push(x.cos() * 5.0);
+    }
+
+    let mut f16_body: Vec<u8> = Vec::with_capacity(count * 2);
+    let mut expected_after_f16: Vec<f32> = Vec::with_capacity(count);
+    for v in &f32_values {
+        let h = half::f16::from_f32(*v);
+        f16_body.extend_from_slice(&h.to_bits().to_le_bytes());
+        expected_after_f16.push(h.to_f32());
+    }
+
+    let view = TensorView::new(StDtype::F16, vec![count], &f16_body).unwrap();
+    let mut tensors: HashMap<String, TensorView> = HashMap::new();
+    tensors.insert("f16_pseudo_real".to_string(), view);
+    let serialized = safetensors::serialize(&tensors, &None).unwrap();
+
+    let reader = SafetensorsReader::from_bytes(serialized).unwrap();
+    let decoded = reader
+        .get("f16_pseudo_real")
+        .unwrap()
+        .to_vec_f32()
+        .unwrap();
+
+    for (i, (got, expected)) in decoded.iter().zip(expected_after_f16.iter()).enumerate() {
+        assert_eq!(
+            got.to_bits(),
+            expected.to_bits(),
+            "F16 roundtrip element {}: got 0x{:08X}, expected 0x{:08X}",
+            i,
+            got.to_bits(),
+            expected.to_bits()
+        );
     }
 }
 

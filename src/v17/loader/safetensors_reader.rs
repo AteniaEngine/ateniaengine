@@ -253,14 +253,27 @@ impl SafetensorsReader {
 impl TensorEntry<'_> {
     /// Decode this entry's raw bytes into a `Vec<f32>`.
     ///
-    /// M4-a supports only `DType::F32`. BF16, F16, FP8 and integer
-    /// dtypes return [`LoaderError::UnsupportedDType`]. M4-d extends
-    /// coverage to BF16 and F16 via host-side downcast.
+    /// Supported dtypes:
+    /// - `DType::F32`: pass-through decode via `f32::from_le_bytes`.
+    /// - `DType::BF16` (M4-d): host-side upcast via `f32::from_bits((bf16 as u32) << 16)`.
+    ///   BF16 is IEEE 754 single-precision truncated to the top 16 bits
+    ///   (1 sign + 8 exponent + 7 mantissa), so the conversion is a pure
+    ///   zero-extension of the low 16 bits — exact for every BF16 value,
+    ///   no rounding.
+    /// - `DType::F16` (M4-d): host-side conversion via the `half` crate's
+    ///   `f16::from_bits(...).to_f32()`. F16 has a different exponent
+    ///   bias (15 vs 127) and 10 mantissa bits, so the conversion is
+    ///   non-trivial — we defer to `half` for the edge cases (subnormals,
+    ///   NaN propagation, infinities).
     ///
-    /// The safetensors format stores F32 tensors as little-endian
-    /// IEEE 754 bytes regardless of host endianness, so we decode via
-    /// `f32::from_le_bytes` and never rely on `bytemuck`-style
-    /// reinterpret casts.
+    /// `DType::FP8` returns [`LoaderError::UnsupportedDType`] — no FP8
+    /// decode is planned for M4. Extending would require deciding which
+    /// FP8 format (E4M3 vs E5M2) and is out of scope.
+    ///
+    /// The safetensors format stores all multi-byte values as
+    /// little-endian regardless of host endianness, so we decode via
+    /// `u16::from_le_bytes` / `f32::from_le_bytes` and never rely on
+    /// `bytemuck`-style reinterpret casts.
     pub fn to_vec_f32(&self) -> Result<Vec<f32>, LoaderError> {
         match self.dtype {
             DType::F32 => {
@@ -288,14 +301,57 @@ impl TensorEntry<'_> {
                 }
                 Ok(out)
             }
-            DType::F16 => Err(LoaderError::UnsupportedDType(format!(
-                "tensor '{}': F16 decode not implemented in M4-a (lands in M4-d)",
-                self.name
-            ))),
-            DType::BF16 => Err(LoaderError::UnsupportedDType(format!(
-                "tensor '{}': BF16 decode not implemented in M4-a (lands in M4-d)",
-                self.name
-            ))),
+            DType::BF16 => {
+                if self.raw_bytes.len() % 2 != 0 {
+                    return Err(LoaderError::InvalidFormat(format!(
+                        "tensor '{}': BF16 body length {} is not a multiple of 2",
+                        self.name,
+                        self.raw_bytes.len()
+                    )));
+                }
+                let expected_elements: usize = self.shape.iter().product();
+                let actual_elements = self.raw_bytes.len() / 2;
+                if actual_elements != expected_elements {
+                    return Err(LoaderError::InvalidFormat(format!(
+                        "tensor '{}': shape {:?} implies {} BF16 elements, \
+                         body carries {}",
+                        self.name, self.shape, expected_elements, actual_elements
+                    )));
+                }
+                let mut out = Vec::with_capacity(actual_elements);
+                for chunk in self.raw_bytes.chunks_exact(2) {
+                    let bf16_bits = u16::from_le_bytes([chunk[0], chunk[1]]);
+                    // BF16 occupies the upper 16 bits of an F32; the
+                    // lower 16 bits are zero. This is lossless — every
+                    // BF16 value maps to exactly one F32 value.
+                    out.push(f32::from_bits((bf16_bits as u32) << 16));
+                }
+                Ok(out)
+            }
+            DType::F16 => {
+                if self.raw_bytes.len() % 2 != 0 {
+                    return Err(LoaderError::InvalidFormat(format!(
+                        "tensor '{}': F16 body length {} is not a multiple of 2",
+                        self.name,
+                        self.raw_bytes.len()
+                    )));
+                }
+                let expected_elements: usize = self.shape.iter().product();
+                let actual_elements = self.raw_bytes.len() / 2;
+                if actual_elements != expected_elements {
+                    return Err(LoaderError::InvalidFormat(format!(
+                        "tensor '{}': shape {:?} implies {} F16 elements, \
+                         body carries {}",
+                        self.name, self.shape, expected_elements, actual_elements
+                    )));
+                }
+                let mut out = Vec::with_capacity(actual_elements);
+                for chunk in self.raw_bytes.chunks_exact(2) {
+                    let f16_bits = u16::from_le_bytes([chunk[0], chunk[1]]);
+                    out.push(half::f16::from_bits(f16_bits).to_f32());
+                }
+                Ok(out)
+            }
             DType::FP8 => Err(LoaderError::UnsupportedDType(format!(
                 "tensor '{}': FP8 decode not planned for M4 scope",
                 self.name

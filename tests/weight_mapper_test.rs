@@ -269,37 +269,86 @@ fn extra_tensors_in_reader_reported_as_skipped() {
 }
 
 #[test]
-fn bf16_tensor_surfaces_unsupported_dtype_through_mapper() {
+fn bf16_tensor_loads_correctly_after_m4d() {
+    // Renamed and re-scoped from the M4-c version that asserted
+    // `UnsupportedDType`. With M4-d (BF16 → F32 conversion in
+    // `TensorEntry::to_vec_f32`), the mapper now accepts BF16
+    // checkpoints end-to-end.
+    //
+    // Strategy: serialize "embedding" as BF16, load it via the
+    // mapper, and verify that every value in the graph matches the
+    // expected BF16-to-F32 conversion (low 16 bits zero) of the
+    // original f32 source.
     let cfg = tiny_cfg();
     let (mut graph, handles) = fresh_mini_flux(&cfg);
 
-    // Serialize "embedding" as BF16 instead of F32. The reader's
-    // to_vec_f32() call (invoked inside load_into) must error with
-    // UnsupportedDType referencing M4-d.
-    let embedding_numel = cfg.vocab_size * cfg.d_model;
-    let bf16_bytes: Vec<u8> = (0..embedding_numel).flat_map(|_| [0x3f, 0x80]).collect();
+    // Source values to encode as BF16: use the "embedding" tensor
+    // that already exists in the graph, truncated to BF16 precision.
+    // The load will then restore the same truncated-and-upcast
+    // values, so we can assert bit-exact against that reference.
+    let embedding_id = handles
+        .param_ids
+        .iter()
+        .zip(handles.param_names.iter())
+        .find(|(_, n)| n.as_str() == "embedding")
+        .map(|(id, _)| *id)
+        .expect("embedding must be in MiniFlux params");
+    let embedding_f32 = graph.nodes[embedding_id]
+        .output
+        .as_ref()
+        .unwrap()
+        .as_cpu_slice()
+        .to_vec();
+
+    let mut bf16_bytes: Vec<u8> = Vec::with_capacity(embedding_f32.len() * 2);
+    let mut expected_after_truncate: Vec<f32> = Vec::with_capacity(embedding_f32.len());
+    for v in &embedding_f32 {
+        let top16 = (v.to_bits() >> 16) as u16;
+        bf16_bytes.extend_from_slice(&top16.to_le_bytes());
+        expected_after_truncate.push(f32::from_bits((top16 as u32) << 16));
+    }
+
     let view =
         TensorView::new(StDtype::BF16, vec![cfg.vocab_size, cfg.d_model], &bf16_bytes).unwrap();
     let mut views: HashMap<String, TensorView> = HashMap::new();
     views.insert("embedding".to_string(), view);
     let buffer = safetensors::serialize(&views, &None).unwrap();
 
+    // Zero the embedding so a no-op load cannot accidentally pass.
+    for v in graph.nodes[embedding_id]
+        .output
+        .as_mut()
+        .unwrap()
+        .as_cpu_slice_mut()
+        .iter_mut()
+    {
+        *v = 0.0;
+    }
+
     let mapper =
         WeightMapper::from_param_names_and_ids(&handles.param_names, &handles.param_ids)
             .unwrap();
     let reader = SafetensorsReader::from_bytes(buffer).unwrap();
-
-    let err = mapper
+    let report = mapper
         .load_into(&mut graph, &reader)
-        .expect_err("BF16 must error");
-    match err {
-        LoaderError::UnsupportedDType(msg) => {
-            assert!(
-                msg.contains("BF16") && msg.contains("M4-d"),
-                "unsupported-dtype message should reference BF16 and M4-d: got {}",
-                msg
-            );
-        }
-        other => panic!("expected UnsupportedDType, got {:?}", other),
+        .expect("BF16 load must succeed after M4-d");
+
+    assert_eq!(report.loaded, 1);
+    assert!(report.skipped.is_empty());
+
+    let loaded_values = graph.nodes[embedding_id]
+        .output
+        .as_ref()
+        .unwrap()
+        .as_cpu_slice();
+    for (i, (got, expected)) in loaded_values.iter().zip(expected_after_truncate.iter()).enumerate() {
+        assert_eq!(
+            got.to_bits(),
+            expected.to_bits(),
+            "embedding element {}: got 0x{:08X}, expected 0x{:08X}",
+            i,
+            got.to_bits(),
+            expected.to_bits()
+        );
     }
 }
