@@ -473,6 +473,20 @@ These are documented so they are not confused with regressions.
    present), and `x`, given grad flowing in. Complex but bounded
    scope.
 
+   **Resolved in commit b623ca2**: `exec_fused_linear_activation_chain`
+   now accepts `record_tape: bool` and registers an analytical
+   `BackOp` that captures the required intermediates (`y1`, per-
+   activation inputs, `a_last`) by move into the closure.
+   Activation derivatives for ReLU / SiLU / GELU are inlined; the
+   reverse-iteration loop handles `Vec<ActType>` of any length.
+   `ensure_cpu()` is called before each capture so the closure-
+   owned tensors stay on CPU regardless of subsequent
+   Degrade/DeepDegrade migrations. Correctness locked by
+   `tests/m3_debt_fused_chain_backward_test.rs` (8 cases: 3/4-b1/
+   4-b2/5-input × SiLU vs non-fused reference, Vec<ActType>=2,
+   ReLU/GELU non-zero finite smoke tests, seq-vs-par parity on
+   the fused chain).
+
 9. **`exec_gpu_add` / `exec_gpu_mul` misleading naming** —
    Methods `exec_gpu_add` and `exec_gpu_mul` in
    `src/gpu/dispatch/executor.rs` (moved from
@@ -531,9 +545,6 @@ measurements to inform mode boundaries.
 **Remaining M3 technical debts to pay** (in no forced order — pick
 by priority and context):
 
-- **Debt #8** — `FusedLinearActivationChain` backward does not
-  register a `BackOp`. Correctness bug: training through this fused
-  node produces silently wrong gradients.
 - **Debt #5** — `FusedSelfAttention` fused backward (optimization,
   low priority until a real model shows it in the profile).
 - **Debt #9** — `exec_gpu_add` / `exec_gpu_mul` misleading naming
@@ -557,6 +568,11 @@ by priority and context):
   tier + cascade + dual-pressure handling).
 - **Debt #7** — `src/apx7/dynamic_load.rs` stateful CPU sampling
   (commit 2a83ee8).
+- **Debt #8** — `FusedLinearActivationChain` backward BackOp
+  registered with analytical gradients for x/W1/b1/W2/b2 across
+  all input layouts and any `Vec<ActType>` length (commit b623ca2).
+  Closes the highest-impact correctness gap of the M3 debt list —
+  APX 4.9 fused patterns can now be trained correctly.
 
 **Admin**:
 
