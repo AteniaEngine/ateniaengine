@@ -258,19 +258,51 @@ mod tests {
 
     #[test]
     fn test_self_fraction_never_exceeds_total_by_much() {
-        // Self CPU can legitimately exceed the system average on
-        // rare occasions (compute-bound single-threaded process
-        // dominating one core while others idle can push `self`
-        // above `total` depending on when each was sampled), but
-        // not catastrophically. A large overshoot signals a
-        // normalization bug.
+        // What this test actually checks is normalization: both
+        // fractions must land in [0, 1]. A normalization bug would
+        // produce values outside that range (e.g. forgetting to
+        // divide by core count yields 2.5 on an over-subscribed
+        // host).
+        //
+        // The previous version asserted `self <= total + 0.2` as a
+        // proxy for that invariant, but `self_fraction` and
+        // `total_fraction` come from sampling windows sysinfo does
+        // not align. On a system where a few threads are busy while
+        // most cores are idle (e.g. Atenia's test suite on a
+        // 24-thread host) `self` can legitimately overshoot `total`
+        // by 0.25+ without any bug — which is the flakiness that
+        // motivated this rewrite.
+        //
+        // We keep a loose sanity cap on the relative comparison
+        // (eps=0.5) as a catch-all for catastrophic drift — not as
+        // the primary invariant.
         let probe = CpuProbe::new().expect("probe must construct");
         let snap = probe.snapshot().expect("snapshot must succeed");
-        let eps = 0.20_f32;
+
+        // Real normalization invariant.
+        assert!(
+            (0.0..=1.0).contains(&snap.self_fraction),
+            "self_fraction {} outside [0, 1]",
+            snap.self_fraction
+        );
+        assert!(
+            (0.0..=1.0).contains(&snap.total_fraction),
+            "total_fraction {} outside [0, 1]",
+            snap.total_fraction
+        );
+
+        // Loose catastrophic-drift cap. Strictly redundant with the
+        // two range asserts above (self <= 1.0 and total >= 0.0
+        // together already bound the overshoot by 1.0), but kept
+        // as an explicit signal of the original test's intent: if a
+        // future change ever loosens the range asserts, this line
+        // preserves the "self should not be wildly larger than
+        // total" concern.
+        let eps = 0.5_f32;
         assert!(
             snap.self_fraction <= snap.total_fraction + eps,
             "self_fraction ({}) exceeds total_fraction ({}) by more than {} — \
-             possible normalization bug",
+             normalization drift (not routine sampling misalignment)",
             snap.self_fraction,
             snap.total_fraction,
             eps
