@@ -560,8 +560,6 @@ by priority and context):
 
 - **Debt #5** — `FusedSelfAttention` fused backward (optimization,
   low priority until a real model shows it in the profile).
-- **Debt #3** — C-side quality on the 3 CUDA ops (silent alloc
-  failures, ~210 lines of copy-paste, sparse docs).
 
 **Closed during M3-e and follow-up cleanup** (for reference):
 
@@ -594,6 +592,47 @@ by priority and context):
   (removal) was selected over (a) rename or (b) real GPU dispatch;
   zero observable behavior change since the `_ => {}` arm already
   covered every `NodeType` the planner actually emits.
+- **Debt #3** — C-side quality on the 3 CUDA ops. Resolved across
+  two commits:
+  - **Fase 3.1** (commit b6d507f): eliminated the dead
+    `launch_matmul_f32` legacy host wrapper (~70 LOC of C,
+    declared in `matmul_kernel.h` and defined in
+    `matmul_kernel.cu` but never linked from Rust — `matmul.rs`
+    uses `matmul_f32_launch_device` directly). Deleted the
+    orphan header. Added a null-check to the 3 `pool_alloc`
+    calls in `src/cuda/matmul.rs` that previously let a null
+    device pointer flow into `cudaMemcpy` and surface as a
+    cryptic `cudaErrorInvalidDevicePointer`.
+  - **Fase 3.2** (commit 0313b73): introduced
+    `src/cuda/pool_helpers.rs` with
+    `with_pooled_device_buffers`, a single Rust helper that
+    centralizes alloc / H↔D memcpy / kernel launch / free for
+    the CPU-path of all four CUDA ops. Eliminated the three
+    remaining legacy C host wrappers (`launch_linear_f32`,
+    `launch_batch_matmul_f32`, `launch_fused_linear_silu_f32`
+    — ~210 LOC of C removed combined). The Rust-side `cuda_*_raw`
+    functions and `cuda_matmul` now all invoke the same
+    `_device_ptrs` launcher through the helper, unifying the
+    CPU-path with the all-Cuda path on the same kernel entry.
+    Added `StorageTransferError::PoolExhausted { size_bytes }`
+    to propagate alloc failures with the actual root cause
+    instead of a masked CUDA-driver error. Net: -166 LOC across
+    10 files, single well-documented helper in place of four
+    partial copies of the same pattern.
+  - **Fase 3.3** (dedicated pool-exhaustion integration test)
+    deferred as follow-up. The current APX 4.12 pool
+    auto-grows by calling `cuda_malloc` directly when its block
+    list is empty (`GpuMemoryPool::alloc` in
+    `src/apx4_12/gpu_memory_pool.rs:19-29`), so a deterministic
+    test for `PoolExhausted` requires one of: a CUDA-absent
+    machine (inverts the skip pattern other tests use), real
+    multi-GB VRAM exhaustion (non-portable, flaky), or a pool
+    refactor with a hard ceiling plus dependency injection for
+    the alloc. None fit a debt cleanup scope. The variant is
+    validated by the type system plus the four existing tests
+    that exercise the helper's happy path end-to-end
+    (apx_4_2_matmul_test, apx_4_4_linear_test,
+    apx_4_5_batch_matmul_test, apx_4_10_fused_linear_silu_gpu_test).
 
 **Admin**:
 
