@@ -722,8 +722,13 @@ With these pre-requisites in place, estimated work drops from
 
 **Then**:
 
-- **M4**: Real `ModelLoader` — `safetensors` support, weight
-  loading, graph population from checkpoints.
+- **M4** ✅ — Real `ModelLoader` (mechanics). Closed in a separate
+  sprint following this handoff. Safetensors reader, weight
+  mapper with shape/dtype validation, BF16/F16 → F32 decode on
+  load. See [HANDOFF_APX_V20_M4.md](./HANDOFF_APX_V20_M4.md) for
+  the full state at M4 close. Targets against real LLM checkpoints
+  (TinyLlama, Llama 3.2 1B) live in a follow-up M4.5 milestone
+  documented in that handoff.
 
 ---
 
