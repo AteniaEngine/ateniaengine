@@ -504,7 +504,7 @@ These are documented so they are not confused with regressions.
    the fused chain).
 
 9. **`exec_gpu_add` / `exec_gpu_mul` misleading naming** —
-   **Resolved via option (c) in commit <pending>**: both
+   **Resolved via option (c) in commit c72783d**: both
    methods eliminated along with the `NodeType::Add` and
    `NodeType::Mul` match arms in `exec_gpu_segment`.
    Investigation confirmed the arms were statically
@@ -587,7 +587,7 @@ by priority and context):
   and zero production consumers outside `tensor.rs` itself. Real
   eviction over `TensorStorage::Cuda` deferred to post-M4.
 - **Debt #9** — `exec_gpu_add` / `exec_gpu_mul` CPU-fallback stubs
-  removed entirely (commit <pending>). Dead code by construction:
+  removed entirely (commit c72783d). Dead code by construction:
   `GpuPlan::build`'s filter `is_cuda_available_for` only accepts
   `NodeType::MatMul`, so the corresponding match arms in
   `exec_gpu_segment` were statically unreachable. Option (c)
