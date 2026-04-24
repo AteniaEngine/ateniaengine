@@ -5,4 +5,5 @@
 //! `crate::apx*_*::gpu_*` module paths; consolidated here so the
 //! `crate::cuda::*` dependency stays inside the `src/gpu/` layer.
 
+pub mod executor;
 pub mod hooks;
