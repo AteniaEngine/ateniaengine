@@ -24,6 +24,7 @@ fn micro_6_4(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> (Vec<f32>, u
 }
 
 #[test]
+#[ignore = "benchmark — run with cargo test -- --ignored"]
 fn apx_6_7_benchmark_profile_logging() {
     let sizes = [128usize, 256, 512, 1024];
 

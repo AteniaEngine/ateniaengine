@@ -35,6 +35,7 @@ where
 }
 
 #[test]
+#[ignore = "benchmark — run with cargo test -- --ignored"]
 fn apx_7_9_hls_bench_print() {
     let width = 8;
     let inputs = make_input();

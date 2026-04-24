@@ -28,6 +28,7 @@ fn run_one(temp: f32, iters: usize) {
 }
 
 #[test]
+#[ignore = "benchmark — run with cargo test -- --ignored"]
 fn apx_6_13_tempered_behavior_bench() {
     // Light benchmark, logs only: no hard assertions to avoid
     // flakiness due to randomness. Used to manually inspect how

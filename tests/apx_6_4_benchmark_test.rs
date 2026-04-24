@@ -56,6 +56,7 @@ fn bench_size(m: usize, k: usize, n: usize) {
 }
 
 #[test]
+#[ignore = "benchmark — run with cargo test -- --ignored"]
 fn apx_6_4_benchmark() {
     let sizes = [128usize, 256, 512, 1024];
     for &s in &sizes {

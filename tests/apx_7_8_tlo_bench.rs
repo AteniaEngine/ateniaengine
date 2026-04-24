@@ -38,6 +38,7 @@ where
 }
 
 #[test]
+#[ignore = "benchmark — run with cargo test -- --ignored"]
 fn apx_7_8_tlo_bench_print() {
     let width = 8;
     let inputs = make_input();

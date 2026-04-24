@@ -1,6 +1,7 @@
 use atenia_engine::tensor::{Tensor, Device};
 
 #[test]
+#[ignore = "benchmark — run with cargo test -- --ignored"]
 fn apx_7_0_bench_parallel_vs_seq() {
     let a = Tensor::randn(&[512, 512], Device::CPU);
     let b = Tensor::randn(&[512, 512], Device::CPU);

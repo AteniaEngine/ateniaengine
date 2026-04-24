@@ -28,6 +28,7 @@ fn max_abs_diff(a: &Tensor, b: &Tensor) -> f32 {
 }
 
 #[test]
+#[ignore = "benchmark — run with cargo test -- --ignored"]
 fn apx_6_10_fused_full_benchmark() {
     let size_list = [128, 256, 512];
 

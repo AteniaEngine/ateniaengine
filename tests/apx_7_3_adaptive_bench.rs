@@ -23,6 +23,7 @@ fn run_once(n: usize, adaptive: bool) -> f64 {
 }
 
 #[test]
+#[ignore = "benchmark — run with cargo test -- --ignored"]
 fn apx_7_3_adaptive_before_after_benchmark() {
     unsafe {
         std::env::set_var("ATENIA_APX_MODE", "7.3");

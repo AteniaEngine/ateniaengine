@@ -21,6 +21,7 @@ fn fake_unfused_op_work(amount: usize) {
 }
 
 #[test]
+#[ignore = "benchmark — run with cargo test -- --ignored"]
 fn apx_6_9_fusion_benchmark() {
     let mut fp = FusionProfiler::new();
 

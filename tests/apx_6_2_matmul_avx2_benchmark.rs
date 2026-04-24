@@ -2,6 +2,7 @@ use atenia_engine::matmul_dispatcher;
 use atenia_engine::apx6_2::avx2_matmul;
 
 #[test]
+#[ignore = "benchmark — run with cargo test -- --ignored"]
 fn bench_avx2_vs_baseline() {
     use std::time::Instant;
     let sizes = [128, 256, 512, 1024];

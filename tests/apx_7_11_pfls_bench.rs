@@ -41,6 +41,7 @@ where
 }
 
 #[test]
+#[ignore = "benchmark — run with cargo test -- --ignored"]
 fn apx_7_11_pfls_bench_print() {
     let width = 4;
     let depth = 6;

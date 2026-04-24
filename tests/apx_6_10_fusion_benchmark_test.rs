@@ -29,6 +29,7 @@ fn fused_full_placeholder(work: usize) {
 }
 
 #[test]
+#[ignore = "benchmark — run with cargo test -- --ignored"]
 fn apx_6_10_fusion_benchmark() {
     let mut selector = FusionSelector::new();
 

@@ -50,6 +50,7 @@ fn bench_case(m: usize, k: usize, n: usize) {
 }
 
 #[test]
+#[ignore = "benchmark — run with cargo test -- --ignored"]
 fn benchmark_cpu_vs_gpu() {
     println!("\n========== APX 6.1 CPU vs GPU Benchmark ==========\n");
 

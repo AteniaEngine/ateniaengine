@@ -57,6 +57,7 @@ fn linear_cpu(x: &Tensor, w: &Tensor, b: &Tensor) -> Tensor {
 }
 
 #[test]
+#[ignore = "benchmark — run with cargo test -- --ignored"]
 fn bench_real_perf() {
     // Try to create GPU manager
     let mgr = match GpuTensorManager::new() {

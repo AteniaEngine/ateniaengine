@@ -41,6 +41,7 @@ fn benchmark_size(m: usize, k: usize, n: usize) {
 }
 
 #[test]
+#[ignore = "benchmark — run with cargo test -- --ignored"]
 fn apx_6_1_matmul_benchmark() {
     // This benchmark does not modify the runtime or execution paths; it only
     // measures existing kernels for different sizes.

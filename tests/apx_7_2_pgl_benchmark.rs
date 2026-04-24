@@ -12,6 +12,7 @@ where
 }
 
 #[test]
+#[ignore = "benchmark — run with cargo test -- --ignored"]
 fn apx_7_2_pgl_benchmark() {
     let a = Tensor::randn(&[1024, 1024], Device::CPU);
     let b = Tensor::randn(&[1024, 1024], Device::CPU);

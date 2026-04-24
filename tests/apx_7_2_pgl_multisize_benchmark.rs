@@ -12,6 +12,7 @@ where
 }
 
 #[test]
+#[ignore = "benchmark — run with cargo test -- --ignored"]
 fn apx_7_2_pgl_multisize_benchmark() {
     // Ensure mode 7.2 so PGL is active in the "auto" path.
     unsafe {

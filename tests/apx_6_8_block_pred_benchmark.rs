@@ -4,6 +4,7 @@ use atenia_engine::apx6_8::BlockSizePredictor;
 use atenia_engine::matmul::matmul_tiled_flex::matmul_tiled_flex;
 
 #[test]
+#[ignore = "benchmark — run with cargo test -- --ignored"]
 fn apx_6_8_block_prediction() {
     let sizes = BlockSizePredictor::candidate_block_sizes();
     let mut pred = BlockSizePredictor::new();
