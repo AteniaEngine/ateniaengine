@@ -1,10 +1,19 @@
-# Handoff — APX v20 M3 (at M3-e.5 close)
+# Handoff — APX v20 M3 (at M3 close)
 
-**Status at handoff**: M3-a, M3-c, M3-d, and M3-e.1–e.5 complete. M3-e
-was expanded from an initial 5 sub-fases to a planned 11 after the
-discovery that memory-only reaction is insufficient for Atenia's
-"good citizen" design goal. M3-e.6 (CPU pressure with process
-attribution) is the next sub-milestone.
+**Status at handoff**: M3 is cleanly closed. M3-a, M3-c, M3-d, and
+M3-e.1–e.11 all complete. M3-e.12 (behavior modes) remains
+explicitly deferred pending real-workload measurements. All nine
+M3 technical debts have been resolved or formally deferred:
+
+- **Correctness debts (closed)**: 8 — #1, #2, #3, #4, #6, #7, #8, #9.
+- **Performance optimization (deferred to post-M4 with concrete
+  re-evaluation criteria)**: 1 — #5 (`FusedSelfAttention` fused
+  backward). See the "Deferred performance optimizations" block
+  below.
+- **Open correctness debts**: 0.
+
+Next: M4 (real `ModelLoader` — safetensors support, weight loading,
+graph population from checkpoints).
 
 This handoff documents the architectural state at M3-e.5 close so the
 next person (or the same person after a long break) can resume on
@@ -555,11 +564,11 @@ reference:
 (behavior modes) remains explicitly deferred, pending real workload
 measurements to inform mode boundaries.
 
-**Remaining M3 technical debts to pay** (in no forced order — pick
-by priority and context):
-
-- **Debt #5** — `FusedSelfAttention` fused backward (optimization,
-  low priority until a real model shows it in the profile).
+**Remaining M3 correctness debts**: none. M3 is cleanly closed
+from a correctness perspective. The one remaining item (Debt #5)
+is a pure performance optimization with no correctness gap; it is
+documented separately below with re-evaluation criteria tied to
+M4 measurements.
 
 **Closed during M3-e and follow-up cleanup** (for reference):
 
@@ -633,6 +642,77 @@ by priority and context):
     that exercise the helper's happy path end-to-end
     (apx_4_2_matmul_test, apx_4_4_linear_test,
     apx_4_5_batch_matmul_test, apx_4_10_fused_linear_silu_gpu_test).
+
+## Deferred performance optimizations (not M3-scope)
+
+### #5 — `FusedSelfAttention` fused backward
+
+**Status**: Deferred. Not a correctness issue.
+
+**Current state**: `FusedSelfAttention` runs fused in forward (and
+is active by default under `ATENIA_APX_MODE=4.19`) but uses the
+naive, non-fused backward through the individual BackOps of the
+underlying subgraph (3 Linears, Transpose, MatMul, Softmax,
+MatMul). Numerically correct — validated bit-exact against the
+non-fused reference by `tests/apx_4_18_self_attention_backward_test.rs`
+with `1e-5` tolerance across `dX`, `dWq`, `dWk`, `dWv`. The
+intermediates needed for a fused backward (`q`, `k`, `v`, `att`,
+`out`) are already cached during forward in
+`self.fused_outputs[id] = FusedOutput::SelfAttention { .. }` —
+so the memory cost of caching is already paid.
+
+**Potential benefit**: ~1-4% end-to-end speedup in training,
+estimated without measurement. Reduces `ensure_cpu` guard
+invocations in backward closures from ~7 to ~1-2 and removes
+several intermediate-gradient allocations that exist only to
+bridge adjacent BackOps.
+
+**Implementation risk**: Requires either (a) skipping BackOp
+registration on individual nodes of the attention pattern —
+exactly the mechanism that caused a historic silent-zero-grad
+bug on this op (see the history section in the docstring of
+`tests/apx_4_18_self_attention_backward_test.rs`), or (b) fused
+and individual BackOps coexisting, which is incorrect because it
+double-counts gradients. The current equivalence test catches
+numerical drift but would NOT detect "which BackOp ran" — a
+silent fallback to the naive path would pass the test, so option
+(a) without additional observability is brittle.
+
+**Re-evaluation criteria**: Re-examine when M4 brings a
+transformer (≥100M params) executing forward+backward
+end-to-end AND the profile shows attention backward as >5% of
+total training time. Until **both** conditions are met,
+implementation is speculative optimization.
+
+**Pre-requisites if resumed**:
+- Deterministic benchmark of standalone attention block backward
+  (measurable baseline → evaluable delta).
+- Observability test verifying which BackOp actually runs
+  (counter, mock, or instrumentation flag) — not just numerical
+  equivalence.
+- Reference transformer model (2-4 layers) with full
+  forward+backward pass executing under the M4 runtime.
+
+With these pre-requisites in place, estimated work drops from
+**5-8h (structural risk)** to **3-5h (safe regression prevention)**.
+
+**Rationale for deferral over implementation**:
+1. Not a correctness gap — unlike the 8 closed debts, the forward
+   fusion preserves the original subgraph structure and backward
+   traverses real, already-registered BackOps. The existing
+   `apx_4_18` test proves bit-exact equivalence.
+2. Without a real transformer running end-to-end (M4+), there is
+   no profile to target. Any estimate of the 1-4% speedup is
+   speculation.
+3. The option-(a) implementation path re-enters exactly the
+   territory that produced the historic silent-zero-grad bug.
+   That bug was caught by the equivalence test only because an
+   alternative path (naive mode) was available for comparison;
+   a subtler regression in the fused backward itself would not
+   be caught by the current suite.
+4. M3 was correctness foundations. Optimizations without
+   measurement do not fit that theme and spend complexity budget
+   in `src/amg/graph.rs` (already 4k+ LOC) for uncertain gain.
 
 **Admin**:
 
