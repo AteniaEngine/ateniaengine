@@ -26,13 +26,6 @@
 //! `!record_tape`; training mode falls through to the per-node CPU
 //! path which records backward correctly.
 //!
-//! # Known debt
-//!
-//! `exec_gpu_add` and `exec_gpu_mul` are prefixed `exec_gpu_` but
-//! execute on CPU (`a.add(b)` / `a.mul(b)`). The naming is misleading
-//! — they are placeholders until dedicated kernels exist. Tracked as
-//! a separate debt item.
-
 use crate::amg::graph::Graph;
 use crate::amg::nodes::NodeType;
 use crate::apx4_3::{gpu_enabled, log_gpu, gpu_plan::GpuSegment};
@@ -52,14 +45,6 @@ impl Graph {
                 NodeType::MatMul => {
                     log_gpu(&format!("Executing MatMul on GPU (node {id})"));
                     self.exec_gpu_matmul(id);
-                }
-                NodeType::Add => {
-                    log_gpu(&format!("Executing Add on GPU (node {id})"));
-                    self.exec_gpu_add(id);
-                }
-                NodeType::Mul => {
-                    log_gpu(&format!("Executing Mul on GPU (node {id})"));
-                    self.exec_gpu_mul(id);
                 }
                 NodeType::Linear => {
                     log_gpu(&format!("Executing Linear on GPU (node {id})"));
@@ -92,35 +77,6 @@ impl Graph {
         let gpu_out = cuda_matmul(a, b, m, k, n);
 
         self.nodes[id].output = Some(gpu_out);
-    }
-
-    pub fn exec_gpu_add(&mut self, id: usize) {
-        let a_id = self.nodes[id].inputs[0];
-        let b_id = self.nodes[id].inputs[1];
-        let a = self.nodes[a_id].output.as_ref().expect("Add missing A");
-        let b = self.nodes[b_id].output.as_ref().expect("Add missing B");
-
-        // For now, use CPU addition but executed inside the logical GPU segment.
-        let gpu_out = a.add(b);
-
-        self.nodes[id].output = Some(gpu_out);
-    }
-
-    pub fn exec_gpu_mul(&mut self, id: usize) {
-        let inputs = self.nodes[id].inputs.clone();
-        if inputs.len() < 2 {
-            // Inconsistent graph or partial Mul node; do not attempt the GPU path.
-            return;
-        }
-
-        let a_opt = self.nodes[inputs[0]].output.as_ref();
-        let b_opt = self.nodes[inputs[1]].output.as_ref();
-
-        if let (Some(a), Some(b)) = (a_opt, b_opt) {
-            // Placeholder: CPU multiplication inside the GPU segment until we have a dedicated kernel.
-            let gpu_out = a.mul(b);
-            self.nodes[id].output = Some(gpu_out);
-        }
     }
 
     pub fn exec_gpu_linear(&mut self, id: usize) {

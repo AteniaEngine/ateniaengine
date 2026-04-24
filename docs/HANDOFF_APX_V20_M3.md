@@ -504,26 +504,23 @@ These are documented so they are not confused with regressions.
    the fused chain).
 
 9. **`exec_gpu_add` / `exec_gpu_mul` misleading naming** —
-   Methods `exec_gpu_add` and `exec_gpu_mul` in
-   `src/gpu/dispatch/executor.rs` (moved from
-   `src/apx4_3/gpu_executor.rs` in commit 80417af) carry the
-   `gpu` prefix but execute on CPU — they call `a.add(b)` and
-   `a.mul(b)` on host tensors directly, with no GPU dispatch.
-   This was identified during M3 debt investigation for the
-   vendor-neutrality refactor.
-
-   The naming originated when these were placeholders intended
-   for future GPU implementation that never materialized. Current
-   code paths relying on these methods silently execute on CPU
-   regardless of GPU availability.
-
-   Resolution options:
-   (a) Rename to `exec_add` / `exec_mul` to match actual behavior.
-   (b) Implement actual GPU dispatch for add/mul operations.
-   (c) Remove if identified as dead code (requires caller audit).
-
-   Tracked separately. Does not block other work. Low priority —
-   functional correctness is preserved, only naming is misleading.
+   **Resolved via option (c) in commit <pending>**: both
+   methods eliminated along with the `NodeType::Add` and
+   `NodeType::Mul` match arms in `exec_gpu_segment`.
+   Investigation confirmed the arms were statically
+   unreachable: `GpuPlan::build` consults
+   `is_cuda_available_for`, which only accepts
+   `NodeType::MatMul`, so the planner never produces a segment
+   containing `Add` or `Mul`. The stubs executed `a.add(b)` /
+   `a.mul(b)` on CPU, misrepresenting their behavior through
+   the `exec_gpu_` prefix. Option (a) rename was rejected as
+   cosmetic (moves the debt without resolving it); option (b)
+   real GPU dispatch was out of scope (requires CUDA kernels,
+   `launch_*_f32_device_ptrs` variants, storage-aware
+   dispatch, tests — a dedicated sub-milestone). Removal is
+   behavior-preserving: the `_ => {}` arm in
+   `exec_gpu_segment` already covered every `NodeType` the
+   planner actually produces in these code paths.
 
 ---
 
@@ -563,9 +560,6 @@ by priority and context):
 
 - **Debt #5** — `FusedSelfAttention` fused backward (optimization,
   low priority until a real model shows it in the profile).
-- **Debt #9** — `exec_gpu_add` / `exec_gpu_mul` misleading naming
-  (they execute on CPU despite the `gpu` prefix). Low priority —
-  functional correctness preserved.
 - **Debt #3** — C-side quality on the 3 CUDA ops (silent alloc
   failures, ~210 lines of copy-paste, sparse docs).
 
@@ -592,6 +586,14 @@ by priority and context):
   eliminated cleanly because they had no `Drop`, no device pointer,
   and zero production consumers outside `tensor.rs` itself. Real
   eviction over `TensorStorage::Cuda` deferred to post-M4.
+- **Debt #9** — `exec_gpu_add` / `exec_gpu_mul` CPU-fallback stubs
+  removed entirely (commit <pending>). Dead code by construction:
+  `GpuPlan::build`'s filter `is_cuda_available_for` only accepts
+  `NodeType::MatMul`, so the corresponding match arms in
+  `exec_gpu_segment` were statically unreachable. Option (c)
+  (removal) was selected over (a) rename or (b) real GPU dispatch;
+  zero observable behavior change since the `_ => {}` arm already
+  covered every `NodeType` the planner actually emits.
 
 **Admin**:
 
