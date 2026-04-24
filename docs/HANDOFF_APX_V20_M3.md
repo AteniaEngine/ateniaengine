@@ -471,6 +471,28 @@ These are documented so they are not confused with regressions.
    present), and `x`, given grad flowing in. Complex but bounded
    scope.
 
+9. **`exec_gpu_add` / `exec_gpu_mul` misleading naming** —
+   Methods `exec_gpu_add` and `exec_gpu_mul` in
+   `src/gpu/dispatch/executor.rs` (moved from
+   `src/apx4_3/gpu_executor.rs` in commit 80417af) carry the
+   `gpu` prefix but execute on CPU — they call `a.add(b)` and
+   `a.mul(b)` on host tensors directly, with no GPU dispatch.
+   This was identified during M3 debt investigation for the
+   vendor-neutrality refactor.
+
+   The naming originated when these were placeholders intended
+   for future GPU implementation that never materialized. Current
+   code paths relying on these methods silently execute on CPU
+   regardless of GPU availability.
+
+   Resolution options:
+   (a) Rename to `exec_add` / `exec_mul` to match actual behavior.
+   (b) Implement actual GPU dispatch for add/mul operations.
+   (c) Remove if identified as dead code (requires caller audit).
+
+   Tracked separately. Does not block other work. Low priority —
+   functional correctness is preserved, only naming is misleading.
+
 ---
 
 ## Files actually touched in M3-e.1–e.5
