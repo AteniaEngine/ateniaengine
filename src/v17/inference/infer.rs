@@ -96,6 +96,12 @@ fn build_inference_context(
             LoaderError::UnsupportedDType(msg) => {
                 InferenceError::LoadFailed(format!("unsupported dtype: {msg}"))
             }
+            LoaderError::ShapeMismatch { tensor_name, expected, actual } => {
+                InferenceError::LoadFailed(format!(
+                    "shape mismatch for '{}': expected {:?}, got {:?}",
+                    tensor_name, expected, actual
+                ))
+            }
         })?;
 
     let contract = make_default_contract();

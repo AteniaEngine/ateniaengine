@@ -21,4 +21,15 @@ pub enum LoaderError {
     /// variant. M4-d extends support to BF16 and F16 via
     /// host-side downcast on load.
     UnsupportedDType(String),
+    /// A tensor from the safetensors file has a shape that does not
+    /// match the shape of the parameter node it would be loaded into.
+    /// Loading proceeds no further for this tensor; fix the source
+    /// checkpoint or the graph architecture so the shapes agree.
+    ///
+    /// Introduced in M4-c (weight mapper).
+    ShapeMismatch {
+        tensor_name: String,
+        expected: Vec<usize>,
+        actual: Vec<usize>,
+    },
 }
