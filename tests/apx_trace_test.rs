@@ -12,7 +12,7 @@ fn apx_25_traces_show_parallelism() {
     let mut g = {
         let mut gb = GraphBuilder::new();
         let input = gb.input();
-        let (logits, _) = build_mini_flux_language_model(
+        let (logits, _, _) = build_mini_flux_language_model(
             &mut gb,
             &MiniFluxConfig {
                 vocab_size: 16,

@@ -17,7 +17,7 @@ fn language_logits_shape_is_correct() {
 
     let mut gb = GraphBuilder::new();
     let tokens_id = gb.input();
-    let (logits_id, _) = build_mini_flux_language_model(&mut gb, &cfg, tokens_id);
+    let (logits_id, _, _) = build_mini_flux_language_model(&mut gb, &cfg, tokens_id);
     gb.output(logits_id);
     let mut graph = gb.build();
 
