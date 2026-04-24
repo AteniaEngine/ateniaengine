@@ -9,6 +9,12 @@ pub mod v15;
 pub mod v16;
 pub mod v17;
 
+// Hardware-probe module: cross-vendor GPU enumeration + optional NVIDIA
+// augmentation. Behind a feature flag so normal builds do not pull wgpu
+// or NVML. See `docs/HARDWARE_PROBE.md` for usage.
+#[cfg(feature = "hw-probe")]
+pub mod hw_probe;
+
 pub mod hal;
 pub mod tensor;
 pub mod amg;
