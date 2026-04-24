@@ -1,8 +1,6 @@
 pub mod dualgraph;
 pub mod hybrid_dispatcher;
 pub mod gpu_transfer_estimator;
-pub mod mirror;
-pub mod persistent;
 pub mod gpu_kernels;
 pub mod kernel_registry;
 pub mod gpu_kernel_signature;

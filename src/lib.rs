@@ -91,8 +91,6 @@ pub use crate::apx7_2::pgl::*;
 pub use crate::apx8::dualgraph::*;
 pub use crate::apx8::hybrid_dispatcher::*;
 pub use crate::apx8::gpu_transfer_estimator::*;
-pub use crate::apx8::mirror::*;
-pub use crate::apx8::persistent::*;
 pub use crate::apx8::gpu_kernels::*;
 pub use crate::apx8::kernel_registry::*;
 pub use crate::apx8::gpu_kernel_signature::*;

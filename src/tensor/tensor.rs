@@ -3,8 +3,6 @@
 use rand::random;
 use std::f32::consts::TAU;
 use std::fmt;
-use crate::apx8::mirror::GPUMirror;
-use crate::apx8::persistent::{GPUPersistenceInfo, next_global_step};
 use crate::gpu::tensor::manager::GpuTensorManager;
 use crate::gpu::tensor::TensorGPU;
 use crate::tensor::disk_tier::{self, DiskTensorHandle};
@@ -152,10 +150,6 @@ pub struct Tensor {
     pub layout: Layout,
     pub strides: Vec<usize>,
     pub grad: Option<Vec<f32>>,
-    /// APX 8.4: optional GPU mirror. Does not affect numeric semantics.
-    pub gpu: Option<GPUMirror>,
-    /// APX 8.5: optional GPU persistence metadata.
-    pub persistence: Option<GPUPersistenceInfo>,
     /// APX 11.1: optional reference to the operation that produced this tensor.
     pub op: Option<crate::ops::op_ref::OpRef>,
 }
@@ -200,8 +194,6 @@ impl Tensor {
             layout: Layout::Contiguous,
             strides,
             grad: None,
-            gpu: None,
-            persistence: None,
             op: None,
         }
     }
@@ -260,8 +252,6 @@ impl Tensor {
             layout,
             strides,
             grad: None,
-            gpu: None,
-            persistence: None,
             op: None,
         }
     }
@@ -310,8 +300,6 @@ impl Tensor {
             layout,
             strides,
             grad: None,
-            gpu: None,
-            persistence: None,
             op: None,
         }
     }
@@ -348,8 +336,6 @@ impl Tensor {
             layout: Layout::Contiguous,
             strides,
             grad: None,
-            gpu: None,
-            persistence: None,
             op: None,
         }
     }
@@ -389,8 +375,6 @@ impl Tensor {
             layout,
             strides,
             grad: None,
-            gpu: None,
-            persistence: None,
             op: None,
         }
     }
@@ -617,8 +601,6 @@ impl Tensor {
             layout: self.layout,
             strides: self.strides.clone(),
             grad: self.grad.clone(),
-            gpu: None,
-            persistence: None,
             op: None,
         }
     }
@@ -637,8 +619,6 @@ impl Tensor {
             layout: self.layout,
             strides: self.strides.clone(),
             grad: self.grad.clone(),
-            gpu: None,
-            persistence: None,
             op: None,
         }
     }
@@ -665,8 +645,6 @@ impl Tensor {
             layout: self.layout,
             strides: self.strides.clone(),
             grad: self.grad.clone(),
-            gpu: None,
-            persistence: None,
             op: None,
         }
     }
@@ -687,8 +665,6 @@ impl Tensor {
             layout: self.layout,
             strides: self.strides.clone(),
             grad: None,
-            gpu: None,
-            persistence: None,
             op: None,
         }
     }
@@ -736,104 +712,16 @@ impl Tensor {
         self.op.as_ref()
     }
 
-    // === APX 8.4: GPU mirroring helpers ===
-
-    /// Ensure a GPU mirror exists for this tensor. Does not move real data in 8.4.
-    pub fn ensure_gpu_mirror(&mut self) {
-        if self.gpu.is_none() {
-            let mut m = GPUMirror::new_empty();
-            let bytes = self.estimated_bytes();
-            m.allocate(bytes);
-            self.gpu = Some(m);
-        }
-    }
-
-    pub fn mark_gpu_dirty(&mut self) {
-        if let Some(ref mut m) = self.gpu {
-            m.mark_dirty_gpu();
-        }
-    }
-
-    pub fn mark_cpu_dirty(&mut self) {
-        if let Some(ref mut m) = self.gpu {
-            m.mark_dirty_cpu();
-        }
-    }
-
-    /// Synchronize from GPU to CPU at state level; in 8.4 does not touch real data.
-    pub fn sync_cpu(&mut self) {
-        let bytes = self.estimated_bytes();
-        if let Some(ref mut m) = self.gpu {
-            match &mut self.storage {
-                TensorStorage::Cpu(v) => {
-                    m.download_to_cpu(v.as_mut_ptr(), bytes);
-                }
-                // APX 8.4 mirror is metadata-only and independent of the
-                // real VRAM path introduced via TensorStorage::Cuda.
-                // Reconciliation of the two paths is pending.
-                TensorStorage::Cuda(_) => {}
-                // Disk storage (M3-e.11.2): the APX 8.4 mirror does
-                // not have meaningful semantics against an on-disk
-                // buffer, so sync is a no-op. Consumers that need
-                // the data must call `ensure_cpu` first.
-                TensorStorage::Disk(_) => {}
-            }
-            m.mark_synced();
-        }
-    }
-
-    /// Synchronize from CPU to GPU at state level; in 8.4 does not touch real data.
-    pub fn sync_gpu(&mut self) {
-        let bytes = self.estimated_bytes();
-        if let Some(ref mut m) = self.gpu {
-            match &self.storage {
-                TensorStorage::Cpu(v) => {
-                    m.upload_from_cpu(v.as_ptr(), bytes);
-                }
-                // APX 8.4 mirror is metadata-only and independent of the
-                // real VRAM path introduced via TensorStorage::Cuda.
-                // Reconciliation of the two paths is pending.
-                TensorStorage::Cuda(_) => {}
-                // Disk storage (M3-e.11.2): no meaningful sync
-                // semantics. No-op.
-                TensorStorage::Disk(_) => {}
-            }
-            m.mark_synced();
-        }
-    }
-
-    // === APX 8.5: GPU persistence helpers ===
-
-    /// Enable GPU persistence for this tensor (metadata only; does not move data).
-    pub fn enable_gpu_persistence(&mut self) {
-        if self.persistence.is_none() {
-            let bytes = self.estimated_bytes();
-            self.persistence = Some(GPUPersistenceInfo {
-                reuse_score: 0,
-                last_used_step: 0,
-                tensor_bytes: bytes,
-                pinned: false,
-            });
-        }
-    }
-
-    /// Record a GPU use of the tensor for the persistence heuristic.
-    pub fn note_gpu_use(&mut self) {
-        if let Some(ref mut p) = self.persistence {
-            p.reuse_score = p.reuse_score.saturating_add(1);
-            p.last_used_step = next_global_step();
-        }
-    }
-
-    /// Naive heuristic for cleaning the GPU mirror: if reuse_score is low and
-    /// the tensor has not been used for many steps, drop the mirror.
-    pub fn maybe_drop_gpu(&mut self, current_step: u64, max_age: u64) {
-        if let (Some(p), Some(_)) = (&self.persistence, &self.gpu) {
-            if !p.pinned && p.reuse_score < 2 {
-                if current_step.saturating_sub(p.last_used_step) > max_age {
-                    self.gpu = None;
-                }
-            }
-        }
-    }
+    // === APX 8.4 GPU mirror / APX 8.5 persistence — removed ===
+    //
+    // Debt #2 cleanup: the metadata-only `GPUMirror` (APX 8.4) and
+    // the unused `GPUPersistenceInfo` eviction heuristic (APX 8.5)
+    // were removed. Their functionality is fully covered by
+    // `TensorStorage::Cuda` (M3-d), which owns real VRAM via
+    // `Arc<InnerGpuPtr>`. The `sync_cpu` / `sync_gpu` methods were
+    // no-ops on `Cuda` and `Disk` storage and had no device pointer
+    // of their own; consumers that need host-side data must call
+    // `ensure_cpu()` (M3-d.2 invariant #4). Real eviction over
+    // `TensorStorage::Cuda` is deferred to post-M4 pending real
+    // workload measurement.
 }

@@ -152,17 +152,17 @@ APX 8.x no ejecuta kernels GPU reales, no reserva memoria de dispositivo, no rea
 - **8.3 GPU Transfer Estimator (`apx8::gpu_transfer_estimator`)**
   - `GPUTransferEstimator::estimate` devuelve un `TransferEstimate` sintético según tamaño de tensor y `DevicePlacement`.
   - `HybridDispatcher::choose_device_for` usa ese criterio para mejorar la decisión CPU/GPU sin mover datos.
-- **8.4 GPU Mirroring Layer (`apx8::mirror`)**
-  - Añade `GPUMirror` y `MirrorState` como marca de espejo GPU en `Tensor` (campo `gpu: Option<GPUMirror>`).
-  - No copia buffers a GPU; sólo marca estados logical-clean/dirty.
-- **8.5 GPU Persistence Layer (`apx8::persistent`)**
-  - Introduce `GPUPersistenceInfo` y un contador global de pasos para heurísticas de reutilización y limpieza del mirror.
-  - Integrado en `Tensor` como `persistence: Option<GPUPersistenceInfo>`.
+- **8.4 GPU Mirroring Layer** — *Removed in M3 debt #2 cleanup.*
+  - Originally añadía `GPUMirror` y `MirrorState` como marca de espejo GPU en `Tensor` (campo `gpu: Option<GPUMirror>`), sin copiar buffers reales.
+  - Quedó redundante tras `TensorStorage::Cuda` (M3-d) que cubre el path real con ownership `Arc<InnerGpuPtr>`. `apx8::mirror` y su integración en `Tensor` fueron eliminados en el cleanup de Debt #2.
+- **8.5 GPU Persistence Layer** — *Removed in M3 debt #2 cleanup.*
+  - Originally introducía `GPUPersistenceInfo` y un contador global de pasos para heurística de eviction del mirror.
+  - Sin consumidores reales fuera de los stubs del mirror; eliminado junto con 8.4. Eviction real sobre `TensorStorage::Cuda` queda diferida a post-M4 pendiente de medición real.
 
 ### APX 8.6–8.12 — Kernels simulados, Registry, IR y MetaLayer
 
 - **8.6 GPU Kernels v0 (`apx8::gpu_kernels`)**
-  - Define un kernel stub `gpu_vec_add` que opera sobre datos CPU y marca el mirror GPU como dirty.
+  - Define un kernel stub `gpu_vec_add` que opera sobre datos CPU. Tras el cleanup de Debt #2 ya no toca el mirror legacy; simplemente computa la suma sobre buffers CPU.
   - Controlado por `RuntimeFlags::enable_gpu_kernels`.
 - **8.7 Kernel Registry v1 (`apx8::kernel_registry`)**
   - `KernelRegistry`, `KernelKey`, `KernelFn` y `RegisteredKernel`.

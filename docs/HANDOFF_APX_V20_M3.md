@@ -384,11 +384,27 @@ These are documented so they are not confused with regressions.
      rethinking `exec_gpu_segment` end to end and is deferred to
      its own milestone.
 
-2. **APX 8.4 `GPUMirror`** (`Tensor.gpu: Option<GPUMirror>`) is a
+2. **APX 8.4 `GPUMirror`** (`Tensor.gpu: Option<GPUMirror>`) was a
    metadata-only mirror introduced long before `TensorStorage::Cuda`.
-   It is still wired through `sync_cpu` / `sync_gpu` on `Tensor` but
-   its arms for the new `Cuda` storage variant are no-ops.
-   Reconciling the two paths is pending.
+   It was still wired through `sync_cpu` / `sync_gpu` on `Tensor`
+   but its arms for the `Cuda` and `Disk` storage variants were
+   no-ops. Reconciling the two paths was pending.
+
+   **Resolved in commit <pending>**: `GPUMirror` and `MirrorState`
+   (APX 8.4) plus the unused `GPUPersistenceInfo` eviction heuristic
+   (APX 8.5) were removed entirely. `Tensor` no longer carries
+   `gpu: Option<GPUMirror>` or `persistence: Option<GPUPersistenceInfo>`
+   fields; the 8 mirror/persistence methods (`ensure_gpu_mirror`,
+   `mark_gpu_dirty`, `mark_cpu_dirty`, `sync_cpu`, `sync_gpu`,
+   `enable_gpu_persistence`, `note_gpu_use`, `maybe_drop_gpu`) are
+   gone. `src/apx8/mirror.rs` and `src/apx8/persistent.rs` were
+   deleted; `gpu_vec_add` in `src/apx8/gpu_kernels.rs` no longer
+   touches mirror metadata. Tests `apx_8_4_mirror_test.rs` and
+   `apx_8_5_persistent_cache_test.rs` were removed; `apx_8_6` lost
+   the single `a.sync_cpu()` line that depended on the removed
+   method. `TensorStorage::Cuda` (M3-d) covers the real VRAM path.
+   Real eviction over `TensorStorage::Cuda` is deferred to post-M4
+   pending real-workload measurement.
 
 3. **The C side of the 3 ops has minor quality debts**: silent
    allocation failures (`atenia_pool_alloc` returning null is only
@@ -550,9 +566,6 @@ by priority and context):
 - **Debt #9** — `exec_gpu_add` / `exec_gpu_mul` misleading naming
   (they execute on CPU despite the `gpu` prefix). Low priority —
   functional correctness preserved.
-- **Debt #2** — APX 8.4 `GPUMirror` reconciliation with
-  `TensorStorage::Cuda` (metadata-only mirror, still no-op on new
-  storage arms).
 - **Debt #3** — C-side quality on the 3 CUDA ops (silent alloc
   failures, ~210 lines of copy-paste, sparse docs).
 
@@ -573,6 +586,12 @@ by priority and context):
   all input layouts and any `Vec<ActType>` length (commit b623ca2).
   Closes the highest-impact correctness gap of the M3 debt list —
   APX 4.9 fused patterns can now be trained correctly.
+- **Debt #2** — APX 8.4 `GPUMirror` and APX 8.5 `GPUPersistenceInfo`
+  removed entirely (commit <pending>). Metadata-only stubs that
+  pre-dated `TensorStorage::Cuda` (M3-d) and became redundant;
+  eliminated cleanly because they had no `Drop`, no device pointer,
+  and zero production consumers outside `tensor.rs` itself. Real
+  eviction over `TensorStorage::Cuda` deferred to post-M4.
 
 **Admin**:
 

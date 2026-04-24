@@ -39,7 +39,6 @@ fn apx_8_6_gpu_vec_add_cpu_coherence() {
 
     let before = a.copy_to_cpu_vec();
     gpu_vec_add(&mut a, &b);
-    a.sync_cpu();
     let after = a.copy_to_cpu_vec();
 
     // We do not introduce NaNs or corruption; the vector remains valid.
