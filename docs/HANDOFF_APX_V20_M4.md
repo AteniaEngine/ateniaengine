@@ -17,7 +17,19 @@ with synthetic data and Atenia's own MiniFlux model, while M4.5
 introduces architecture-specific gaps (RoPE, GQA) plus external
 dependency and numerical-debugging surface.
 
-**Last M4 commit**: `9f1ee82` (M4-d, BF16/F16 decode).
+**Last M4 commit**: `9f1ee82` (M4-d, BF16/F16 decode) — last of the
+four-sub-phase conservative plan.
+
+**Empirical follow-up**: `06eb526` adds `tests/m4_real_safetensors_validation_test.rs`,
+an `#[ignore]`-gated test that opens a real HuggingFace gpt2
+`model.safetensors` file (~548 MB, F32) and walks the reader API
+end-to-end. Ran green on first attempt: 160 tensors parsed, dtype
+distribution `{F32: 160}`, token embedding located at `wte.weight`
+with shape `[50257, 768]`, 38,597,376 f32 elements decoded with
+every value finite and numerically sane (max |v| = 1.785, mean |v|
+= 0.104). Metadata `__metadata__` block (`{format: "pt"}`) round-
+tripped correctly. **Zero fixes required** — the loader mechanics
+work on a file Atenia did not write.
 
 ---
 
@@ -29,6 +41,7 @@ dependency and numerical-debugging surface.
 | M4-b | `4d3cf5f` | MiniFlux safetensors roundtrip validation. `MiniFluxHandles` gains a parallel `param_names: Vec<String>` that exposes the logical names `register_weight` was already using internally for deterministic init seeds. End-to-end roundtrip (serialize → deserialize → bit-exact) proven on a live MiniFlux graph. 3 tests + 5 existing callers updated to match the new tuple return shapes. |
 | M4-c | `e0df986` | `WeightMapper` formalizes the "safetensors tensor name → graph parameter node_id" mapping, with shape validation (new `LoaderError::ShapeMismatch`), dtype propagation, and `LoadReport { loaded, skipped, missing }`. Loose-mode by default. Constructor rejects length mismatch and duplicate names. 5 tests. |
 | M4-d | `9f1ee82` | BF16 and F16 decode in `TensorEntry::to_vec_f32`. BF16 is manual (shift + `from_bits`, lossless). F16 uses the `half` crate (handles subnormals / NaN / infinities correctly). The `WeightMapper` needs no changes — once the reader stops returning `UnsupportedDType`, BF16/F16 checkpoints flow through identically to F32. 4 new tests + 1 M4-c test updated from "expect error" to "expect success". |
+| Empirical validation | `06eb526` | Real-world load test with HuggingFace gpt2 (`tests/m4_real_safetensors_validation_test.rs`). `#[ignore]`-gated, consumes `GPT2_SAFETENSORS_PATH` env var. Validates parse + enumeration (160 tensors) + shape sanity + dtype distribution + embedding extraction (`wte.weight`, shape `[50257, 768]`, 38.6M f32 elements) + finiteness + numeric range + metadata roundtrip on a 548 MB file. Runs in 8.51s. Zero fixes needed — loader worked on first attempt against an external producer. |
 
 ---
 
@@ -105,6 +118,19 @@ Treat as invariants. Future work extends rather than re-litigates.
     inference entrypoint is NOT yet wired to the safetensors loader
     itself — that integration is M4.5 or later.
 
+11. **Embedding-name fallback lists live in the test, not in the
+    loader**. The M4 empirical test (`06eb526`) tries a short
+    ordered list `["wte.weight", "transformer.wte.weight", "wte"]`
+    to locate the gpt2 token embedding — this confirmed that gpt2
+    HF distributes the canonical `wte.weight` form without the
+    `transformer.` prefix. Llama-family uses a different pattern
+    (`model.embed_tokens.weight`). Keeping the fallback list as
+    test-local data, not as loader-side "smart detection", is
+    deliberate: the loader must stay architecture-agnostic. When
+    M4.5 introduces a TinyLlama-specific graph builder, that
+    builder owns the Llama naming convention; the `WeightMapper`
+    itself never grows an architecture-aware lookup.
+
 ---
 
 ## Gaps explicitly closed in M4
@@ -128,9 +154,15 @@ Honest list of everything M4 touches the boundary of but does not
 deliver. Each item has a clear next-step context rather than an
 open-ended "someday".
 
-- **Real LLM loading end-to-end**. Requires M4.5. Every M4 test
-  uses synthetic data or Atenia's own MiniFlux — no external
-  checkpoint has been loaded yet.
+- **Real LLM execution end-to-end**. Requires M4.5. The M4
+  loader mechanics are validated on both synthetic data and a
+  real gpt2 checkpoint (commit `06eb526`) — bytes land in the
+  reader, decode correctly, and populate `Vec<f32>` values
+  indistinguishable from the source. What remains unvalidated
+  is running a real model forward pass: gpt2 would need
+  `LayerNorm` (not implemented, M4.5 scope) plus a gpt2-specific
+  graph builder; TinyLlama would need RoPE plus a Llama graph
+  builder. Loader mechanics: closed. Model execution: deferred.
 
 - **RoPE (Rotary Positional Embedding)**. Does not exist as a
   `NodeType`. Estimated 2-4 days (forward is a 2D rotation of
@@ -234,6 +266,8 @@ to hand-rolled equivalents to minimize surface for subtle bugs
 
 Tests added or modified under M4:
 
+### Synthetic tests (run by default in `cargo test`)
+
 | File | Tests | Added in |
 |------|-------|----------|
 | `tests/safetensors_reader_test.rs` | 12 (9 for F32/parse/metadata + 4 for BF16/F16 decode and roundtrip) | M4-a, M4-d |
@@ -241,7 +275,21 @@ Tests added or modified under M4:
 | `tests/weight_mapper_test.rs` | 5 (load bit-exact, shape mismatch, missing, skipped, BF16 via mapper) | M4-c, M4-d (BF16 test updated) |
 | 3 unit tests inside `src/v17/loader/weight_mapper.rs` | 3 (constructor: length mismatch, duplicates, empty legal) | M4-c |
 
-**Total M4-specific: 23 tests.**
+**Total synthetic M4-specific: 23 tests.**
+
+### Empirical test (skipped by default, requires env var)
+
+| File | Tests | Added in |
+|------|-------|----------|
+| `tests/m4_real_safetensors_validation_test.rs` | 1 (`#[ignore]`-gated real gpt2 file walk; consumes `GPT2_SAFETENSORS_PATH`) | `06eb526` |
+
+Validated against 548 MB HuggingFace gpt2 checkpoint: 160 tensors,
+all F32, token embedding `wte.weight` `[50257, 768]` decoded to
+38.6M f32 elements (100% finite), metadata roundtrip intact. 8.51s
+runtime in debug build. Run with:
+
+    $env:GPT2_SAFETENSORS_PATH = "path\to\model.safetensors"
+    cargo test --test m4_real_safetensors_validation_test -- --ignored --nocapture
 
 Plus 6 pre-existing tests updated to match new return-tuple shapes
 after M4-b extended `build_mini_flux_language_model` and
@@ -278,13 +326,16 @@ All pass; no correctness-path regression in the core M3 test suite.
    TinyLlama use? Where in the transformer block does RoPE apply
    (before or after Q/K projection)? Do we need to cache cos/sin
    tables or compute on the fly?
-6. First real external validation of the M4 loader: have the
-   M4.5-a or M4.5-b investigation download a small safetensors
-   file (e.g. TinyLlama's `model.safetensors`) and run
-   `SafetensorsReader::open` on it. Print the tensor list. This
-   is a 10-minute sanity check that the M4 reader handles the
-   format in the wild — if anything breaks (unusual dtype, giant
-   shape, encoding quirk) we find out before building on top.
+6. ~~First real external validation of the M4 loader~~ — **done
+   during M4 close** (commit `06eb526`). gpt2 walked clean on the
+   first attempt. If M4.5 targets a non-gpt2 model (TinyLlama,
+   Llama 3.2), repeat the same sanity check against that file
+   before writing builder code: set a new env var pointing at its
+   `model.safetensors`, adapt the naming-fallback list in
+   `tests/m4_real_safetensors_validation_test.rs` (Llama uses
+   `model.embed_tokens.weight`), and confirm the test passes.
+   Cheap pre-flight against format surprises (dtype, shape,
+   encoding quirks specific to a new producer).
 
 ---
 
@@ -338,3 +389,27 @@ Recorded briefly so the decisions taken in-flight are not lost.
   Do not generalize — M4.5 has more unknowns (external model,
   numerical debugging) and should be sized honestly at its own
   kickoff, not extrapolated from M4.
+
+- **`read_metadata` two-pass approach was the right call**. The
+  M4-a implementation decision to call
+  `SafeTensors::read_metadata` separately from `deserialize`
+  (because the 0.4 crate does not expose `metadata()` on the
+  deserialized view) looked like a micro-inefficiency at the
+  time. On the empirical gpt2 validation it paid off cleanly:
+  the 548 MB file parsed with metadata intact (`{format: "pt"}`
+  recovered correctly), no second pass over the body, no
+  lifetime gymnastics. The extra ~microsecond header re-parse
+  is irrelevant compared to the I/O of reading 548 MB into the
+  buffer.
+
+- **Zero fixes on the first real-world file**. The gpt2 load
+  test ran green on first attempt — no naming surprise, no
+  dtype edge case, no shape quirk. Two non-trivial contributors:
+  (1) M4-a tested against files that `safetensors::serialize`
+  produced, which is the exact reference implementation any HF
+  checkpoint goes through, so format compatibility was
+  inevitable; (2) the gpt2 checkpoint is F32, matching the only
+  decode path M4-a implemented before M4-d. A BF16 target
+  (TinyLlama) is the next real test of the M4-d decode path in
+  the wild — plan to run the empirical test against it early in
+  M4.5.
