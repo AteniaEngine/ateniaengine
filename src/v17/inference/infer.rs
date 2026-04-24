@@ -85,6 +85,17 @@ fn build_inference_context(
             LoaderError::PolicyDenied(msg) | LoaderError::IoError(msg) => {
                 InferenceError::LoadFailed(format!("io/policy error: {msg}"))
             }
+            // M4-a additions: InvalidFormat and UnsupportedDType are
+            // produced by the safetensors reader, which is not yet
+            // wired into this inference entrypoint (M4-b/c will add
+            // that). Route them through the same LoadFailed variant
+            // so the match stays exhaustive.
+            LoaderError::InvalidFormat(msg) => {
+                InferenceError::LoadFailed(format!("invalid model format: {msg}"))
+            }
+            LoaderError::UnsupportedDType(msg) => {
+                InferenceError::LoadFailed(format!("unsupported dtype: {msg}"))
+            }
         })?;
 
     let contract = make_default_contract();
