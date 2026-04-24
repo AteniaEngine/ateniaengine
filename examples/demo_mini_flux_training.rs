@@ -52,7 +52,7 @@ fn main() {
     let batches = make_batches(encoded.clone(), cfg.seq_len, cfg.batch_size);
     assert!(!batches.is_empty(), "dataset too small for requested configuration");
 
-    let (graph, param_ids) = build_language_training_graph(&cfg);
+    let (graph, param_ids, _param_names) = build_language_training_graph(&cfg);
     let optim = AdamW::new(param_ids.len(), 0.008, 0.9, 0.999, 1e-8, 0.0);
     let mut trainer = TrainerV2::new(graph, param_ids, optim);
 
@@ -67,7 +67,7 @@ fn main() {
 
     let mut infer_builder = GraphBuilder::new();
     let tokens_id = infer_builder.input();
-    let (logits_id, infer_param_ids) = build_mini_flux_language_model(&mut infer_builder, &cfg, tokens_id);
+    let (logits_id, infer_param_ids, _infer_param_names) = build_mini_flux_language_model(&mut infer_builder, &cfg, tokens_id);
     infer_builder.output(logits_id);
     let mut infer_graph = infer_builder.build();
 

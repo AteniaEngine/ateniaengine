@@ -42,8 +42,6 @@ use atenia_engine::v16::contract::execution_contract::{
     ExecutionBackend, ExecutionContract,
 };
 use atenia_engine::v16::guards::execution_guard::ExecutionGuard;
-use atenia_engine::v16::guards::guard_action::GuardAction;
-use atenia_engine::v16::guards::guard_conditions::GuardConditions;
 use atenia_engine::v16::guards::guard_manager::GuardManager;
 use atenia_engine::v16::guards::simple_memory_pressure_guard::SimpleMemoryPressureGuard;
 
@@ -67,6 +65,10 @@ impl FixedVramProbe {
             calls: AtomicU64::new(0),
         }
     }
+    // Observer for test instrumentation. Kept for parity with
+    // `FixedRamProbe::calls` below and in case future assertions
+    // want to check how many snapshots a given scenario triggered.
+    #[allow(dead_code)]
     fn calls(&self) -> u64 {
         self.calls.load(Ordering::Relaxed)
     }
@@ -104,6 +106,9 @@ impl FixedRamProbe {
             calls: AtomicU64::new(0),
         }
     }
+    // See `FixedVramProbe::calls` — kept as test instrumentation
+    // even when no current test asserts on it.
+    #[allow(dead_code)]
     fn calls(&self) -> u64 {
         self.calls.load(Ordering::Relaxed)
     }

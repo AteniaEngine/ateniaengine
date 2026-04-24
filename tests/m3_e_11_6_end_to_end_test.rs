@@ -32,7 +32,6 @@
 //! separately in `m3_e_11_2_tensor_storage_disk_test`).
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use uuid::Uuid;
 
