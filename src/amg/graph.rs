@@ -1815,14 +1815,31 @@ impl Graph {
     /// inputs — matching what the APX 4.9 fusion detector
     /// legitimately produces in `apx4_9::patterns::fuse_linear_activation_linear`.
     ///
-    /// **Note**: this helper still does NOT register a BackOp
-    /// entry. The fused node is forward-only, same as before the
-    /// cleanup. Implementing a real fused backward is a separate
-    /// debt (tracked independently).
+    /// **Backward** (Debt #8 closure): when `record_tape` is true
+    /// this helper **also registers a `BackOp`** that implements the
+    /// analytical backward for the full chain (grad for `x`, `W1`,
+    /// `b1?`, `W2`, `b2?`). The activation derivatives for `ReLU`,
+    /// `SiLU` and `GELU` are inlined inside the closure; a
+    /// `Vec<ActType>` of length N > 1 is handled by iterating the
+    /// chain in reverse, multiplying the incoming grad by each
+    /// activation derivative evaluated at the cached pre-activation
+    /// input.
+    ///
+    /// The intermediates needed by backward (`y1` = input to act[0],
+    /// `a_i` = input to act[i+1] for i in 0..N-1, and `a_last` =
+    /// input to the second linear) are **captured by move into the
+    /// closure**. They are NOT stored in `self.nodes[*].output` and
+    /// therefore escape `migrate_all_to_disk` / `migrate_all_cuda_to_cpu`.
+    /// To keep migrations correct, each captured intermediate is forced
+    /// to CPU via `ensure_cpu()` before the clone — any subsequent
+    /// memory-pressure reaction that migrates the rest of the graph
+    /// leaves the captured tensors on CPU where they are needed at
+    /// backward time.
     fn exec_fused_linear_activation_chain(
         &mut self,
         node_id: usize,
         acts: Vec<super::nodes::ActType>,
+        record_tape: bool,
     ) {
         if crate::apx_debug_enabled() && !crate::apx_is_silent() {
             eprintln!(
@@ -1849,6 +1866,16 @@ impl Graph {
             .expect("FusedLinearActivationChain missing w1")
             .clone();
 
+        // Capture node ids for the BackOp closure up front, alongside
+        // the forward disambiguation. The `op_inputs` layout for the
+        // closure follows the canonical fused_inputs order:
+        //   [x, w1, (b1?), w2, (b2?)]
+        // so `b1_id` and `b2_id` are captured as `Option<usize>` and
+        // drive both the grad-accumulation paths in backward and the
+        // `forward_inputs` indexing for `w2`.
+        let x_id = inputs[0];
+        let w1_id = inputs[1];
+
         // M3 debt cleanup — parser disambiguation fix:
         //
         // `apx4_9::patterns::fuse_linear_activation_linear` produces
@@ -1872,15 +1899,16 @@ impl Graph {
         // `inputs.len() == 4` — the ambiguous case. Lengths 3 and
         // 5 remain unambiguous and keep their pre-fix handling.
         let mut idx = 2;
-        let b1_opt = if inputs.len() == 5 {
+        let (b1_opt, b1_id) = if inputs.len() == 5 {
             // Unambiguous: [x, w1, b1, w2, b2].
-            let b1 = self.nodes[inputs[idx]]
+            let id = inputs[idx];
+            let b1 = self.nodes[id]
                 .output
                 .as_ref()
                 .expect("FusedLinearActivationChain missing b1")
                 .clone();
             idx += 1;
-            Some(b1)
+            (Some(b1), Some(id))
         } else if inputs.len() == 4
             && self.nodes[inputs[idx]]
                 .output
@@ -1890,49 +1918,90 @@ impl Graph {
         {
             // 4-input layout with bias on first linear:
             // [x, w1, b1, w2]. The tensor at idx=2 is 1D → it's b1.
-            let b1 = self.nodes[inputs[idx]]
+            let id = inputs[idx];
+            let b1 = self.nodes[id]
                 .output
                 .as_ref()
                 .expect("FusedLinearActivationChain missing b1")
                 .clone();
             idx += 1;
-            Some(b1)
+            (Some(b1), Some(id))
         } else {
             // 3-input [x, w1, w2] or 4-input [x, w1, w2, b2] —
             // the tensor at idx=2 is the 2D weight w2.
-            None
+            (None, None)
         };
 
-        let w2 = self.nodes[inputs[idx]]
+        let w2_id = inputs[idx];
+        let w2 = self.nodes[w2_id]
             .output
             .as_ref()
             .expect("FusedLinearActivationChain missing w2")
             .clone();
         idx += 1;
 
-        let b2_opt = if idx < inputs.len() {
-            let b2 = self.nodes[inputs[idx]]
+        let (b2_opt, b2_id) = if idx < inputs.len() {
+            let id = inputs[idx];
+            let b2 = self.nodes[id]
                 .output
                 .as_ref()
                 .expect("FusedLinearActivationChain missing b2")
                 .clone();
-            Some(b2)
+            (Some(b2), Some(id))
         } else {
-            None
+            (None, None)
         };
 
+        // Forward path. When `record_tape` is true, we also capture
+        // all intermediates needed by the BackOp closure. Each
+        // captured tensor is forced to CPU via `ensure_cpu()` before
+        // the clone so that a subsequent `migrate_all_to_disk` /
+        // `migrate_all_cuda_to_cpu` on the rest of the graph does
+        // not leave these closure-owned tensors on GPU storage that
+        // the backward pre-pass cannot reach.
         let mut h = match b1_opt.as_ref() {
             Some(b1) => nn_linear::linear(&x, &w1, Some(b1)),
             None => nn_linear::linear(&x, &w1, None),
         };
 
-        for act in acts {
+        // `pre_act_chain[i]` is the tensor fed into `acts[i]` during
+        // forward. For the first activation it is `y1`. For later
+        // activations (Vec<ActType> with N > 1) it is the output of
+        // the previous activation. The backward loop reads it to
+        // compute the pointwise activation derivative.
+        let mut pre_act_chain: Vec<Tensor> = Vec::new();
+        if record_tape {
+            h.ensure_cpu().expect(
+                "FusedLinearActivationChain: y1 ensure_cpu before BackOp capture \
+                 (see StorageTransferError variants)",
+            );
+            pre_act_chain.push(h.clone());
+        }
+
+        for (i, act) in acts.iter().enumerate() {
             h = match act {
                 super::nodes::ActType::ReLU => nn_act::relu(&h),
                 super::nodes::ActType::SiLU => nn_act::silu(&h),
                 super::nodes::ActType::GELU => nn_act::gelu(&h),
             };
+            if record_tape && i < acts.len() - 1 {
+                h.ensure_cpu().expect(
+                    "FusedLinearActivationChain: intermediate ensure_cpu before BackOp capture",
+                );
+                pre_act_chain.push(h.clone());
+            }
         }
+
+        // `a_last` is the input to the second linear — also the output
+        // of the last activation. Needed by backward for `grad_W2`.
+        let a_last_for_capture = if record_tape {
+            h.ensure_cpu().expect(
+                "FusedLinearActivationChain: a_last ensure_cpu before BackOp capture",
+            );
+            Some(h.clone())
+        } else {
+            None
+        };
 
         let out = match b2_opt.as_ref() {
             Some(b2) => nn_linear::linear(&h, &w2, Some(b2)),
@@ -1948,6 +2017,145 @@ impl Graph {
         }
 
         self.nodes[node_id].set_output(out);
+
+        // --- BackOp registration (Debt #8) ---
+        //
+        // Captured by move:
+        //   - `acts_capture`: the Vec<ActType> (owned copy).
+        //   - `pre_act_capture`: inputs to each activation, in order.
+        //   - `a_last_capture`: input to the second linear.
+        //   - `x_id, w1_id, w2_id, b1_id, b2_id`: node ids for grad
+        //     accumulation. `b1_id.is_some()` == (b1 was present);
+        //     same for b2.
+        //
+        // The closure does NOT rely on `forward_inputs[*]` for any
+        // intermediate — only for `x`, `w1`, `w2`, whose tensors live
+        // in `self.nodes[*].output` and are reachable via the
+        // standard pre-pass migration in `backward_checked`.
+        if record_tape {
+            let acts_capture: Vec<super::nodes::ActType> = acts.clone();
+            let pre_act_capture: Vec<Tensor> = pre_act_chain;
+            let a_last_capture: Tensor = a_last_for_capture
+                .expect("record_tape implies a_last was captured");
+            let op_inputs = inputs.clone();
+
+            self.tape.push(BackOp {
+                inputs: op_inputs,
+                output: node_id,
+                backward: Box::new(move |store, forward_inputs, out_grad| {
+                    // Pointwise activation derivatives. Inlined to
+                    // keep the closure self-contained.
+                    fn act_derivative(
+                        act: &super::nodes::ActType,
+                        x_slice: &[f32],
+                    ) -> Vec<f32> {
+                        match act {
+                            super::nodes::ActType::ReLU => x_slice
+                                .iter()
+                                .map(|&v| if v > 0.0 { 1.0 } else { 0.0 })
+                                .collect(),
+                            super::nodes::ActType::SiLU => x_slice
+                                .iter()
+                                .map(|&v| {
+                                    let s = 1.0f32 / (1.0f32 + (-v).exp());
+                                    s + v * s * (1.0 - s)
+                                })
+                                .collect(),
+                            super::nodes::ActType::GELU => x_slice
+                                .iter()
+                                .map(|&v| {
+                                    let c = 0.79788456_f32; // sqrt(2/pi)
+                                    let x3 = v * v * v;
+                                    let inner = c * (v + 0.044715_f32 * x3);
+                                    let t = inner.tanh();
+                                    let sech2 = 1.0 - t * t;
+                                    let d_inner =
+                                        c * (1.0 + 3.0 * 0.044715_f32 * v * v);
+                                    0.5 * (1.0 + t) + 0.5 * v * sech2 * d_inner
+                                })
+                                .collect(),
+                        }
+                    }
+
+                    let x = forward_inputs[0];
+                    let w1 = forward_inputs[1];
+                    let w2_fi_idx = 2 + if b1_id.is_some() { 1 } else { 0 };
+                    let w2 = forward_inputs[w2_fi_idx];
+
+                    // grad_b2 = sum_rows(grad_out)
+                    if let Some(b2id) = b2_id {
+                        let grad_b2 = sum_rows(out_grad);
+                        add_to_grad_slice(store, b2id, &grad_b2);
+                    }
+
+                    // grad_W2 = a_last^T @ grad_out
+                    let a_last_t = transpose_2d(&a_last_capture);
+                    let mut grad_w2 = nn_linear::matmul(&a_last_t, out_grad);
+                    grad_w2.ensure_cpu().expect(
+                        "FusedLinearActivationChain backward: grad_W2 ensure_cpu failed",
+                    );
+                    add_to_grad_slice(store, w2_id, grad_w2.as_cpu_slice());
+
+                    // grad_a_last = grad_out @ W2^T
+                    let w2_t = transpose_2d(w2);
+                    let mut grad_a = nn_linear::matmul(out_grad, &w2_t);
+                    grad_a.ensure_cpu().expect(
+                        "FusedLinearActivationChain backward: grad_a_last ensure_cpu failed",
+                    );
+
+                    // Loop in reverse through activations. After the
+                    // loop, `grad_a` is `grad_y1` (grad wrt output of
+                    // the first linear, before any activation).
+                    for i in (0..acts_capture.len()).rev() {
+                        let input_to_act = &pre_act_capture[i];
+                        let d = act_derivative(
+                            &acts_capture[i],
+                            input_to_act.as_cpu_slice(),
+                        );
+                        let grad_a_slice = grad_a.as_cpu_slice();
+                        debug_assert_eq!(
+                            d.len(),
+                            grad_a_slice.len(),
+                            "activation derivative length mismatch"
+                        );
+                        let mut new_data = vec![0.0f32; grad_a_slice.len()];
+                        for j in 0..grad_a_slice.len() {
+                            new_data[j] = grad_a_slice[j] * d[j];
+                        }
+                        grad_a = Tensor::new_cpu_with_layout(
+                            grad_a.shape.clone(),
+                            new_data,
+                            grad_a.device,
+                            grad_a.dtype,
+                            Layout::Contiguous,
+                        );
+                    }
+                    let grad_y1 = grad_a;
+
+                    // grad_b1 = sum_rows(grad_y1)
+                    if let Some(b1id) = b1_id {
+                        let grad_b1 = sum_rows(&grad_y1);
+                        add_to_grad_slice(store, b1id, &grad_b1);
+                    }
+
+                    // grad_W1 = x^T @ grad_y1
+                    let x_t = transpose_2d(x);
+                    let mut grad_w1 = nn_linear::matmul(&x_t, &grad_y1);
+                    grad_w1.ensure_cpu().expect(
+                        "FusedLinearActivationChain backward: grad_W1 ensure_cpu failed",
+                    );
+                    add_to_grad_slice(store, w1_id, grad_w1.as_cpu_slice());
+
+                    // grad_x = grad_y1 @ W1^T
+                    let w1_t = transpose_2d(w1);
+                    let mut grad_x = nn_linear::matmul(&grad_y1, &w1_t);
+                    grad_x.ensure_cpu().expect(
+                        "FusedLinearActivationChain backward: grad_x ensure_cpu failed",
+                    );
+                    add_to_grad_slice(store, x_id, grad_x.as_cpu_slice());
+                }),
+            });
+        }
     }
 
     pub(crate) fn execute_single_inner(&mut self, node_id: usize, record_tape: bool) {
@@ -1978,15 +2186,13 @@ impl Graph {
         // and gives backward a complete chain to walk. Same pattern as
         // the `gpu_plan` intercept further down.
         //
-        // `FusedLinearActivationChain` has an analogous tape gap (both
-        // its pre-match handler and the match-arm handler further down
-        // are forward-only) but is NOT guarded here — the two handler
-        // copies have drifted on input-count validation, so guarding
-        // the pre-match and falling through to the match arm breaks
-        // test graphs that exercise the 3-input path. Fixing this
-        // requires either consolidating the two duplicate handlers or
-        // implementing a fused BackOp; tracked as separate technical
-        // debt.
+        // `FusedLinearActivationChain` now registers a real
+        // analytical BackOp inside `exec_fused_linear_activation_chain`
+        // (Debt #8 closure). The helper receives `record_tape` and
+        // dispatches through the pre-match early return below —
+        // training mode gets a complete backward chain from the
+        // fused node; inference mode skips the capture / tape
+        // registration entirely.
 
         // APX 4.13: if there is a fused op associated with this node, delegate
         // to the fused executor and return. We clone the FusedOp to avoid
@@ -2015,13 +2221,13 @@ impl Graph {
         // cleanup — it was dead code (always intercepted by this
         // early-return) and had stricter input validation (4/5 only)
         // that would break `apx_2_5_fused_kernels_test` if ever
-        // reached. Neither handler registered a BackOp, so the
-        // backward gap remains — that's a separate debt tracked
-        // independently.
+        // reached. The helper registers a real analytical BackOp
+        // when `record_tape` is true (Debt #8 closure), so the
+        // backward chain now flows correctly through the fused node.
         if let super::nodes::NodeType::FusedLinearActivationChain(acts) =
             self.nodes[node_id].node_type.clone()
         {
-            self.exec_fused_linear_activation_chain(node_id, acts);
+            self.exec_fused_linear_activation_chain(node_id, acts, record_tape);
             // Timing handled by `NodeTimingRecorder` at function exit (M3-e.10).
             return;
         }
