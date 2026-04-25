@@ -99,6 +99,28 @@ pub enum NodeType {
     RmsNorm,
     SiLU,
     Softmax,
+    /// Rotary Positional Embedding (half-split layout).
+    ///
+    /// ## Layout convention
+    /// Half-split (HuggingFace), NOT interleaved (original
+    /// paper). Required for numerical equivalence with PyTorch
+    /// reference implementations.
+    ///
+    /// ## Position assumption
+    /// Positions are implicit `[0..seq_len)` for inference
+    /// without KV cache. KV cache support (planned M5+)
+    /// requires extending this NodeType to accept explicit
+    /// position offset.
+    ///
+    /// ## Parameters
+    /// - `head_dim`: dimension of each attention head
+    ///   (must be even)
+    /// - `base_freq`: base frequency for theta computation
+    ///   (10000 for Llama 1/2/TinyLlama, 500000 for Llama 3+).
+    ///   `u32` is used (not `f32`) so the variant remains
+    ///   `Eq`-derivable; sub-integer base frequencies are not
+    ///   used by any model in scope.
+    RoPE { head_dim: usize, base_freq: u32 },
     /// Generic activation wrapper for APX 4.8+ (keeps SiLU variant for compat).
     Activation(ActType),
     /// Fused Linear + Activation node.

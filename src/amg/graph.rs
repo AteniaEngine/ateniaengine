@@ -25,6 +25,7 @@ use crate::nn::activations as nn_act;
 use crate::nn::linear as nn_linear;
 use std::time::Instant;
 use crate::nn::normalization as nn_norm;
+use crate::nn::rope as nn_rope;
 use crate::nn::softmax as nn_softmax;
 use crate::optim::adamw::AdamW;
 #[cfg(debug_assertions)]
@@ -934,6 +935,7 @@ impl Graph {
                 | NodeType::RmsNorm
                 | NodeType::SiLU
                 | NodeType::Softmax
+                | NodeType::RoPE { .. }
                 | NodeType::LogSoftmax
                 | NodeType::Output => in_len == 1,
                 NodeType::IndexSelect => in_len == 2,
@@ -3746,6 +3748,42 @@ impl Graph {
                                     }
                                     add_to_grad_slice(store, ids[0], &grad_x);
                                 }
+                            }),
+                        });
+                    }
+                }
+            }
+            NodeType::RoPE { head_dim, base_freq } => {
+                let inputs = self.nodes[node_id].inputs.clone();
+                if inputs.len() != 1 {
+                    // Inconsistent graph (e.g., artificial trace tests):
+                    // do not execute RoPE.
+                    return;
+                }
+                let x_opt = self.nodes[inputs[0]].output.as_ref();
+                if let Some(x) = x_opt.cloned() {
+                    let out = nn_rope::apply_rope(&x, head_dim, base_freq);
+                    self.nodes[node_id].set_output(out);
+
+                    if record_tape {
+                        let op_inputs = self.nodes[node_id].inputs.clone();
+                        let ids = op_inputs.clone();
+                        let head_dim_captured = head_dim;
+                        let base_freq_captured = base_freq;
+                        self.tape.push(BackOp {
+                            inputs: op_inputs,
+                            output: node_id,
+                            backward: Box::new(move |store, forward_inputs, out_grad| {
+                                let x = forward_inputs[0];
+                                let shape = x.shape.clone();
+                                let out_grad_slice = out_grad.as_cpu_slice();
+                                let grad_x = nn_rope::apply_rope_backward(
+                                    out_grad_slice,
+                                    &shape,
+                                    head_dim_captured,
+                                    base_freq_captured,
+                                );
+                                add_to_grad_slice(store, ids[0], &grad_x);
                             }),
                         });
                     }

@@ -123,6 +123,14 @@ impl GraphBuilder {
         self.add_node(NodeType::Softmax, vec![x_id])
     }
 
+    /// Add a RoPE node (Rotary Positional Embedding, half-split layout).
+    ///
+    /// Input shape: `[batch, seq_len, n_heads, head_dim]`. Positions are
+    /// implicit `[0..seq_len)`. See [`NodeType::RoPE`] for details.
+    pub fn rope(&mut self, x_id: usize, head_dim: usize, base_freq: u32) -> usize {
+        self.add_node(NodeType::RoPE { head_dim, base_freq }, vec![x_id])
+    }
+
     pub fn build(self) -> super::graph::Graph {
         let mut graph = super::graph::Graph::new(self.nodes);
 
