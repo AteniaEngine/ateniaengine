@@ -38,6 +38,8 @@ APX v20 connects the completed telemetry and decision infrastructure to real ext
 
 - **M4.6** — Llama-family compatibility expansion: Llama 3.2 (with `rope_scaling: "llama3"`), Qwen 2.5 (with QK-Norm), Phi 3.5 mini, SmolLM3, Mistral 7B (subject to host RAM). Most architectural deltas are small per family; the work is in extending the config parser, the weight mapper, and the builder for each family's specific operations.
 
+- **M4.6.1** — Mathematical ground-truth validation. Extend the per-model PyTorch comparison tests with NumPy F64 reference forwards (full models) and optionally mpmath arbitrary-precision reference (isolated components). Resolves the implicit "PyTorch as ground truth" framing in M4.5-d.1 by measuring drift against mathematical truth directly. See [ADR-002](./docs/decisions/ADR-002-mathematical-ground-truth-validation.md).
+
 - **M4.7** — Beyond-VRAM execution. Run a 13B-class model in BF16 on notebook hardware (8 GB VRAM, 16 GB RAM, SSD). The first end-to-end exercise of the M3 reaction loop against a workload that genuinely exceeds available VRAM. Validates the project's core differential: the ability to execute models on hardware that other engines cannot accommodate.
 
 ### Out of scope for v20

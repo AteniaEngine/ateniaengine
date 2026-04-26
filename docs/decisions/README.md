@@ -30,6 +30,7 @@ Additional sections used when relevant: Rationale, Alternatives Considered, Trig
 ## Index
 
 - [ADR-001](./ADR-001-numerical-health-monitor-deferred.md) — Numerical Health Monitor — Deferred Pending Empirical Data
+- [ADR-002](./ADR-002-mathematical-ground-truth-validation.md) — Mathematical Ground-Truth Validation Strategy
 
 ## Naming convention
 
