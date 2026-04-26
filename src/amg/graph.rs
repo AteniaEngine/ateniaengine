@@ -931,6 +931,7 @@ impl Graph {
                 | NodeType::CrossEntropyLoss => in_len == 2,
                 NodeType::Reshape { .. }
                 | NodeType::Transpose2D
+                | NodeType::Permute { .. }
                 | NodeType::TransposeLastTwo
                 | NodeType::RmsNorm
                 | NodeType::SiLU
@@ -2959,6 +2960,31 @@ impl Graph {
                     }
                 }
             }
+            NodeType::Permute { ref perm } => {
+                let op_inputs = self.nodes[node_id].inputs.clone();
+                if op_inputs.len() != 1 {
+                    return;
+                }
+                let src = op_inputs[0];
+                if let Some(x) = self.nodes[src].output.clone() {
+                    let perm_clone: Vec<usize> = perm.clone();
+                    let out = permute(&x, &perm_clone);
+                    self.nodes[node_id].set_output(out);
+
+                    if record_tape {
+                        let inv = inverse_perm(&perm_clone);
+                        let ids = op_inputs.clone();
+                        self.tape.push(BackOp {
+                            inputs: op_inputs,
+                            output: node_id,
+                            backward: Box::new(move |store, _, out_grad| {
+                                let grad_x = permute(out_grad, &inv);
+                                add_to_grad_slice(store, ids[0], grad_x.as_cpu_slice());
+                            }),
+                        });
+                    }
+                }
+            }
             NodeType::TransposeLastTwo => {
                 let src = self.nodes[node_id].inputs[0];
                 let x = self.nodes[src]
@@ -3000,20 +3026,43 @@ impl Graph {
                     .expect("BatchMatMul missing input B")
                     .clone();
 
+                let rank = a.shape.len();
                 assert!(
-                    a.shape.len() == 3 && b.shape.len() == 3,
-                    "BatchMatMul expects 3D tensors",
+                    rank == 3 || rank == 4,
+                    "BatchMatMul expects 3D or 4D tensors, got {}",
+                    rank
                 );
-                let batch = a.shape[0];
-                let m = a.shape[1];
-                let k = a.shape[2];
-                let n = b.shape[2];
-
-                assert_eq!(b.shape[0], batch, "BatchMatMul batch mismatch");
-                assert_eq!(b.shape[1], k, "BatchMatMul inner dim mismatch");
+                assert_eq!(
+                    b.shape.len(),
+                    rank,
+                    "BatchMatMul rank mismatch between inputs (a={}, b={})",
+                    rank,
+                    b.shape.len()
+                );
+                let (batch, m, k, n, output_shape) = if rank == 3 {
+                    assert_eq!(a.shape[0], b.shape[0], "BatchMatMul dim 0 mismatch");
+                    assert_eq!(a.shape[2], b.shape[1], "BatchMatMul inner dim mismatch");
+                    let batch = a.shape[0];
+                    let m = a.shape[1];
+                    let k = a.shape[2];
+                    let n = b.shape[2];
+                    (batch, m, k, n, vec![batch, m, n])
+                } else {
+                    // rank == 4: flatten dim 0 and dim 1 into a single
+                    // "outer" batch. Memory is contiguous so this is a
+                    // pure shape reinterpretation for the dispatcher.
+                    assert_eq!(a.shape[0], b.shape[0], "BatchMatMul4D dim 0 mismatch");
+                    assert_eq!(a.shape[1], b.shape[1], "BatchMatMul4D dim 1 mismatch");
+                    assert_eq!(a.shape[3], b.shape[2], "BatchMatMul4D inner dim mismatch");
+                    let outer = a.shape[0] * a.shape[1];
+                    let m = a.shape[2];
+                    let k = a.shape[3];
+                    let n = b.shape[3];
+                    (outer, m, k, n, vec![a.shape[0], a.shape[1], m, n])
+                };
 
                 let mut out = Tensor::with_layout(
-                    vec![batch, m, n],
+                    output_shape,
                     0.0,
                     a.device,
                     Layout::Contiguous,
@@ -4221,6 +4270,83 @@ fn add_to_grad_slice(store: &GradStore, node_id: usize, values: &[f32]) {
     store.add(node_id, values);
 }
 
+/// Inverse of a permutation: `inv[perm[i]] = i`. The result `inv` is
+/// such that `permute(permute(x, perm), inv) == x`.
+fn inverse_perm(perm: &[usize]) -> Vec<usize> {
+    let mut inv = vec![0_usize; perm.len()];
+    for (i, &p) in perm.iter().enumerate() {
+        inv[p] = i;
+    }
+    inv
+}
+
+/// Validate a permutation: length matches `rank`, every index
+/// `0..rank` appears exactly once, no out-of-range entries.
+fn validate_perm(perm: &[usize], rank: usize) {
+    assert_eq!(
+        perm.len(),
+        rank,
+        "permute: perm length {} does not match tensor rank {}",
+        perm.len(),
+        rank
+    );
+    let mut seen = vec![false; rank];
+    for &p in perm {
+        assert!(
+            p < rank,
+            "permute: perm index {} out of range for rank {}",
+            p,
+            rank
+        );
+        assert!(!seen[p], "permute: perm has duplicate index {}", p);
+        seen[p] = true;
+    }
+}
+
+/// Permute `x` according to `perm` (general transpose).
+///
+/// Output is always contiguous: `out[i_0, ..., i_{r-1}] = x[i_{inv[0]}, ..., i_{inv[r-1]}]`,
+/// i.e. position `(j_0, .., j_{r-1})` in the output reads from input
+/// at the position whose dim `perm[d]` equals `j_d`.
+fn permute(x: &Tensor, perm: &[usize]) -> Tensor {
+    let in_shape = &x.shape;
+    let rank = in_shape.len();
+    validate_perm(perm, rank);
+
+    let out_shape: Vec<usize> = perm.iter().map(|&p| in_shape[p]).collect();
+    let numel: usize = in_shape.iter().product();
+    let in_data = x.as_cpu_slice();
+    let mut out_data = vec![0.0_f32; numel];
+
+    // Strides for the (contiguous) input. For rank 0 the whole loop
+    // collapses to a single element.
+    let mut in_strides = vec![1_usize; rank.max(1)];
+    if rank >= 2 {
+        for i in (0..rank - 1).rev() {
+            in_strides[i] = in_strides[i + 1] * in_shape[i + 1];
+        }
+    }
+
+    let mut out_idx_multi = vec![0_usize; rank];
+    for out_linear in 0..numel {
+        // Decode output linear index → multi-index over out_shape.
+        let mut tmp = out_linear;
+        for d in (0..rank).rev() {
+            out_idx_multi[d] = tmp % out_shape[d];
+            tmp /= out_shape[d];
+        }
+        // Map to input position: dimension `d` of the output is
+        // dimension `perm[d]` of the input.
+        let mut in_linear = 0_usize;
+        for d in 0..rank {
+            in_linear += out_idx_multi[d] * in_strides[perm[d]];
+        }
+        out_data[out_linear] = in_data[in_linear];
+    }
+
+    Tensor::new_cpu_with_layout(out_shape, out_data, x.device, x.dtype, Layout::Contiguous)
+}
+
 fn transpose_2d(t: &Tensor) -> Tensor {
     assert_eq!(t.shape.len(), 2, "transpose_2d expects a 2D tensor");
     let rows = t.shape[0];
@@ -4324,17 +4450,40 @@ fn transpose_last_two(x: &Tensor) -> Tensor {
 }
 
 fn batch_matmul(a: &Tensor, b: &Tensor) -> Tensor {
-    assert!(a.shape.len() == 3 && b.shape.len() == 3, "BatchMatMul expects 3D tensors");
-    let batch = a.shape[0];
-    let m = a.shape[1];
-    let k = a.shape[2];
-    let n = b.shape[2];
-
-    assert_eq!(b.shape[0], batch, "BatchMatMul batch mismatch");
-    assert_eq!(b.shape[1], k, "BatchMatMul inner dim mismatch");
+    // Accept rank 3 or rank 4. For rank 4, dim 0 and dim 1 are
+    // flattened into a single "outer" batch — memory is contiguous
+    // so the dispatcher is unaware of the conceptual grouping.
+    let rank = a.shape.len();
+    assert!(
+        rank == 3 || rank == 4,
+        "BatchMatMul expects 3D or 4D tensors, got {}",
+        rank
+    );
+    assert_eq!(
+        b.shape.len(),
+        rank,
+        "BatchMatMul rank mismatch between inputs"
+    );
+    let (batch, m, k, n, output_shape) = if rank == 3 {
+        assert_eq!(a.shape[0], b.shape[0], "BatchMatMul dim 0 mismatch");
+        assert_eq!(a.shape[2], b.shape[1], "BatchMatMul inner dim mismatch");
+        (a.shape[0], a.shape[1], a.shape[2], b.shape[2], vec![a.shape[0], a.shape[1], b.shape[2]])
+    } else {
+        assert_eq!(a.shape[0], b.shape[0], "BatchMatMul4D dim 0 mismatch");
+        assert_eq!(a.shape[1], b.shape[1], "BatchMatMul4D dim 1 mismatch");
+        assert_eq!(a.shape[3], b.shape[2], "BatchMatMul4D inner dim mismatch");
+        let outer = a.shape[0] * a.shape[1];
+        (
+            outer,
+            a.shape[2],
+            a.shape[3],
+            b.shape[3],
+            vec![a.shape[0], a.shape[1], a.shape[2], b.shape[3]],
+        )
+    };
 
     let mut out = Tensor::with_layout(
-        vec![batch, m, n],
+        output_shape,
         0.0,
         a.device,
         Layout::Contiguous,
@@ -4355,10 +4504,26 @@ fn batch_matmul(a: &Tensor, b: &Tensor) -> Tensor {
 }
 
 fn batch_matmul_backward(a: &Tensor, b: &Tensor, out_grad: &Tensor) -> (Vec<f32>, Vec<f32>) {
-    let batch = a.shape[0];
-    let m = a.shape[1];
-    let k = a.shape[2];
-    let n = b.shape[2];
+    // Accept rank 3 or rank 4. For rank 4, flatten dim 0 and dim 1
+    // into a single "outer" batch — memory is contiguous so the inner
+    // math is unchanged.
+    let rank = a.shape.len();
+    debug_assert!(
+        rank == 3 || rank == 4,
+        "batch_matmul_backward: rank must be 3 or 4, got {}",
+        rank
+    );
+    debug_assert_eq!(b.shape.len(), rank);
+    let (batch, m, k, n) = if rank == 3 {
+        (a.shape[0], a.shape[1], a.shape[2], b.shape[2])
+    } else {
+        (
+            a.shape[0] * a.shape[1],
+            a.shape[2],
+            a.shape[3],
+            b.shape[3],
+        )
+    };
     let a_slice = a.as_cpu_slice();
     let b_slice = b.as_cpu_slice();
     let out_grad_slice = out_grad.as_cpu_slice();

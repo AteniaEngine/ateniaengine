@@ -87,6 +87,30 @@ pub enum NodeType {
     Mul,
     MatMul,
     Transpose2D,
+    /// Permute (general transpose) — reorders tensor dimensions
+    /// according to `perm`.
+    ///
+    /// Output shape: `[input.shape[perm[0]], input.shape[perm[1]], ...]`.
+    ///
+    /// `perm` must:
+    /// - have length equal to input rank
+    /// - contain every index in `[0..rank)` exactly once
+    ///   (no duplicates, no out-of-range)
+    ///
+    /// ## Examples
+    /// - `perm=[1,0]` on shape `[3,4]` → shape `[4,3]` (2D transpose)
+    /// - `perm=[0,2,1,3]` on shape `[b,s,h,d]` → `[b,h,s,d]`
+    ///   (multi-head attention layout swap)
+    ///
+    /// ## Implementation
+    /// Performs a data copy (not stride manipulation). Output is
+    /// always `Layout::Contiguous`, consistent with the rest of the
+    /// codebase which assumes contiguous tensors.
+    ///
+    /// ## Backward
+    /// Uses the inverse permutation: `inv[perm[i]] = i`. NOT
+    /// self-inverse like `Transpose2D`.
+    Permute { perm: Vec<usize> },
     IndexSelect,
     Reshape { target: Vec<isize> },
     TransposeLastTwo,

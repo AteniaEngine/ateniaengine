@@ -65,6 +65,13 @@ impl GraphBuilder {
         self.add_node(NodeType::TransposeLastTwo, vec![src])
     }
 
+    /// Permute a tensor's dimensions according to `perm` (general
+    /// transpose). See [`NodeType::Permute`] for details and shape
+    /// constraints on `perm`.
+    pub fn permute(&mut self, x_id: usize, perm: Vec<usize>) -> usize {
+        self.add_node(NodeType::Permute { perm }, vec![x_id])
+    }
+
     pub fn batch_matmul(&mut self, a: usize, b: usize) -> usize {
         self.add_node(NodeType::BatchMatMul, vec![a, b])
     }
