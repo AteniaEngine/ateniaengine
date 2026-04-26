@@ -927,6 +927,7 @@ impl Graph {
                 | NodeType::MatMul
                 | NodeType::BatchMatMul
                 | NodeType::BroadcastAdd
+                | NodeType::BroadcastMul
                 | NodeType::Gather
                 | NodeType::CrossEntropyLoss => in_len == 2,
                 NodeType::Reshape { .. }
@@ -3161,6 +3162,47 @@ impl Graph {
                     });
                 }
             }
+            NodeType::BroadcastMul => {
+                let inputs = self.nodes[node_id].inputs.clone();
+                assert_eq!(inputs.len(), 2, "BroadcastMul expects two inputs");
+                let a = self.nodes[inputs[0]]
+                    .output
+                    .as_ref()
+                    .expect("BroadcastMul missing A")
+                    .clone();
+                let b = self.nodes[inputs[1]]
+                    .output
+                    .as_ref()
+                    .expect("BroadcastMul missing B")
+                    .clone();
+                let out = broadcast_mul(&a, &b);
+                self.nodes[node_id].set_output(out.clone());
+
+                if record_tape {
+                    let op_inputs = inputs.clone();
+                    let shape_a = a.shape.clone();
+                    let shape_b = b.shape.clone();
+                    // Capture `a` and `b` by value: backward needs the
+                    // forward inputs to compute grad_a = out_grad * b
+                    // and grad_b = sum(out_grad * a). Unlike
+                    // BroadcastAdd, both gradients depend on the OTHER
+                    // input (chain rule for multiplication).
+                    let a_for_back = a.clone();
+                    let b_for_back = b.clone();
+                    self.tape.push(BackOp {
+                        inputs: op_inputs.clone(),
+                        output: node_id,
+                        backward: Box::new(move |store, _forward_inputs, out_grad| {
+                            let grad_a =
+                                mul_broadcast_grad(out_grad, &b_for_back, &shape_a);
+                            let grad_b =
+                                mul_broadcast_grad(out_grad, &a_for_back, &shape_b);
+                            add_to_grad_slice(store, op_inputs[0], &grad_a);
+                            add_to_grad_slice(store, op_inputs[1], &grad_b);
+                        }),
+                    });
+                }
+            }
             NodeType::BroadcastAdd => {
                 let inputs = self.nodes[node_id].inputs.clone();
                 assert_eq!(inputs.len(), 2, "BroadcastAdd expects two inputs");
@@ -4581,6 +4623,66 @@ fn add_broadcast_inplace(out: &mut Tensor, other: &Tensor) {
         }
         let other_offset = linear_index(&other_index, &other.shape);
         out.as_cpu_slice_mut()[out_offset] += other.as_cpu_slice()[other_offset];
+        if !increment_multi_index(&mut index, &out.shape) {
+            break;
+        }
+    }
+}
+
+/// Backward helper for [`NodeType::BroadcastMul`]: walks every output
+/// position, reads `out_grad[i] * other[broadcast(i)]`, and accumulates
+/// it into the slot of `target_shape` that the broadcast rules map `i`
+/// to. Used twice per BroadcastMul backward pass (once with `other=b`
+/// and `target_shape=a.shape` to compute grad_a, once with `other=a`
+/// and `target_shape=b.shape` to compute grad_b).
+fn mul_broadcast_grad(
+    out_grad: &Tensor,
+    other: &Tensor,
+    target_shape: &[usize],
+) -> Vec<f32> {
+    let mut grad = vec![0.0; target_shape.iter().product()];
+    let rank = target_shape.len();
+    debug_assert_eq!(out_grad.shape.len(), rank);
+    debug_assert_eq!(other.shape.len(), rank);
+    let mut index = vec![0usize; rank];
+    let out_grad_slice = out_grad.as_cpu_slice();
+    let other_slice = other.as_cpu_slice();
+    loop {
+        let out_offset = linear_index(&index, &out_grad.shape);
+        let mut other_index = vec![0usize; rank];
+        let mut target_index = vec![0usize; rank];
+        for d in 0..rank {
+            other_index[d] = if other.shape[d] == 1 { 0 } else { index[d] };
+            target_index[d] = if target_shape[d] == 1 { 0 } else { index[d] };
+        }
+        let other_offset = linear_index(&other_index, &other.shape);
+        let target_offset = linear_index(&target_index, target_shape);
+        grad[target_offset] += out_grad_slice[out_offset] * other_slice[other_offset];
+        if !increment_multi_index(&mut index, &out_grad.shape) {
+            break;
+        }
+    }
+    grad
+}
+
+fn broadcast_mul(a: &Tensor, b: &Tensor) -> Tensor {
+    assert_eq!(a.shape.len(), b.shape.len(), "BroadcastMul ranks must match");
+    let mut out = a.clone();
+    mul_broadcast_inplace(&mut out, b);
+    out
+}
+
+fn mul_broadcast_inplace(out: &mut Tensor, other: &Tensor) {
+    let rank = out.shape.len();
+    let mut index = vec![0usize; rank];
+    loop {
+        let out_offset = linear_index(&index, &out.shape);
+        let mut other_index = vec![0usize; rank];
+        for d in 0..rank {
+            other_index[d] = if other.shape[d] == 1 { 0 } else { index[d] };
+        }
+        let other_offset = linear_index(&other_index, &other.shape);
+        out.as_cpu_slice_mut()[out_offset] *= other.as_cpu_slice()[other_offset];
         if !increment_multi_index(&mut index, &out.shape) {
             break;
         }

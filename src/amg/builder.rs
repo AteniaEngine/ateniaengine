@@ -80,6 +80,13 @@ impl GraphBuilder {
         self.add_node(NodeType::BroadcastAdd, vec![a, b])
     }
 
+    /// Element-wise broadcast multiply. Both inputs must have the
+    /// same rank; dims where `b.shape[d] == 1` are broadcast.
+    /// Use case: per-feature learnable scale (e.g. RMSNorm γ).
+    pub fn broadcast_mul(&mut self, a: usize, b: usize) -> usize {
+        self.add_node(NodeType::BroadcastMul, vec![a, b])
+    }
+
     pub fn log_softmax(&mut self, src: usize) -> usize {
         self.add_node(NodeType::LogSoftmax, vec![src])
     }

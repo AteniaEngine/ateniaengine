@@ -116,6 +116,26 @@ pub enum NodeType {
     TransposeLastTwo,
     BatchMatMul,
     BroadcastAdd,
+    /// Element-wise multiplication with broadcasting — analogous to
+    /// [`NodeType::BroadcastAdd`] but with `*` in place of `+`.
+    ///
+    /// Convention: both inputs must have the same rank. For each
+    /// dimension `d`, if `b.shape[d] == 1` then `b` is broadcast
+    /// over that dimension; otherwise the dim sizes must agree.
+    /// Output shape equals `a.shape`. Use `Reshape` upstream if
+    /// you need to align ranks (e.g. expand a `[hidden]` gamma to
+    /// `[1, 1, hidden]` before broadcasting against `[b, s, hidden]`).
+    ///
+    /// ## Primary use case
+    /// Apply a learnable per-feature scale (RMSNorm γ, LayerNorm γ,
+    /// per-channel bias, etc.) without expanding the parameter into a
+    /// full-shape tensor.
+    ///
+    /// ## Backward
+    /// `grad_a[i] = out_grad[i] * b[broadcast(i)]` (same shape as `a`).
+    /// `grad_b[j] = Σ_{i mapped to j} out_grad[i] * a[i]` (reduced over
+    /// the broadcast dims of `b`).
+    BroadcastMul,
     LogSoftmax,
     Gather,
     CrossEntropyLoss,
