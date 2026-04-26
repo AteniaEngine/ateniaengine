@@ -224,6 +224,16 @@ open-ended "someday".
 
 ## M4.5 scope proposed (tentative)
 
+> **Update — M4.5 has since been closed.** The four sub-phases below
+> (a / b / c / d) all landed, with one additional primitive sub-step
+> (`BroadcastMul`) inserted after investigation revealed that
+> `RmsNorm` does not multiply by γ. See
+> [`HANDOFF_APX_V20_M4.5.md`](./HANDOFF_APX_V20_M4.5.md) for the
+> closed-state record, locked architectural decisions, empirical
+> validation numbers (PyTorch comparison `max_abs_diff ≈ 0.73`),
+> and proposed next milestones (M4.6 Llama-family expansion;
+> M4.7 beyond-VRAM execution).
+
 The investigation in `HANDOFF_APX_V20_M3.md` §10 mapped four sub-
 phases for M4.5, still valid:
 
