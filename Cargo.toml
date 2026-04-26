@@ -21,7 +21,6 @@ hw-probe = [
     "dep:wgpu",
     "dep:nvml-wrapper",
     "dep:serde",
-    "dep:serde_json",
     "dep:os_info",
 ]
 
@@ -38,11 +37,15 @@ libloading = "0.8"
 safetensors = "0.4"
 half = "2"
 
+# serde_json is used by both the TinyLlama config loader (M4.5-b1)
+# and the hw-probe binary, so it stays as a regular runtime dep
+# rather than being feature-gated.
+serde_json = "1"
+
 # Optional deps, only pulled in with `--features hw-probe`.
 wgpu = { version = "22", optional = true }
 nvml-wrapper = { version = "0.10", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
-serde_json = { version = "1", optional = true }
 os_info = { version = "3", optional = true }
 
 [[bin]]
@@ -51,4 +54,5 @@ path = "src/bin/hardware_probe.rs"
 required-features = ["hw-probe"]
 
 [dev-dependencies]
-serde_json = "1"
+# (serde_json now lives in [dependencies], available transitively
+# to integration tests as well — kept here as a no-op marker.)

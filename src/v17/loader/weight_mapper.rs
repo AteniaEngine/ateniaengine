@@ -1,4 +1,4 @@
-//! Weight mapper (M4-c).
+//! Weight mapper (M4-c, extended for M4.5-b1).
 //!
 //! Formalizes the "safetensors tensor name → graph parameter node_id"
 //! mapping that M4-b validated ad-hoc via `HashMap::from_iter`, and
@@ -6,7 +6,8 @@
 //!
 //! - **Shape**: every tensor loaded from the safetensors file must
 //!   match the shape of the parameter tensor already materialized in
-//!   the graph at build time. Mismatch surfaces as
+//!   the graph at build time, **after any registered transformations
+//!   have been applied**. Mismatch surfaces as
 //!   [`LoaderError::ShapeMismatch`] with both shapes attached.
 //! - **Dtype**: only F32 is supported in M4-c. BF16 / F16 / FP8 fall
 //!   through as [`LoaderError::UnsupportedDType`] via the M4-a
@@ -21,14 +22,28 @@
 //! as errors. A future strict-mode entry point can be added without
 //! changing the loose-mode surface.
 //!
+//! # M4.5-b1 extension: `LoadTransform`
+//!
+//! HuggingFace and Atenia disagree on Linear-weight layout
+//! (`[out, in]` vs `[in, out]`), and TinyLlama-style models use
+//! Grouped Query Attention which Atenia's M4.5 graph treats as MHA
+//! by tiling K/V projections at load time. To keep the graph
+//! free of model-specific reshaping plumbing, the mapper applies
+//! a small per-tensor transform pipeline between decode and copy:
+//! `decode_f32 → transforms → shape_check → copy`.
+//!
+//! Existing call sites that build a mapper via
+//! [`WeightMapper::from_param_names_and_ids`] without configuring
+//! transforms get the original M4-c behavior bit-exact: empty
+//! transform list ≡ direct copy.
+//!
 //! # Design notes
 //!
 //! The mapper is intentionally decoupled from `MiniFluxHandles` or
 //! any specific architecture struct. Its constructor accepts two
 //! index-aligned slices (names + node_ids) that any `build_*` helper
-//! in `src/nn/` can produce. When TinyLlama (M4.5) or other model
-//! builders land, they reuse the same mapper without needing new
-//! `from_xyz_handles` convenience constructors.
+//! in `src/nn/` can produce. TinyLlama-specific transform wiring
+//! lives in `src/nn/tinyllama/weight_loading.rs`.
 
 use std::collections::HashMap;
 
@@ -37,13 +52,62 @@ use crate::amg::graph::Graph;
 use super::loader_errors::LoaderError;
 use super::safetensors_reader::SafetensorsReader;
 
+/// A single transformation applied to a tensor's decoded float values
+/// between safetensors decode and graph copy. Multiple transforms are
+/// applied in the order they appear in [`WeightMapping::transforms`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum LoadTransform {
+    /// 2D matrix transpose `[a, b] -> [b, a]`. Used to convert
+    /// HuggingFace Linear weights (stored as `[out_features, in_features]`)
+    /// into Atenia's `[in_features, out_features]` convention.
+    Transpose2D,
+
+    /// Repeat each consecutive `group_size`-block along `dim`
+    /// `repeats` times. For GQA K/V expansion to MHA-equivalent
+    /// shape: applied to a K/V projection weight in HF layout
+    /// `[n_kv_heads * head_dim, hidden]` with
+    /// `dim=0, group_size=head_dim, repeats=kv_groups`, this produces
+    /// `[n_q_heads * head_dim, hidden]`. The result is bit-exact to
+    /// what `torch.repeat_interleave(K, dim=2, repeats=kv_groups)`
+    /// would produce on the runtime tensor `[b, s, n_kv, d]` after
+    /// the projection.
+    TileGroupedDim {
+        dim: usize,
+        group_size: usize,
+        repeats: usize,
+    },
+
+    /// Multiply every element by `factor`. Used to pre-fold the
+    /// `1/sqrt(head_dim)` attention scale into K_proj weights so
+    /// the graph does not need a separate scaling node.
+    Scale { factor: f32 },
+
+    /// Reshape (metadata only) the loaded tensor to `target`. The
+    /// new shape must have the same numel as the current shape;
+    /// data is left untouched (Layout::Contiguous preserved).
+    /// Use case: aligning a 1D RMSNorm `[hidden]` gamma with the
+    /// graph parameter `[1, 1, hidden]` that `BroadcastMul`
+    /// expects (M4.5-b1).
+    Reshape { target: Vec<usize> },
+}
+
+/// One entry in [`WeightMapper`]: the graph parameter node that
+/// receives this tensor's values and the optional list of transforms
+/// applied between decode and copy.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WeightMapping {
+    pub node_id: usize,
+    pub transforms: Vec<LoadTransform>,
+}
+
 /// Bidirectional view from a tensor's logical name (as used inside
 /// `register_weight`-style builders) to the graph parameter node that
-/// holds its values. Construct with
-/// [`WeightMapper::from_param_names_and_ids`].
+/// holds its values, plus the transforms applied to that tensor on
+/// load. Construct with [`WeightMapper::from_param_names_and_ids`]
+/// and configure transforms with [`WeightMapper::set_transforms`].
 #[derive(Debug, Clone)]
 pub struct WeightMapper {
-    mapping: HashMap<String, usize>,
+    mapping: HashMap<String, WeightMapping>,
 }
 
 /// Summary returned by [`WeightMapper::load_into`] after a
@@ -51,26 +115,22 @@ pub struct WeightMapper {
 /// M4-c; callers can choose to enforce emptiness at their own layer.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LoadReport {
-    /// Count of tensors that were matched, validated, and whose
-    /// values were copied into the corresponding graph parameter.
     pub loaded: usize,
-    /// Names present in the safetensors file but absent from the
-    /// mapper. Typical cause: checkpoint ships extra metadata tensors
-    /// or auxiliary tables (tokenizer embeddings, EMA shadows) that
-    /// the current graph does not consume.
     pub skipped: Vec<String>,
-    /// Names present in the mapper but absent from the file. Typical
-    /// cause: sharded or partial checkpoint. Fatal in strict-mode
-    /// scenarios, informational in the loose-mode `load_into`.
     pub missing: Vec<String>,
 }
 
 impl WeightMapper {
-    /// Build a mapper from two index-aligned slices. Fails with
-    /// [`LoaderError::InvalidFormat`] if the slices have different
-    /// lengths, or if the name slice has duplicates (the resulting
-    /// `HashMap` would silently drop collisions — surfacing the
-    /// duplicate as an error is preferable to a hard-to-debug load).
+    /// Build a mapper from two index-aligned slices. Each entry
+    /// starts with an empty transform list (bit-exact backward
+    /// compatibility with M4-c). Configure transforms with
+    /// [`Self::set_transforms`].
+    ///
+    /// Fails with [`LoaderError::InvalidFormat`] if the slices have
+    /// different lengths, or if the name slice has duplicates (the
+    /// resulting `HashMap` would silently drop collisions — surfacing
+    /// the duplicate as an error is preferable to a hard-to-debug
+    /// load).
     pub fn from_param_names_and_ids(
         names: &[String],
         ids: &[usize],
@@ -84,9 +144,14 @@ impl WeightMapper {
             )));
         }
 
-        let mut mapping: HashMap<String, usize> = HashMap::with_capacity(names.len());
+        let mut mapping: HashMap<String, WeightMapping> =
+            HashMap::with_capacity(names.len());
         for (name, id) in names.iter().zip(ids.iter()) {
-            if mapping.insert(name.clone(), *id).is_some() {
+            let entry = WeightMapping {
+                node_id: *id,
+                transforms: Vec::new(),
+            };
+            if mapping.insert(name.clone(), entry).is_some() {
                 return Err(LoaderError::InvalidFormat(format!(
                     "WeightMapper: duplicate parameter name '{}'; \
                      a safetensors checkpoint cannot disambiguate a \
@@ -98,6 +163,28 @@ impl WeightMapper {
         }
 
         Ok(Self { mapping })
+    }
+
+    /// Attach a transform pipeline to a parameter name. The transforms
+    /// are applied in the order given between decode and copy. Returns
+    /// [`LoaderError::InvalidFormat`] if the name is not in the mapper
+    /// (defensive: caller likely intended a different name).
+    pub fn set_transforms(
+        &mut self,
+        name: &str,
+        transforms: Vec<LoadTransform>,
+    ) -> Result<(), LoaderError> {
+        match self.mapping.get_mut(name) {
+            Some(entry) => {
+                entry.transforms = transforms;
+                Ok(())
+            }
+            None => Err(LoaderError::InvalidFormat(format!(
+                "WeightMapper::set_transforms: parameter name '{}' is not in \
+                 the mapper; check the name against the parameter list",
+                name
+            ))),
+        }
     }
 
     /// Number of entries in the mapper.
@@ -114,13 +201,19 @@ impl WeightMapper {
     /// parameter that holds its tensor, or `None` if the name is not
     /// mapped.
     pub fn get(&self, name: &str) -> Option<usize> {
-        self.mapping.get(name).copied()
+        self.mapping.get(name).map(|m| m.node_id)
+    }
+
+    /// Borrow the full mapping entry (node_id + transforms) for a
+    /// name. Useful in tests and in the TinyLlama helper to verify
+    /// the configured transform list.
+    pub fn get_mapping(&self, name: &str) -> Option<&WeightMapping> {
+        self.mapping.get(name)
     }
 
     /// Load every tensor from `reader` whose name is present in the
-    /// mapper into the corresponding graph parameter node. Validates
-    /// shape on each load; surfaces dtype-unsupported cases from the
-    /// reader as-is.
+    /// mapper into the corresponding graph parameter node. Decodes,
+    /// applies transforms, validates shape post-transform, then copies.
     ///
     /// Loose-mode: missing entries (in mapper, absent from reader)
     /// and skipped entries (in reader, absent from mapper) are
@@ -134,17 +227,88 @@ impl WeightMapper {
     ) -> Result<LoadReport, LoaderError> {
         let mut report = LoadReport::default();
 
-        // Names that the reader exposed; used to detect `missing`
-        // entries (in mapper, absent from reader).
         let reader_names: std::collections::HashSet<String> =
             reader.iter().map(|e| e.name.to_string()).collect();
 
         for entry in reader.iter() {
-            let Some(&node_id) = self.mapping.get(entry.name) else {
+            let Some(mapping) = self.mapping.get(entry.name) else {
                 report.skipped.push(entry.name.to_string());
                 continue;
             };
 
+            let node_id = mapping.node_id;
+
+            // Decode raw values from the safetensors entry. Shape
+            // here is the file shape (pre-transform).
+            let mut values = entry.to_vec_f32()?;
+            let mut current_shape: Vec<usize> = entry.shape.to_vec();
+
+            // Apply registered transforms in order. Each transform
+            // updates `values` and `current_shape` in lockstep.
+            for transform in &mapping.transforms {
+                match transform {
+                    LoadTransform::Transpose2D => {
+                        if current_shape.len() != 2 {
+                            return Err(LoaderError::InvalidFormat(format!(
+                                "tensor '{}': Transpose2D requires a 2D tensor, \
+                                 got rank {} (shape {:?})",
+                                entry.name,
+                                current_shape.len(),
+                                current_shape
+                            )));
+                        }
+                        let rows = current_shape[0];
+                        let cols = current_shape[1];
+                        values = transpose_2d_flat(&values, rows, cols);
+                        current_shape = vec![cols, rows];
+                    }
+                    LoadTransform::TileGroupedDim {
+                        dim,
+                        group_size,
+                        repeats,
+                    } => {
+                        values = tile_grouped_dim(
+                            &values,
+                            &current_shape,
+                            *dim,
+                            *group_size,
+                            *repeats,
+                        )
+                        .map_err(|msg| {
+                            LoaderError::InvalidFormat(format!(
+                                "tensor '{}': {}",
+                                entry.name, msg
+                            ))
+                        })?;
+                        current_shape[*dim] *= *repeats;
+                    }
+                    LoadTransform::Scale { factor } => {
+                        for v in values.iter_mut() {
+                            *v *= *factor;
+                        }
+                    }
+                    LoadTransform::Reshape { target } => {
+                        let target_numel: usize = target.iter().product();
+                        let current_numel: usize = current_shape.iter().product();
+                        if target_numel != current_numel {
+                            return Err(LoaderError::InvalidFormat(format!(
+                                "tensor '{}': Reshape target {:?} (numel {}) does not match \
+                                 current shape {:?} (numel {})",
+                                entry.name,
+                                target,
+                                target_numel,
+                                current_shape,
+                                current_numel
+                            )));
+                        }
+                        // Pure metadata change — data layout is unchanged.
+                        current_shape = target.clone();
+                    }
+                }
+            }
+
+            // Look up the graph parameter and validate the
+            // post-transform shape against it.
             let tensor = graph
                 .nodes
                 .get_mut(node_id)
@@ -157,37 +321,18 @@ impl WeightMapper {
                     ))
                 })?;
 
-            // Shape must match exactly. The safetensors format carries
-            // the shape as `Vec<usize>`; the graph parameter carries
-            // it in `Tensor::shape`. No broadcasting, no squeezing —
-            // a mismatch means the source checkpoint is for a
-            // different architecture configuration, and silent
-            // acceptance would corrupt inference.
-            if entry.shape != tensor.shape.as_slice() {
+            if current_shape != tensor.shape.as_slice() {
                 return Err(LoaderError::ShapeMismatch {
                     tensor_name: entry.name.to_string(),
                     expected: tensor.shape.clone(),
-                    actual: entry.shape.to_vec(),
+                    actual: current_shape,
                 });
             }
 
-            // Decode values. Propagates `UnsupportedDType` for BF16/
-            // F16/FP8 unchanged from the reader (M4-d extends the
-            // decode path, not the mapper).
-            let values = entry.to_vec_f32()?;
-
-            // Copy in-place into the existing CPU storage. Keeps
-            // shape, layout, strides, and storage variant intact —
-            // only the numeric values change.
             let slice = tensor.as_cpu_slice_mut();
             if slice.len() != values.len() {
-                // This branch is defensive: the shape-match check
-                // above already implies matching element counts, but
-                // keeping an explicit guard makes the copy_from_slice
-                // panic path impossible to reach and the diagnostic
-                // clearer if the invariant is ever broken.
                 return Err(LoaderError::InvalidFormat(format!(
-                    "tensor '{}': element count {} after decode does not match \
+                    "tensor '{}': element count {} after transforms does not match \
                      graph parameter capacity {}",
                     entry.name,
                     values.len(),
@@ -198,8 +343,6 @@ impl WeightMapper {
             report.loaded += 1;
         }
 
-        // Detect missing entries: names the mapper expected to fill
-        // that the reader did not provide.
         for name in self.mapping.keys() {
             if !reader_names.contains(name) {
                 report.missing.push(name.clone());
@@ -208,6 +351,90 @@ impl WeightMapper {
 
         Ok(report)
     }
+}
+
+// ---------------------------------------------------------------------
+// Transform helpers (free functions, also used by tests)
+// ---------------------------------------------------------------------
+
+/// 2D matrix transpose on a flat row-major buffer.
+/// `values` has logical shape `[rows, cols]`; the result has logical
+/// shape `[cols, rows]`.
+pub(crate) fn transpose_2d_flat(values: &[f32], rows: usize, cols: usize) -> Vec<f32> {
+    debug_assert_eq!(values.len(), rows * cols);
+    let mut out = vec![0.0_f32; rows * cols];
+    for r in 0..rows {
+        for c in 0..cols {
+            out[c * rows + r] = values[r * cols + c];
+        }
+    }
+    out
+}
+
+/// Repeat each consecutive `group_size`-block along `dim` `repeats`
+/// times. Returns a new flat buffer in row-major contiguous layout
+/// for the post-tile shape.
+///
+/// Returns `Err(message)` if `shape[dim]` is not a multiple of
+/// `group_size` or if `dim` is out of range.
+pub(crate) fn tile_grouped_dim(
+    values: &[f32],
+    shape: &[usize],
+    dim: usize,
+    group_size: usize,
+    repeats: usize,
+) -> Result<Vec<f32>, String> {
+    if dim >= shape.len() {
+        return Err(format!(
+            "TileGroupedDim: dim {} out of range for shape {:?}",
+            dim, shape
+        ));
+    }
+    if group_size == 0 {
+        return Err("TileGroupedDim: group_size must be positive".into());
+    }
+    if repeats == 0 {
+        return Err("TileGroupedDim: repeats must be positive".into());
+    }
+    let current_d = shape[dim];
+    if current_d % group_size != 0 {
+        return Err(format!(
+            "TileGroupedDim: shape[{}]={} is not divisible by group_size={}",
+            dim, current_d, group_size
+        ));
+    }
+    let expected_in: usize = shape.iter().product();
+    if values.len() != expected_in {
+        return Err(format!(
+            "TileGroupedDim: input length {} does not match shape {:?} (product {})",
+            values.len(),
+            shape,
+            expected_in
+        ));
+    }
+
+    let outer: usize = shape[..dim].iter().product();
+    let inner: usize = shape[dim + 1..].iter().product();
+    let n_groups = current_d / group_size;
+    let new_d = current_d * repeats;
+    let mut out = vec![0.0_f32; outer * new_d * inner];
+
+    for o in 0..outer {
+        let in_outer = o * current_d * inner;
+        let out_outer = o * new_d * inner;
+        for g in 0..n_groups {
+            let in_group = in_outer + g * group_size * inner;
+            let out_group_base = out_outer + (g * repeats) * group_size * inner;
+            for r in 0..repeats {
+                let out_block = out_group_base + r * group_size * inner;
+                let block_len = group_size * inner;
+                out[out_block..out_block + block_len]
+                    .copy_from_slice(&values[in_group..in_group + block_len]);
+            }
+        }
+    }
+
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -249,5 +476,39 @@ mod tests {
         assert_eq!(mapper.len(), 0);
         assert!(!mapper.contains("anything"));
         assert_eq!(mapper.get("anything"), None);
+    }
+
+    #[test]
+    fn fresh_mapping_has_no_transforms() {
+        let names = vec!["w".to_string()];
+        let ids = vec![42usize];
+        let mapper = WeightMapper::from_param_names_and_ids(&names, &ids).unwrap();
+        let entry = mapper.get_mapping("w").unwrap();
+        assert_eq!(entry.node_id, 42);
+        assert!(entry.transforms.is_empty());
+    }
+
+    #[test]
+    fn set_transforms_attaches_pipeline() {
+        let names = vec!["w".to_string()];
+        let ids = vec![7usize];
+        let mut mapper = WeightMapper::from_param_names_and_ids(&names, &ids).unwrap();
+        mapper
+            .set_transforms("w", vec![LoadTransform::Transpose2D])
+            .unwrap();
+        let entry = mapper.get_mapping("w").unwrap();
+        assert_eq!(entry.transforms, vec![LoadTransform::Transpose2D]);
+    }
+
+    #[test]
+    fn set_transforms_rejects_unknown_name() {
+        let mut mapper = WeightMapper::from_param_names_and_ids(&[], &[]).unwrap();
+        let err = mapper
+            .set_transforms("nope", vec![LoadTransform::Transpose2D])
+            .expect_err("unknown name must fail");
+        match err {
+            LoaderError::InvalidFormat(msg) => assert!(msg.contains("not in the mapper")),
+            other => panic!("expected InvalidFormat, got {:?}", other),
+        }
     }
 }
