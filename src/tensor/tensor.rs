@@ -638,8 +638,21 @@ impl Tensor {
                 // storage is `Cpu(Vec<f32>)` and the original `Vec<u16>`
                 // is dropped. Use this when a consumer needs `&[f32]`
                 // residency rather than a transient decoded copy.
+                //
+                // The `dtype` tag is also flipped to `F32` to match
+                // the new storage. Downstream ops (e.g. `with_layout`
+                // output construction in `MatMul`, the
+                // `assert_eq!(a.dtype, b.dtype)` checks in `add` /
+                // `mul` / `broadcast_add`) read `dtype` to decide
+                // output dtype and to reject mixed-precision inputs;
+                // leaving the clone tagged `BF16` while its bytes
+                // are F32 surfaces as a "BF16 vs F32" panic on the
+                // first inter-op boundary. Sweeping the tag here
+                // keeps the contract local: after `ensure_cpu`, the
+                // tensor is F32 in every observable sense.
                 let cpu_vec: Vec<f32> = bits.iter().map(|&b| bf16_bits_to_f32(b)).collect();
                 self.storage = TensorStorage::Cpu(cpu_vec);
+                self.dtype = DType::F32;
                 Ok(self)
             }
             TensorStorage::Cuda(g) => {

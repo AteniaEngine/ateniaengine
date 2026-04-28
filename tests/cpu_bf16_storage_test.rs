@@ -130,6 +130,11 @@ fn ensure_cpu_transitions_bf16_to_f32_storage() {
 
     // Storage variant flipped; data still equals the originals.
     assert!(matches!(t.storage(), TensorStorage::Cpu(_)));
+    // M4.7.2.c bugfix: dtype tag must also flip to F32 so
+    // downstream ops that read `dtype` to construct outputs or
+    // to enforce mixed-precision rejection see a consistent F32
+    // tensor.
+    assert_eq!(t.dtype, DType::F32, "ensure_cpu must flip dtype to F32 on CpuBf16 → Cpu");
     let view = t.as_cpu_slice();
     assert_eq!(view.len(), originals.len());
     for (got, want) in view.iter().zip(originals.iter()) {

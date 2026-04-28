@@ -2596,16 +2596,27 @@ impl Graph {
                 let a_id = self.nodes[node_id].inputs[0];
                 let b_id = self.nodes[node_id].inputs[1];
 
-                let a = self.nodes[a_id]
+                let mut a = self.nodes[a_id]
                     .output
                     .as_ref()
                     .expect("MatMul missing input A")
                     .clone();
-                let b = self.nodes[b_id]
+                let mut b = self.nodes[b_id]
                     .output
                     .as_ref()
                     .expect("MatMul missing input B")
                     .clone();
+
+                // M4.7.2.c: decode-on-access for BF16 parameters.
+                // The clones above are local to this arm; calling
+                // ensure_cpu materialises CpuBf16 storage as F32 in
+                // the clone without touching the graph node's
+                // persistent BF16 buffer. Cpu / Cuda / Disk paths
+                // are no-ops for the variants they already handle.
+                a.ensure_cpu()
+                    .expect("MatMul: BF16/Cuda/Disk → Cpu materialisation failed for operand A");
+                b.ensure_cpu()
+                    .expect("MatMul: BF16/Cuda/Disk → Cpu materialisation failed for operand B");
 
                 assert_eq!(a.shape.len(), 2, "MatMul expects 2D lhs tensor");
                 assert_eq!(b.shape.len(), 2, "MatMul expects 2D rhs tensor");
@@ -2905,6 +2916,12 @@ impl Graph {
                     .expect("IndexSelect missing indices")
                     .clone();
 
+                // M4.7.2.c: decode-on-access for BF16 embedding tables.
+                let mut table = table;
+                table.ensure_cpu().expect(
+                    "IndexSelect: BF16/Cuda/Disk → Cpu materialisation failed for table",
+                );
+
                 let out = index_select_rows(&table, &indices);
                 self.nodes[node_id].set_output(out.clone());
 
@@ -3165,16 +3182,24 @@ impl Graph {
             NodeType::BroadcastMul => {
                 let inputs = self.nodes[node_id].inputs.clone();
                 assert_eq!(inputs.len(), 2, "BroadcastMul expects two inputs");
-                let a = self.nodes[inputs[0]]
+                let mut a = self.nodes[inputs[0]]
                     .output
                     .as_ref()
                     .expect("BroadcastMul missing A")
                     .clone();
-                let b = self.nodes[inputs[1]]
+                let mut b = self.nodes[inputs[1]]
                     .output
                     .as_ref()
                     .expect("BroadcastMul missing B")
                     .clone();
+                // M4.7.2.c: decode-on-access for BF16 gamma / scale
+                // parameters. Llama RmsNorm γ flows through this op.
+                a.ensure_cpu().expect(
+                    "BroadcastMul: BF16/Cuda/Disk → Cpu materialisation failed for A",
+                );
+                b.ensure_cpu().expect(
+                    "BroadcastMul: BF16/Cuda/Disk → Cpu materialisation failed for B",
+                );
                 let out = broadcast_mul(&a, &b);
                 self.nodes[node_id].set_output(out.clone());
 
@@ -3206,16 +3231,26 @@ impl Graph {
             NodeType::BroadcastAdd => {
                 let inputs = self.nodes[node_id].inputs.clone();
                 assert_eq!(inputs.len(), 2, "BroadcastAdd expects two inputs");
-                let a = self.nodes[inputs[0]]
+                let mut a = self.nodes[inputs[0]]
                     .output
                     .as_ref()
                     .expect("BroadcastAdd missing A")
                     .clone();
-                let b = self.nodes[inputs[1]]
+                let mut b = self.nodes[inputs[1]]
                     .output
                     .as_ref()
                     .expect("BroadcastAdd missing B")
                     .clone();
+                // M4.7.2.c: decode-on-access for BF16 bias / mask
+                // parameters. Qwen QKV bias flows through this op,
+                // and the Llama causal mask is a pre-baked Parameter
+                // on path A.
+                a.ensure_cpu().expect(
+                    "BroadcastAdd: BF16/Cuda/Disk → Cpu materialisation failed for A",
+                );
+                b.ensure_cpu().expect(
+                    "BroadcastAdd: BF16/Cuda/Disk → Cpu materialisation failed for B",
+                );
                 let out = broadcast_add(&a, &b);
                 self.nodes[node_id].set_output(out.clone());
 
