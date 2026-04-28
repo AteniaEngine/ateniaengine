@@ -45,6 +45,17 @@ APX v20 connects the completed telemetry and decision infrastructure to real ext
 
 - **M4.7** — Beyond-VRAM execution. The killer demo for the v20 thesis: run a 13B-class model in BF16 on the dev hardware end-to-end. Concrete target hardware: **RTX 4070 Laptop with 8 GB VRAM, 32 GB RAM, project root on an external USB SSD (drive F:)**. A 13B model in BF16 weighs roughly 26 GB on disk — does not fit in VRAM (8 GB), does not fit in RAM alone (32 GB minus working set leaves no room for activations + KV cache), but is executable end-to-end with VRAM ↔ RAM ↔ disk offload orchestrated by the M3 reaction loop. This is the first end-to-end exercise of that loop against a workload that genuinely exceeds VRAM, and the first time the project's core differential — *adapt execution to hardware reality, not the other way around* — is exercised on a real model rather than synthetic memory-pressure injection. Mistral 7B falls out of scope for free once M4.7 lands: its architecture is identical to Llama 2, blocked today only on memory tiering.
 
+  **Sub-phase plan (calibrated 2.5×):**
+  - **M4.7.1** — Sharded safetensors loader (multi-file + `model.safetensors.index.json`, drop-after-decode RAM bound). ~20h.
+  - **M4.7.2** — Native BF16 storage layer + decode-on-access. **~40–50h** (recalibrated from the original ~60h estimate after the BF16 precision-floor spike commit `a786837` — see note below).
+  - **M4.7.3** — GPU MatMul with resident operands + executor device dispatch. ~40h.
+  - **M4.7.4** — RAM↔SSD streaming primitive (mmap, chunked pull). ~30h.
+  - **M4.7.5** — M3-e policy upgrade (LRU per-tensor selection, probe cache, prefetch, ensure_cpu safety net on consumers). ~40h.
+  - **M4.7.6** — First end-to-end run on Llama 2 13B (or Mistral 7B v0.3 fallback) + F64 validation per ADR-004. ~30h.
+  - **Total: ~190–200h calibrated ≈ 5–6 calendar weeks** at sustainable pace. The original roadmap estimate of "5–10 days" was substantially optimistic; this is the realistic scope after end-to-end gap analysis.
+
+  **Note on the BF16 spike (commit `a786837`)**: a precision-floor simulation gated by `ATENIA_BF16_PRECISION_FLOOR=1` is committed to `WeightMapper::load_into`. With the env var off the code is bit-identical to the baseline; with it on, every parameter is round-tripped through BF16 quantisation before reaching the graph, faithfully simulating the precision impact of native BF16 storage without any storage refactor. Empirically on Qwen 2.5 1.5B (the worst-case from the M4.6 family — head_dim=128, scale not power-of-2): max drift vs F64 = 0.029, argmax MATCH 4/4, **17× under the ADR-004 threshold of 0.5** and **53× closer to F64 truth than industry-default PyTorch BF16**. The spike answered the only load-bearing question for M4.7.2 — *does BF16 precision survive a Llama-class forward?* — empirically yes. The remaining work is pure storage plumbing (no precision risk).
+
 ### Out of scope for v20
 
 - Tokenizer integration (M5+)
