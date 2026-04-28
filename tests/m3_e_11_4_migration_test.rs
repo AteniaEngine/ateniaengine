@@ -313,6 +313,7 @@ fn test_migrate_all_cpu_to_disk_atomicity_preserves_storage_on_failure() {
         .map(|n| {
             n.output.as_ref().map(|t| match &t.storage {
                 TensorStorage::Cpu(_) => "Cpu",
+                TensorStorage::CpuBf16(_) => "CpuBf16",
                 TensorStorage::Cuda(_) => "Cuda",
                 TensorStorage::Disk(_) => "Disk",
             })
@@ -337,6 +338,7 @@ fn test_migrate_all_cpu_to_disk_atomicity_preserves_storage_on_failure() {
         .map(|n| {
             n.output.as_ref().map(|t| match &t.storage {
                 TensorStorage::Cpu(_) => "Cpu",
+                TensorStorage::CpuBf16(_) => "CpuBf16",
                 TensorStorage::Cuda(_) => "Cuda",
                 TensorStorage::Disk(_) => "Disk",
             })

@@ -58,6 +58,23 @@ pub(crate) fn cuda_device_ptr(
                  extracting the device pointer"
             )
         }
+        crate::tensor::TensorStorage::CpuBf16(_) => {
+            // M4.7.2 panic-stub: the GPU path will land in M4.7.3
+            // (residency-aware kernels, BF16 host→device transfers).
+            // Until then, callers that want to run a CpuBf16 param
+            // through CUDA must transition the variant via
+            // `Tensor::ensure_cpu` first (eager F32 upcast) and then
+            // `ensure_gpu`. The Llama hot path in `graph.rs` does
+            // not reach this function for CpuBf16 because the
+            // executor decode-on-access pattern materialises a
+            // transient F32 vec before any CUDA call.
+            unreachable!(
+                "cuda_device_ptr called on CpuBf16 storage — M4.7.3 \
+                 (residency-aware GPU kernels with BF16 host transfers) \
+                 has not landed yet; transition the variant via \
+                 ensure_cpu then ensure_gpu first."
+            )
+        }
     }
 }
 
@@ -75,6 +92,17 @@ pub(crate) fn cuda_device_ptr_mut(
                 "cuda_device_ptr_mut called on Disk storage — the caller must \
                  verify via matches!(_, TensorStorage::Cuda(_)) before \
                  extracting the device pointer"
+            )
+        }
+        crate::tensor::TensorStorage::CpuBf16(_) => {
+            // M4.7.2 panic-stub: see `cuda_device_ptr` for the
+            // milestone breakdown. Mutating CpuBf16 in place would
+            // also lose the BF16 precision contract; this call site
+            // is unreachable on the Llama forward path.
+            unreachable!(
+                "cuda_device_ptr_mut called on CpuBf16 storage — M4.7.3 \
+                 (residency-aware GPU kernels with BF16 host transfers) \
+                 has not landed yet."
             )
         }
     }

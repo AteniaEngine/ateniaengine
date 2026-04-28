@@ -87,6 +87,31 @@ pub enum TensorStorage {
     /// by the owning [`Tensor`]'s `shape` and `layout` fields. The storage
     /// variant itself is layout-agnostic.
     Cpu(Vec<f32>),
+    /// Host-resident dense BF16 storage as raw `u16` bits (M4.7.2).
+    ///
+    /// Each element holds the upper 16 bits of an F32 (sign + 8 exponent
+    /// bits + 7 mantissa bits); decode is the lossless shift
+    /// `f32::from_bits((bits as u32) << 16)`. Halves the RAM footprint of
+    /// model parameters vs `Cpu(Vec<f32>)`, which is the load-bearing
+    /// property for fitting 13B-class models on a 32 GB box.
+    ///
+    /// **Decode-on-access semantics.** This variant has no F32 cache:
+    /// every `copy_to_cpu_vec()` materialises a fresh `Vec<f32>` by
+    /// upcasting all elements; `as_cpu_slice()` and `as_cpu_slice_mut()`
+    /// **panic** because exposing a borrowed `&[f32]` would require an
+    /// internal cache or a temporary that outlives the borrow. Hot-path
+    /// executors that need `&[f32]` operands materialise a transient
+    /// `Vec<f32>` themselves and feed it to F32-only kernels — the
+    /// pattern documented in M4.7.2's investigation report and applied
+    /// inside `src/amg/graph.rs` MatMul / IndexSelect / BroadcastMul /
+    /// BroadcastAdd arms.
+    ///
+    /// Produced today only by the loader (`WeightMapper` with
+    /// `store_params_as_bf16=true`); never by ops, never by user code
+    /// constructing tensors directly. Backward, training, GPU dispatch,
+    /// and disk-spill paths panic with milestone-tagged messages when
+    /// they encounter this variant.
+    CpuBf16(Vec<u16>),
     /// Device-resident storage backed by a refcounted [`TensorGPU`].
     ///
     /// Entered via [`Tensor::ensure_gpu`] and exited via
@@ -103,6 +128,28 @@ pub enum TensorStorage {
     /// that reuses `ensure_cpu` and then the pre-existing CPU → VRAM
     /// path.
     Disk(DiskTensorHandle),
+}
+
+/// Decode a `u16` BF16 bit pattern into the corresponding `f32`.
+///
+/// BF16 occupies the upper 16 bits of an F32; the lower 16 mantissa bits
+/// are zero. The conversion is lossless and round-trip-exact with the
+/// down-convert `(f.to_bits() >> 16) as u16`.
+#[inline]
+pub fn bf16_bits_to_f32(bits: u16) -> f32 {
+    f32::from_bits((bits as u32) << 16)
+}
+
+/// Down-convert an `f32` into the `u16` BF16 representation by truncation.
+///
+/// Round-trip-exact when `f` was previously produced by [`bf16_bits_to_f32`].
+/// For arbitrary `f32` values this is a truncating cast that drops the
+/// lower 16 mantissa bits — the M4.7.2 spike (commit `a786837`)
+/// validated empirically that the resulting drift on the M4.6 family of
+/// models stays well under the ADR-004 threshold.
+#[inline]
+pub fn f32_to_bf16_bits(f: f32) -> u16 {
+    (f.to_bits() >> 16) as u16
 }
 
 /// Failure modes for storage transitions (Cpu ↔ Cuda, Cpu ↔ Disk) in
@@ -387,6 +434,69 @@ impl Tensor {
         }
     }
 
+    /// Constructs a CPU-resident BF16 tensor from raw `u16` bit
+    /// patterns (M4.7.2).
+    ///
+    /// `bits` must hold `shape.iter().product()` BF16 elements, each
+    /// already in the canonical "upper 16 F32 bits" representation
+    /// (the same form produced by [`f32_to_bf16_bits`] or by reading
+    /// BF16 bytes off a safetensors checkpoint with little-endian
+    /// `u16::from_le_bytes`). The tensor's `dtype` is set to
+    /// [`DType::BF16`] to reflect the storage type; consumers that
+    /// need an `&[f32]` view materialise one via
+    /// [`Tensor::copy_to_cpu_vec`] (decode-on-access) or
+    /// [`Tensor::ensure_cpu`] (eager upcast, transitions storage).
+    ///
+    /// # Panics
+    /// Panics if `bits.len() != shape.iter().product()`.
+    pub fn new_cpu_bf16(shape: Vec<usize>, bits: Vec<u16>) -> Self {
+        let expected: usize = shape.iter().product();
+        assert_eq!(
+            bits.len(),
+            expected,
+            "Tensor::new_cpu_bf16: bits length {} does not match shape product {} (shape = {:?})",
+            bits.len(),
+            expected,
+            shape
+        );
+        let strides = Self::compute_strides(&shape, &Layout::Contiguous);
+        Self {
+            shape,
+            storage: TensorStorage::CpuBf16(bits),
+            device: Device::CPU,
+            dtype: DType::BF16,
+            layout: Layout::Contiguous,
+            strides,
+            grad: None,
+            op: None,
+        }
+    }
+
+    /// Replaces the current storage with raw BF16 `bits` (M4.7.2).
+    ///
+    /// Mirrors [`Self::set_cpu_data`] for the BF16 path. Used by the
+    /// loader (`WeightMapper` with `store_params_as_bf16=true`) to
+    /// down-convert the post-`LoadTransform` F32 working buffer into
+    /// the persistent BF16 storage of a graph parameter that was
+    /// pre-allocated with `Cpu` or `CpuBf16`. Updates `dtype` to
+    /// [`DType::BF16`] to reflect the post-call storage.
+    ///
+    /// # Panics
+    /// Panics if `bits.len() != self.numel()`.
+    pub fn set_cpu_bf16_bits(&mut self, bits: Vec<u16>) {
+        let expected = self.numel();
+        assert_eq!(
+            bits.len(),
+            expected,
+            "Tensor::set_cpu_bf16_bits: bits length {} does not match shape product {} (shape = {:?})",
+            bits.len(),
+            expected,
+            self.shape
+        );
+        self.storage = TensorStorage::CpuBf16(bits);
+        self.dtype = DType::BF16;
+    }
+
     /// Replaces the current storage with CPU-resident `data`.
     ///
     /// Does not modify `shape` or `strides`; callers are expected to have
@@ -417,6 +527,14 @@ impl Tensor {
     pub fn as_cpu_slice(&self) -> &[f32] {
         match &self.storage {
             TensorStorage::Cpu(v) => v.as_slice(),
+            TensorStorage::CpuBf16(_) => panic!(
+                "Tensor::as_cpu_slice called on a CpuBf16 tensor. \
+                 CpuBf16 storage requires decode-on-access via \
+                 copy_to_cpu_vec() (or ensure_cpu() to transition the \
+                 storage variant); direct &[f32] borrow is not supported \
+                 because exposing it would require an internal cache that \
+                 M4.7.2 deliberately defers."
+            ),
             TensorStorage::Cuda(_) => panic!(
                 "Tensor::as_cpu_slice called on a GPU-resident tensor. \
                  Call ensure_cpu() first to transfer data to host memory."
@@ -435,6 +553,13 @@ impl Tensor {
     pub fn as_cpu_slice_mut(&mut self) -> &mut [f32] {
         match &mut self.storage {
             TensorStorage::Cpu(v) => v.as_mut_slice(),
+            TensorStorage::CpuBf16(_) => panic!(
+                "Tensor::as_cpu_slice_mut called on a CpuBf16 tensor. \
+                 BF16 parameters are read-only after load; mutating them \
+                 in place would lose the precision contract. If a write \
+                 path is genuinely needed, transition the variant via \
+                 ensure_cpu() first."
+            ),
             TensorStorage::Cuda(_) => panic!(
                 "Tensor::as_cpu_slice_mut called on a GPU-resident tensor. \
                  Call ensure_cpu() first to transfer data to host memory."
@@ -459,6 +584,16 @@ impl Tensor {
     pub fn copy_to_cpu_vec(&self) -> Vec<f32> {
         match &self.storage {
             TensorStorage::Cpu(v) => v.clone(),
+            TensorStorage::CpuBf16(bits) => {
+                // Decode-on-access (M4.7.2): materialise a fresh F32 vec
+                // by upcasting every BF16 bit pattern. The upcast
+                // `f32::from_bits((b as u32) << 16)` is lossless. No
+                // cache: each call allocates a new Vec<f32>; callers
+                // that need to reuse the F32 view across multiple ops
+                // should hold the returned Vec, or transition the
+                // storage via `ensure_cpu`.
+                bits.iter().map(|&b| bf16_bits_to_f32(b)).collect()
+            }
             TensorStorage::Cuda(g) => g
                 .to_cpu()
                 .expect("copy_to_cpu_vec: device->host copy failed (driver error)"),
@@ -498,6 +633,15 @@ impl Tensor {
     pub fn ensure_cpu(&mut self) -> Result<&mut Self, StorageTransferError> {
         match &self.storage {
             TensorStorage::Cpu(_) => Ok(self),
+            TensorStorage::CpuBf16(bits) => {
+                // M4.7.2: eager upcast BF16 → F32. After this the
+                // storage is `Cpu(Vec<f32>)` and the original `Vec<u16>`
+                // is dropped. Use this when a consumer needs `&[f32]`
+                // residency rather than a transient decoded copy.
+                let cpu_vec: Vec<f32> = bits.iter().map(|&b| bf16_bits_to_f32(b)).collect();
+                self.storage = TensorStorage::Cpu(cpu_vec);
+                Ok(self)
+            }
             TensorStorage::Cuda(g) => {
                 let cpu_vec = g
                     .to_cpu()
@@ -550,7 +694,14 @@ impl Tensor {
         // direct disk→device copy: the data has to pass through a
         // host buffer anyway for the H→D memcpy, so the extra hop
         // is cost-free in wall time and keeps the paths orthogonal.
-        if matches!(self.storage, TensorStorage::Disk(_)) {
+        // M4.7.2: CpuBf16 → Cuda follows the same two-hop pattern
+        // (CpuBf16 → Cpu via the BF16 decode, then Cpu → Cuda
+        // through the F32 path). VRAM is F32 only today; M4.7.3
+        // will introduce a residency-aware GPU path.
+        if matches!(
+            self.storage,
+            TensorStorage::Disk(_) | TensorStorage::CpuBf16(_)
+        ) {
             self.ensure_cpu()?;
             // Fall through to the Cpu branch below.
         }
@@ -561,10 +712,12 @@ impl Tensor {
 
         let cpu_data: &[f32] = match &self.storage {
             TensorStorage::Cpu(v) => v.as_slice(),
-            // After the Disk → Cpu hop above, we are guaranteed
-            // Cpu here. Cuda was already handled by the early
-            // return at the top of the function.
-            TensorStorage::Cuda(_) | TensorStorage::Disk(_) => unreachable!(
+            // After the Disk → Cpu / CpuBf16 → Cpu hops above, we
+            // are guaranteed Cpu here. Cuda was already handled by
+            // the early return at the top of the function.
+            TensorStorage::CpuBf16(_)
+            | TensorStorage::Cuda(_)
+            | TensorStorage::Disk(_) => unreachable!(
                 "ensure_gpu reached a non-Cpu variant after the normalization step; \
                  this is a bug"
             ),

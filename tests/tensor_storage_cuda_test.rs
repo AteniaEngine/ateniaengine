@@ -74,6 +74,7 @@ fn test_ensure_gpu_on_gpu_is_noop() {
     let ptr_before = match t.storage() {
         TensorStorage::Cuda(g) => g.device_ptr(),
         TensorStorage::Cpu(_) => unreachable!("storage should be Cuda here"),
+        TensorStorage::CpuBf16(_) => unreachable!("test never places tensor on CpuBf16"),
         TensorStorage::Disk(_) => unreachable!("test never places tensor on Disk"),
     };
 
@@ -83,6 +84,7 @@ fn test_ensure_gpu_on_gpu_is_noop() {
     let ptr_after = match t.storage() {
         TensorStorage::Cuda(g) => g.device_ptr(),
         TensorStorage::Cpu(_) => unreachable!("storage should still be Cuda"),
+        TensorStorage::CpuBf16(_) => unreachable!("test never places tensor on CpuBf16"),
         TensorStorage::Disk(_) => unreachable!("test never places tensor on Disk"),
     };
 

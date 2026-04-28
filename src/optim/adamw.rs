@@ -71,6 +71,13 @@ impl AdamW {
                      reactive-path territory, not a training-loop steady \
                      state."
                 ),
+                crate::tensor::TensorStorage::CpuBf16(_) => panic!(
+                    "AdamW: parameter is CpuBf16-resident; BF16 storage \
+                     for trainable parameters is out of M4.7.2 scope \
+                     (forward-only inference). A training pipeline \
+                     against BF16 params requires F32 accumulators and \
+                     a write-back path, which is M5+ territory."
+                ),
             };
             for i in 0..grad.len() {
                 let g = grad[i];

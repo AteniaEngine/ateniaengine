@@ -49,6 +49,7 @@ fn test_storage_accessor() {
         TensorStorage::Cpu(v) => {
             assert_eq!(v, &vec![7.0, 8.0, 9.0]);
         }
+        TensorStorage::CpuBf16(_) => unreachable!("test uses CPU storage only"),
         TensorStorage::Cuda(_) => unreachable!("test uses CPU storage only"),
         TensorStorage::Disk(_) => unreachable!("test uses CPU storage only"),
     }
@@ -89,6 +90,7 @@ fn test_clone_preserves_storage() {
         TensorStorage::Cpu(v) => {
             assert_eq!(v, &vec![1.0, 2.0, 3.0, 4.0]);
         }
+        TensorStorage::CpuBf16(_) => unreachable!("test uses CPU storage only"),
         TensorStorage::Cuda(_) => unreachable!("test uses CPU storage only"),
         TensorStorage::Disk(_) => unreachable!("test uses CPU storage only"),
     }

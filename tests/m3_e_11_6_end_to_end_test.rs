@@ -194,6 +194,10 @@ fn count_by_storage(graph: &atenia_engine::amg::graph::Graph) -> (usize, usize, 
         if let Some(t) = &n.output {
             match &t.storage {
                 TensorStorage::Cpu(_) => cpu += 1,
+                // CpuBf16 (M4.7.2) does not appear in the M3-e
+                // migration tests, but the tally must remain
+                // exhaustive over `TensorStorage`.
+                TensorStorage::CpuBf16(_) => cpu += 1,
                 TensorStorage::Cuda(_) => cuda += 1,
                 TensorStorage::Disk(_) => disk += 1,
             }

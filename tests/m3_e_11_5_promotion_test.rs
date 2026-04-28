@@ -237,6 +237,7 @@ fn param_storage_is(graph: &atenia_engine::amg::graph::Graph, kind: &str) -> boo
     graph.nodes.iter().any(|n| {
         n.output.as_ref().map(|t| match &t.storage {
             TensorStorage::Cpu(_) => kind == "Cpu",
+            TensorStorage::CpuBf16(_) => kind == "CpuBf16",
             TensorStorage::Cuda(_) => kind == "Cuda",
             TensorStorage::Disk(_) => kind == "Disk",
         }).unwrap_or(false)
