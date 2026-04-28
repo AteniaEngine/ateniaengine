@@ -336,6 +336,68 @@ impl Tensor {
         Self::zeros_like_shape(shape, device)
     }
 
+    /// Constructs a tensor of the given shape with `TensorStorage::Cuda`
+    /// storage (uninitialised VRAM, M4.7.3.a).
+    ///
+    /// Used by residency-aware ops to pre-allocate the output buffer
+    /// directly on VRAM, skipping the CPU-roundtrip that the legacy
+    /// `cuda_matmul`/`try_gpu_matmul` path performs. The VRAM region is
+    /// owned through the `Arc<InnerGpuPtr>` inside the `TensorGPU`;
+    /// dropping the `Tensor` (or replacing its storage) frees the VRAM
+    /// when the last clone goes away — same lifecycle as
+    /// `Tensor::ensure_gpu`.
+    ///
+    /// Internally flattens `shape` into the `(rows, cols)` view that
+    /// `TensorGPU` expects: `rows = numel`, `cols = 1`. The owning
+    /// `Tensor::shape` field stays authoritative; `TensorGPU`'s rows/cols
+    /// are an implementation detail of the storage.
+    ///
+    /// # Errors
+    /// Returns [`StorageTransferError::EngineUnavailable`] if no CUDA
+    /// engine is available, or [`StorageTransferError::AllocationFailed`]
+    /// if VRAM allocation fails.
+    pub fn zeros_new_cuda(shape: &[usize]) -> Result<Self, StorageTransferError> {
+        let numel: usize = shape.iter().product();
+        let gpu = TensorGPU::empty(numel, 1)
+            .map_err(|_| StorageTransferError::AllocationFailed)?;
+        let shape_vec = shape.to_vec();
+        let strides = Self::compute_strides(&shape_vec, &Layout::Contiguous);
+        Ok(Self {
+            shape: shape_vec,
+            storage: TensorStorage::Cuda(gpu),
+            device: Device::GPU,
+            dtype: DType::F32,
+            layout: Layout::Contiguous,
+            strides,
+            grad: None,
+            op: None,
+        })
+    }
+
+    /// Decode-aware materialisation that preserves GPU residency.
+    ///
+    /// Brings the storage into a numerically-ready state — `Cpu(Vec<f32>)`
+    /// or `Cuda(TensorGPU)` — without materialising a Cuda tensor back
+    /// to host memory. Use in executor arms whose op has a residency-
+    /// aware GPU kernel (M4.7.3): we want `CpuBf16`/`Disk` to decode but
+    /// `Cuda` to flow through to the GPU dispatch unchanged.
+    ///
+    /// Behaviour by current variant:
+    /// - `Cpu(_)`: no-op.
+    /// - `Cuda(_)`: no-op (preserve residency).
+    /// - `CpuBf16(_)`: decode to `Cpu(Vec<f32>)`, flip dtype to F32 (same
+    ///   contract as [`Self::ensure_cpu`]).
+    /// - `Disk(_)`: read to `Cpu(Vec<f32>)`.
+    ///
+    /// Arms whose op has no GPU kernel (RmsNorm, Softmax, RoPE, SiLU, …)
+    /// continue to use the unconditional [`Self::ensure_cpu`].
+    pub fn ensure_decoded(&mut self) -> Result<&mut Self, StorageTransferError> {
+        match &self.storage {
+            TensorStorage::Cpu(_) | TensorStorage::Cuda(_) => Ok(self),
+            TensorStorage::CpuBf16(_) | TensorStorage::Disk(_) => self.ensure_cpu(),
+        }
+    }
+
     /// Returns a tensor filled with ones for the given shape.
     pub fn ones(shape: Vec<usize>, device: Device, dtype: DType) -> Self {
         Self::new(shape, 1.0, device, dtype)

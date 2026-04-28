@@ -11,8 +11,11 @@
 //! 4.11 (these hooks) and APX 4.12 (memory pool) are coevolutions and
 //! the hook consults the pool before spending VRAM.
 
-use crate::tensor::{Tensor, Device};
-use crate::cuda::{self, matmul::cuda_matmul, fused_linear_silu::cuda_fused_linear_silu};
+use crate::tensor::{Tensor, TensorStorage};
+use crate::cuda::{
+    self, matmul::cuda_matmul, matmul::cuda_matmul_inplace,
+    fused_linear_silu::cuda_fused_linear_silu,
+};
 use crate::amg::graph::Graph;
 use crate::apx4_12::pool_dispatcher::try_gpu_with_pool;
 
@@ -36,13 +39,24 @@ pub fn gpu_can_run_matmul(m: usize, k: usize, n: usize) -> bool {
     true
 }
 
-/// Attempt to execute MatMul on GPU.
+/// Attempt to execute MatMul on GPU (M4.7.3.a residency-aware).
+///
 /// Returns `true` if it ran on GPU and `out` contains the result.
+///
+/// Per-storage gating (option (b) of the M4.7.3 investigation):
+///
+/// - **Both operands `Cuda` and `out` is `Cuda`**: residency path.
+///   Calls [`cuda_matmul_inplace`] directly on the device pointers.
+///   The shape gate (`gpu_can_run_matmul`) is bypassed because
+///   uploading the operands has already been paid; running CPU on
+///   already-VRAM-resident data would force a download.
+/// - **All operands `Cpu`**: existing CPU-roundtrip path. Shape gate
+///   applies; output materialised back to Cpu.
+/// - **Mixed (one operand on each)**: returns `false`. The caller
+///   normalises the storage at the executor arm via `ensure_decoded`
+///   before re-dispatching, so this branch is unreachable on the
+///   Llama hot path; it stays as a defensive fallback.
 pub fn try_gpu_matmul(a: &Tensor, b: &Tensor, out: &mut Tensor) -> bool {
-    // Only supports 2D f32 tensors on logical CPU.
-    if a.device != Device::CPU || b.device != Device::CPU {
-        return false;
-    }
     if a.dtype != b.dtype || a.dtype != out.dtype {
         return false;
     }
@@ -61,16 +75,48 @@ pub fn try_gpu_matmul(a: &Tensor, b: &Tensor, out: &mut Tensor) -> bool {
         return false;
     }
 
-    if !gpu_can_run_matmul(m, k, n) {
-        return false;
-    }
-
     if !cuda::cuda_available() {
         return false;
     }
 
-    // APX 4.12: use the MemoryPool dispatcher to decide whether to execute
-    // on GPU or let the caller fall back to the CPU path.
+    // ---- Residency path: every operand and the output already on VRAM ----
+    let all_cuda = matches!(
+        (&a.storage, &b.storage, &out.storage),
+        (
+            TensorStorage::Cuda(_),
+            TensorStorage::Cuda(_),
+            TensorStorage::Cuda(_),
+        )
+    );
+    if all_cuda {
+        cuda_matmul_inplace(a, b, out, m, k, n);
+        if apx_trace_enabled() {
+            println!("[APX M4.7.3] GPU MatMul executed (residency-aware)");
+        }
+        return true;
+    }
+
+    // ---- CPU-roundtrip path: shape gate + pool budget ----
+    let all_cpu = matches!(
+        (&a.storage, &b.storage, &out.storage),
+        (
+            TensorStorage::Cpu(_),
+            TensorStorage::Cpu(_),
+            TensorStorage::Cpu(_),
+        )
+    );
+    if !all_cpu {
+        // Mixed storage. The executor arm normalises before reaching
+        // this hook (see `Tensor::ensure_decoded`); a mixed call
+        // signals a routing mistake. Bail out silently and let the
+        // caller's CPU path handle the operation.
+        return false;
+    }
+
+    if !gpu_can_run_matmul(m, k, n) {
+        return false;
+    }
+
     let mut ran_gpu = false;
     let bytes_needed = m
         .saturating_mul(n)
@@ -84,7 +130,7 @@ pub fn try_gpu_matmul(a: &Tensor, b: &Tensor, out: &mut Tensor) -> bool {
                 out.as_cpu_slice_mut().clone_from_slice(gpu_out.as_cpu_slice());
                 ran_gpu = true;
                 if apx_trace_enabled() {
-                    println!("[APX 4.11] GPU MatMul executed");
+                    println!("[APX 4.11] GPU MatMul executed (CPU-roundtrip)");
                 }
             }
         },

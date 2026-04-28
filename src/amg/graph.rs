@@ -2607,16 +2607,16 @@ impl Graph {
                     .expect("MatMul missing input B")
                     .clone();
 
-                // M4.7.2.c: decode-on-access for BF16 parameters.
-                // The clones above are local to this arm; calling
-                // ensure_cpu materialises CpuBf16 storage as F32 in
-                // the clone without touching the graph node's
-                // persistent BF16 buffer. Cpu / Cuda / Disk paths
-                // are no-ops for the variants they already handle.
-                a.ensure_cpu()
-                    .expect("MatMul: BF16/Cuda/Disk → Cpu materialisation failed for operand A");
-                b.ensure_cpu()
-                    .expect("MatMul: BF16/Cuda/Disk → Cpu materialisation failed for operand B");
+                // M4.7.2.c + M4.7.3.a: decode-on-access that preserves
+                // GPU residency. `ensure_decoded` materialises BF16 →
+                // F32 and Disk → F32 on the clone, but leaves Cuda
+                // residency intact so the residency-aware GPU MatMul
+                // path can consume the operands directly. Plain Cpu
+                // is a no-op.
+                a.ensure_decoded()
+                    .expect("MatMul: BF16/Disk → Cpu materialisation failed for operand A");
+                b.ensure_decoded()
+                    .expect("MatMul: BF16/Disk → Cpu materialisation failed for operand B");
 
                 assert_eq!(a.shape.len(), 2, "MatMul expects 2D lhs tensor");
                 assert_eq!(b.shape.len(), 2, "MatMul expects 2D rhs tensor");
@@ -2625,13 +2625,35 @@ impl Graph {
                 assert_eq!(b.shape[0], k, "MatMul inner dimension mismatch");
                 let n = b.shape[1];
 
-                let mut out = Tensor::with_layout(
-                    vec![m, n],
-                    0.0,
-                    a.device,
-                    Layout::Contiguous,
-                    a.dtype,
+                // M4.7.3.a: when both operands live on VRAM, allocate
+                // the output directly in VRAM so the kernel writes in
+                // place and the result stays GPU-resident for the next
+                // op. Otherwise allocate a host buffer and let the
+                // CPU-roundtrip / pool path fill it.
+                let both_cuda = matches!(
+                    (&a.storage, &b.storage),
+                    (TensorStorage::Cuda(_), TensorStorage::Cuda(_))
                 );
+                let mut out = if both_cuda {
+                    match Tensor::zeros_new_cuda(&[m, n]) {
+                        Ok(t) => t,
+                        Err(_) => Tensor::with_layout(
+                            vec![m, n],
+                            0.0,
+                            a.device,
+                            Layout::Contiguous,
+                            a.dtype,
+                        ),
+                    }
+                } else {
+                    Tensor::with_layout(
+                        vec![m, n],
+                        0.0,
+                        a.device,
+                        Layout::Contiguous,
+                        a.dtype,
+                    )
+                };
 
                 // APX 5.4: timing measurement for MatMul (CPU/GPU) for
                 // collecting adaptive statistics.
