@@ -32,6 +32,7 @@ Additional sections used when relevant: Rationale, Alternatives Considered, Trig
 - [ADR-001](./ADR-001-numerical-health-monitor-deferred.md) — Numerical Health Monitor — Deferred Pending Empirical Data
 - [ADR-002](./ADR-002-mathematical-ground-truth-validation.md) — Mathematical Ground-Truth Validation Strategy
 - [ADR-003](./ADR-003-methodology-questioning-framework.md) — Methodology Questioning Framework
+- [ADR-004](./ADR-004-f64-reference-as-default.md) — F64 Reference as Default Numerical Validation Methodology
 
 ## Naming convention
 
