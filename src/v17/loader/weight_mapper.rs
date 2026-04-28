@@ -339,6 +339,36 @@ impl WeightMapper {
                     slice.len()
                 )));
             }
+
+            // M4.7.2 spike — BF16 precision-floor simulation.
+            //
+            // When the env var `ATENIA_BF16_PRECISION_FLOOR=1` is
+            // set, every loaded parameter is round-tripped through
+            // BF16 quantisation just before being copied into the
+            // graph parameter. This faithfully simulates the
+            // precision impact of native BF16 storage (every
+            // parameter value is forced onto the BF16 grid) without
+            // changing `TensorStorage` or the engine's F32 ops. The
+            // transforms (Scale, TileGroupedDim, …) run in full F32
+            // first; the floor applies to their output, mirroring
+            // the "decode → transform → quantise → store as BF16"
+            // pipeline a real BF16 storage layer would implement.
+            //
+            // BF16 retains the 8 F32 exponent bits and the upper 7
+            // F32 mantissa bits; the lower 16 mantissa bits are
+            // zeroed. Implemented inline to avoid a half-crate
+            // dependency for the spike.
+            if std::env::var("ATENIA_BF16_PRECISION_FLOOR")
+                .ok()
+                .as_deref()
+                == Some("1")
+            {
+                for v in values.iter_mut() {
+                    let bits = v.to_bits() & 0xFFFF_0000_u32;
+                    *v = f32::from_bits(bits);
+                }
+            }
+
             slice.copy_from_slice(&values);
             report.loaded += 1;
         }
