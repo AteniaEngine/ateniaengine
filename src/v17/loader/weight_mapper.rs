@@ -108,6 +108,16 @@ pub struct WeightMapping {
 #[derive(Debug, Clone)]
 pub struct WeightMapper {
     mapping: HashMap<String, WeightMapping>,
+    /// When `true`, every parameter loaded into the graph is
+    /// down-converted from F32 to BF16 just before being copied
+    /// into the destination `Tensor` (M4.7.2). The
+    /// `LoadTransform` pipeline still runs in F32 (Scale,
+    /// TileGroupedDim, Transpose2D, Reshape need F32 working
+    /// values), so the BF16 down-convert is a single-pass
+    /// truncation of the post-transform F32 buffer. Default
+    /// `false` for full backward compatibility with the M4.6
+    /// numerical-validation fixtures and every existing test.
+    store_params_as_bf16: bool,
 }
 
 /// Summary returned by [`WeightMapper::load_into`] after a
@@ -162,7 +172,31 @@ impl WeightMapper {
             }
         }
 
-        Ok(Self { mapping })
+        Ok(Self {
+            mapping,
+            store_params_as_bf16: false,
+        })
+    }
+
+    /// Toggle the BF16 storage path (M4.7.2). When `true`, every
+    /// parameter is down-converted from F32 to `Vec<u16>` after the
+    /// `LoadTransform` pipeline runs, and stored as
+    /// `TensorStorage::CpuBf16` instead of `TensorStorage::Cpu`.
+    /// Halves the persistent RAM footprint of model parameters.
+    /// See module-level documentation and the M4.7.2.a commit for
+    /// the BF16 storage contract; the precision impact was
+    /// validated empirically by the spike (commit `a786837`).
+    ///
+    /// Returns `&mut Self` to allow fluent configuration.
+    pub fn set_store_params_as_bf16(&mut self, enabled: bool) -> &mut Self {
+        self.store_params_as_bf16 = enabled;
+        self
+    }
+
+    /// Whether the BF16 storage path is currently active. Used by
+    /// tests and diagnostic logging.
+    pub fn store_params_as_bf16(&self) -> bool {
+        self.store_params_as_bf16
     }
 
     /// Attach a transform pipeline to a parameter name. The transforms
@@ -359,14 +393,18 @@ impl WeightMapper {
                 });
             }
 
-            let slice = tensor.as_cpu_slice_mut();
-            if slice.len() != values.len() {
+            // Element-count check, valid for both Cpu (`as_cpu_slice_mut`)
+            // and CpuBf16 (`numel()`) destinations. We cannot pre-emptively
+            // borrow the F32 slice here because the BF16 path will mutate
+            // `tensor.storage` to a different variant.
+            let dest_numel = tensor.numel();
+            if dest_numel != values.len() {
                 return Err(LoaderError::InvalidFormat(format!(
                     "tensor '{}': element count {} after transforms does not match \
                      graph parameter capacity {}",
                     entry.name,
                     values.len(),
-                    slice.len()
+                    dest_numel
                 )));
             }
 
@@ -399,7 +437,24 @@ impl WeightMapper {
                 }
             }
 
-            slice.copy_from_slice(&values);
+            if self.store_params_as_bf16 {
+                // M4.7.2: native BF16 storage path. The post-transform
+                // F32 working buffer is down-converted to `Vec<u16>` via
+                // truncation (`(v.to_bits() >> 16) as u16`) and assigned
+                // to the destination tensor as `TensorStorage::CpuBf16`.
+                // The persistent footprint is half the F32 path; the
+                // precision impact was validated by the spike
+                // (commit `a786837`) and is bit-exact equivalent because
+                // the precision-floor simulation above and this
+                // down-convert apply the same operation. Round-trip on
+                // decode-on-access is exactly the same value.
+                let bits: Vec<u16> =
+                    values.iter().map(|&v| (v.to_bits() >> 16) as u16).collect();
+                tensor.set_cpu_bf16_bits(bits);
+            } else {
+                let slice = tensor.as_cpu_slice_mut();
+                slice.copy_from_slice(&values);
+            }
             outcome.loaded += 1;
             satisfied_names.insert(entry.name.to_string());
         }
