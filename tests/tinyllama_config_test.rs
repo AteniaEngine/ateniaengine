@@ -1,7 +1,7 @@
 //! Tests for `LlamaConfig` parsing, validation, and derived helpers
 //! (M4.5-b1, Paso 1).
 
-use atenia_engine::nn::llama::LlamaConfig;
+use atenia_engine::nn::llama::{LlamaConfig, RopeScaling};
 use std::path::PathBuf;
 
 /// Embedded copy of `models/tinyllama-1.1b/config.json` so the test
@@ -276,4 +276,166 @@ fn parse_qwen2_real_config_file_on_disk() {
     assert!(cfg.effective_attention_bias());
     assert_eq!(cfg.vocab_size, 151_936);
     assert_eq!(cfg.num_hidden_layers, 28);
+}
+
+// ---------------------------------------------------------------------------
+// M4.6 Phase C.1 — Llama 3.2 config additions: rope_scaling + head_dim
+// ---------------------------------------------------------------------------
+
+/// Llama 3.2 1B's `config.json` carries an explicit `head_dim` field
+/// AND a populated `rope_scaling` block with `rope_type: "llama3"`.
+/// The parser must ingest both without rejecting unsupported fields.
+#[test]
+fn parse_llama_3_2_config_with_rope_scaling_and_head_dim() {
+    let json = r#"{
+      "architectures": ["LlamaForCausalLM"],
+      "attention_bias": false,
+      "attention_dropout": 0.0,
+      "bos_token_id": 128000,
+      "eos_token_id": 128009,
+      "head_dim": 64,
+      "hidden_act": "silu",
+      "hidden_size": 2048,
+      "initializer_range": 0.02,
+      "intermediate_size": 8192,
+      "max_position_embeddings": 131072,
+      "mlp_bias": false,
+      "model_type": "llama",
+      "num_attention_heads": 32,
+      "num_hidden_layers": 16,
+      "num_key_value_heads": 8,
+      "pad_token_id": 128004,
+      "rms_norm_eps": 1e-05,
+      "rope_scaling": {
+        "factor": 32.0,
+        "high_freq_factor": 4.0,
+        "low_freq_factor": 1.0,
+        "original_max_position_embeddings": 8192,
+        "rope_type": "llama3"
+      },
+      "rope_theta": 500000.0,
+      "tie_word_embeddings": true,
+      "torch_dtype": "bfloat16",
+      "use_cache": true,
+      "vocab_size": 128256
+    }"#;
+    let cfg = LlamaConfig::from_json_str(json)
+        .expect("Llama 3.2 config must parse with rope_scaling and head_dim");
+
+    assert_eq!(cfg.vocab_size, 128_256);
+    assert_eq!(cfg.num_hidden_layers, 16);
+    assert_eq!(cfg.num_attention_heads, 32);
+    assert_eq!(cfg.num_key_value_heads, 8);
+    assert_eq!(cfg.kv_groups(), 4);
+    assert_eq!(cfg.rope_theta, 500_000);
+    assert_eq!(cfg.tie_word_embeddings, true);
+    assert_eq!(cfg.model_type.as_deref(), Some("llama"));
+
+    // Phase C.1 specifics:
+    assert_eq!(cfg.head_dim, Some(64));
+    assert_eq!(cfg.effective_head_dim(), 64);
+    let scaling = cfg
+        .effective_rope_scaling()
+        .expect("rope_scaling should be present");
+    match scaling {
+        RopeScaling::Llama3 {
+            factor,
+            low_freq_factor,
+            high_freq_factor,
+            original_max_position_embeddings,
+        } => {
+            assert!((*factor - 32.0).abs() < 1e-6);
+            assert!((*low_freq_factor - 1.0).abs() < 1e-6);
+            assert!((*high_freq_factor - 4.0).abs() < 1e-6);
+            assert_eq!(*original_max_position_embeddings, 8192);
+        }
+    }
+}
+
+/// Legacy `type` alias (transformers <4.43) must be honoured the
+/// same way as the modern `rope_type` field.
+#[test]
+fn parse_rope_scaling_accepts_legacy_type_alias() {
+    let json = r#"{
+        "vocab_size": 100,
+        "hidden_size": 16,
+        "num_hidden_layers": 2,
+        "num_attention_heads": 4,
+        "num_key_value_heads": 2,
+        "intermediate_size": 32,
+        "max_position_embeddings": 64,
+        "rope_theta": 500000.0,
+        "rms_norm_eps": 1e-5,
+        "tie_word_embeddings": true,
+        "attention_bias": false,
+        "rope_scaling": {
+            "type": "llama3",
+            "factor": 8.0,
+            "low_freq_factor": 1.0,
+            "high_freq_factor": 4.0,
+            "original_max_position_embeddings": 8192
+        },
+        "bos_token_id": 0,
+        "eos_token_id": 1
+    }"#;
+    let cfg = LlamaConfig::from_json_str(json).expect("legacy `type` alias must work");
+    let scaling = cfg
+        .effective_rope_scaling()
+        .expect("rope_scaling should be parsed via legacy `type` alias");
+    assert!(matches!(scaling, RopeScaling::Llama3 { factor, .. } if (*factor - 8.0).abs() < 1e-6));
+}
+
+/// Unknown `rope_type` (e.g. yarn, longrope) is silently downgraded
+/// to no-scaling — the parser is permissive so future scaling
+/// variants land as opt-in extensions, not breaking changes.
+#[test]
+fn parse_unknown_rope_type_silently_yields_no_scaling() {
+    let json = r#"{
+        "vocab_size": 100,
+        "hidden_size": 16,
+        "num_hidden_layers": 2,
+        "num_attention_heads": 4,
+        "num_key_value_heads": 2,
+        "intermediate_size": 32,
+        "max_position_embeddings": 64,
+        "rope_theta": 10000.0,
+        "rms_norm_eps": 1e-5,
+        "tie_word_embeddings": true,
+        "attention_bias": false,
+        "rope_scaling": {
+            "rope_type": "yarn",
+            "factor": 4.0
+        },
+        "bos_token_id": 0,
+        "eos_token_id": 1
+    }"#;
+    let cfg = LlamaConfig::from_json_str(json).expect("unknown rope_type must not fail parse");
+    assert!(cfg.effective_rope_scaling().is_none());
+}
+
+/// Models without `rope_scaling` (TinyLlama / SmolLM2 / Qwen) must
+/// continue to report `None`. Same for the implicit `head_dim`.
+#[test]
+fn legacy_models_have_no_rope_scaling_and_implicit_head_dim() {
+    let cfg = LlamaConfig::from_json_str(TINYLLAMA_CONFIG_JSON).unwrap();
+    assert!(cfg.effective_rope_scaling().is_none());
+    assert_eq!(cfg.head_dim, None);
+    assert_eq!(cfg.effective_head_dim(), 64); // 2048 / 32
+}
+
+/// Real on-disk Llama 3.2 1B config — same `#[ignore]` convention.
+#[test]
+#[ignore]
+fn parse_llama_3_2_real_config_file_on_disk() {
+    let path = PathBuf::from("models/llama-3.2-1b-instruct/config.json");
+    let cfg = LlamaConfig::from_json_file(&path)
+        .expect("real on-disk Llama 3.2 config should parse and validate");
+    assert_eq!(cfg.model_type.as_deref(), Some("llama"));
+    assert_eq!(cfg.vocab_size, 128_256);
+    assert_eq!(cfg.num_hidden_layers, 16);
+    assert_eq!(cfg.effective_head_dim(), 64);
+    let scaling = cfg.effective_rope_scaling().expect("must have llama3 scaling");
+    match scaling {
+        RopeScaling::Llama3 { factor, .. } => assert!((*factor - 32.0).abs() < 1e-6),
+    }
 }

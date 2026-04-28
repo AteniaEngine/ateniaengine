@@ -16,5 +16,5 @@ pub mod config;
 pub mod weight_loading;
 
 pub use builder::{build_llama, LlamaHandles, LlamaRuntime};
-pub use config::{ConfigError, LlamaConfig};
+pub use config::{ConfigError, LlamaConfig, RopeScaling};
 pub use weight_loading::llama_weight_mapper;

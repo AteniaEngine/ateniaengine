@@ -57,6 +57,44 @@ pub struct LlamaConfig {
     /// `pad_token_id` is absent from many Llama configs (TinyLlama
     /// included), so it is optional.
     pub pad_token_id: Option<u32>,
+    /// Per-head dimension when the config sets it explicitly
+    /// (Llama 3.2 onwards). When absent, the effective head_dim is
+    /// `hidden_size / num_attention_heads` — see
+    /// [`Self::effective_head_dim`]. Architectures like Phi-3 medium
+    /// where the two diverge will need the explicit field; for the
+    /// Llama family seen so far the two coincide.
+    pub head_dim: Option<usize>,
+    /// `rope_scaling` block. `None` for plain RoPE (TinyLlama,
+    /// SmolLM2, Qwen 2.5). Currently the only recognised
+    /// `rope_type` is `"llama3"` (Llama 3.x). Anything else parses
+    /// to `None` with a tracing-friendly warning at parse time.
+    pub rope_scaling: Option<RopeScaling>,
+}
+
+/// Parsed `rope_scaling` block from a Llama-family `config.json`.
+///
+/// Variants intentionally narrow: only the schemas Atenia knows how
+/// to honour at runtime are accepted. Future scaling families
+/// (`"yarn"`, `"longrope"`, ...) are added as new variants when we
+/// add support, not parsed-but-ignored.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RopeScaling {
+    /// Llama 3 piecewise inverse-frequency scaling (Llama 3.1, 3.2,
+    /// 3.3). Algorithm: see
+    /// `huggingface/transformers::modeling_rope_utils::_compute_llama3_parameters`.
+    Llama3 {
+        /// Long-context expansion factor (32.0 for Llama 3.2).
+        factor: f32,
+        /// Lower-bound frequency multiplier; controls where the
+        /// smooth-interp band ends on the short-wavelength side.
+        low_freq_factor: f32,
+        /// Upper-bound frequency multiplier; mirrors
+        /// `low_freq_factor` on the long-wavelength side.
+        high_freq_factor: f32,
+        /// Pre-training context length used as the wavelength
+        /// reference (8192 for Llama 3.2).
+        original_max_position_embeddings: u32,
+    },
 }
 
 /// Errors that can arise while loading or validating a Llama-family config.
@@ -148,6 +186,94 @@ fn get_optional_string(v: &Value, key: &str) -> Result<Option<String>, ConfigErr
     }
 }
 
+fn get_optional_usize(v: &Value, key: &str) -> Result<Option<usize>, ConfigError> {
+    match v.get(key) {
+        None => Ok(None),
+        Some(Value::Null) => Ok(None),
+        Some(other) => other
+            .as_u64()
+            .map(|n| Some(n as usize))
+            .ok_or_else(|| {
+                ConfigError::Parse(format!(
+                    "field `{}` is not a non-negative integer",
+                    key
+                ))
+            }),
+    }
+}
+
+/// Parse the `rope_scaling` JSON object if present and recognised.
+///
+/// Tolerates two field-name conventions for the discriminator:
+/// `"rope_type"` (transformers >=4.43) and `"type"` (legacy /
+/// pre-4.43). Returns `Ok(None)` when the field is missing, JSON
+/// null, or carries an unsupported `rope_type` — Atenia only
+/// recognises `"llama3"` today, so any other value is silently
+/// downgraded to no-scaling rather than failing the whole parse.
+fn get_rope_scaling(v: &Value) -> Result<Option<RopeScaling>, ConfigError> {
+    let block = match v.get("rope_scaling") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(other) => other,
+    };
+    if !block.is_object() {
+        return Err(ConfigError::Parse(
+            "field `rope_scaling` must be a JSON object".into(),
+        ));
+    }
+    // Accept both `rope_type` (modern) and `type` (legacy).
+    let rope_type = block
+        .get("rope_type")
+        .or_else(|| block.get("type"))
+        .and_then(|x| x.as_str());
+    match rope_type {
+        Some("llama3") => {
+            let factor = block
+                .get("factor")
+                .and_then(|x| x.as_f64())
+                .ok_or_else(|| {
+                    ConfigError::Parse(
+                        "rope_scaling.llama3 requires numeric `factor`".into(),
+                    )
+                })? as f32;
+            let low_freq_factor = block
+                .get("low_freq_factor")
+                .and_then(|x| x.as_f64())
+                .ok_or_else(|| {
+                    ConfigError::Parse(
+                        "rope_scaling.llama3 requires numeric `low_freq_factor`".into(),
+                    )
+                })? as f32;
+            let high_freq_factor = block
+                .get("high_freq_factor")
+                .and_then(|x| x.as_f64())
+                .ok_or_else(|| {
+                    ConfigError::Parse(
+                        "rope_scaling.llama3 requires numeric `high_freq_factor`".into(),
+                    )
+                })? as f32;
+            let original_max_position_embeddings = block
+                .get("original_max_position_embeddings")
+                .and_then(|x| x.as_u64())
+                .ok_or_else(|| {
+                    ConfigError::Parse(
+                        "rope_scaling.llama3 requires integer `original_max_position_embeddings`"
+                            .into(),
+                    )
+                })? as u32;
+            Ok(Some(RopeScaling::Llama3 {
+                factor,
+                low_freq_factor,
+                high_freq_factor,
+                original_max_position_embeddings,
+            }))
+        }
+        // Unknown / unsupported scaling — treat as no-scaling.
+        // Future variants (yarn, longrope, dynamic) will land as
+        // explicit branches before this catch-all.
+        _ => Ok(None),
+    }
+}
+
 fn get_optional_u32(v: &Value, key: &str) -> Result<Option<u32>, ConfigError> {
     match v.get(key) {
         None => Ok(None),
@@ -210,6 +336,8 @@ impl LlamaConfig {
             bos_token_id: get_u32(&v, "bos_token_id")?,
             eos_token_id: get_u32(&v, "eos_token_id")?,
             pad_token_id: get_optional_u32(&v, "pad_token_id")?,
+            head_dim: get_optional_usize(&v, "head_dim")?,
+            rope_scaling: get_rope_scaling(&v)?,
         };
         cfg.validate()?;
         Ok(cfg)
@@ -222,8 +350,31 @@ impl LlamaConfig {
     }
 
     /// Per-head dimension: `hidden_size / num_attention_heads`.
+    ///
+    /// Kept for backward compatibility. New call sites should prefer
+    /// [`Self::effective_head_dim`], which honours the explicit
+    /// `head_dim` field set by Llama 3.2 and friends. For all
+    /// Llama-family checkpoints seen so far the two values coincide.
     pub fn head_dim(&self) -> usize {
         self.hidden_size / self.num_attention_heads
+    }
+
+    /// Effective per-head dimension. Explicit `head_dim` from the
+    /// config wins when present; otherwise falls back to
+    /// `hidden_size / num_attention_heads`. Llama 3.2 sets the
+    /// field explicitly, even though the two values agree (64).
+    /// Future architectures (e.g. Phi-3 medium) may decouple them.
+    pub fn effective_head_dim(&self) -> usize {
+        self.head_dim
+            .unwrap_or_else(|| self.hidden_size / self.num_attention_heads)
+    }
+
+    /// Convenience accessor for the parsed `rope_scaling` block.
+    /// Returns `None` for plain-RoPE checkpoints
+    /// (TinyLlama, SmolLM2, Qwen 2.5). Returns `Some(&RopeScaling)`
+    /// for Llama 3.x.
+    pub fn effective_rope_scaling(&self) -> Option<&RopeScaling> {
+        self.rope_scaling.as_ref()
     }
 
     /// K/V heads share the same per-head dimension as Q heads in
