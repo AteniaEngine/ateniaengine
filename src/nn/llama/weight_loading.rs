@@ -23,6 +23,27 @@
 //!   scaling node.
 //! - **`v_proj`**: `[TileGroupedDim, Transpose2D]`. Same GQA
 //!   expansion, no scale (V is not part of the QK product).
+//!
+//! ## Phase B (Qwen 2.5 family) — QKV biases
+//!
+//! Activated when `LlamaConfig::effective_attention_bias()` returns
+//! true (currently: Qwen2 model_type without an explicit
+//! `attention_bias` field). Three additional 1D tensor families
+//! per layer:
+//!
+//! - **`q_proj.bias`** (`[hidden]`): `[Reshape([1, hidden])]`. The
+//!   rank-2 layout matches the same-rank rule of `BroadcastAdd`
+//!   when added to the `[batch*seq, hidden]` projection output.
+//! - **`k_proj.bias`** (`[kv_heads * head_dim]`):
+//!   `[TileGroupedDim, Reshape([1, hidden]), Scale]`. Mirrors the
+//!   K weight transform: GQA expansion to MHA shape, plus the
+//!   `1/sqrt(head_dim)` absorption that eliminates a runtime
+//!   scale. The scale must apply to the bias too so that
+//!   `Q @ (h W_k + b_k)^T / sqrt(d_k)` ≡ `Q @ k_atenia^T` holds
+//!   exactly.
+//! - **`v_proj.bias`** (`[kv_heads * head_dim]`):
+//!   `[TileGroupedDim, Reshape([1, hidden])]`. GQA expansion only;
+//!   V never enters the QK product, so no scale.
 
 use crate::nn::llama::LlamaConfig;
 use crate::v17::loader::loader_errors::LoaderError;
@@ -124,6 +145,43 @@ pub fn compute_transforms_for_name(
         || name == "lm_head.weight"
     {
         return vec![LoadTransform::Transpose2D];
+    }
+
+    // ---- QKV biases (Qwen 2.5 family) -----------------------------
+    // Order matters: the K bias mirrors the K weight pipeline so
+    // that `Q @ k_atenia^T` reproduces PyTorch's
+    // `Q @ (h W_k + b_k)^T / sqrt(d_k)` exactly.
+    if name.contains(".self_attn.k_proj.bias") {
+        return vec![
+            LoadTransform::TileGroupedDim {
+                dim: 0,
+                group_size: head_dim,
+                repeats: kv_groups,
+            },
+            LoadTransform::Reshape {
+                target: vec![1, hidden_size],
+            },
+            LoadTransform::Scale {
+                factor: attention_scale,
+            },
+        ];
+    }
+    if name.contains(".self_attn.v_proj.bias") {
+        return vec![
+            LoadTransform::TileGroupedDim {
+                dim: 0,
+                group_size: head_dim,
+                repeats: kv_groups,
+            },
+            LoadTransform::Reshape {
+                target: vec![1, hidden_size],
+            },
+        ];
+    }
+    if name.contains(".self_attn.q_proj.bias") {
+        return vec![LoadTransform::Reshape {
+            target: vec![1, hidden_size],
+        }];
     }
 
     // Defensive default — unknown name gets identity. The mapper

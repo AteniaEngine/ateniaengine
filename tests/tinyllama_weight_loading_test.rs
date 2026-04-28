@@ -306,6 +306,42 @@ fn llama_weight_mapper_dispatches_each_name_correctly() {
             vec![LoadTransform::Transpose2D],
         ),
         ("lm_head.weight", vec![LoadTransform::Transpose2D]),
+        // Phase B (Qwen 2.5 family) — QKV biases. The dispatch is
+        // purely name-based, so TinyLlama's hidden/head_dim/kv_groups
+        // exercise it just as well as Qwen's would.
+        (
+            "model.layers.0.self_attn.q_proj.bias",
+            vec![LoadTransform::Reshape {
+                target: vec![1, hidden],
+            }],
+        ),
+        (
+            "model.layers.0.self_attn.k_proj.bias",
+            vec![
+                LoadTransform::TileGroupedDim {
+                    dim: 0,
+                    group_size: head_dim,
+                    repeats: kv_groups,
+                },
+                LoadTransform::Reshape {
+                    target: vec![1, hidden],
+                },
+                LoadTransform::Scale { factor: scale },
+            ],
+        ),
+        (
+            "model.layers.27.self_attn.v_proj.bias",
+            vec![
+                LoadTransform::TileGroupedDim {
+                    dim: 0,
+                    group_size: head_dim,
+                    repeats: kv_groups,
+                },
+                LoadTransform::Reshape {
+                    target: vec![1, hidden],
+                },
+            ],
+        ),
     ];
 
     for (name, expected) in cases {
