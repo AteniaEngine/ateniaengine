@@ -3064,16 +3064,26 @@ impl Graph {
             NodeType::BatchMatMul => {
                 let inputs = self.nodes[node_id].inputs.clone();
                 assert_eq!(inputs.len(), 2, "BatchMatMul expects two inputs");
-                let a = self.nodes[inputs[0]]
+                let mut a = self.nodes[inputs[0]]
                     .output
                     .as_ref()
                     .expect("BatchMatMul missing input A")
                     .clone();
-                let b = self.nodes[inputs[1]]
+                let mut b = self.nodes[inputs[1]]
                     .output
                     .as_ref()
                     .expect("BatchMatMul missing input B")
                     .clone();
+
+                // M4.7.2.c + M4.7.3.b: decode-on-access that preserves
+                // GPU residency. `ensure_decoded` materialises BF16 →
+                // F32 and Disk → F32 on the clone, but leaves Cuda
+                // residency intact so `cuda_batch_matmul`'s `all_cuda`
+                // dispatch can consume the operands directly.
+                a.ensure_decoded()
+                    .expect("BatchMatMul: BF16/Disk → Cpu materialisation failed for operand A");
+                b.ensure_decoded()
+                    .expect("BatchMatMul: BF16/Disk → Cpu materialisation failed for operand B");
 
                 let rank = a.shape.len();
                 assert!(
@@ -3110,18 +3120,97 @@ impl Graph {
                     (outer, m, k, n, vec![a.shape[0], a.shape[1], m, n])
                 };
 
-                let mut out = Tensor::with_layout(
-                    output_shape,
-                    0.0,
-                    a.device,
-                    Layout::Contiguous,
-                    a.dtype,
+                // M4.7.3.b: when both operands live on VRAM, allocate
+                // the output directly in VRAM so the kernel writes in
+                // place and the result stays GPU-resident for the next
+                // op. Otherwise allocate a host buffer like before.
+                let both_cuda = matches!(
+                    (&a.storage, &b.storage),
+                    (TensorStorage::Cuda(_), TensorStorage::Cuda(_))
                 );
+                let mut out = if both_cuda {
+                    match Tensor::zeros_new_cuda(&output_shape) {
+                        Ok(t) => t,
+                        Err(_) => Tensor::with_layout(
+                            output_shape.clone(),
+                            0.0,
+                            a.device,
+                            Layout::Contiguous,
+                            a.dtype,
+                        ),
+                    }
+                } else {
+                    Tensor::with_layout(
+                        output_shape,
+                        0.0,
+                        a.device,
+                        Layout::Contiguous,
+                        a.dtype,
+                    )
+                };
 
                 // APX 5.4: timing measurement for BatchMatMul (CPU/GPU) for
                 // collecting adaptive statistics.
                 let start_time = Instant::now();
                 let device_chosen;
+
+                // M4.7.3.b: residency short-circuit. When all three
+                // tensors are Cuda we route directly to the
+                // device-pointer dispatch regardless of the kernel
+                // planner's target — uploading is already paid and
+                // running CPU here would force a pointless download.
+                // Mirrors the early-return in MatMul that consults
+                // `try_gpu_matmul` before the planner-target switch.
+                if both_cuda
+                    && matches!(out.storage, TensorStorage::Cuda(_))
+                    && crate::cuda::cuda_available()
+                {
+                    dispatch_batch_matmul_cuda(&a, &b, &mut out, batch, m, k, n);
+                    let device_chosen_resident = DeviceTarget::GPU;
+
+                    if is_54 {
+                        let duration_us = start_time.elapsed().as_micros() as u64;
+                        if let Some(ref info) = node_exec_info_5x {
+                            let sample = Sample {
+                                op_name: info.op_name.clone(),
+                                shape: info.shape.clone(),
+                                dtype: match info.dtype.as_str() {
+                                    "F16" => crate::tensor::DType::F16,
+                                    "BF16" => crate::tensor::DType::BF16,
+                                    "FP8" => crate::tensor::DType::FP8,
+                                    _ => crate::tensor::DType::F32,
+                                },
+                                device_chosen: device_chosen_resident,
+                                duration_us,
+                                vram_before: 0,
+                                vram_after: 0,
+                                fallback: false,
+                            };
+                            let sel_mutex = crate::global_adaptive_selector();
+                            if let Ok(mut sel) = sel_mutex.lock() {
+                                sel.register_sample(sample);
+                            }
+                        }
+                    }
+
+                    self.nodes[node_id].set_output(out.clone());
+
+                    if record_tape {
+                        let op_inputs = inputs.clone();
+                        self.tape.push(BackOp {
+                            inputs: op_inputs.clone(),
+                            output: node_id,
+                            backward: Box::new(move |store, forward_inputs, out_grad| {
+                                let a = forward_inputs[0];
+                                let b = forward_inputs[1];
+                                let (grad_a, grad_b) = batch_matmul_backward(a, b, out_grad);
+                                add_to_grad_slice(store, op_inputs[0], &grad_a);
+                                add_to_grad_slice(store, op_inputs[1], &grad_b);
+                            }),
+                        });
+                    }
+                    return;
+                }
 
                 // Target selection via APX 5.2 (KernelPlanner) already computed
                 // in 'plan'. We use the same mapping logic as in MatMul.
