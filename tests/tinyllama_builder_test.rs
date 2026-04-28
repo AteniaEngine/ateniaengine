@@ -1,4 +1,4 @@
-//! Tests for `build_tinyllama` (M4.5-b1 Paso 3.1).
+//! Tests for `build_tinyllama` (M4.5-b1 Paso 3.1, extended in M4.6 A.1).
 //!
 //! Coverage:
 //!   1. Tiny config builds without panic.
@@ -7,6 +7,10 @@
 //!   4. Per-parameter shape sanity.
 //!   5. Tiny-config forward smoke test (no numerical validation).
 //!   6. Full TinyLlama config builds and validates without execution.
+//!   7. Tied-embeddings tiny config builds without panic (M4.6 A.1).
+//!   8. Tied-embeddings excludes `lm_head.weight` from the parameter list (M4.6 A.1).
+//!   9. Tied-embeddings forward smoke (M4.6 A.1).
+//!   10. TinyLlama baseline (`tie_word_embeddings=false`) regression intact.
 
 use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::nn::tinyllama::{
@@ -59,6 +63,29 @@ fn tiny_config() -> TinyLlamaConfig {
         }"#,
     )
     .expect("tiny config must parse")
+}
+
+/// Same as `tiny_config()` but with `tie_word_embeddings` flipped on.
+/// Used by the M4.6 A.1 tied-embeddings tests.
+fn tiny_config_tied() -> TinyLlamaConfig {
+    TinyLlamaConfig::from_json_str(
+        r#"{
+          "vocab_size": 100,
+          "hidden_size": 64,
+          "num_hidden_layers": 1,
+          "num_attention_heads": 4,
+          "num_key_value_heads": 2,
+          "intermediate_size": 128,
+          "max_position_embeddings": 32,
+          "rope_theta": 10000.0,
+          "rms_norm_eps": 1e-5,
+          "tie_word_embeddings": true,
+          "attention_bias": false,
+          "bos_token_id": 0,
+          "eos_token_id": 1
+        }"#,
+    )
+    .expect("tiny tied config must parse")
 }
 
 fn build_with(
@@ -224,4 +251,102 @@ fn build_full_tinyllama_no_execute_validates_and_exposes_handles() {
     // activations on the order of ~1.1 GB and dominate test runtime.
     assert_eq!(handles.param_names.len(), 201);
     assert!(handles.param_ids.iter().all(|&id| id > 0));
+}
+
+// ---------------------------------------------------------------------------
+// M4.6 Phase A.1 — tied word embeddings
+// ---------------------------------------------------------------------------
+
+#[test]
+fn build_with_tied_embeddings_does_not_panic() {
+    let cfg = tiny_config_tied();
+    let runtime = TinyLlamaRuntime { batch: 1, seq: 4 };
+    let (_graph, handles) = build_with(&cfg, runtime);
+
+    assert_eq!(
+        handles.param_names.len(),
+        handles.param_ids.len(),
+        "param_names and param_ids must remain index-aligned with tied embeddings"
+    );
+    // Tied: 1 (embed) + 1 layer × 9 + 1 (final norm) = 11
+    // (No separate `lm_head.weight` parameter is registered.)
+    assert_eq!(handles.param_names.len(), 11);
+}
+
+#[test]
+fn tied_embeddings_excludes_lm_head_weight_from_param_list() {
+    let runtime = TinyLlamaRuntime { batch: 1, seq: 4 };
+
+    let (_g_tied, h_tied) = build_with(&tiny_config_tied(), runtime);
+    let (_g_untied, h_untied) = build_with(&tiny_config(), runtime);
+
+    // The only structural delta is the absence of `lm_head.weight`.
+    assert_eq!(
+        h_untied.param_names.len(),
+        h_tied.param_names.len() + 1,
+        "untied build should have exactly one extra parameter (lm_head.weight)"
+    );
+
+    let untied_names: Vec<&str> = h_untied.param_names.iter().map(|s| s.as_str()).collect();
+    let tied_names: Vec<&str> = h_tied.param_names.iter().map(|s| s.as_str()).collect();
+
+    assert!(
+        untied_names.contains(&"lm_head.weight"),
+        "untied build must register lm_head.weight"
+    );
+    assert!(
+        !tied_names.contains(&"lm_head.weight"),
+        "tied build must NOT register lm_head.weight (reuses embed_tokens)"
+    );
+
+    // All other names must match between the two builds.
+    let untied_other: std::collections::HashSet<&str> = untied_names
+        .iter()
+        .copied()
+        .filter(|n| *n != "lm_head.weight")
+        .collect();
+    let tied_set: std::collections::HashSet<&str> = tied_names.iter().copied().collect();
+    assert_eq!(
+        untied_other, tied_set,
+        "non-lm_head parameter names must be identical between tied and untied builds"
+    );
+}
+
+#[test]
+fn tied_embeddings_forward_smoke() {
+    let cfg = tiny_config_tied();
+    let runtime = TinyLlamaRuntime { batch: 1, seq: 4 };
+    let (mut graph, _handles) = build_with(&cfg, runtime);
+
+    let tokens = Tensor::new_cpu(vec![1, 4], vec![1.0_f32, 2.0, 3.0, 4.0]);
+    let outputs = graph.execute(vec![tokens]);
+    assert_eq!(outputs.len(), 1, "expected one Output (logits)");
+
+    let logits = &outputs[0];
+    assert_eq!(
+        logits.shape,
+        vec![1, 4, cfg.vocab_size],
+        "tied logits shape must match (batch, seq, vocab)"
+    );
+    for &v in logits.as_cpu_slice() {
+        assert!(v.is_finite(), "non-finite logit produced under tied embeddings: {}", v);
+    }
+}
+
+#[test]
+fn tinyllama_baseline_untied_still_produces_201_params() {
+    // Regression: the M4.5 baseline (TinyLlama 1.1B, tie_word_embeddings=false)
+    // must continue to register the same 201 parameters with the same names.
+    let cfg = TinyLlamaConfig::from_json_str(TINYLLAMA_CONFIG_JSON).unwrap();
+    let runtime = TinyLlamaRuntime { batch: 1, seq: 4 };
+    let (_graph, handles) = build_with(&cfg, runtime);
+
+    assert_eq!(handles.param_names.len(), 201, "TinyLlama param count regression");
+    assert!(
+        handles
+            .param_names
+            .iter()
+            .any(|n| n == "lm_head.weight"),
+        "TinyLlama untied baseline must still register lm_head.weight"
+    );
 }

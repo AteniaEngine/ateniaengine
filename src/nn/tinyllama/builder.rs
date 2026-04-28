@@ -315,16 +315,47 @@ pub fn build_tinyllama(
     let x_final = gb.broadcast_mul(x_normed, final_ln_gamma);
 
     // ---- LM head ----
-    let lm_head_w = register_param_named(
-        gb,
-        "lm_head.weight",
-        vec![config.hidden_size, config.vocab_size],
-        &mut param_ids,
-        &mut param_names,
-    );
+    //
+    // When `config.tie_word_embeddings == true`, the LM head reuses the
+    // `embed_tokens` weight matrix transposed, instead of having its own
+    // Parameter. This is standard practice in modern Llama-family models
+    // (Llama 3.2, Qwen 2.5, SmolLM2, ...) and matches HuggingFace's
+    // behavior of NOT storing a separate `lm_head.weight` in the
+    // safetensors checkpoint when tied.
+    //
+    // Approach: insert a `Transpose2D` node in the graph that converts
+    // `embed_w` from `[vocab, hidden]` to `[hidden, vocab]` at execution
+    // time, then matmul against the normalized hidden state. This avoids
+    // duplicating the weight in memory.
+    //
+    // Performance note: `Transpose2D` performs a data copy of size
+    // `vocab × hidden` floats per forward pass. For TinyLlama
+    // (`vocab=32000, hidden=2048`) this is ~256 MB. For models with
+    // larger vocabularies (Llama 3.2: 128256, Qwen 2.5: 151936) the cost
+    // grows accordingly. Acceptable for M4.6 forward-only validation;
+    // future optimization (e.g., transpose-free matmul via operand
+    // swapping) is a known follow-up.
     let bs = (runtime.batch * runtime.seq) as isize;
     let x_flat = gb.reshape(x_final, vec![bs, config.hidden_size as isize]);
-    let logits_flat = gb.matmul(x_flat, lm_head_w);
+
+    let lm_head_input = if config.tie_word_embeddings {
+        // Reuse `embed_w` as the transposed lm_head weight. After
+        // Transpose2D the shape is `[hidden, vocab]` — exactly what a
+        // separate `lm_head.weight` parameter would have after the
+        // `LoadTransform::Transpose2D` applied at load time.
+        gb.transpose_2d(embed_w)
+    } else {
+        // Register a dedicated `lm_head.weight` Parameter.
+        register_param_named(
+            gb,
+            "lm_head.weight",
+            vec![config.hidden_size, config.vocab_size],
+            &mut param_ids,
+            &mut param_names,
+        )
+    };
+
+    let logits_flat = gb.matmul(x_flat, lm_head_input);
     let logits = gb.reshape(
         logits_flat,
         vec![

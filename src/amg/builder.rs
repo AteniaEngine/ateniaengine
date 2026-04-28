@@ -65,6 +65,11 @@ impl GraphBuilder {
         self.add_node(NodeType::TransposeLastTwo, vec![src])
     }
 
+    /// 2D matrix transpose: `[a, b] -> [b, a]`. Input must be rank 2.
+    pub fn transpose_2d(&mut self, src: usize) -> usize {
+        self.add_node(NodeType::Transpose2D, vec![src])
+    }
+
     /// Permute a tensor's dimensions according to `perm` (general
     /// transpose). See [`NodeType::Permute`] for details and shape
     /// constraints on `perm`.
