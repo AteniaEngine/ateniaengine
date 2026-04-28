@@ -19,8 +19,8 @@
 //! forward of ~70 s; release should drop that into the low seconds.
 
 use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::nn::tinyllama::{
-    build_tinyllama, tinyllama_weight_mapper, TinyLlamaConfig, TinyLlamaRuntime,
+use atenia_engine::nn::llama::{
+    build_llama, llama_weight_mapper, LlamaConfig, LlamaRuntime,
 };
 use atenia_engine::tensor::Tensor;
 use atenia_engine::v17::loader::safetensors_reader::SafetensorsReader;
@@ -102,13 +102,13 @@ fn tinyllama_logits_match_pytorch_reference() {
     let path = env::var("TINYLLAMA_SAFETENSORS_PATH")
         .expect("Set TINYLLAMA_SAFETENSORS_PATH to TinyLlama model.safetensors");
 
-    let config = TinyLlamaConfig::from_json_str(EMBEDDED_CONFIG)
+    let config = LlamaConfig::from_json_str(EMBEDDED_CONFIG)
         .expect("failed to parse embedded TinyLlama config");
-    let runtime = TinyLlamaRuntime { batch: 1, seq: seq_len };
+    let runtime = LlamaRuntime { batch: 1, seq: seq_len };
 
     let mut gb = GraphBuilder::new();
     let token_input_id = gb.input();
-    let handles = build_tinyllama(&mut gb, &config, &runtime, token_input_id);
+    let handles = build_llama(&mut gb, &config, &runtime, token_input_id);
     let _ = gb.output(handles.logits_id);
     let mut graph = gb.build();
     assert_eq!(handles.param_ids.len(), 201);
@@ -116,7 +116,7 @@ fn tinyllama_logits_match_pytorch_reference() {
     println!("\nLoading weights...");
     let load_start = std::time::Instant::now();
     let reader = SafetensorsReader::open(Path::new(&path)).expect("open safetensors");
-    let mapper = tinyllama_weight_mapper(&config, &handles.param_names, &handles.param_ids)
+    let mapper = llama_weight_mapper(&config, &handles.param_names, &handles.param_ids)
         .expect("build mapper");
     let report = mapper.load_into(&mut graph, &reader).expect("load_into");
     drop(reader);

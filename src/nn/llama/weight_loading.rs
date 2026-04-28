@@ -1,7 +1,8 @@
-//! TinyLlama-specific WeightMapper builder.
+//! Llama-family WeightMapper builder.
 //!
 //! Encapsulates the per-tensor transform list needed to load a
-//! HuggingFace TinyLlama / Llama-family checkpoint into an Atenia
+//! HuggingFace Llama-family checkpoint (TinyLlama, SmolLM2,
+//! Llama 3.x, Qwen 2.5, ...) into an Atenia
 //! graph. The builder graph layer (M4.5-b1, Paso 3) registers
 //! parameters with the names this helper expects; this helper does
 //! not touch the graph itself.
@@ -23,11 +24,11 @@
 //! - **`v_proj`**: `[TileGroupedDim, Transpose2D]`. Same GQA
 //!   expansion, no scale (V is not part of the QK product).
 
-use crate::nn::tinyllama::TinyLlamaConfig;
+use crate::nn::llama::LlamaConfig;
 use crate::v17::loader::loader_errors::LoaderError;
 use crate::v17::loader::weight_mapper::{LoadTransform, WeightMapper};
 
-/// Build a `WeightMapper` pre-configured for a TinyLlama-style
+/// Build a `WeightMapper` pre-configured for a Llama-family
 /// HuggingFace checkpoint. The caller supplies the parameter
 /// names/ids produced by the graph builder; this function attaches
 /// the appropriate transforms by inspecting each name.
@@ -37,8 +38,8 @@ use crate::v17::loader::weight_mapper::{LoadTransform, WeightMapper};
 /// caller bug). Unknown parameter names get an empty transform list
 /// (defensive default), so the mapper is permissive about extra
 /// names that future architectures may add.
-pub fn tinyllama_weight_mapper(
-    config: &TinyLlamaConfig,
+pub fn llama_weight_mapper(
+    config: &LlamaConfig,
     param_names: &[String],
     param_ids: &[usize],
 ) -> Result<WeightMapper, LoaderError> {
@@ -69,7 +70,7 @@ pub fn tinyllama_weight_mapper(
 
 /// Compute the transform list for a single HF parameter name.
 /// `pub` so integration tests can verify the per-name dispatch
-/// directly without going through `tinyllama_weight_mapper`.
+/// directly without going through `llama_weight_mapper`.
 pub fn compute_transforms_for_name(
     name: &str,
     hidden_size: usize,

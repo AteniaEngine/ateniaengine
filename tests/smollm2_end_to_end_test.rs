@@ -17,8 +17,8 @@
 //! ```
 
 use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::nn::tinyllama::{
-    build_tinyllama, tinyllama_weight_mapper, TinyLlamaConfig, TinyLlamaRuntime,
+use atenia_engine::nn::llama::{
+    build_llama, llama_weight_mapper, LlamaConfig, LlamaRuntime,
 };
 use atenia_engine::tensor::Tensor;
 use atenia_engine::v17::loader::safetensors_reader::SafetensorsReader;
@@ -63,7 +63,7 @@ fn smollm2_loads_and_executes_forward_with_real_weights() {
         .expect("Set SMOLLM2_SAFETENSORS_PATH to model.safetensors");
     println!("Loading from: {}", path);
 
-    let config = TinyLlamaConfig::from_json_str(EMBEDDED_SMOLLM2_CONFIG)
+    let config = LlamaConfig::from_json_str(EMBEDDED_SMOLLM2_CONFIG)
         .expect("failed to parse embedded SmolLM2 config");
     println!(
         "Config: vocab={} hidden={} layers={} heads={} kv_heads={} \
@@ -78,13 +78,13 @@ fn smollm2_loads_and_executes_forward_with_real_weights() {
         config.tie_word_embeddings,
     );
 
-    let runtime = TinyLlamaRuntime { batch: 1, seq: 4 };
+    let runtime = LlamaRuntime { batch: 1, seq: 4 };
     println!("Runtime: batch={} seq={}", runtime.batch, runtime.seq);
 
     let build_start = std::time::Instant::now();
     let mut gb = GraphBuilder::new();
     let token_input_id = gb.input();
-    let handles = build_tinyllama(&mut gb, &config, &runtime, token_input_id);
+    let handles = build_llama(&mut gb, &config, &runtime, token_input_id);
     let _ = gb.output(handles.logits_id);
     let mut graph = gb.build();
     println!(
@@ -115,7 +115,7 @@ fn smollm2_loads_and_executes_forward_with_real_weights() {
         reader.iter().count()
     );
 
-    let mapper = tinyllama_weight_mapper(&config, &handles.param_names, &handles.param_ids)
+    let mapper = llama_weight_mapper(&config, &handles.param_names, &handles.param_ids)
         .expect("failed to build weight mapper");
 
     println!("Loading weights into graph...");

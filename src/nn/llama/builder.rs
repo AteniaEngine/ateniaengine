@@ -1,8 +1,8 @@
-//! TinyLlama / Llama-family graph builder (M4.5-b1, Paso 3).
+//! Llama-family graph builder (M4.5-b1, Paso 3).
 //!
 //! Constructs the full Llama-family inference graph from a
-//! [`TinyLlamaConfig`] (mirroring the HF `config.json`) and a
-//! [`TinyLlamaRuntime`] (concrete batch and seq for the run).
+//! [`LlamaConfig`] (mirroring the HF `config.json`) and a
+//! [`LlamaRuntime`] (concrete batch and seq for the run).
 //!
 //! ## Architecture
 //! ```text
@@ -42,24 +42,24 @@
 //!
 //! ## GQA via load-time tile (no graph cost)
 //! K/V projections are tiled by `kv_groups` at load time
-//! (see [`crate::nn::tinyllama::weight_loading`]), so this graph
+//! (see [`crate::nn::llama::weight_loading`]), so this graph
 //! sees pure 32-head MHA. KV-shared attention is M5+.
 
 use crate::amg::builder::GraphBuilder;
-use crate::nn::tinyllama::config::TinyLlamaConfig;
+use crate::nn::llama::config::LlamaConfig;
 use crate::tensor::Tensor;
 
 /// Concrete runtime dimensions for graph construction. Different
 /// `(batch, seq)` combinations require rebuilding the graph.
 #[derive(Debug, Clone, Copy)]
-pub struct TinyLlamaRuntime {
+pub struct LlamaRuntime {
     pub batch: usize,
     pub seq: usize,
 }
 
-/// Handles produced by [`build_tinyllama`] for downstream
+/// Handles produced by [`build_llama`] for downstream
 /// integration with [`crate::v17::loader::weight_mapper::WeightMapper`].
-pub struct TinyLlamaHandles {
+pub struct LlamaHandles {
     pub token_input_id: usize,
     pub logits_id: usize,
     /// Index-aligned with [`Self::param_names`].
@@ -92,8 +92,8 @@ fn build_transformer_block_llama(
     layer_idx: usize,
     x: usize,
     causal_mask_id: usize,
-    config: &TinyLlamaConfig,
-    runtime: &TinyLlamaRuntime,
+    config: &LlamaConfig,
+    runtime: &LlamaRuntime,
     param_ids: &mut Vec<usize>,
     param_names: &mut Vec<String>,
 ) -> usize {
@@ -250,17 +250,18 @@ fn build_transformer_block_llama(
     gb.add(x_residual_1, ffn_out)
 }
 
-/// Build the complete TinyLlama / Llama-family graph.
+/// Build the complete Llama-family graph.
 ///
 /// `token_input_id` must be a previously-registered `Input` of
 /// shape `[batch, seq]` containing token IDs as f32.
-pub fn build_tinyllama(
+pub fn build_llama(
     gb: &mut GraphBuilder,
-    config: &TinyLlamaConfig,
-    runtime: &TinyLlamaRuntime,
+    config: &LlamaConfig,
+    runtime: &LlamaRuntime,
     token_input_id: usize,
-) -> TinyLlamaHandles {
-    config.validate().expect("invalid TinyLlamaConfig");
+) -> LlamaHandles {
+    config.validate().expect("invalid LlamaConfig");
+
 
     let mut param_ids: Vec<usize> = Vec::new();
     let mut param_names: Vec<String> = Vec::new();
@@ -365,7 +366,7 @@ pub fn build_tinyllama(
         ],
     );
 
-    TinyLlamaHandles {
+    LlamaHandles {
         token_input_id,
         logits_id: logits,
         param_ids,

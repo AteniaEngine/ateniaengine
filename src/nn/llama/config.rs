@@ -1,5 +1,7 @@
-//! Parsing, validation, and derived helpers for a TinyLlama / Llama-family
-//! `config.json` (HuggingFace convention).
+//! Parsing, validation, and derived helpers for a Llama-family
+//! `config.json` (HuggingFace convention). Covers TinyLlama 1.1B,
+//! SmolLM2, Llama 3.x, Qwen 2.5, and other `LlamaForCausalLM`
+//! variants.
 //!
 //! Scope (M4.5-b1, Paso 1): only the fields actually consumed by the
 //! graph builder land here. Tokenizer-only and training-only fields
@@ -15,13 +17,13 @@ use std::path::Path;
 
 use serde_json::Value;
 
-/// Configuration for a TinyLlama / Llama-family model.
+/// Configuration for a Llama-family model.
 ///
 /// Constructed from a HuggingFace `config.json` via
-/// [`TinyLlamaConfig::from_json_file`] or
-/// [`TinyLlamaConfig::from_json_str`].
+/// [`LlamaConfig::from_json_file`] or
+/// [`LlamaConfig::from_json_str`].
 #[derive(Clone, Debug, PartialEq)]
-pub struct TinyLlamaConfig {
+pub struct LlamaConfig {
     pub vocab_size: usize,
     pub hidden_size: usize,
     pub num_hidden_layers: usize,
@@ -50,7 +52,7 @@ pub struct TinyLlamaConfig {
     pub pad_token_id: Option<u32>,
 }
 
-/// Errors that can arise while loading or validating a TinyLlama config.
+/// Errors that can arise while loading or validating a Llama-family config.
 #[derive(Debug)]
 pub enum ConfigError {
     /// The config file could not be read from disk.
@@ -157,13 +159,13 @@ fn get_rope_theta(v: &Value) -> Result<u32, ConfigError> {
 
 // --- impl ----------------------------------------------------------------
 
-impl TinyLlamaConfig {
+impl LlamaConfig {
     /// Parse from a JSON string. Validates after parsing.
     pub fn from_json_str(s: &str) -> Result<Self, ConfigError> {
         let v: Value = serde_json::from_str(s)
             .map_err(|e| ConfigError::Parse(format!("JSON syntax error: {}", e)))?;
 
-        let cfg = TinyLlamaConfig {
+        let cfg = LlamaConfig {
             vocab_size: get_usize(&v, "vocab_size")?,
             hidden_size: get_usize(&v, "hidden_size")?,
             num_hidden_layers: get_usize(&v, "num_hidden_layers")?,

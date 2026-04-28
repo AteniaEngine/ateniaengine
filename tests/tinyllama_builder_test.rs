@@ -1,4 +1,4 @@
-//! Tests for `build_tinyllama` (M4.5-b1 Paso 3.1, extended in M4.6 A.1).
+//! Tests for `build_llama` (M4.5-b1 Paso 3.1, extended in M4.6 A.1).
 //!
 //! Coverage:
 //!   1. Tiny config builds without panic.
@@ -13,8 +13,8 @@
 //!   10. TinyLlama baseline (`tie_word_embeddings=false`) regression intact.
 
 use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::nn::tinyllama::{
-    build_tinyllama, TinyLlamaConfig, TinyLlamaHandles, TinyLlamaRuntime,
+use atenia_engine::nn::llama::{
+    build_llama, LlamaConfig, LlamaHandles, LlamaRuntime,
 };
 use atenia_engine::tensor::Tensor;
 
@@ -44,8 +44,8 @@ const TINYLLAMA_CONFIG_JSON: &str = r#"{
 }"#;
 
 /// A small but architecturally faithful config for fast tests.
-fn tiny_config() -> TinyLlamaConfig {
-    TinyLlamaConfig::from_json_str(
+fn tiny_config() -> LlamaConfig {
+    LlamaConfig::from_json_str(
         r#"{
           "vocab_size": 100,
           "hidden_size": 64,
@@ -67,8 +67,8 @@ fn tiny_config() -> TinyLlamaConfig {
 
 /// Same as `tiny_config()` but with `tie_word_embeddings` flipped on.
 /// Used by the M4.6 A.1 tied-embeddings tests.
-fn tiny_config_tied() -> TinyLlamaConfig {
-    TinyLlamaConfig::from_json_str(
+fn tiny_config_tied() -> LlamaConfig {
+    LlamaConfig::from_json_str(
         r#"{
           "vocab_size": 100,
           "hidden_size": 64,
@@ -89,12 +89,12 @@ fn tiny_config_tied() -> TinyLlamaConfig {
 }
 
 fn build_with(
-    cfg: &TinyLlamaConfig,
-    runtime: TinyLlamaRuntime,
-) -> (atenia_engine::amg::graph::Graph, TinyLlamaHandles) {
+    cfg: &LlamaConfig,
+    runtime: LlamaRuntime,
+) -> (atenia_engine::amg::graph::Graph, LlamaHandles) {
     let mut gb = GraphBuilder::new();
     let token_input_id = gb.input();
-    let handles = build_tinyllama(&mut gb, cfg, &runtime, token_input_id);
+    let handles = build_llama(&mut gb, cfg, &runtime, token_input_id);
     let _ = gb.output(handles.logits_id);
     (gb.build(), handles)
 }
@@ -102,7 +102,7 @@ fn build_with(
 #[test]
 fn build_tiny_config_does_not_panic_and_aligns_param_lists() {
     let cfg = tiny_config();
-    let runtime = TinyLlamaRuntime { batch: 1, seq: 4 };
+    let runtime = LlamaRuntime { batch: 1, seq: 4 };
     let (_graph, handles) = build_with(&cfg, runtime);
 
     assert_eq!(
@@ -117,8 +117,8 @@ fn build_tiny_config_does_not_panic_and_aligns_param_lists() {
 
 #[test]
 fn build_full_tinyllama_yields_201_parameters() {
-    let cfg = TinyLlamaConfig::from_json_str(TINYLLAMA_CONFIG_JSON).unwrap();
-    let runtime = TinyLlamaRuntime { batch: 1, seq: 4 };
+    let cfg = LlamaConfig::from_json_str(TINYLLAMA_CONFIG_JSON).unwrap();
+    let runtime = LlamaRuntime { batch: 1, seq: 4 };
     let (_graph, handles) = build_with(&cfg, runtime);
     // 1 + 22 × 9 + 1 + 1 = 201
     assert_eq!(handles.param_names.len(), 201);
@@ -127,8 +127,8 @@ fn build_full_tinyllama_yields_201_parameters() {
 
 #[test]
 fn param_names_match_huggingface_convention() {
-    let cfg = TinyLlamaConfig::from_json_str(TINYLLAMA_CONFIG_JSON).unwrap();
-    let runtime = TinyLlamaRuntime { batch: 1, seq: 4 };
+    let cfg = LlamaConfig::from_json_str(TINYLLAMA_CONFIG_JSON).unwrap();
+    let runtime = LlamaRuntime { batch: 1, seq: 4 };
     let (_graph, handles) = build_with(&cfg, runtime);
 
     let names: Vec<&str> = handles.param_names.iter().map(|s| s.as_str()).collect();
@@ -168,8 +168,8 @@ fn param_names_match_huggingface_convention() {
 
 #[test]
 fn param_shapes_match_expected_post_transform_layouts() {
-    let cfg = TinyLlamaConfig::from_json_str(TINYLLAMA_CONFIG_JSON).unwrap();
-    let runtime = TinyLlamaRuntime { batch: 1, seq: 4 };
+    let cfg = LlamaConfig::from_json_str(TINYLLAMA_CONFIG_JSON).unwrap();
+    let runtime = LlamaRuntime { batch: 1, seq: 4 };
     let (graph, handles) = build_with(&cfg, runtime);
 
     let lookup = |name: &str| -> &Tensor {
@@ -215,7 +215,7 @@ fn param_shapes_match_expected_post_transform_layouts() {
 #[test]
 fn build_tiny_executes_forward_smoke() {
     let cfg = tiny_config();
-    let runtime = TinyLlamaRuntime { batch: 1, seq: 4 };
+    let runtime = LlamaRuntime { batch: 1, seq: 4 };
     let (mut graph, _handles) = build_with(&cfg, runtime);
 
     // Token IDs as f32 (Atenia IndexSelect cast convention).
@@ -241,8 +241,8 @@ fn build_tiny_executes_forward_smoke() {
 
 #[test]
 fn build_full_tinyllama_no_execute_validates_and_exposes_handles() {
-    let cfg = TinyLlamaConfig::from_json_str(TINYLLAMA_CONFIG_JSON).unwrap();
-    let runtime = TinyLlamaRuntime { batch: 1, seq: 4 };
+    let cfg = LlamaConfig::from_json_str(TINYLLAMA_CONFIG_JSON).unwrap();
+    let runtime = LlamaRuntime { batch: 1, seq: 4 };
     let (_graph, handles) = build_with(&cfg, runtime);
 
     // Building the full 22-layer graph with zero-initialized weights
@@ -260,7 +260,7 @@ fn build_full_tinyllama_no_execute_validates_and_exposes_handles() {
 #[test]
 fn build_with_tied_embeddings_does_not_panic() {
     let cfg = tiny_config_tied();
-    let runtime = TinyLlamaRuntime { batch: 1, seq: 4 };
+    let runtime = LlamaRuntime { batch: 1, seq: 4 };
     let (_graph, handles) = build_with(&cfg, runtime);
 
     assert_eq!(
@@ -275,7 +275,7 @@ fn build_with_tied_embeddings_does_not_panic() {
 
 #[test]
 fn tied_embeddings_excludes_lm_head_weight_from_param_list() {
-    let runtime = TinyLlamaRuntime { batch: 1, seq: 4 };
+    let runtime = LlamaRuntime { batch: 1, seq: 4 };
 
     let (_g_tied, h_tied) = build_with(&tiny_config_tied(), runtime);
     let (_g_untied, h_untied) = build_with(&tiny_config(), runtime);
@@ -315,7 +315,7 @@ fn tied_embeddings_excludes_lm_head_weight_from_param_list() {
 #[test]
 fn tied_embeddings_forward_smoke() {
     let cfg = tiny_config_tied();
-    let runtime = TinyLlamaRuntime { batch: 1, seq: 4 };
+    let runtime = LlamaRuntime { batch: 1, seq: 4 };
     let (mut graph, _handles) = build_with(&cfg, runtime);
 
     let tokens = Tensor::new_cpu(vec![1, 4], vec![1.0_f32, 2.0, 3.0, 4.0]);
@@ -337,8 +337,8 @@ fn tied_embeddings_forward_smoke() {
 fn tinyllama_baseline_untied_still_produces_201_params() {
     // Regression: the M4.5 baseline (TinyLlama 1.1B, tie_word_embeddings=false)
     // must continue to register the same 201 parameters with the same names.
-    let cfg = TinyLlamaConfig::from_json_str(TINYLLAMA_CONFIG_JSON).unwrap();
-    let runtime = TinyLlamaRuntime { batch: 1, seq: 4 };
+    let cfg = LlamaConfig::from_json_str(TINYLLAMA_CONFIG_JSON).unwrap();
+    let runtime = LlamaRuntime { batch: 1, seq: 4 };
     let (_graph, handles) = build_with(&cfg, runtime);
 
     assert_eq!(handles.param_names.len(), 201, "TinyLlama param count regression");

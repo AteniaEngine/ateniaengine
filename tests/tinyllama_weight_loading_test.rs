@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::nn::tinyllama::weight_loading::compute_transforms_for_name;
-use atenia_engine::nn::tinyllama::{tinyllama_weight_mapper, TinyLlamaConfig};
+use atenia_engine::nn::llama::weight_loading::compute_transforms_for_name;
+use atenia_engine::nn::llama::{llama_weight_mapper, LlamaConfig};
 use atenia_engine::tensor::Tensor;
 use atenia_engine::v17::loader::safetensors_reader::SafetensorsReader;
 use atenia_engine::v17::loader::weight_mapper::{LoadTransform, WeightMapper};
@@ -235,8 +235,8 @@ fn composite_tile_then_transpose_then_scale_matches_manual_computation() {
 // Test 5 — TinyLlama helper produces expected per-name transforms
 // ---------------------------------------------------------------------------
 #[test]
-fn tinyllama_weight_mapper_dispatches_each_name_correctly() {
-    let cfg = TinyLlamaConfig::from_json_str(TINYLLAMA_CONFIG_JSON).unwrap();
+fn llama_weight_mapper_dispatches_each_name_correctly() {
+    let cfg = LlamaConfig::from_json_str(TINYLLAMA_CONFIG_JSON).unwrap();
     let head_dim = cfg.head_dim();
     let kv_groups = cfg.kv_groups();
     let scale = 1.0_f32 / (head_dim as f32).sqrt();
@@ -317,7 +317,7 @@ fn tinyllama_weight_mapper_dispatches_each_name_correctly() {
     // names/ids vec and attaches transforms correctly.
     let names: Vec<String> = cases.iter().map(|c| c.0.to_string()).collect();
     let ids: Vec<usize> = (0..cases.len()).collect();
-    let mapper = tinyllama_weight_mapper(&cfg, &names, &ids).unwrap();
+    let mapper = llama_weight_mapper(&cfg, &names, &ids).unwrap();
     for (name, expected) in cases {
         let entry = mapper.get_mapping(name).expect("entry must exist");
         assert_eq!(entry.transforms, *expected);

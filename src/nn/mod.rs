@@ -5,4 +5,4 @@ pub mod softmax;
 pub mod transformer;
 pub mod mini_flux;
 pub mod rope;
-pub mod tinyllama;
+pub mod llama;
