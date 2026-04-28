@@ -6,4 +6,5 @@ pub mod loader_policy;
 pub mod loader_errors;
 pub mod safetensors_reader;
 pub mod shard_index;
+pub mod sharded_reader;
 pub mod weight_mapper;

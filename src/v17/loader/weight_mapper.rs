@@ -225,14 +225,44 @@ impl WeightMapper {
         graph: &mut Graph,
         reader: &SafetensorsReader,
     ) -> Result<LoadReport, LoaderError> {
+        // Single-shard load: thin wrapper over the per-shard inner
+        // loop. Behaviour is bit-identical to the original M4-c
+        // implementation; the refactor exists so
+        // `ShardedSafetensorsReader` (M4.7.1.b) can reuse the inner
+        // loop across multiple shard files without duplicating the
+        // decode-transform-copy logic.
         let mut report = LoadReport::default();
+        let mut satisfied: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        let outcome = self.load_one_shard_into(graph, reader, &mut satisfied)?;
+        report.loaded = outcome.loaded;
+        report.skipped = outcome.skipped;
+        report.missing = self.collect_missing(&satisfied);
+        Ok(report)
+    }
 
-        let reader_names: std::collections::HashSet<String> =
-            reader.iter().map(|e| e.name.to_string()).collect();
+    /// Per-shard load primitive. Iterates `reader`, decodes each
+    /// tensor, applies transforms, copies into the graph parameter,
+    /// and records every mapper name it satisfied into
+    /// `satisfied_names`. Tensors present in the file but absent
+    /// from the mapper are returned in `ShardLoadOutcome.skipped`;
+    /// the caller aggregates `skipped` across shards.
+    ///
+    /// `satisfied_names` is the cross-shard accumulator that lets
+    /// the sharded driver compute the global `missing` list at the
+    /// end (see [`Self::collect_missing`]). For a single-shard load
+    /// the caller may pass an empty set and discard it.
+    pub fn load_one_shard_into(
+        &self,
+        graph: &mut Graph,
+        reader: &SafetensorsReader,
+        satisfied_names: &mut std::collections::HashSet<String>,
+    ) -> Result<ShardLoadOutcome, LoaderError> {
+        let mut outcome = ShardLoadOutcome::default();
 
         for entry in reader.iter() {
             let Some(mapping) = self.mapping.get(entry.name) else {
-                report.skipped.push(entry.name.to_string());
+                outcome.skipped.push(entry.name.to_string());
                 continue;
             };
 
@@ -370,17 +400,43 @@ impl WeightMapper {
             }
 
             slice.copy_from_slice(&values);
-            report.loaded += 1;
+            outcome.loaded += 1;
+            satisfied_names.insert(entry.name.to_string());
         }
 
-        for name in self.mapping.keys() {
-            if !reader_names.contains(name) {
-                report.missing.push(name.clone());
-            }
-        }
-
-        Ok(report)
+        Ok(outcome)
     }
+
+    /// Compute the cross-shard `missing` list: mapper names that
+    /// were never satisfied by any shard. Used by both the
+    /// single-shard `load_into` and the sharded driver to fill the
+    /// final `LoadReport.missing` field.
+    pub fn collect_missing(
+        &self,
+        satisfied_names: &std::collections::HashSet<String>,
+    ) -> Vec<String> {
+        self.mapping
+            .keys()
+            .filter(|name| !satisfied_names.contains(name.as_str()))
+            .cloned()
+            .collect()
+    }
+}
+
+/// Outcome of a single-shard load. Aggregated across shards by
+/// [`crate::v17::loader::sharded_reader::ShardedSafetensorsReader`]
+/// to produce a final [`LoadReport`].
+///
+/// `skipped` is per-shard (tensors in this shard that the mapper
+/// does not know about). `loaded` is per-shard count. `missing` is
+/// **not** computed at the per-shard level — it is meaningless
+/// without seeing every shard, since a tensor missing from shard 0
+/// might be present in shard 1. The caller computes it once at the
+/// end via [`WeightMapper::collect_missing`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ShardLoadOutcome {
+    pub loaded: usize,
+    pub skipped: Vec<String>,
 }
 
 // ---------------------------------------------------------------------
