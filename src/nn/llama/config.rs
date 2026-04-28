@@ -42,9 +42,16 @@ pub struct LlamaConfig {
     pub rms_norm_eps: f32,
     pub tie_word_embeddings: bool,
     /// Whether `q_proj`/`k_proj`/`v_proj`/`o_proj` carry a bias.
-    /// `false` for TinyLlama; affects whether the builder registers
-    /// bias parameters.
-    pub attention_bias: bool,
+    /// `Some(false)` for TinyLlama and SmolLM2 (explicit in
+    /// `config.json`); `None` for Qwen 2.5 (the field is absent
+    /// from the official config — Qwen2 hard-codes QKV biases on,
+    /// see [`Self::effective_attention_bias`]).
+    pub attention_bias: Option<bool>,
+    /// HuggingFace `model_type` discriminator: `"llama"`,
+    /// `"qwen2"`, etc. Optional because some legacy configs omit
+    /// it. Used by [`Self::effective_attention_bias`] to resolve
+    /// per-family defaults when the explicit field is absent.
+    pub model_type: Option<String>,
     pub bos_token_id: u32,
     pub eos_token_id: u32,
     /// `pad_token_id` is absent from many Llama configs (TinyLlama
@@ -119,6 +126,28 @@ fn get_bool(v: &Value, key: &str) -> Result<bool, ConfigError> {
         .ok_or_else(|| ConfigError::Parse(format!("missing or non-bool field `{}`", key)))
 }
 
+fn get_optional_bool(v: &Value, key: &str) -> Result<Option<bool>, ConfigError> {
+    match v.get(key) {
+        None => Ok(None),
+        Some(Value::Null) => Ok(None),
+        Some(other) => other
+            .as_bool()
+            .ok_or_else(|| ConfigError::Parse(format!("field `{}` is not a bool", key)))
+            .map(Some),
+    }
+}
+
+fn get_optional_string(v: &Value, key: &str) -> Result<Option<String>, ConfigError> {
+    match v.get(key) {
+        None => Ok(None),
+        Some(Value::Null) => Ok(None),
+        Some(other) => other
+            .as_str()
+            .ok_or_else(|| ConfigError::Parse(format!("field `{}` is not a string", key)))
+            .map(|s| Some(s.to_string())),
+    }
+}
+
 fn get_optional_u32(v: &Value, key: &str) -> Result<Option<u32>, ConfigError> {
     match v.get(key) {
         None => Ok(None),
@@ -176,7 +205,8 @@ impl LlamaConfig {
             rope_theta: get_rope_theta(&v)?,
             rms_norm_eps: get_f32(&v, "rms_norm_eps")?,
             tie_word_embeddings: get_bool(&v, "tie_word_embeddings")?,
-            attention_bias: get_bool(&v, "attention_bias")?,
+            attention_bias: get_optional_bool(&v, "attention_bias")?,
+            model_type: get_optional_string(&v, "model_type")?,
             bos_token_id: get_u32(&v, "bos_token_id")?,
             eos_token_id: get_u32(&v, "eos_token_id")?,
             pad_token_id: get_optional_u32(&v, "pad_token_id")?,
@@ -206,6 +236,25 @@ impl LlamaConfig {
     /// For standard MHA (no GQA) this is 1.
     pub fn kv_groups(&self) -> usize {
         self.num_attention_heads / self.num_key_value_heads
+    }
+
+    /// Resolved value of `attention_bias` for graph construction.
+    ///
+    /// HuggingFace `config.json` semantics differ across Llama-family
+    /// architectures: Llama and SmolLM explicitly emit
+    /// `"attention_bias": false`, but Qwen2 omits the field entirely
+    /// and hard-codes QKV biases on inside `Qwen2Attention`. This
+    /// helper centralises the disambiguation:
+    ///
+    /// 1. If the config carries an explicit `attention_bias`, that
+    ///    value wins.
+    /// 2. Otherwise, the `model_type` drives the default: `"qwen2"`
+    ///    → `true`; everything else → `false`.
+    pub fn effective_attention_bias(&self) -> bool {
+        if let Some(explicit) = self.attention_bias {
+            return explicit;
+        }
+        matches!(self.model_type.as_deref(), Some("qwen2"))
     }
 
     /// Rough parameter-count estimate. Used by tests to sanity-check
