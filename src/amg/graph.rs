@@ -2876,11 +2876,20 @@ impl Graph {
             }
             NodeType::Transpose2D => {
                 let src = self.nodes[node_id].inputs[0];
-                let x = self.nodes[src]
+                let mut x = self.nodes[src]
                     .output
                     .as_ref()
                     .expect("Transpose missing input")
                     .clone();
+                // M4.7.2.c: tied word embeddings reuse the
+                // embedding parameter as the LM head via
+                // `gb.transpose_2d(embed_w)`. With BF16 storage
+                // active that param is `CpuBf16`; decode-on-access
+                // before delegating to the F32-only `transpose_2d`
+                // helper.
+                x.ensure_cpu().expect(
+                    "Transpose2D: BF16/Cuda/Disk → Cpu materialisation failed",
+                );
                 let out = transpose_2d(&x);
                 self.nodes[node_id].set_output(out.clone());
 
