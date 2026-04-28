@@ -8,13 +8,14 @@ This roadmap communicates scope and priority, not calendar commitments. Versions
 
 ## Status overview
 
-Atenia Engine is currently working through APX v20 (Real Model Runtime Integration). Earlier versions (v12 through v19) are complete. The most recently closed sub-milestone is M4.5: end-to-end forward execution of `TinyLlama-1.1B-Chat-v1.0` with PyTorch numerical validation.
+Atenia Engine is currently working through APX v20 (Real Model Runtime Integration). Earlier versions (v12 through v19) are complete. The most recently closed sub-milestone is M4.6: Llama-family compatibility expansion, with four production checkpoints (TinyLlama 1.1B, SmolLM2 1.7B, Qwen 2.5 1.5B, Llama 3.2 1B) executing end-to-end and validated against PyTorch F64 mathematical ground truth per ADR-004.
 
 Detailed closing notes per milestone live in the `docs/` directory:
 
 - [docs/HANDOFF_APX_V20_M3.md](./docs/HANDOFF_APX_V20_M3.md) — reactive execution context, real GPU storage, M3-e migration loop
 - [docs/HANDOFF_APX_V20_M4.md](./docs/HANDOFF_APX_V20_M4.md) — safetensors loader and weight mapping mechanics
 - [docs/HANDOFF_APX_V20_M4.5.md](./docs/HANDOFF_APX_V20_M4.5.md) — real model execution end-to-end (`TinyLlama-1.1B`)
+- [docs/HANDOFF_APX_V20_M4.6.md](./docs/HANDOFF_APX_V20_M4.6.md) — Llama-family compatibility expansion (four checkpoints, F64 validation methodology)
 
 ---
 
@@ -34,13 +35,15 @@ APX v20 connects the completed telemetry and decision infrastructure to real ext
 
 - **M4.5** — End-to-end real model execution. The engine loads a HuggingFace `TinyLlama-1.1B-Chat-v1.0` checkpoint and runs forward on CPU. Logits match a PyTorch reference within F32-vs-BF16 precision drift over 22 transformer blocks (max absolute diff ≈ 0.73, mean ≈ 0.06, no values diverging by more than 1.0). New graph primitives landed for this: rotary positional embedding, general permute, broadcast multiplication, and rank-4 batched matmul. A complete Llama-2 graph builder consumes the HuggingFace parameter naming convention directly.
 
+- **M4.6** — Llama-family compatibility expansion. Three production checkpoints added on top of TinyLlama: SmolLM2 1.7B (Phase A — tied word embeddings, configurable RmsNorm eps, generic `nn::llama` rename), Qwen 2.5 1.5B (Phase B — Q/K/V projection biases, `model_type`-aware config defaults), and Llama 3.2 1B Instruct (Phase C — `rope_scaling: "llama3"` piecewise frequency scaling, explicit `head_dim`). Each model validated against PyTorch F64 mathematical ground truth per [ADR-004](./docs/decisions/ADR-004-f64-reference-as-default.md), with Atenia F32 max drift between 1.32×10⁻⁴ and 1.45×10⁻³ — three to four orders of magnitude closer to truth than industry-default BF16 inference on the same checkpoints. Argmax MATCH 4/4 positions on every model. The Llama 3 scaling wiring is falsified independently with a long-context graph test (seq_len = 2048) that proves the scaled inverse-frequency vector reaches the RoPE kernel through the AMG pipeline.
+
+- **M4.6.1** — Retroactive F64 validation for TinyLlama. The original M4.5-d.1 test (PyTorch BF16 reference) is preserved untouched as historical record of the pre-ADR-004 methodology. A new `tinyllama_f64_validation_test.rs` adds the F64-gated equivalent: Atenia max drift 1.41×10⁻⁴, ratio 5198× vs BF16. Resolves the implicit "PyTorch as ground truth" framing left by M4.5-d.1 — the BF16-argmax disagreement reported there was a near-tie quantisation artefact, not an Atenia bug. See [ADR-004](./docs/decisions/ADR-004-f64-reference-as-default.md).
+
 ### Pending sub-phases
 
-- **M4.6** — Llama-family compatibility expansion: Llama 3.2 (with `rope_scaling: "llama3"`), Qwen 2.5 (with QK-Norm), Phi 3.5 mini, SmolLM3, Mistral 7B (subject to host RAM). Most architectural deltas are small per family; the work is in extending the config parser, the weight mapper, and the builder for each family's specific operations.
+- **M4.6.2** (optional) — Phi 3.5 mini. Originally enumerated as an M4.6 candidate; deferred at planning time on grounds of urgency. The Phi family is Llama-class with `rope_scaling: "longrope"` (a different piecewise schema than llama3, requiring a parallel `compute_inv_freqs_longrope`) and possible QK-Norm variants. Investigation-previa first; implementation 0.5–2 days depending on whether new primitives are required. Useful before M4.7 only if Phi 3.5 mini is a target deployment; otherwise M4.7 is strictly higher leverage.
 
-- **M4.6.1** — Mathematical ground-truth validation. Extend the per-model PyTorch comparison tests with NumPy F64 reference forwards (full models) and optionally mpmath arbitrary-precision reference (isolated components). Resolves the implicit "PyTorch as ground truth" framing in M4.5-d.1 by measuring drift against mathematical truth directly. See [ADR-002](./docs/decisions/ADR-002-mathematical-ground-truth-validation.md).
-
-- **M4.7** — Beyond-VRAM execution. Run a 13B-class model in BF16 on notebook hardware (8 GB VRAM, 16 GB RAM, SSD). The first end-to-end exercise of the M3 reaction loop against a workload that genuinely exceeds available VRAM. Validates the project's core differential: the ability to execute models on hardware that other engines cannot accommodate.
+- **M4.7** — Beyond-VRAM execution. Run a 13B-class model in BF16 on notebook hardware (8 GB VRAM, 16 GB RAM, SSD). The first end-to-end exercise of the M3 reaction loop against a workload that genuinely exceeds available VRAM. Validates the project's core differential: the ability to execute models on hardware that other engines cannot accommodate. Mistral 7B falls out of scope for free once M4.7 lands — its architecture is identical to Llama 2, blocked today only on RAM.
 
 ### Out of scope for v20
 
@@ -49,8 +52,8 @@ APX v20 connects the completed telemetry and decision infrastructure to real ext
 - Token-by-token generation (M5+)
 - Native BF16 / F16 storage without F32 upcast (separate optimization milestone)
 - Multi-file (sharded) safetensors (extension when needed for larger models)
-- Forward optimization at the matmul dispatcher level (post-M5 follow-up)
 - Backward over loaded models (M5+ training territory)
+- **Forward performance optimization (deferred post-M4.7)**. M4.5 documented a known follow-up: ~35 s release-mode forward on ~5 GFLOPs for TinyLlama is slower than expected for a 24-thread AVX2 CPU, suggesting the matmul dispatcher misses the AVX2 microkernel path on some shapes. M4.6 added three more datapoints (SmolLM2, Qwen 2.5, Llama 3.2; see [HANDOFF_APX_V20_M4.6.md](./docs/HANDOFF_APX_V20_M4.6.md)) but no profiling work. The performance optimization milestone should be scoped *after* M4.7 numbers are available, not before — beyond-VRAM execution will produce the first empirical data on whether the actual bottleneck is compute, memory bandwidth, or tier transition latency. Optimising on the M4.6 baseline risks chasing the wrong bottleneck before the killer-demo workload exposes what matters. The principle "make it work, make it right, make it fast" applies in order: M4.5 closed *work*; M4.6 closed *right*; *fast* follows M4.7.
 
 > **Note on the prior roadmap.** Earlier drafts of this document scoped v20 as "Execution Memory and Learning" — a milestone built around persistent execution memory feeding future decisions. That concept was not lost: it lives today as scaffolding inside the v13 Hybrid Execution Engine, and its observable effect on real workloads is now scheduled to be demonstrated in M4.7, where memory pressure during beyond-VRAM model execution is genuine rather than synthetic. The v20 label was reassigned to Real Model Runtime Integration when investigation showed that loading and executing a real model is the prerequisite for any meaningful test of execution-experience learning.
 
