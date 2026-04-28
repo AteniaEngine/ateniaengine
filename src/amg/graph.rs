@@ -934,7 +934,7 @@ impl Graph {
                 | NodeType::Transpose2D
                 | NodeType::Permute { .. }
                 | NodeType::TransposeLastTwo
-                | NodeType::RmsNorm
+                | NodeType::RmsNorm { .. }
                 | NodeType::SiLU
                 | NodeType::Softmax
                 | NodeType::RoPE { .. }
@@ -3726,7 +3726,8 @@ impl Graph {
                      accidentally gated or skipped"
                 )
             }
-            NodeType::RmsNorm => {
+            NodeType::RmsNorm { eps_bits } => {
+                let eps = f32::from_bits(eps_bits);
                 let inputs = self.nodes[node_id].inputs.clone();
                 if inputs.len() != 1 {
                     // Inconsistent graph (e.g., artificial trace tests): do not execute RmsNorm.
@@ -3735,7 +3736,7 @@ impl Graph {
 
                 let x_opt = self.nodes[inputs[0]].output.as_ref();
                 if let Some(x) = x_opt.cloned() {
-                    let out = nn_norm::rms_norm(&x, 1e-5);
+                    let out = nn_norm::rms_norm(&x, eps);
                     self.nodes[node_id].set_output(out);
                 }
             }

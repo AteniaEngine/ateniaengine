@@ -118,8 +118,11 @@ impl GraphBuilder {
     }
 
     /// RMSNorm over last dimension.
-    pub fn rms_norm(&mut self, x_id: usize) -> usize {
-        self.add_node(NodeType::RmsNorm, vec![x_id])
+    ///
+    /// `eps` is the per-model stabilizer (1e-5 for Llama family,
+    /// 1e-6 for Qwen 2.5).
+    pub fn rms_norm(&mut self, x_id: usize, eps: f32) -> usize {
+        self.add_node(NodeType::RmsNorm { eps_bits: eps.to_bits() }, vec![x_id])
     }
 
     /// ReLU activation.

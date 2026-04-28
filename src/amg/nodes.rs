@@ -140,7 +140,17 @@ pub enum NodeType {
     Gather,
     CrossEntropyLoss,
     Linear,
-    RmsNorm,
+    /// RMSNorm over the last dimension.
+    ///
+    /// ## Parameters
+    /// - `eps_bits`: small constant added to the mean of squares
+    ///   before sqrt, to avoid division by zero. Per-model value
+    ///   (1e-5 for Llama/TinyLlama/SmolLM2, 1e-6 for Qwen 2.5).
+    ///   Stored as `u32` (raw `f32::to_bits` representation) so
+    ///   the variant remains `Eq`-derivable, mirroring the RoPE
+    ///   `base_freq` convention. Use [`Self::rms_norm_eps`] to
+    ///   recover the `f32` value.
+    RmsNorm { eps_bits: u32 },
     SiLU,
     Softmax,
     /// Rotary Positional Embedding (half-split layout).

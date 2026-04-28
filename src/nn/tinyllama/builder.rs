@@ -114,7 +114,7 @@ fn build_transformer_block_llama(
         param_ids,
         param_names,
     );
-    let h_normed = gb.rms_norm(x);
+    let h_normed = gb.rms_norm(x, config.rms_norm_eps);
     let h = gb.broadcast_mul(h_normed, input_ln_gamma);
 
     // ---- 2. Q/K/V projections ----
@@ -209,7 +209,7 @@ fn build_transformer_block_llama(
         param_ids,
         param_names,
     );
-    let h2_normed = gb.rms_norm(x_residual_1);
+    let h2_normed = gb.rms_norm(x_residual_1, config.rms_norm_eps);
     let h2 = gb.broadcast_mul(h2_normed, post_ln_gamma);
 
     // ---- 13. SwiGLU FFN ----
@@ -311,7 +311,7 @@ pub fn build_tinyllama(
         &mut param_ids,
         &mut param_names,
     );
-    let x_normed = gb.rms_norm(x);
+    let x_normed = gb.rms_norm(x, config.rms_norm_eps);
     let x_final = gb.broadcast_mul(x_normed, final_ln_gamma);
 
     // ---- LM head ----

@@ -160,7 +160,7 @@ fn build_block<G: GraphLike>(
     param_ids: &mut Vec<usize>,
     param_names: &mut Vec<String>,
 ) -> usize {
-    let norm_in = graph.add_node_of_type(NodeType::RmsNorm, vec![input_id]);
+    let norm_in = graph.add_node_of_type(NodeType::RmsNorm { eps_bits: (1e-5_f32).to_bits() }, vec![input_id]);
 
     let w_q = register_weight(graph, &format!("{}_wq", prefix), cfg.d_model, cfg.d_model, param_ids, param_names);
     let w_k = register_weight(graph, &format!("{}_wk", prefix), cfg.d_model, cfg.d_model, param_ids, param_names);
@@ -223,7 +223,7 @@ fn build_block<G: GraphLike>(
 
     let attn_res = graph.add_node_of_type(NodeType::Add, vec![input_id, attn_proj]);
 
-    let norm_mlp_in = graph.add_node_of_type(NodeType::RmsNorm, vec![attn_res]);
+    let norm_mlp_in = graph.add_node_of_type(NodeType::RmsNorm { eps_bits: (1e-5_f32).to_bits() }, vec![attn_res]);
     let w1 = register_weight(graph, &format!("{}_w1", prefix), cfg.d_model, cfg.d_hidden, param_ids, param_names);
     let w2 = register_weight(graph, &format!("{}_w2", prefix), cfg.d_hidden, cfg.d_model, param_ids, param_names);
 

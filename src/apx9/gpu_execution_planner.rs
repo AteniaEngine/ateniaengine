@@ -58,7 +58,7 @@ impl GPUExecutionPlanner {
                     | NodeType::MatMul
                     | NodeType::BatchMatMul
                     | NodeType::Linear
-                    | NodeType::RmsNorm
+                    | NodeType::RmsNorm { .. }
                     | NodeType::SiLU
                     | NodeType::Softmax
             );
@@ -139,7 +139,7 @@ impl GPUExecutionPlanner {
             let kernel_name = match node.node_type {
                 NodeType::MatMul | NodeType::BatchMatMul | NodeType::Linear => "kernel_matmul_v0".to_string(),
                 NodeType::Add | NodeType::BroadcastAdd => "kernel_add_v0".to_string(),
-                NodeType::RmsNorm => "kernel_rmsnorm_v0".to_string(),
+                NodeType::RmsNorm { .. } => "kernel_rmsnorm_v0".to_string(),
                 NodeType::SiLU | NodeType::Activation(_) => "kernel_activation_v0".to_string(),
                 NodeType::Softmax | NodeType::LogSoftmax => "kernel_softmax_v0".to_string(),
                 _ => "kernel_cpu_fallback_v0".to_string(),

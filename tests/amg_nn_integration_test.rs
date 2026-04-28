@@ -73,7 +73,7 @@ fn graph_rms_silu_softmax_pipeline_is_valid() {
     let mut gb = GraphBuilder::new();
 
     let x_id = gb.input();
-    let n_id = gb.rms_norm(x_id);
+    let n_id = gb.rms_norm(x_id, 1e-5);
     let a_id = gb.silu(n_id);
     let s_id = gb.softmax(a_id);
     let _out_id = gb.output(s_id);
