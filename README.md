@@ -67,34 +67,41 @@ Atenia Engine is implemented in Rust. The project follows an APX (Adaptive Execu
 
 Real, executable, deterministic:
 
-- **🦀 Tensor engine** — Forward + backward with autograd, CPU + CUDA paths
-- **🧩 AMG (Adaptive Model Graph)** — Graph representation with executor, independent of PyTorch/TF
-- **⚡ Fused kernels** — Attention and QKV paths on CPU and GPU
-- **🖼 Convolutional ops in AMG** — `Conv2D` and `MaxPool2D` with forward, backward, and autograd tape integration (APX v20 M1)
-- **🧮 MNIST pipeline** — Conv2D, MaxPool, Dense on f32 tensors, end-to-end structural
-- **🤖 Real LLM execution** — Four production small open LLMs load from HuggingFace `.safetensors` checkpoints and run forward end-to-end on CPU: `TinyLlama-1.1B-Chat-v1.0`, `SmolLM2-1.7B-Instruct`, `Qwen2.5-1.5B-Instruct`, and `Llama-3.2-1B-Instruct`. Each model is validated against PyTorch F64 mathematical ground truth per [ADR-004](./docs/decisions/ADR-004-f64-reference-as-default.md), with Atenia's F32 max drift between 1.32×10⁻⁴ and 1.45×10⁻³ — three to four orders of magnitude closer to mathematical truth than industry-default BF16 inference on the same checkpoints. Argmax MATCH 4/4 positions on every model. (APX v20 M4.5 + M4.6 + M4.6.1)
-- **📦 Sharded safetensors loader** — Multi-file HuggingFace checkpoints load end-to-end via `ShardedSafetensorsReader`, with drop-after-decode keeping peak RAM bounded by max-shard-size instead of total-checkpoint-size. Verified on Mistral 7B v0.3 (3 shards, 14.5 GB BF16). Pure addition: the four M4.6 single-file checkpoints stay bit-identical. (APX v20 M4.7.1)
-- **💾 Native BF16 parameter storage** — `TensorStorage::CpuBf16(Vec<u16>)` halves the persistent RAM footprint of model parameters (50.0% savings, verified empirically). Decode-on-access at five executor seams (MatMul, IndexSelect, BroadcastMul, BroadcastAdd, Transpose2D) keeps the F32 hot-path kernels untouched. Re-validated end-to-end against PyTorch F64 truth on the four M4.6 checkpoints: drift bit-exact identical to the precision-floor spike, threshold `< 0.5` per ADR-004 holds with comfortable margin on every model. (APX v20 M4.7.2)
-- **🔒 Deterministic execution** — Same input, same output, always
-- **📋 Policy registry** — Pure, deterministic, explainable policy layer with evidence-aware evaluation
-- **📜 Execution contracts** — Data structures, validators, replay scaffolding
-- **📡 Real memory telemetry** — VRAM (via `nvidia-smi` subprocess) and RAM (via `sysinfo`), validated against ground-truth readings
-- **🧠 Signal producers** — `FailureCounter` (time-windowed) and `LatencyMonitor` (P50-baseline spike detection) with deterministic purge semantics
-- **🚦 SignalBus** — Single integration point that assembles real telemetry into `GuardConditions` (v16) and `PolicyEvidenceSnapshot` (v15)
-- **⚡ Reactive execution hook** — `ReactiveExecutionContext` wires the SignalBus to the AMG executor; `execute_checked` returns a typed `ExecutionAbortReason` when a guard triggers mid-run (APX v20 M2)
-- **🏗 Portable build** — Auto-detection of CUDA Toolkit and MSVC BuildTools installation paths in `build.rs`; respects `CUDA_PATH` and `MSVC_TOOLS_PATH` overrides
+**Real LLM inference (APX v20 M4.5–M4.7.2)**
+
+- **🤖 Four production LLMs run end-to-end on CPU.** TinyLlama 1.1B Chat, SmolLM2 1.7B Instruct, Qwen 2.5 1.5B Instruct, and Llama 3.2 1B Instruct load from HuggingFace `.safetensors` and produce logits validated against PyTorch F64 ground truth per [ADR-004](./docs/decisions/ADR-004-f64-reference-as-default.md). Atenia F32 drift sits between **1.32×10⁻⁴ and 1.45×10⁻³** — three-to-four orders of magnitude closer to mathematical truth than industry-default BF16 inference on the same checkpoints. Argmax matches F64 on every position of every model.
+- **📦 Sharded safetensors loader.** Multi-file HuggingFace checkpoints (`model-NNNNN-of-NNNNN.safetensors` + `index.json`) load via `ShardedSafetensorsReader` with drop-after-decode. Verified on Mistral 7B v0.3 (14.5 GB across 3 shards); peak RAM stays bounded by the largest single shard, not the sum.
+- **💾 Native BF16 parameter storage.** `TensorStorage::CpuBf16(Vec<u16>)` halves the persistent RAM footprint of model parameters (verified at exactly 50.0% on TinyLlama). All four production checkpoints re-validated under BF16 storage active — drift bit-exact identical to the precision-floor spike, all under the ADR-004 threshold.
+
+**Engine foundations**
+
+- **🦀 Tensor engine** — Forward + backward with autograd, CPU + CUDA paths.
+- **🧩 AMG (Adaptive Model Graph)** — Graph representation with its own executor, independent of PyTorch/TF.
+- **⚡ Fused kernels** — Attention and QKV on CPU and GPU.
+- **🖼 Convolutional ops** — `Conv2D` and `MaxPool2D` natively in AMG (forward, backward, tape) (APX v20 M1).
+- **🔒 Deterministic execution** — Same input, same output, every time.
+- **🏗 Portable build** — `build.rs` auto-detects CUDA Toolkit and MSVC BuildTools; overridable via `CUDA_PATH` and `MSVC_TOOLS_PATH`.
+
+**Adaptive execution scaffolding**
+
+- **📡 Real memory telemetry** — VRAM (via `nvidia-smi`) and RAM (via `sysinfo`), validated against ground-truth readings.
+- **🧠 Signal producers** — `FailureCounter` (time-windowed) and `LatencyMonitor` (P50-baseline spike detection) with deterministic purge semantics.
+- **🚦 SignalBus** — Assembles real telemetry into `GuardConditions` (v16) and `PolicyEvidenceSnapshot` (v15).
+- **⚡ Reactive execution hook** — `ReactiveExecutionContext` wires the SignalBus to the AMG executor; `execute_checked` returns a typed `ExecutionAbortReason` on guard trip (APX v20 M2).
+- **📋 Policy registry** — Pure, deterministic, explainable policy layer with evidence-aware evaluation.
+- **📜 Execution contracts** — Data structures, validators, replay scaffolding.
 
 ### 🟡 Scaffolding still being wired to runtime signals
 
 Architecture in place, full end-to-end wiring in progress:
 
-- **Production guards** — The guard framework (v16) and the SignalBus (v19) are both real; however, the built-in `ExecutionGuard` implementations currently live in tests only. Guards in production code are a v21 deliverable.
-- **Execution Policies (v15)** — `DecisionBias` base weights are hardcoded constants per built-in policy. `evaluate_with_evidence` does react to real signals from the SignalBus, but no execution path consumes the resulting `DecisionBias` yet.
-- **AMM Forecaster** — Now exposes real VRAM and RAM readings in addition to the static byte counter. Integration with the memory manager's allocation decisions is pending.
-- **Fusion Selector (v6.10/6.11)** — Measures `fused_full_us`; `fused_qkv_us = 0` is a hardcoded placeholder awaiting real paired measurement.
-- **`FragmentationWarning`** — Intentionally not emitted. External proxies (reserved memory, per-process attribution) would be semantically misleading. Deferred until the engine exposes its own GPU allocator.
-- **MNIST validation** — Structural pipeline runs with a synthetic model. Real MNIST dataset + trained weights pending.
-- **v17 model runtime** — Now wired: M4 delivered the safetensors loader (reader, weight mapper, BF16/F16 decode); M4.5 wired the loader to a complete Llama-family graph builder and demonstrated end-to-end execution of TinyLlama-1.1B with PyTorch-bounded numerical drift; M4.6 extended the same `build_llama` builder to four production checkpoints (TinyLlama, SmolLM2, Qwen 2.5, Llama 3.2) with F64-validated numerical fidelity per ADR-004. Inference UX (tokenizer, KV cache) is M5+; beyond-VRAM execution on a 13B-class model is M4.7.
+- **Production guards** — The guard framework (v16) and SignalBus (v19) are real, but built-in `ExecutionGuard` implementations live in tests only. Guards in production code are a v21 deliverable.
+- **Execution Policies (v15)** — `DecisionBias` reacts to real SignalBus evidence, but no execution path consumes the resulting bias yet.
+- **AMM Forecaster** — Exposes real VRAM and RAM. Integration with memory-manager allocation decisions is pending.
+- **Fusion Selector (v6.10/6.11)** — `fused_qkv_us = 0` is a placeholder awaiting paired measurement.
+- **`FragmentationWarning`** — Intentionally not emitted (external proxies would be misleading). Deferred until Atenia exposes its own GPU allocator.
+- **MNIST pipeline** — Conv2D / MaxPool / Dense run end-to-end on synthetic data; real MNIST dataset + trained weights pending.
+- **GPU residency-aware execution** — CUDA kernels for matmul / batch_matmul / fused_linear_silu exist, but the executor still does CPU-roundtrip per call instead of consuming GPU-resident operands. Residency-aware dispatch is **M4.7.3** (in progress).
 
 ### Roadmap (APX v18 → v25)
 
@@ -115,26 +122,24 @@ Architecture in place, full end-to-end wiring in progress:
   - 4 of 5 `PolicySignalKind` variants produced; `FragmentationWarning` deferred
   - `FailureCounter` and `LatencyMonitor` as internal state producers
 
-**In progress — v20 (model runtime integration, in milestones):**
+**In progress — v20 (model runtime integration):**
 
-- **M1 ✅** — `Conv2D` and `MaxPool2D` implemented natively in AMG with forward, backward, tape integration, and gradient checking against finite differences
-- **M2 ✅** — `ReactiveExecutionContext` attached to `Graph`; the executor (`run_plan`, `apx7::*` schedulers) consults `check_guard_before_node` before each node; `execute_checked` returns `Result<_, ExecutionAbortReason>` on abort; existing APIs preserved as backward-compatible wrappers
-- **M3 ✅** — Real GPU allocation for `Tensor` behind a vendor-neutral storage abstraction (a/c/d closed) plus the M3-e reaction loop that moves real VRAM to RAM on guard `Degrade`. See [docs/HANDOFF_APX_V20_M3.md](./docs/HANDOFF_APX_V20_M3.md).
-- **M4 ✅** — Model loader mechanics (safetensors). `SafetensorsReader` (header + body, by-name + iterator access), `WeightMapper` (name → graph parameter mapping with shape validation and `LoadReport` diagnostics), and BF16/F16 → F32 decode. Validated empirically against a real HuggingFace gpt2 checkpoint. See [docs/HANDOFF_APX_V20_M4.md](./docs/HANDOFF_APX_V20_M4.md).
-- **M4.5 ✅** — Real model execution. Atenia executes a HuggingFace **TinyLlama-1.1B-Chat-v1.0** checkpoint end-to-end on CPU, with logits that match a PyTorch reference within F32-vs-BF16 precision drift over 22 transformer blocks. New primitives: `NodeType::RoPE` (half-split layout), `NodeType::Permute`, `NodeType::BroadcastMul`; `BatchMatMul` extended to rank 4. New module `src/nn/tinyllama/` (renamed to `src/nn/llama/` in M4.6 A.3.1) with `LlamaConfig` parser, `llama_weight_mapper` (handles the HuggingFace `[out, in]` Linear convention, GQA tile-on-load, attention-scale absorption into K_proj), and `build_llama` (full Llama-2 graph builder). Numerical validation against PyTorch quantified at `max_abs_diff ≈ 0.73`, `mean_abs_diff ≈ 0.06`, with no values diverging by more than 1.0. See [docs/HANDOFF_APX_V20_M4.5.md](./docs/HANDOFF_APX_V20_M4.5.md).
-- **M4.6 ✅** — Llama-family compatibility expansion. Three production checkpoints added on top of TinyLlama: **SmolLM2 1.7B Instruct** (Phase A — tied word embeddings, configurable RmsNorm eps, generic `nn::llama` rename), **Qwen 2.5 1.5B Instruct** (Phase B — Q/K/V projection biases with `model_type`-aware config defaults, K-bias scale absorption), and **Llama 3.2 1B Instruct** (Phase C — `rope_scaling: "llama3"` piecewise frequency scaling implemented as a pure function with F64 internal compute, plus an explicit `head_dim` config field). Each model validated against PyTorch F64 mathematical ground truth per [ADR-004](./docs/decisions/ADR-004-f64-reference-as-default.md): Atenia F32 max drift is 0.001446 (SmolLM2), 0.000346 (Qwen 2.5), and 0.000132 (Llama 3.2), three to four orders of magnitude closer to truth than industry-default BF16 inference. Argmax MATCH 4/4 positions on every model. The Llama 3 scaling is verified mathematically (unit tests against the HF reference algorithm) and end-to-end through the AMG graph (long-context falsifier at seq_len = 2048). See [docs/HANDOFF_APX_V20_M4.6.md](./docs/HANDOFF_APX_V20_M4.6.md).
-- **M4.6.1 ✅** — Retroactive F64 validation for TinyLlama. The original M4.5-d.1 BF16-reference test is preserved untouched as historical record of the pre-ADR-004 methodology; a new F64-gated test reports Atenia max drift 0.000141 vs F64 (ratio 5198× vs BF16) with argmax MATCH 4/4. Resolves the implicit "PyTorch as ground truth" framing left by M4.5-d.1 — the BF16-argmax disagreement reported there was a near-tie quantisation artefact, not an Atenia bug.
-- **M4.6.2 (deferred until after M4.7 — priority, not feasibility)** — Phi 3.5 mini. Llama-class architecture with a different `rope_scaling: "longrope"` schema and a fused `qkv_proj` / `gate_up_proj` that need to be split at load time. Technically viable on the dev hardware today (32 GB RAM accommodates the ~15 GB F32 weights) but explicitly deferred — M4.7 is strictly higher impact. Phi 3.5 mini lands after the *momento guau*.
-- **M4.7 (in progress)** — Beyond-VRAM execution. Target hardware: **RTX 4070 Laptop with 8 GB VRAM, 32 GB RAM, project root on an external USB SSD (drive F:)**. A 13B BF16 model (~26 GB on disk) fits in neither VRAM nor RAM alone but is executable via VRAM ↔ RAM ↔ disk offload orchestrated by the M3 reaction loop. Six sub-phases:
-  - **M4.7.1 ✅** — Sharded safetensors loader. Mistral 7B v0.3 (3 shards, 14.5 GB BF16) loads end-to-end with `loaded=291 / skipped=0 / missing=0`, drop-after-decode confirmed in practice (peak ~5 GB per-shard instead of the 15 GB sum).
-  - **M4.7.2 ✅** — Native BF16 parameter storage with decode-on-access. `TensorStorage::CpuBf16(Vec<u16>)` halves the persistent param footprint (verified empirically on TinyLlama: 2.5 GB BF16 vs 5.0 GB F32 — 50.0% to within IEEE arithmetic). All four M4.6 production checkpoints re-validated against PyTorch F64 truth under BF16 storage active, drift bit-exact identical to the precision-floor spike `a786837` and well under the ADR-004 threshold of 0.5: TinyLlama 0.000141, SmolLM2 0.001446, Qwen 2.5 0.029057, Llama 3.2 0.000132. Argmax MATCH 4/4 positions on every model.
-  - **M4.7.3** (currently active) — GPU MatMul with resident operands + executor device dispatch.
-  - **M4.7.4** — RAM ↔ SSD streaming primitive (mmap, chunked pull).
-  - **M4.7.5** — M3-e policy upgrade (LRU per-tensor selection, probe cache, prefetch).
-  - **M4.7.6** — First end-to-end run on Llama 2 13B (or Mistral 7B v0.3 fallback) + F64 validation per ADR-004.
-- **M5+** — Inference UX: tokenizer integration, KV cache, token-by-token generation. The milestone that turns "Atenia produces correct logits" into "Atenia can chat".
+- **M1–M3 ✅** — Conv2D / MaxPool2D in AMG, reactive executor, real GPU storage with M3-e VRAM→RAM migration. See [HANDOFF M3](./docs/HANDOFF_APX_V20_M3.md).
+- **M4 ✅** — Safetensors loader: `SafetensorsReader`, `WeightMapper`, BF16/F16 → F32 decode, validated against gpt2. See [HANDOFF M4](./docs/HANDOFF_APX_V20_M4.md).
+- **M4.5 ✅** — TinyLlama 1.1B end-to-end on CPU, PyTorch-bounded numerical drift over 22 layers. See [HANDOFF M4.5](./docs/HANDOFF_APX_V20_M4.5.md).
+- **M4.6 ✅** — Llama-family expansion. SmolLM2 1.7B (tied embeddings), Qwen 2.5 1.5B (QKV biases, model_type-aware defaults), Llama 3.2 1B (`rope_scaling: "llama3"` with F64-internal piecewise compute). All four M4.6-scope models F64-validated per ADR-004. See [HANDOFF M4.6](./docs/HANDOFF_APX_V20_M4.6.md).
+- **M4.6.1 ✅** — Retroactive F64 validation for TinyLlama (drift 0.000141, ratio 5198× vs BF16).
+- **M4.6.2** *(deferred until after M4.7 — priority, not feasibility)* — Phi 3.5 mini. Architectural deltas identified (longrope, fused qkv_proj / gate_up_proj); technically viable but lower impact than M4.7.
+- **M4.7** *(in progress)* — Beyond-VRAM execution. Target: RTX 4070 Laptop with **8 GB VRAM, 32 GB RAM, project on USB SSD**. A 13B BF16 model (~26 GB) fits in neither VRAM nor RAM alone but runs end-to-end via VRAM ↔ RAM ↔ disk offload. Six sub-phases:
+  - **M4.7.1 ✅** — Sharded safetensors loader (Mistral 7B v0.3, 3 shards, 14.5 GB).
+  - **M4.7.2 ✅** — Native BF16 parameter storage. 50% RAM savings, all four M4.6 checkpoints re-validated under BF16 active.
+  - **M4.7.3** *(active)* — GPU MatMul with resident operands + executor device dispatch.
+  - **M4.7.4** — RAM ↔ SSD streaming (mmap, chunked pull).
+  - **M4.7.5** — M3-e policy upgrade (LRU, probe cache, prefetch).
+  - **M4.7.6** — First end-to-end run on Llama 2 13B (or Mistral 7B v0.3 fallback) + F64 validation.
+- **M5+** — Inference UX: tokenizer, KV cache, token-by-token generation.
 
-> **Note on forward performance.** Release-mode forward times for the four M4.6 models range from 21 s (Qwen 2.5) to 50 s (SmolLM2) at seq_len = 4 on a 24-thread AVX2 CPU, which is slower than expected for the underlying GFLOP count. The matmul dispatcher likely misses the AVX2 microkernel path on some shapes. The performance optimization milestone is **deferred until after M4.7** — beyond-VRAM execution will produce the first empirical data on whether the actual bottleneck is compute, memory bandwidth, or tier transition latency. Optimising on the M4.6 baseline risks chasing the wrong bottleneck before the killer-demo workload exposes what matters. The principle "make it work, make it right, make it fast" applies in order: M4.5 closed *work*; M4.6 closed *right*; *fast* follows M4.7.
+> **Forward performance is deferred until after M4.7.** Current release-mode forward times sit between 21 s (Qwen 2.5) and 50 s (SmolLM2) at seq=4 on a 24-thread AVX2 CPU — slower than expected for the GFLOP count, suggesting the matmul dispatcher misses the AVX2 microkernel on some shapes. Optimising before the beyond-VRAM workload runs risks chasing the wrong bottleneck. The principle "make it work, make it right, make it fast" applies in order: M4.5 closed *work*, M4.6 closed *right*, *fast* follows M4.7.
 
 **Later:**
 
@@ -161,19 +166,18 @@ The build script auto-detects CUDA Toolkit and MSVC BuildTools installation path
 
 ### Test coverage
 
-The repository contains a growing suite (~300 test files as of v20 M2) covering:
+The repository ships **~1100 `#[test]` functions across ~350 test files**, covering:
 
 - Tensor operations and autograd correctness
-- Graph construction and execution
-- Deterministic serialization (JSON, CSV)
-- Structural integration of APX v13–v20 modules
-- CPU + CUDA numerical equivalence where applicable
-- Forward equivalence of native AMG conv/pool against the v17 reference
+- Graph construction and execution (CPU + CUDA numerical equivalence where applicable)
 - Gradient checking via central finite differences
-- SignalBus producing `GuardConditions` and `PolicyEvidenceSnapshot` from real probes
-- AMG executor aborting cleanly on guard verdicts and resuming execution when conditions are clean
+- F64 numerical validation per [ADR-004](./docs/decisions/ADR-004-f64-reference-as-default.md) on the four production LLMs
+- BF16 storage round-trip equivalence with the precision-floor spike (regression gate)
+- Sharded safetensors loading on real multi-file checkpoints
+- SignalBus producing `GuardConditions` / `PolicyEvidenceSnapshot` from real probes
+- AMG executor aborting cleanly on guard verdicts and resuming when conditions are clean
 
-See [docs/TESTS.md](./docs/TESTS.md) and [tests/README.md](./tests/README.md) for the test methodology note and category breakdown.
+See [docs/TESTS.md](./docs/TESTS.md) and [tests/README.md](./tests/README.md) for methodology and categorisation.
 
 > [!WARNING]
 > **Note on test methodology.**  
@@ -210,14 +214,28 @@ Atenia is designed to sit **below** ML frameworks and **above** raw hardware exe
 
 ## 📚 Documentation
 
-- [ROADMAP.md](./ROADMAP.md) — Versioned roadmap with milestones and design constraints per APX version
-- [docs/APX.md](./docs/APX.md) — Per-version notes on what each APX milestone introduced and its scope
-- [docs/TESTS.md](./docs/TESTS.md) — Test methodology and categorization
-- [docs/ARCHITECTURE_REACTION_STRATEGIES.md](./docs/ARCHITECTURE_REACTION_STRATEGIES.md) — Design principle for reaction strategies (APX v21+)
+**Roadmap and architecture**
+
+- [ROADMAP.md](./ROADMAP.md) — Versioned roadmap with milestones and design constraints
+- [docs/APX.md](./docs/APX.md) — Per-version APX notes
+- [docs/ARCHITECTURE_REACTION_STRATEGIES.md](./docs/ARCHITECTURE_REACTION_STRATEGIES.md) — Reaction strategies (APX v21+)
 - [docs/RESEARCH_INTEL_APIS.md](./docs/RESEARCH_INTEL_APIS.md) — Multi-vendor GPU API research (APX v22+)
-- [docs/HANDOFF_APX_V20_M4.5.md](./docs/HANDOFF_APX_V20_M4.5.md) — APX v20 M4.5 closing notes (real model execution, TinyLlama 1.1B)
-- [docs/HANDOFF_APX_V20_M4.6.md](./docs/HANDOFF_APX_V20_M4.6.md) — APX v20 M4.6 closing notes (Llama-family expansion, four checkpoints, F64 validation)
-- [docs/decisions/](./docs/decisions/) — Architectural Decision Records (ADRs), including ADR-004 on the F64 reference methodology
+
+**Milestone closing notes (HANDOFFs)**
+
+- [HANDOFF M3](./docs/HANDOFF_APX_V20_M3.md) — Reactive executor + GPU storage + M3-e migration
+- [HANDOFF M4](./docs/HANDOFF_APX_V20_M4.md) — Safetensors loader
+- [HANDOFF M4.5](./docs/HANDOFF_APX_V20_M4.5.md) — TinyLlama end-to-end
+- [HANDOFF M4.6](./docs/HANDOFF_APX_V20_M4.6.md) — Llama-family expansion + F64 validation methodology
+
+**Architectural Decision Records (ADRs)**
+
+- [docs/decisions/](./docs/decisions/) — ADR-001 through ADR-004
+- [ADR-004](./docs/decisions/ADR-004-f64-reference-as-default.md) — F64 reference as primary numerical validation methodology
+
+**Testing**
+
+- [docs/TESTS.md](./docs/TESTS.md) — Test methodology and categorisation
 - Subversion READMEs: [`src/v13`](./src/v13/README.md), [`src/v14`](./src/v14/README.md), [`src/v15`](./src/v15/README.md), [`src/v16`](./src/v16/README.md), [`src/v17`](./src/v17/README.md)
 
 ---
