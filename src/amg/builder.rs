@@ -150,7 +150,37 @@ impl GraphBuilder {
     /// Input shape: `[batch, seq_len, n_heads, head_dim]`. Positions are
     /// implicit `[0..seq_len)`. See [`NodeType::RoPE`] for details.
     pub fn rope(&mut self, x_id: usize, head_dim: usize, base_freq: u32) -> usize {
-        self.add_node(NodeType::RoPE { head_dim, base_freq }, vec![x_id])
+        self.add_node(
+            NodeType::RoPE {
+                head_dim,
+                base_freq,
+                scaling: None,
+            },
+            vec![x_id],
+        )
+    }
+
+    /// Add a RoPE node with Llama 3 piecewise frequency scaling.
+    ///
+    /// Equivalent to [`Self::rope`] but threads the long-context
+    /// scaling parameters through the variant. Used by `build_llama`
+    /// when the parsed config carries a `RopeScaling::Llama3` block
+    /// (Llama 3.1, 3.2, 3.3).
+    pub fn rope_scaled(
+        &mut self,
+        x_id: usize,
+        head_dim: usize,
+        base_freq: u32,
+        scaling: super::nodes::RopeScalingLlama3,
+    ) -> usize {
+        self.add_node(
+            NodeType::RoPE {
+                head_dim,
+                base_freq,
+                scaling: Some(scaling),
+            },
+            vec![x_id],
+        )
     }
 
     pub fn build(self) -> super::graph::Graph {

@@ -3845,23 +3845,38 @@ impl Graph {
                     }
                 }
             }
-            NodeType::RoPE { head_dim, base_freq } => {
+            NodeType::RoPE { head_dim, base_freq, scaling } => {
                 let inputs = self.nodes[node_id].inputs.clone();
                 if inputs.len() != 1 {
                     // Inconsistent graph (e.g., artificial trace tests):
                     // do not execute RoPE.
                     return;
                 }
+                // Compute inverse frequencies once; the same vector is
+                // reused by the backward closure below. None means
+                // plain RoPE (legacy bit-identical path); Some means
+                // Llama 3 piecewise scaling.
+                let inv_freqs = match scaling {
+                    None => nn_rope::compute_inv_freqs(head_dim, base_freq),
+                    Some(s) => nn_rope::compute_inv_freqs_llama3(
+                        head_dim,
+                        base_freq,
+                        s.factor(),
+                        s.low_freq_factor(),
+                        s.high_freq_factor(),
+                        s.original_max_position_embeddings,
+                    ),
+                };
                 let x_opt = self.nodes[inputs[0]].output.as_ref();
                 if let Some(x) = x_opt.cloned() {
-                    let out = nn_rope::apply_rope(&x, head_dim, base_freq);
+                    let out = nn_rope::apply_rope_with_inv_freqs(&x, head_dim, &inv_freqs);
                     self.nodes[node_id].set_output(out);
 
                     if record_tape {
                         let op_inputs = self.nodes[node_id].inputs.clone();
                         let ids = op_inputs.clone();
                         let head_dim_captured = head_dim;
-                        let base_freq_captured = base_freq;
+                        let inv_freqs_captured = inv_freqs;
                         self.tape.push(BackOp {
                             inputs: op_inputs,
                             output: node_id,
@@ -3869,11 +3884,11 @@ impl Graph {
                                 let x = forward_inputs[0];
                                 let shape = x.shape.clone();
                                 let out_grad_slice = out_grad.as_cpu_slice();
-                                let grad_x = nn_rope::apply_rope_backward(
+                                let grad_x = nn_rope::apply_rope_backward_with_inv_freqs(
                                     out_grad_slice,
                                     &shape,
                                     head_dim_captured,
-                                    base_freq_captured,
+                                    &inv_freqs_captured,
                                 );
                                 add_to_grad_slice(store, ids[0], &grad_x);
                             }),

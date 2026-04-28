@@ -100,7 +100,7 @@ fn build_transformer_block_llama(
     let prefix = format!("model.layers.{}", layer_idx);
     let hidden = config.hidden_size;
     let n_heads = config.num_attention_heads;
-    let head_dim = config.head_dim();
+    let head_dim = config.effective_head_dim();
     let intermediate = config.intermediate_size;
     let batch = runtime.batch;
     let seq = runtime.seq;
@@ -202,8 +202,34 @@ fn build_transformer_block_llama(
     let v = gb.reshape(v_flat, split_shape);
 
     // ---- 4. RoPE on Q and K (V unchanged) ----
-    let q_rope = gb.rope(q, head_dim, config.rope_theta);
-    let k_rope = gb.rope(k, head_dim, config.rope_theta);
+    //
+    // Llama 3.x checkpoints carry a `rope_scaling` block in the
+    // config that reshapes the inverse-frequency schedule (Llama 3
+    // piecewise scaling). Plain RoPE (TinyLlama, SmolLM2, Qwen)
+    // takes the `None` branch and remains bit-identical.
+    let (q_rope, k_rope) = match config.effective_rope_scaling() {
+        None => (
+            gb.rope(q, head_dim, config.rope_theta),
+            gb.rope(k, head_dim, config.rope_theta),
+        ),
+        Some(crate::nn::llama::RopeScaling::Llama3 {
+            factor,
+            low_freq_factor,
+            high_freq_factor,
+            original_max_position_embeddings,
+        }) => {
+            let scaling = crate::amg::nodes::RopeScalingLlama3::new(
+                *factor,
+                *low_freq_factor,
+                *high_freq_factor,
+                *original_max_position_embeddings,
+            );
+            (
+                gb.rope_scaled(q, head_dim, config.rope_theta, scaling.clone()),
+                gb.rope_scaled(k, head_dim, config.rope_theta, scaling),
+            )
+        }
+    };
 
     // ---- 5. [b, s, h, d] → [b, h, s, d] ----
     let q_perm = gb.permute(q_rope, vec![0, 2, 1, 3]);

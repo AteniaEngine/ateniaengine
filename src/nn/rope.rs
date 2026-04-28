@@ -138,14 +138,33 @@ fn validate_shape(shape: &[usize], head_dim: usize, op: &str) {
 /// # Panics
 /// See [`validate_shape`].
 pub fn apply_rope(x: &Tensor, head_dim: usize, base_freq: u32) -> Tensor {
+    let inv_freqs = compute_inv_freqs(head_dim, base_freq);
+    apply_rope_with_inv_freqs(x, head_dim, &inv_freqs)
+}
+
+/// Apply RoPE using a caller-provided inverse-frequency vector.
+///
+/// Used by Llama 3.x checkpoints whose `rope_scaling` field reshapes
+/// the frequency schedule (see [`compute_inv_freqs_llama3`]). For
+/// plain RoPE, prefer [`apply_rope`] which encapsulates the standard
+/// schedule.
+///
+/// `inv_freqs.len()` must equal `head_dim / 2`.
+pub fn apply_rope_with_inv_freqs(x: &Tensor, head_dim: usize, inv_freqs: &[f32]) -> Tensor {
     let shape = &x.shape;
-    validate_shape(shape, head_dim, "apply_rope");
+    validate_shape(shape, head_dim, "apply_rope_with_inv_freqs");
+    assert_eq!(
+        inv_freqs.len(),
+        head_dim / 2,
+        "apply_rope_with_inv_freqs: inv_freqs length {} != head_dim/2 ({})",
+        inv_freqs.len(),
+        head_dim / 2
+    );
 
     let batch = shape[0];
     let seq_len = shape[1];
     let n_heads = shape[2];
     let half = head_dim / 2;
-    let inv_freqs = compute_inv_freqs(head_dim, base_freq);
 
     let x_slice = x.as_cpu_slice();
     let mut output = vec![0.0_f32; x_slice.len()];
@@ -194,22 +213,40 @@ pub fn apply_rope(x: &Tensor, head_dim: usize, base_freq: u32) -> Tensor {
 /// Panics if `out_grad`'s shape does not satisfy the same constraints
 /// as the forward input.
 pub fn apply_rope_backward(out_grad: &[f32], shape: &[usize], head_dim: usize, base_freq: u32) -> Vec<f32> {
-    validate_shape(shape, head_dim, "apply_rope_backward");
+    let inv_freqs = compute_inv_freqs(head_dim, base_freq);
+    apply_rope_backward_with_inv_freqs(out_grad, shape, head_dim, &inv_freqs)
+}
+
+/// Backward pass for RoPE using a caller-provided inverse-frequency
+/// vector. Mirrors [`apply_rope_with_inv_freqs`] for the gradient.
+pub fn apply_rope_backward_with_inv_freqs(
+    out_grad: &[f32],
+    shape: &[usize],
+    head_dim: usize,
+    inv_freqs: &[f32],
+) -> Vec<f32> {
+    validate_shape(shape, head_dim, "apply_rope_backward_with_inv_freqs");
     let expected: usize = shape.iter().product();
     assert_eq!(
         out_grad.len(),
         expected,
-        "apply_rope_backward: out_grad length {} does not match shape product {} (shape = {:?})",
+        "apply_rope_backward_with_inv_freqs: out_grad length {} does not match shape product {} (shape = {:?})",
         out_grad.len(),
         expected,
         shape
+    );
+    assert_eq!(
+        inv_freqs.len(),
+        head_dim / 2,
+        "apply_rope_backward_with_inv_freqs: inv_freqs length {} != head_dim/2 ({})",
+        inv_freqs.len(),
+        head_dim / 2
     );
 
     let batch = shape[0];
     let seq_len = shape[1];
     let n_heads = shape[2];
     let half = head_dim / 2;
-    let inv_freqs = compute_inv_freqs(head_dim, base_freq);
 
     let mut grad_x = vec![0.0_f32; out_grad.len()];
 

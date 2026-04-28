@@ -174,7 +174,17 @@ pub enum NodeType {
     ///   `u32` is used (not `f32`) so the variant remains
     ///   `Eq`-derivable; sub-integer base frequencies are not
     ///   used by any model in scope.
-    RoPE { head_dim: usize, base_freq: u32 },
+    /// - `scaling`: optional Llama 3 piecewise frequency
+    ///   scaling. `None` reproduces plain RoPE bit-for-bit
+    ///   (TinyLlama, SmolLM2, Qwen 2.5). `Some(RopeScalingLlama3)`
+    ///   activates the long-context scaling used by Llama 3.x.
+    ///   See [`RopeScalingLlama3`] and
+    ///   [`crate::nn::rope::compute_inv_freqs_llama3`].
+    RoPE {
+        head_dim: usize,
+        base_freq: u32,
+        scaling: Option<RopeScalingLlama3>,
+    },
     /// Generic activation wrapper for APX 4.8+ (keeps SiLU variant for compat).
     Activation(ActType),
     /// Fused Linear + Activation node.
@@ -189,6 +199,56 @@ pub enum NodeType {
     /// No-op placeholder used for structurally removed nodes.
     NoOp,
     Output,
+}
+
+/// Llama 3 piecewise inverse-frequency scaling parameters carried by
+/// [`NodeType::RoPE`].
+///
+/// Scalars are stored as raw `f32::to_bits` (`u32`) so the enclosing
+/// `NodeType` can stay `Eq + Hash`-derivable. Mirrors the same trick
+/// already used for `NodeType::RmsNorm { eps_bits }` and the legacy
+/// `RoPE { base_freq: u32 }` representation. Use the named accessors
+/// to recover the `f32` values.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RopeScalingLlama3 {
+    factor_bits: u32,
+    low_freq_factor_bits: u32,
+    high_freq_factor_bits: u32,
+    /// Pre-training context length used as the wavelength reference.
+    /// Stored as `u32` directly because it is integer-valued.
+    pub original_max_position_embeddings: u32,
+}
+
+impl RopeScalingLlama3 {
+    /// Build from the `f32` parameters directly read off the config.
+    pub fn new(
+        factor: f32,
+        low_freq_factor: f32,
+        high_freq_factor: f32,
+        original_max_position_embeddings: u32,
+    ) -> Self {
+        Self {
+            factor_bits: factor.to_bits(),
+            low_freq_factor_bits: low_freq_factor.to_bits(),
+            high_freq_factor_bits: high_freq_factor.to_bits(),
+            original_max_position_embeddings,
+        }
+    }
+
+    /// Long-context expansion factor (32.0 for Llama 3.2).
+    pub fn factor(&self) -> f32 {
+        f32::from_bits(self.factor_bits)
+    }
+
+    /// Lower-bound frequency multiplier (1.0 for Llama 3.2).
+    pub fn low_freq_factor(&self) -> f32 {
+        f32::from_bits(self.low_freq_factor_bits)
+    }
+
+    /// Upper-bound frequency multiplier (4.0 for Llama 3.2).
+    pub fn high_freq_factor(&self) -> f32 {
+        f32::from_bits(self.high_freq_factor_bits)
+    }
 }
 
 #[derive(Clone, Debug)]
