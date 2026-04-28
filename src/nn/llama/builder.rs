@@ -142,9 +142,53 @@ fn build_transformer_block_llama(
 
     // matmul is 2D — flatten [b, s, h] → [b*s, h] before each Linear.
     let h_flat = gb.reshape(h, vec![bs, hidden as isize]);
-    let q_flat = gb.matmul(h_flat, q_proj_w);
-    let k_flat = gb.matmul(h_flat, k_proj_w);
-    let v_flat = gb.matmul(h_flat, v_proj_w);
+    let q_flat_raw = gb.matmul(h_flat, q_proj_w);
+    let k_flat_raw = gb.matmul(h_flat, k_proj_w);
+    let v_flat_raw = gb.matmul(h_flat, v_proj_w);
+
+    // ---- 2.b QKV biases (Qwen 2.5 family) ----
+    //
+    // Llama, TinyLlama, and SmolLM2 omit Q/K/V biases. Qwen 2.5
+    // hard-codes them (`bias=True` in `Qwen2Attention`); the
+    // resolved value lives in `LlamaConfig::effective_attention_bias`
+    // so per-family quirks stay out of the builder.
+    //
+    // Bias parameter shapes are `[1, hidden]` (post-GQA-tile) so a
+    // same-rank `BroadcastAdd` against the matmul output `[bs, hidden]`
+    // satisfies the AMG broadcast rule (rank match required at
+    // `graph.rs::broadcast_add`). The tile + reshape happens at load
+    // time via the weight-mapper transform pipeline (B.3); the builder
+    // sees the bias parameter at its final `[1, hidden]` shape.
+    let (q_flat, k_flat, v_flat) = if config.effective_attention_bias() {
+        let q_proj_b = register_param_named(
+            gb,
+            &format!("{}.self_attn.q_proj.bias", prefix),
+            vec![1, hidden],
+            param_ids,
+            param_names,
+        );
+        let k_proj_b = register_param_named(
+            gb,
+            &format!("{}.self_attn.k_proj.bias", prefix),
+            vec![1, hidden],
+            param_ids,
+            param_names,
+        );
+        let v_proj_b = register_param_named(
+            gb,
+            &format!("{}.self_attn.v_proj.bias", prefix),
+            vec![1, hidden],
+            param_ids,
+            param_names,
+        );
+        (
+            gb.broadcast_add(q_flat_raw, q_proj_b),
+            gb.broadcast_add(k_flat_raw, k_proj_b),
+            gb.broadcast_add(v_flat_raw, v_proj_b),
+        )
+    } else {
+        (q_flat_raw, k_flat_raw, v_flat_raw)
+    };
 
     // ---- 3. Multi-head reshape ----
     let split_shape = vec![
