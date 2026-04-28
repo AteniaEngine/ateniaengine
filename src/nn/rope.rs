@@ -10,7 +10,7 @@ use crate::tensor::Tensor;
 /// `i in 0..head_dim/2`. Shared by [`apply_rope`] and
 /// [`apply_rope_backward`] so that any change to the schedule applies
 /// to both directions.
-pub(crate) fn compute_inv_freqs(head_dim: usize, base_freq: u32) -> Vec<f32> {
+pub fn compute_inv_freqs(head_dim: usize, base_freq: u32) -> Vec<f32> {
     let half = head_dim / 2;
     let base_freq_f32 = base_freq as f32;
     (0..half)
@@ -54,7 +54,7 @@ pub(crate) fn compute_inv_freqs(head_dim: usize, base_freq: u32) -> Vec<f32> {
 ///                                     inv_freq[i] = (1 - s) * inv_freq_base[i] / factor
 ///                                                  + s * inv_freq_base[i]      // smooth
 /// ```
-pub(crate) fn compute_inv_freqs_llama3(
+pub fn compute_inv_freqs_llama3(
     head_dim: usize,
     base_freq: u32,
     factor: f32,
