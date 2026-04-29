@@ -288,12 +288,35 @@ fn get_optional_u32(v: &Value, key: &str) -> Result<Option<u32>, ConfigError> {
     }
 }
 
+/// Default `rope_theta` for Llama-family architectures that
+/// predate the explicit field in `config.json`. **Llama 2** (June
+/// 2023) shipped before HuggingFace started serialising `rope_theta`
+/// — its `config.json` carries no such field, but the upstream
+/// PyTorch implementation hard-codes `theta = 10000.0` inside
+/// `LlamaRotaryEmbedding`. Every later checkpoint (TinyLlama,
+/// SmolLM2, Qwen 2.5, Llama 3.x) writes the field explicitly, so
+/// this default is exercised exclusively by the Llama 1/2 era.
+///
+/// Defined as a constant so the M4.7.6.a parser change has a
+/// single, documented source of truth and so a future
+/// architectural family with a different default (none known
+/// today) becomes a one-line audit point.
+pub const ROPE_THETA_LEGACY_DEFAULT: u32 = 10_000;
+
 /// `rope_theta` may be encoded as a float (`10000.0`) or as an integer
 /// (`10000`). Accept both, fail if non-integer-valued or negative.
+///
+/// **M4.7.6.a**: when the field is absent or `null`, fall back to
+/// [`ROPE_THETA_LEGACY_DEFAULT`] (10000) — Llama 2 era checkpoints
+/// did not serialise the field. Pre-M4.7.6.a this raised
+/// `Parse("missing field rope_theta")`, which prevented Llama 2
+/// from loading even though the math was correct.
 fn get_rope_theta(v: &Value) -> Result<u32, ConfigError> {
-    let raw = v
-        .get("rope_theta")
-        .ok_or_else(|| ConfigError::Parse("missing field `rope_theta`".into()))?;
+    let raw = match v.get("rope_theta") {
+        None => return Ok(ROPE_THETA_LEGACY_DEFAULT),
+        Some(Value::Null) => return Ok(ROPE_THETA_LEGACY_DEFAULT),
+        Some(x) => x,
+    };
     let f = raw
         .as_f64()
         .ok_or_else(|| ConfigError::Parse("`rope_theta` is not numeric".into()))?;
