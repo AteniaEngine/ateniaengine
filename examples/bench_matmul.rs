@@ -296,6 +296,24 @@ fn bench_matmul_shape(shape: &MatMulShape) {
             });
             print_row("avx2 4x8 BLIS (apx6_4)", shape, m_s, mn_s);
         }
+
+        // M4.8.e: matrixmultiply::sgemm direct call. Single-
+        // threaded (the library's default build); the
+        // dispatcher's rayon row-partition wrapper layers
+        // multi-thread parallelism on top.
+        let (m_s, mn_s) = time_iters(TIMED_ITERS, || {
+            unsafe {
+                matrixmultiply::sgemm(
+                    shape.m, shape.k, shape.n,
+                    1.0,
+                    a.as_ptr(), shape.k as isize, 1,
+                    b.as_ptr(), shape.n as isize, 1,
+                    0.0,
+                    out.as_mut_ptr(), shape.n as isize, 1,
+                );
+            }
+        });
+        print_row("matrixmultiply sgemm", shape, m_s, mn_s);
     }
 
     let (m_s, mn_s) = time_iters(scalar_iters, || {

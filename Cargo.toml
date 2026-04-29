@@ -37,6 +37,18 @@ libloading = "0.8"
 safetensors = "0.4"
 half = "2"
 
+# M4.8.e — vendor-agnostic cache-blocked SIMD matmul.
+# Pure-Rust BLIS-style sgemm with AVX2/FMA + NEON paths and
+# runtime ISA dispatch (no MKL, no C toolchain, AMD-friendly,
+# ARM-ready). The dispatcher routes shapes large enough to
+# benefit from cache blocking through `matrixmultiply::sgemm`;
+# small shapes stay on the existing handcoded kernels because
+# the matrixmultiply packing overhead dominates them. Runtime
+# parallelism for column partitioning lives in
+# `matmul_dispatcher.rs` (rayon, M4.8.d), keeping
+# matrixmultiply on its default single-threaded build.
+matrixmultiply = "0.3"
+
 # serde_json is used by both the TinyLlama config loader (M4.5-b1)
 # and the hw-probe binary, so it stays as a regular runtime dep
 # rather than being feature-gated.

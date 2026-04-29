@@ -51,12 +51,29 @@ pub fn matmul_dispatch(
     matmul_dispatch_serial(a, b, out, m, k, n);
 }
 
-/// Pre-M4.8.d body of `matmul_dispatch`, preserved
-/// unchanged. Only the caller surface moved: the original
-/// `matmul_dispatch` is now the parallel wrapper above and
-/// reaches this serial path either when `M = 1` (no
-/// parallel benefit) or after partitioning a multi-row call
-/// into 1-row pieces.
+/// M4.8.e — minimum total work to engage `matrixmultiply::sgemm`.
+///
+/// `matrixmultiply` packs A and B into cache-friendly buffers
+/// before the compute kernel runs. The packing has fixed
+/// overhead (~1 µs of `memcpy` per panel); below ~1 MFLOP of
+/// compute the packing dominates and the existing AVX2 paths
+/// win. Above this threshold the cache blocking pays off
+/// massively: on the dev box (Raptor Lake-HX, 30 MB L3) a
+/// 1×4096×32000 (~260 MFLOPS) call drops from 167 ms (avx2
+/// basic) to ~25 ms via single-threaded matrixmultiply.
+///
+/// 1 MFLOPs lower bound is conservative; the bench harness
+/// catches regressions if a shape ends up on the wrong side.
+const MATRIXMULTIPLY_MIN_MK_N: usize = 1_000_000;
+
+/// Pre-M4.8.d body of `matmul_dispatch`, preserved with one
+/// addition (M4.8.e): a `matrixmultiply::sgemm` fast path
+/// for shapes whose total work clears
+/// `MATRIXMULTIPLY_MIN_MK_N`. Reaches this serial path
+/// either when `M = 1` (no row parallelism possible — the
+/// dominant case for seq=1 generation) or after the
+/// row-partitioning wrapper has split a multi-row call into
+/// 1-row pieces (where the per-row work is `1 * k * n`).
 fn matmul_dispatch_serial(
     a: &[f32],
     b: &[f32],
@@ -65,6 +82,39 @@ fn matmul_dispatch_serial(
     k: usize,
     n: usize,
 ) {
+    // M4.8.e: route cache-blocking-friendly shapes through
+    // `matrixmultiply::sgemm`. Pure-Rust, AVX2/FMA on x86_64,
+    // NEON on aarch64 — vendor-agnostic by design (rules out
+    // MKL by construction, satisfies the M4.8 milestone
+    // constraint).
+    //
+    // Row-major contiguous layout: A is (m, k) row-major →
+    // rsa = k, csa = 1. B is (k, n) row-major → rsb = n,
+    // csb = 1. Output C is (m, n) row-major → rsc = n,
+    // csc = 1. `alpha = 1.0`, `beta = 0.0` overwrites the
+    // output (matches the contract every other path in this
+    // dispatcher honours).
+    //
+    // SAFETY: `sgemm` is `unsafe` because it accepts raw
+    // pointers + strides that the caller must promise are
+    // in-bounds for the (m, k, n) triple. We feed it slices
+    // we own with explicitly-computed strides; the
+    // pre-condition holds.
+    let total_work = m * k * n;
+    if total_work >= MATRIXMULTIPLY_MIN_MK_N {
+        unsafe {
+            matrixmultiply::sgemm(
+                m, k, n,
+                1.0,
+                a.as_ptr(), k as isize, 1,
+                b.as_ptr(), n as isize, 1,
+                0.0,
+                out.as_mut_ptr(), n as isize, 1,
+            );
+        }
+        return;
+    }
+
     let mode = crate::apx_mode();
 
     // APX 7.x: read runtime flags to enable PEX paths.
