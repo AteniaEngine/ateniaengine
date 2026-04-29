@@ -13,16 +13,119 @@
 //! This module also defines the abort reason enum surfaced by the
 //! checked execution path.
 
+use std::collections::VecDeque;
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::amm::signal_bus::SignalBus;
 use crate::tensor::disk_tier;
 use crate::v16::contract::execution_contract::ExecutionContract;
 use crate::v16::guards::guard_conditions::GuardConditions;
 use crate::v16::guards::guard_manager::GuardManager;
+
+/// M4.7.5.b — touch-ordered LRU of graph node IDs, used by the
+/// per-tensor selective-spill policy that lands in M4.7.5.c+.d.
+///
+/// The structure is a single `Mutex<VecDeque<usize>>`. On a touch:
+/// the existing entry (if any) is removed via `retain` (O(N)) and
+/// the id is appended at the back, so the front of the deque is
+/// the *least recently used* node and the back is the *most
+/// recently used*. The `migrate_all_cpu_to_disk` selective sibling
+/// (M4.7.5.c) reads the front to pick eviction candidates.
+///
+/// **Cost analysis** (Risk #1 of the M4.7.5 investigation): O(N)
+/// per touch on a deque of N nodes. For TinyLlama (N≈200,
+/// 200 ops/forward) the touch cost is ~40k pointer comparisons per
+/// forward; at ~1 ns each, ~40 µs total — well under 0.01% of a
+/// 30 s forward. For Llama 2 13B (N≈1850, ~1850 ops/forward) the
+/// touch cost is ~3.4 M comparisons ≈ 3.4 ms, still <0.02% of a
+/// 30 s budget. A doubly-linked-list LRU would be O(1) per touch
+/// at the cost of unsafe-adjacent code; the simpler structure is
+/// chosen for M4.7.5 and re-evaluated in M5 if the
+/// micro-benchmark surfaces a regression.
+///
+/// The LRU is touched from `NodeTimingRecorder::drop` so it
+/// reflects the **completion order** of nodes, not their
+/// scheduling order — which is what selective-spill policy needs
+/// (a node that just finished is the most recently used; one
+/// that finished 30 layers ago is a strong eviction candidate).
+///
+/// Lock contention is non-existent in the executor's
+/// single-thread hot path. The mutex is taken explicitly so a
+/// future multi-thread executor (M5+) keeps correctness without
+/// changes to this API.
+#[derive(Debug)]
+pub struct TouchOrder {
+    inner: Mutex<VecDeque<usize>>,
+}
+
+impl TouchOrder {
+    /// Construct an empty touch order.
+    pub fn new() -> Self {
+        Self {
+            inner: Mutex::new(VecDeque::new()),
+        }
+    }
+
+    /// Record `node_id` as the most recently used. If `node_id` was
+    /// already present, it is moved to the back; otherwise it is
+    /// appended. Idempotent.
+    ///
+    /// A poisoned mutex is silently recovered (`into_inner`); the
+    /// touch is a best-effort signal — losing one update is far
+    /// less harmful than poisoning the executor on a benign
+    /// concurrent panic in tests.
+    pub fn touch(&self, node_id: usize) {
+        let mut guard = match self.inner.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        // Remove any prior entry, then append. `retain` is O(N) on
+        // the deque; see the type's docstring for the cost analysis.
+        guard.retain(|&id| id != node_id);
+        guard.push_back(node_id);
+    }
+
+    /// Snapshot the touch order as a `Vec<usize>`, oldest first
+    /// (front of the deque) to most recently used (back). Used by
+    /// the selective-spill policy to pick eviction candidates and
+    /// by tests to assert the order.
+    pub fn snapshot(&self) -> Vec<usize> {
+        let guard = match self.inner.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        guard.iter().copied().collect()
+    }
+
+    /// Number of distinct node ids currently tracked.
+    pub fn len(&self) -> usize {
+        let guard = match self.inner.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        guard.len()
+    }
+
+    /// Drop every entry. Used by tests that want a deterministic
+    /// starting state across multiple `execute` calls on the same
+    /// graph.
+    pub fn clear(&self) {
+        let mut guard = match self.inner.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        guard.clear();
+    }
+}
+
+impl Default for TouchOrder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Runtime reactive execution layer attached to a `Graph`.
 ///
@@ -66,6 +169,14 @@ pub struct ReactiveExecutionContext {
     /// [`Self::with_cache_dir`] to place the files in a
     /// deterministic location (typically a unique temp dir).
     pub cache_dir: PathBuf,
+    /// M4.7.5.b: touch-ordered LRU of graph node ids. Updated
+    /// from `NodeTimingRecorder::drop` so each node lands at the
+    /// MRU end at completion. Read by the M4.7.5.c selective-spill
+    /// policy to pick eviction candidates from the LRU end.
+    /// Carried as `Arc` so the `NodeTimingRecorder` can hold a
+    /// cheap clone alongside its `Arc<SignalBus>` without keeping
+    /// the whole context alive for the duration of one node.
+    pub(crate) lru_touch_order: Arc<TouchOrder>,
 }
 
 /// M3-e.6: system-wide CPU utilization threshold above which the
@@ -334,7 +445,17 @@ impl ReactiveExecutionContext {
             degrade_vetoed_by_cpu_count: AtomicU64::new(0),
             deep_degrade_events_count: AtomicU64::new(0),
             cache_dir: disk_tier::default_cache_dir(),
+            lru_touch_order: Arc::new(TouchOrder::new()),
         }
+    }
+
+    /// M4.7.5.b — shared handle to the touch-ordered LRU. Cheap
+    /// clone (atomic refcount); the underlying `TouchOrder`
+    /// lives on the context for as long as the context does.
+    /// Used by the selective-spill policy and by tests that
+    /// need to inspect node completion order.
+    pub fn lru_touch_order(&self) -> Arc<TouchOrder> {
+        Arc::clone(&self.lru_touch_order)
     }
 
     /// M3-e.11.6: manually run the orphan-file GC on

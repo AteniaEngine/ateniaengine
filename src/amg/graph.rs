@@ -741,6 +741,12 @@ struct NodeTimingRecorder {
     node_id: usize,
     node_count: usize,
     bus: Option<std::sync::Arc<crate::amm::signal_bus::SignalBus>>,
+    /// M4.7.5.b — shared touch-ordered LRU. Touched on Drop so
+    /// the LRU records *completion* order (a freshly-touched node
+    /// lands at the MRU end). `None` when no `reactive_context`
+    /// is attached, in which case the touch is a no-op (nothing
+    /// to update).
+    lru: Option<std::sync::Arc<crate::amg::reactive::TouchOrder>>,
     record_hpge: bool,
 }
 
@@ -749,6 +755,13 @@ impl Drop for NodeTimingRecorder {
         let dt = self.start.elapsed();
         if let Some(bus) = self.bus.as_ref() {
             bus.latency_monitor().record_latency(dt);
+        }
+        // M4.7.5.b — register node completion in the LRU. O(N) per
+        // touch on the deque size; cost analysis lives on the
+        // `TouchOrder` docstring. Cheap as long as the executor
+        // walks one node at a time, which is the contract today.
+        if let Some(lru) = self.lru.as_ref() {
+            lru.touch(self.node_id);
         }
         if self.record_hpge {
             crate::apx7::hpge_priority::record_node_time(
@@ -2217,6 +2230,7 @@ impl Graph {
                 .reactive_context
                 .as_ref()
                 .map(|c| std::sync::Arc::clone(&c.signal_bus)),
+            lru: self.reactive_context.as_ref().map(|c| c.lru_touch_order()),
             record_hpge: crate::apx_mode_at_least("7.6"),
         };
 
