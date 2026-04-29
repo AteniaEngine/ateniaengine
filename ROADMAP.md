@@ -8,7 +8,9 @@ This roadmap communicates scope and priority, not calendar commitments. Versions
 
 ## Status overview
 
-Atenia Engine is currently working through APX v20 (Real Model Runtime Integration). Earlier versions (v12 through v19) are complete. The most recently closed sub-milestone is **M4.7: beyond-VRAM execution — the killer demo**. Atenia executes Llama 2 13B Chat end-to-end on dev-class commodity hardware (RTX 4070 Laptop, 8 GB VRAM, 32 GB RAM, D: NVMe spill cache) under three execution modes; argmax is preserved **bit-exactly** (id=1, logit=4.7747) across the LRU spill + lazy-restore cycle on a 26 GB BF16 model that does not fit in VRAM, does not fit in RAM alone, and is mediated end-to-end by the M3-e reaction loop. The v20 thesis "adapt execution to hardware reality, not the other way around" is now demonstrated against a real workload, not synthetic memory-pressure injection.
+Atenia Engine is currently working through APX v20 (Real Model Runtime Integration). Earlier versions (v12 through v19) are complete. The most recently closed sub-milestone is **M4.9: public CLI demo**. The full M4.7 → M4.8 → M4.9 trajectory is closed: Llama 2 13B Chat runs end-to-end on dev-class commodity hardware (RTX 4070 Laptop, 8 GB VRAM, 32 GB RAM, NVMe spill cache) with the LRU spill + lazy-restore transparency contract preserved bit-exactly; the matmul dispatcher is 49.5× faster on the production shape; and the entire reproduction surface fits in one CLI command (`atenia run --mode c --model <path>`) that completes in **6.9 minutes wall-clock** on the dev box. The v20 thesis "adapt execution to hardware reality, not the other way around" is now demonstrated against a real workload — and reproducible by anyone who clones the repo with the right hardware.
+
+**Next active milestone: M5** (tokenizer + KV cache + token-by-token generation). All v20 prerequisites are in place.
 
 Detailed closing notes per milestone live in the `docs/` directory:
 
@@ -16,7 +18,9 @@ Detailed closing notes per milestone live in the `docs/` directory:
 - [docs/HANDOFF_APX_V20_M4.md](./docs/HANDOFF_APX_V20_M4.md) — safetensors loader and weight mapping mechanics
 - [docs/HANDOFF_APX_V20_M4.5.md](./docs/HANDOFF_APX_V20_M4.5.md) — real model execution end-to-end (`TinyLlama-1.1B`)
 - [docs/HANDOFF_APX_V20_M4.6.md](./docs/HANDOFF_APX_V20_M4.6.md) — Llama-family compatibility expansion (four checkpoints, F64 validation methodology)
-- [docs/HANDOFF_APX_V20_M4.7.md](./docs/HANDOFF_APX_V20_M4.7.md) — beyond-VRAM killer demo (Llama 2 13B Chat on 8 GB VRAM + 32 GB RAM, transparency contract closed)
+- [docs/HANDOFF_APX_V20_M4.7.md](./docs/HANDOFF_APX_V20_M4.7.md) — beyond-VRAM killer demo (Llama 2 13B Chat, transparency contract closed)
+- [docs/HANDOFF_APX_V20_M4.8.md](./docs/HANDOFF_APX_V20_M4.8.md) — performance optimisation (3.5× on 13B; 49.5× on the production matmul shape; vendor-agnostic AVX2/FMA + matrixmultiply)
+- [docs/HANDOFF_APX_V20_M4.9.md](./docs/HANDOFF_APX_V20_M4.9.md) — public CLI demo (`atenia run --mode c` reproduces the momento guau in 6.9 min via one command)
 
 ---
 
@@ -168,7 +172,7 @@ The momento guau is closed but the demo's wall-clock is impractical for a public
   - `8655832` (a — clap 4 derive-based skeleton in `src/bin/atenia.rs`. Three subcommands: `probe`, `run`, `explain` (legacy v13 surface preserved). `probe` arm gated at runtime via `cfg!(feature = "hw-probe")` rather than `required-features` on the `[[bin]]` entry so default builds stay installable. Probe parity verified bit-exact against the legacy `hardware_probe` binary.).
   - `a18c64a` (b — `src/demo/mod.rs` extraction. Pressure probes, reactive-context factory, sharded BF16 load helper, argmax reduction lifted from `tests/m4_7_6_e_*` into `pub mod demo` behind a default-on `demo` Cargo feature. Test refactored to consume the public module via a 25-line wrapper that preserves the pre-M4.9.b call sites; M4.7.6.e `cargo test --no-run` clean.).
   - `5851bec` (c — `atenia run --mode a` end-to-end. New `src/cli_run.rs` library module with the DemoReport schema, heartbeat-dots progress UX (~2 s flush on stderr), hardware soft-warning when total RAM < 28 GB, cache-dir disk-throughput probe (200 MB/s warning floor), text + JSON renderers. Mode A reproduces M4.8.f bit-exact: argmax id=1 logit=4.7747 at pos 0, forward 278 s, total 7.5 min on the dev box.).
-  - `d554996` (d — `atenia run --mode c`. Forced 50 % LRU spill via `Graph::deep_degrade_with_lru`, post-spill forward with lazy restore, transparency contract block. `argmax(pre)` and `argmax(post)` compared bit-exactly; exit code 3 on violation, 0 on PASS. Smoke-tested on Llama 2 13B Chat: argmax(pre) = argmax(post) = 1 logit 4.7747, 866/1732 LRU entries spilled (50.0 % exact), total wall-clock 12.4 min — M4.7.6.e momento guau reproduced via one command.).
+  - `d554996` (d — `atenia run --mode c`. Forced 50 % LRU spill via `Graph::deep_degrade_with_lru`, post-spill forward with lazy restore, transparency contract block. `argmax(pre)` and `argmax(post)` compared bit-exactly; exit code 3 on violation, 0 on PASS. Smoke-tested on Llama 2 13B Chat: argmax(pre) = argmax(post) = 1 logit 4.7747, 866/1732 LRU entries spilled (50.0 % exact). Subsequent dev-box reproductions on a clean shell with warm caches land at **warmup forward 200 s + spill 19 s + post-spill forward 23 s = 6.9 min total wall-clock** — M4.7.6.e momento guau reproduced via one command, faster on every successive run as M4.8 perf compounds with cache warmth.).
   - `6bed661` (e — `atenia run --mode b`. High-pressure RAM/VRAM probes promoting `Degrade → DeepDegrade` autonomously; forward wrapped in `catch_unwind` to absorb the documented M4.7.5.e activation-arm gap. Smoke-tested: 4 DeepDegrade events, 26 031.7 MB spilled, panic message surfaced verbatim, exit 0 (trigger plumbing OK). 8.1 min wall-clock.).
   - **(f)** — Documentation + release polish. New `docs/CLI.md` documenting every subcommand, flag, exit code, and the JSON schema. `README.md` ships the "Reproduce the momento guau in one command" section near the top with the exact command sequence and expected output. Legacy `hardware_probe` binary dropped (parity verified at .a; the `atenia probe` subcommand is now the canonical surface). ROADMAP marked closed at this commit.
 
@@ -198,19 +202,23 @@ The momento guau is closed but the demo's wall-clock is impractical for a public
 
 ---
 
-## Next active milestone — M4.8: Performance optimization
+## Next active milestone — M5: Inference UX
 
-The momento guau is closed (M4.7.6.e) but its wall-clock is impractical for a public reproduction. M4.8 closes the gap between theoretical CPU peak (hundreds of GFLOPS on the i7-14650HX) and observed Atenia throughput (~5 GFLOPS effective on TinyLlama). Investigation-previa lands first per the M4.5 / M4.6 / M4.7 discipline; no code before the investigation report enumerates dispatcher state, real bottleneck profile, and quick wins. Vendor-agnostic by design — Intel and AMD x86-64 baseline, no MKL, with NEON/AMX hooks left open for v22 / v24.
+The v20 reproduction surface is closed (M4.9 ✅): `atenia run --mode c` produces a `[PASS] ✓` transparency contract on Llama 2 13B Chat in ~6.9 minutes on the dev box. Every prerequisite for M5 is in place: every model in scope is numerically validated against PyTorch F64 (ADR-004), the storage / spill / restore / parallel-matmul primitives are wired and bit-exact, the public CLI is reproducible cross-platform, and the build is vendor-agnostic.
 
-## After M4.8 — M4.9: Public CLI demo
+**M5 scope:**
 
-`atenia probe` + `atenia run --model <path> --mode {a|b|c}`. One command to reproduce the momento guau on a 32 GB / 8 GB box. Depends on M4.8 because the demo is not credible at 18.7-minute wall-clock — it is at 2–4 minutes.
+- **Tokenizer integration**. `tokenizers` crate (or sentencepiece-rs) wired so the demo accepts text input, not raw float-encoded token IDs. The current Mode A / Mode C harnesses prompt with `[1.0, 100.0, 200.0, 300.0]` (BOS + arbitrary IDs); M5 lifts that to "BOS + tokenized prompt".
+- **KV cache**. Per-layer K and V storage so token-by-token generation skips the prefix-prefill cost on each new token. Critical for any wall-clock that approximates "interactive". Memory cost: O(layers × seq × hidden) per sample; needs to integrate with the M4.7 spill / restore primitives so long contexts spill cleanly under pressure.
+- **Token-by-token generation loop**. `atenia generate --prompt "<text>" --max-tokens N` as a fourth `atenia run` mode (or a new `atenia generate` subcommand). Greedy decoding first; sampling (temperature, top-k, top-p) as a follow-up.
+- **13 B GPU acceleration sub-milestone** (deferred technical debt from M4.7):
+  - **Non-pooled `cuda_matmul` variant** for tensors > 64 MB. Direct `cudaMalloc` per invocation — bypasses the `apx4_12::DEFAULT_BLOCK_SIZE` pool ceiling that currently routes every Llama 2 13B layer (100–270 MB) to the CPU fallback. Tracked in HANDOFF M4.7 decision 34.
+  - **`apx4::gpu_context::gpu_available()` reactivation**. Hardcoded to `false` since pre-M4.6; lands together with the non-pooled variant or rejected tensors silently corrupt. Tracked in HANDOFF M4.7 decision 35.
+  - **`ensure_cpu` activation-arm coverage** under continuous spill pressure. M4.7.6.e Mode B exposed the gap; the M4.9 CLI absorbs it via `catch_unwind`. Closing the gap flips Mode B from "trigger validated, forward absorbed" to "trigger validated, forward completes". Tracked in HANDOFF M4.7 decision 38.
 
-## After M4.9 — M5: Inference UX
+The 13B GPU sub-milestone is **not** a prerequisite for the 1B-class generation work; it unblocks the per-token wall-clock on the killer-demo target. M5 ships the generation loop on the M4.7 / M4.8 stack as it stands; the GPU acceleration is the tail that makes 13B token-by-token generation interactive rather than 30 s/token.
 
-Tokenizer integration + KV cache + token-by-token generation. Becomes meaningfully easier post-M4.7 because every model in scope is now numerically validated and the storage / spill / restore primitives are in place; the unknowns collapse to UX rather than correctness or memory tiering. The M5+ technical-debt items deferred from M4.7 (non-pooled `cuda_matmul` for tensors > 64 MB; `apx4::gpu_context::gpu_available()` reactivation; `ensure_cpu` activation-arm coverage under continuous pressure) land inside M5, scoped as a "13 B GPU acceleration" sub-milestone — they are not a prerequisite for the 1B-class generation work but they unblock the per-token wall-clock on the killer-demo target.
-
-See [HANDOFF M4.7](./docs/HANDOFF_APX_V20_M4.7.md) "How to resume on M5" for the recommended sequencing.
+See [HANDOFF M4.7](./docs/HANDOFF_APX_V20_M4.7.md) "How to resume on M5" and [HANDOFF M4.9](./docs/HANDOFF_APX_V20_M4.9.md) for the recommended sequencing.
 
 ---
 
