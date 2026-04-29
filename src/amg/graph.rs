@@ -489,11 +489,23 @@ impl Graph {
         })
     }
 
-    /// M3-e.11.4: migrate every `node.output` currently in
-    /// `TensorStorage::Cpu` to `TensorStorage::Disk` via the disk
-    /// tier introduced in M3-e.11.1. Used by the `DeepDegrade`
-    /// reaction strategy that lands in M3-e.11.5; also callable
-    /// standalone for tests and future policies.
+    /// M3-e.11.4 (extended in M4.7.4.c): migrate every
+    /// `node.output` currently in `TensorStorage::Cpu` *or*
+    /// `TensorStorage::CpuBf16` to `TensorStorage::Disk` via the
+    /// disk tier introduced in M3-e.11.1. Used by the
+    /// `DeepDegrade` reaction strategy from M3-e.11.5; also
+    /// callable standalone for tests and future policies.
+    ///
+    /// **M4.7.4.c BF16 arm**: a `CpuBf16(Vec<u16>)` tensor is
+    /// spilled at its native 2-byte width via `write_bf16_tensor`,
+    /// producing a `DiskTensorHandle` tagged
+    /// `DiskDtype::BF16`. The disk file therefore carries the
+    /// same 50 % footprint saving the M4.7.2 storage variant
+    /// gives in RAM — a 13B-class checkpoint stays at ~26 GB on
+    /// disk instead of inflating to ~52 GB via an f32 upcast.
+    /// Pre-M4.7.4.c the BF16 arm fell into `tensors_skipped`,
+    /// silently defeating the spill on the very inputs the
+    /// reactive loop most cares about.
     ///
     /// # Atomicity
     ///
@@ -568,32 +580,44 @@ impl Graph {
                 continue;
             };
 
-            // Only Cpu tensors are migration candidates. Cuda gets
-            // skipped (caller should compose with
-            // migrate_all_cuda_to_cpu first via migrate_all_to_disk).
-            // Disk is already in the target tier.
-            if !matches!(tensor.storage, TensorStorage::Cpu(_)) {
-                report.tensors_skipped += 1;
-                continue;
-            }
-
-            // Extract a copy of the Cpu data WITHOUT mutating the
-            // storage yet. If the write below fails, the tensor
-            // must remain fully readable.
-            let data: Vec<f32> = match &tensor.storage {
-                TensorStorage::Cpu(v) => v.clone(),
-                _ => unreachable!("matches! above rules out non-Cpu"),
+            // M4.7.4.c: both Cpu (F32) and CpuBf16 are migration
+            // candidates. Cuda gets skipped (caller should compose
+            // with migrate_all_cuda_to_cpu first via
+            // migrate_all_to_disk). Disk is already in the target
+            // tier.
+            //
+            // Pre-M4.7.4.c the CpuBf16 arm fell into `tensors_skipped`,
+            // which silently defeated the M4.7.2 50% RAM win the
+            // moment the reactive loop tried to spill: a 13B-class
+            // checkpoint stored as CpuBf16 reported migration
+            // success while leaving every parameter in RAM. The
+            // BF16 arm now spills via the dtype-tagged
+            // `write_bf16_tensor` from disk_tier (M4.7.4.a), so the
+            // 50% saving propagates to disk too.
+            let handle_result = match &tensor.storage {
+                TensorStorage::Cpu(v) => {
+                    let data = v.clone();
+                    crate::tensor::disk_tier::write_f32_tensor(cache_dir, &data)
+                }
+                TensorStorage::CpuBf16(v) => {
+                    let data = v.clone();
+                    crate::tensor::disk_tier::write_bf16_tensor(cache_dir, &data)
+                }
+                _ => {
+                    // Cuda / Disk — already-resident or already-
+                    // spilled, see arm comment above.
+                    report.tensors_skipped += 1;
+                    continue;
+                }
             };
 
             // Write-before-swap: the disk file is created first;
             // only after we have a valid handle do we replace
             // `tensor.storage`. If the write errors, the tensor
-            // stays in Cpu and the report either becomes partial
-            // (if earlier tensors migrated) or we return Err (if
-            // nothing migrated yet).
-            let handle = match crate::tensor::disk_tier::write_f32_tensor(
-                cache_dir, &data,
-            ) {
+            // stays in its source tier and the report either
+            // becomes partial (if earlier tensors migrated) or we
+            // return Err (if nothing migrated yet).
+            let handle = match handle_result {
                 Ok(h) => h,
                 Err(e) => {
                     let err = StorageTransferError::DiskWriteFailed(e.to_string());
@@ -610,8 +634,11 @@ impl Graph {
             };
 
             // Atomic swap: the Arc<InnerDiskFile> from `handle`
-            // becomes the owner. The previous Cpu Vec<f32> drops
-            // (its memory is released as usual).
+            // becomes the owner. The previous Cpu Vec<f32> /
+            // CpuBf16 Vec<u16> drops (its memory is released as
+            // usual). The dtype tag on the handle records which
+            // path produced the file so `ensure_cpu` can route
+            // correctly on restore (M4.7.4.d).
             tensor.storage = TensorStorage::Disk(handle);
             report.tensors_migrated += 1;
         }
