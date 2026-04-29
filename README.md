@@ -157,6 +157,56 @@ Full, current roadmap: [ROADMAP.md](./ROADMAP.md).
 
 ---
 
+## 🚀 Reproduce the *momento guau* in one command
+
+The shortest path from `git clone` to a green transparency contract on dev-box hardware (RTX 4070 Laptop, 8 GB VRAM, 32 GB RAM, NVMe):
+
+```bash
+git clone https://github.com/AteniaEngine/ateniaengine.git
+cd ateniaengine
+
+# Download Llama 2 13B Chat (requires HuggingFace auth).
+huggingface-cli download meta-llama/Llama-2-13b-chat-hf \
+    --local-dir ./models/llama-2-13b-chat \
+    --include '*.safetensors' '*.json' 'tokenizer*'
+
+cargo install --path .
+
+atenia run --mode c \
+           --model ./models/llama-2-13b-chat \
+           --cache-dir ./atenia-cache
+```
+
+Expected output (~12 minutes wall-clock on the dev-box hardware):
+
+```
+=== Atenia v20 Killer Demo — Llama-family — Mode C ===
+Phases:
+  Build graph ....................   1.28s
+  Load weights .................   166.78s   (~156 MB/s)
+  Warmup forward ...............   470.98s
+  Force LRU spill ................  72.52s   (866 tensors migrated)
+  Forward ......................    31.15s
+Per-position argmax:
+  Pos 0: argmax id =     1   logit = 4.7747
+Transparency contract:
+  argmax(pre)  = 1, logit 4.7747
+  argmax(post) = 1, logit 4.7747
+  [PASS] ✓ argmax(pre-spill) == argmax(post-spill) bit-exactly —
+          the LRU spill + lazy-restore cycle is mathematically
+          transparent at this parameter scale.
+```
+
+Three modes are available:
+
+- `--mode a` — clean RAM, no spill (baseline; ~7.5 min on the dev box).
+- `--mode b` — autonomous LRU spill triggered by simulated memory pressure (~8 min; trigger plumbing validation).
+- `--mode c` — forced 50 % LRU spill, the canonical *momento guau* path (~12 min; transparency contract).
+
+Full CLI reference: [docs/CLI.md](./docs/CLI.md). Each `atenia` subcommand also responds to `--help`.
+
+---
+
 ## 🔬 Running the Code
 
 Atenia Engine compiles with Rust stable (2024 edition or later) and requires no external ML frameworks.

@@ -95,20 +95,20 @@ wgpu = { version = "22", optional = true }
 nvml-wrapper = { version = "0.10", optional = true }
 os_info = { version = "3", optional = true }
 
-[[bin]]
-name = "hardware_probe"
-path = "src/bin/hardware_probe.rs"
-required-features = ["hw-probe"]
-
-# M4.9.a — public single-binary CLI. Subcommands:
+# M4.9.a–.f — public single-binary CLI. Subcommands:
 #   atenia probe       (requires --features hw-probe at compile)
 #   atenia run         (the tri-mode killer-demo runner)
+#   atenia explain     (legacy v13 self-trainer narrative)
 # Default-build users get `atenia run`; pulling `--features
 # hw-probe` adds the cross-vendor GPU enumerator. The probe
 # arm is gated at runtime via `cfg!(feature = "hw-probe")`
 # rather than `required-features` so the single binary stays
 # installable from a default `cargo install --path .` even on
 # hosts that cannot build wgpu.
+#
+# M4.9.f: the legacy `hardware_probe` binary was dropped; the
+# `atenia probe` subcommand is now the canonical surface
+# (parity verified bit-exact at M4.9.a).
 [[bin]]
 name = "atenia"
 path = "src/bin/atenia.rs"
