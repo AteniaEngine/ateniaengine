@@ -134,11 +134,35 @@ APX v20 connects the completed telemetry and decision infrastructure to real ext
 
 The momento guau is closed but the demo's wall-clock is impractical for a public reproduction (Mode A 18.7 min on CPU, Mode C ~24 min). Two sub-milestones land before M5 to make the result both fast and reproducible:
 
-- **M4.8 — Performance optimization** *(prerequisite for M4.9)*. The 13 B Llama 2 forward currently runs single-threaded on a single CPU core's worth of throughput (~5 GFLOPS effective on TinyLlama vs hundreds of theoretical GFLOPS available). The 18.7-minute Mode A wall-clock is dominated by matmul throughput on shapes the dispatcher does not currently service through its AVX2 / FMA path. Scope: multi-threaded forward execution, AVX2 / FMA microkernels for the matmul shapes Llama-family models actually use, parallelism in the hot path (attention heads, batched matmul row partitioning), cache-aware blocking for matrices that exceed L3, memory-layout audit for SIMD alignment. **Target**: drop the 13 B Mode A forward from ~18.7 min to **2–4 min** on the same dev box (single-threaded wall-clock × 5–10×).
+- **M4.8 ✅ — Performance optimization**. Closed across six sub-steps:
+  - `8f542af` (a — `examples/bench_matmul.rs` baseline harness measuring every reachable CPU MatMul kernel against the canonical Llama shapes plus BF16 decode + clone costs. Confirmed empirically: at default `cargo build --release` the production path was the scalar triple-loop registered as `scalar_matmul`, with `matmul_dispatch` measured at 0.30–0.44 GFLOPS — ~600× below the dev box's ~1.5 TFLOPS theoretical FP32 peak. Three structural defects identified: default `apx_mode = "4.19"` < `"6.3"` lexicographically, `avx2_matmul` registration compile-time gated, and `run_plan` purely serial.).
+  - `6353b97` (b — three surgical fixes in `src/lib.rs`: default `apx_mode()` lifted from `"4.19"` to `"7.2"`; `apx_mode_at_least()` switched from lexicographic to numeric segment comparison (closes the latent `"6.10" < "6.3"` bomb); `avx2_matmul` registration moved from compile-time `#[cfg(target_feature = "avx2")]` to runtime `is_x86_feature_detected!("avx2")`. Bench shows `matmul_dispatch` immediately at 3.1× on `1×5120×5120` and 5.3× on `4×5120×13824`.).
+  - `22453fb` (c — SIMD BF16 decode kernel (`bf16_decode_avx2`, 8-lane via `_mm256_cvtepu16_epi32` + `_mm256_slli_epi32`). Bulk decode bandwidth lifted from 5.71 GB/s scalar to 15.77 GB/s SIMD on a 70.78 M element 13B-class layer (2.76× faster). Routed at every BF16 → F32 site in `src/tensor/tensor.rs`. Removes ~17 s of pure decode overhead per 13B forward.).
+  - `6746cfa` (d — parallel `batch_matmul_dispatch` over the batch dim via rayon `par_chunks_mut` (40 attention heads now run on 24 cores, 7.1× over serial); parallel `matmul_dispatch` wrapper that row-partitions when M >= 2 and per-row work clears 1 K elements (captures the M=4 seq=4 shapes — Q/K/V/O / gate/up / down / lm_head all run 4-way parallel after the wrapper). Cumulative on `4×5120×13824`: 12.4× over the M4.8.a baseline.).
+  - `1e9cda4` (e — `matrixmultiply 0.3` integration. Pure-Rust BLIS-style sgemm with AVX2/FMA + NEON paths and runtime ISA dispatch — vendor-agnostic by design (rules out MKL by construction, satisfies the milestone constraint). Routed at the top of `matmul_dispatch_serial` for shapes whose total work clears 1 MFLOP. Cumulative across all five sub-steps: **49.5× on `4×5120×13824`** (1954 → 39 ms; 0.34 → 14.35 GFLOPS), 13.4× on `1×5120×5120`, 9.2× on `1×4096×32000`. The 1 MFLOP gate keeps tiny matmuls on the existing AVX2 path because matrixmultiply's panel-packing overhead dominates below the threshold.).
+  - **(f)** — Final 13B Mode A re-validation + ROADMAP / README update. Same `tests/m4_7_6_d_llama2_13b_mode_a_test.rs` harness as M4.7.6.d. Local result on the dev box (RTX 4070 Laptop, 32 GB DDR5-5600, D: NVMe SN770):
 
-  **Vendor-agnostic design constraint**: optimisations must run on Intel **and** AMD x86-64 (both ship AVX2 + FMA as the modern baseline). **Do not** introduce MKL — Intel-only, contradicts the multi-vendor v22 / v23 trajectory. Preferred candidates: pure-Rust SIMD via `matrixmultiply` / `faer`, or OpenBLAS as a vendored C dependency that is also AMD-optimised. Runtime CPUID detection promotes AVX-512 paths where available (Raptor Lake mobile typically does not ship AVX-512; Zen 4 does — the dispatcher must select per-machine, not per-build). Architecture must keep NEON (ARM, Apple Silicon v24) and AMX (x86 v22+) reachable as additional ISA lanes without reshaping the public interfaces — only the implementations are platform-specific.
+    | Phase    | Wall-clock           | Speedup vs pre-M4.8 |
+    |----------|---------------------:|--------------------:|
+    | Build    | 1.93 s               | (~no change)        |
+    | Load     | 162.90 s @ 160 MB/s  | (~no change)        |
+    | **Forward at seq=4** | **322.81 s (5.38 min)** | **3.49×** vs 18.75 min baseline |
+    | Argmax pos 0 | id=1, logit=4.7747 | bit-exact ≡ M4.7.6.e Mode C |
 
-  Investigation-previa report lands first; no code before the report enumerates current dispatcher state, real bottleneck profile, and quick wins. Estimated complexity reference: ~M4.7.5-class once the investigation surfaces the highest-impact arms. Expected to ship across 4–6 commits.
+    Post-M4.8 wall-clock lands at 5.4 min — slightly above the 2–4 min aspirational band but a solid 3.5× lift on the production target, with the bit-exact transparency contract preserved (argmax(Mode A post-M4.8) == argmax(Mode A pre-M4.8) == argmax(Mode C) == 1, logit 4.7747). Headroom remains for the M=1 (seq=1 generation) shapes that don't benefit from row-partitioning — column-partitioning matrixmultiply calls under rayon scope is the natural M5+ follow-up.
+
+    F64 4-model re-validation under M4.7.5 LRU spill (ADR-004 close criterion):
+
+    | Model | Drift M4.7.5.f | Drift M4.8 | Argmax |
+    |-------|---------------:|-----------:|:------:|
+    | TinyLlama 1.1B | 0.000141 | 0.000063 | 4/4 |
+    | SmolLM2 1.7B   | 0.001446 | 0.000242 | 4/4 |
+    | Qwen 2.5 1.5B  | 0.029057 | 0.029047 | 4/4 |
+    | Llama 3.2 1B   | 0.000132 | 0.000041 | 4/4 |
+
+    Drift improved on all four M4.6 family models (matrixmultiply's panel packing yields more numerically faithful reduction order than the legacy AVX2 path); ADR-004 threshold 0.5 with massive headroom on every row. Test harness wall-clock dropped from 384 s (M4.8.b) → 144 s (.c) → 106 s (.d) → 92 s (.e) — every sub-phase produced a measurable lift. **No performance regressions** in the M4.6 family.
+
+  Vendor-agnostic by construction throughout: matrixmultiply's AVX2/FMA + NEON paths and runtime ISA dispatch keep Intel + AMD x86-64 on equal footing today and leave Apple Silicon (NEON) reachable for v24 without reshaping the public interfaces. **No MKL was introduced.** AVX-512 is documented as not present on the dev box's Raptor Lake-HX silicon (fused off in microcode); the dispatcher would pick it up via `is_x86_feature_detected!("avx512f")` on any AMD Zen 4 / Intel Xeon machine that ships it.
 
 - **M4.9 — Public CLI demo** *(depends on M4.8)*. A single command anyone can run after `git clone` to reproduce the *momento guau* without writing a test harness. Minimum subcommands:
   - `atenia probe` — surfaces real hardware capabilities (CPU + AVX flags, RAM, VRAM, NVMe vs HDD on the configured tier directory). Builds on the existing `hw-probe`.
