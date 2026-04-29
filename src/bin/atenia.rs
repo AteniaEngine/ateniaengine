@@ -321,35 +321,43 @@ fn run_probe(_args: ProbeArgs) -> i32 {
 }
 
 // ============================================================
-// `atenia run` (M4.9.a stub)
+// `atenia run` — dispatches into atenia_engine::cli_run
 // ============================================================
 
+#[cfg(feature = "demo")]
 fn run_demo(args: RunArgs) -> i32 {
-    // M4.9.a stub. The real Mode A / B / C runners land in
-    // M4.9.c / .e / .d respectively. This stub exists so the
-    // clap surface is complete and `atenia run --help` works
-    // end-to-end before the engine wiring lands.
-    let mode_label = match args.mode {
-        Mode::A => "a",
-        Mode::B => "b",
-        Mode::C => "c",
+    use atenia_engine::cli_run as cr;
+    let translated = cr::RunArgs {
+        model: args.model,
+        mode: match args.mode {
+            Mode::A => cr::Mode::A,
+            Mode::B => cr::Mode::B,
+            Mode::C => cr::Mode::C,
+        },
+        seq: args.seq,
+        output: match args.output {
+            OutputFormat::Text => cr::OutputFormat::Text,
+            OutputFormat::Json => cr::OutputFormat::Json,
+        },
+        cache_dir: args.cache_dir,
+        no_progress: args.no_progress,
     };
-    let _ = (args.model, args.seq, args.output, args.cache_dir, args.no_progress);
+    cr::run(translated)
+}
 
+#[cfg(not(feature = "demo"))]
+fn run_demo(_args: RunArgs) -> i32 {
     eprintln!(
-        "error: `atenia run --mode {}` is not yet implemented in this build.\n\
+        "error: this build of `atenia` was compiled without the `demo` feature.\n\
          \n\
-         M4.9.a established the CLI skeleton; the per-mode runners land in\n\
-         M4.9.c (Mode A), M4.9.d (Mode C — the canonical 'momento guau'),\n\
-         and M4.9.e (Mode B). Until those land, the killer demo can be\n\
-         reproduced via the existing example + ignored test:\n\
+         The `run` subcommand needs the `atenia_engine::demo` and\n\
+         `atenia_engine::cli_run` modules. Both are gated behind the `demo`\n\
+         Cargo feature (default-enabled). Rebuild with the default feature\n\
+         set:\n\
          \n  \
-         cargo run --release --example llama2_13b_demo            # Mode A\n  \
-         cargo test --release --test m4_7_6_e_llama2_13b_modes_b_c_test \\\n    \
-                    -- --ignored --nocapture --test-threads=1     # Modes B, C\n\
-         \n\
-         See ROADMAP.md for the M4.9 sub-phase tracker.",
-        mode_label,
+         cargo install --path .\n  \
+         cargo build --release --bin atenia\n  \
+         cargo run   --release --bin atenia -- run --model <PATH> --mode a"
     );
     2
 }

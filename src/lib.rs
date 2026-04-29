@@ -24,6 +24,16 @@ pub mod hw_probe;
 #[cfg(feature = "demo")]
 pub mod demo;
 
+// M4.9.c — CLI runner module for `atenia run`. Implements
+// Mode A (.c), Mode C (.d, the canonical *momento guau*
+// path), and Mode B (.e, autonomous-trigger validation).
+// Lives in the library rather than alongside `src/bin/atenia.rs`
+// so the binary stays small and the runner can be tested
+// directly via integration tests (M4.9.f). Behind the `demo`
+// feature because every mode goes through `crate::demo`.
+#[cfg(feature = "demo")]
+pub mod cli_run;
+
 pub mod hal;
 pub mod tensor;
 pub mod amg;
