@@ -49,6 +49,15 @@ half = "2"
 # matrixmultiply on its default single-threaded build.
 matrixmultiply = "0.3"
 
+# M4.9.a — derive-based CLI parsing for the public `atenia`
+# binary. Single dependency, MIT/Apache, ~150 KB binary impact.
+# `derive` feature is the canonical idiomatic surface; it
+# auto-generates --help text + validation from the struct
+# definitions in `src/bin/atenia.rs` so the spec lives in one
+# place. No async runtime / no I/O traits — clap is a parser,
+# not a framework.
+clap = { version = "4", features = ["derive", "env"] }
+
 # serde_json is used by both the TinyLlama config loader (M4.5-b1)
 # and the hw-probe binary, so it stays as a regular runtime dep
 # rather than being feature-gated.
@@ -64,6 +73,19 @@ os_info = { version = "3", optional = true }
 name = "hardware_probe"
 path = "src/bin/hardware_probe.rs"
 required-features = ["hw-probe"]
+
+# M4.9.a — public single-binary CLI. Subcommands:
+#   atenia probe       (requires --features hw-probe at compile)
+#   atenia run         (the tri-mode killer-demo runner)
+# Default-build users get `atenia run`; pulling `--features
+# hw-probe` adds the cross-vendor GPU enumerator. The probe
+# arm is gated at runtime via `cfg!(feature = "hw-probe")`
+# rather than `required-features` so the single binary stays
+# installable from a default `cargo install --path .` even on
+# hosts that cannot build wgpu.
+[[bin]]
+name = "atenia"
+path = "src/bin/atenia.rs"
 
 [dev-dependencies]
 # (serde_json now lives in [dependencies], available transitively
