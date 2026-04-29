@@ -15,6 +15,15 @@ pub mod v17;
 #[cfg(feature = "hw-probe")]
 pub mod hw_probe;
 
+// M4.9.b — public reproduction-surface helpers for the v20
+// killer demo. Pressure probes, reactive-context factory,
+// sharded BF16 load helper, argmax reduction. Default-on (see
+// the `demo` feature in Cargo.toml); shared between the
+// `atenia run` CLI subcommand and the `tests/m4_7_6_e_*`
+// integration tests so both paths stay synchronised.
+#[cfg(feature = "demo")]
+pub mod demo;
+
 pub mod hal;
 pub mod tensor;
 pub mod amg;

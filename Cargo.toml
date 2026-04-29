@@ -12,6 +12,25 @@ keywords = ["runtime", "execution", "ai", "rust", "adaptive"]
 categories = ["science", "algorithms", "simulation"]
 
 [features]
+# Default features: M4.9.b. The `demo` feature ships the
+# `atenia_engine::demo` module that the `atenia run` CLI
+# subcommand and the `tests/m4_7_6_e_*` integration tests
+# share. Default-on so:
+#   - `cargo test --test m4_7_6_e_llama2_13b_modes_b_c_test`
+#     keeps working with no extra flags.
+#   - `cargo build --release --bin atenia` produces a binary
+#     where `atenia run` is wired to the demo module.
+# Power users wanting the minimal library surface disable
+# via `--no-default-features`.
+default = ["demo"]
+
+# Demo reproduction-surface module: pressure probes, reactive-
+# context factory, sharded BF16 load helper, argmax reduction.
+# All primitives are existing engine code surfaced behind a
+# stable public API at `atenia_engine::demo`. Adds no extra
+# dependencies — the feature gates a module, not a dep tree.
+demo = []
+
 # Hardware-probe binary: cross-vendor GPU enumeration via wgpu, with
 # optional NVIDIA augmentation via NVML. Gated behind a feature so the
 # wgpu transitive-dep footprint (~50 crates, heavy first build) does

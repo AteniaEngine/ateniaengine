@@ -74,29 +74,13 @@
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 use std::time::Instant;
-use uuid::Uuid;
 
-use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::amg::reactive::ReactiveExecutionContext;
-use atenia_engine::amm::ram_probe::{RamProbeApi, RamProbeError, RamSnapshot};
-use atenia_engine::amm::signal_bus::SignalBus;
-use atenia_engine::amm::vram_probe::{VramProbeApi, VramProbeError, VramSnapshot};
-use atenia_engine::nn::llama::{
-    build_llama, llama_weight_mapper, LlamaConfig, LlamaRuntime,
+use atenia_engine::demo::{
+    argmax_row, build_and_load_llama, make_context, LlamaLoadMetrics,
 };
+use atenia_engine::nn::llama::LlamaRuntime;
 use atenia_engine::tensor::tensor::Tensor;
-use atenia_engine::v15::policy::types::DecisionBias;
-use atenia_engine::v16::contract::constraints::{Constraints, RuntimeState};
-use atenia_engine::v16::contract::execution_contract::{
-    ExecutionBackend, ExecutionContract,
-};
-use atenia_engine::v16::guards::execution_guard::ExecutionGuard;
-use atenia_engine::v16::guards::guard_manager::GuardManager;
-use atenia_engine::v16::guards::simple_memory_pressure_guard::SimpleMemoryPressureGuard;
-use atenia_engine::v17::loader::sharded_reader::ShardedSafetensorsReader;
 
 /// Llama 2 13B Chat lives on the **internal NVMe (D:)**, same
 /// as in M4.7.6.a / .d. Override via `ATENIA_LLAMA2_13B_DIR`.
@@ -117,211 +101,41 @@ fn resolve_model_dir() -> PathBuf {
     }
 }
 
+/// Cache-dir helper. M4.9.b — moved to
+/// `atenia_engine::demo::cache_dir_for`. Re-exposed here as a
+/// thin wrapper so the test reads as a single change against
+/// the pre-M4.9.b version.
 fn cache_dir_for(label: &str) -> PathBuf {
-    let base = match env::var("ATENIA_DISK_TIER_DIR") {
-        Ok(v) => PathBuf::from(v),
-        Err(_) => atenia_engine::tensor::disk_tier::default_cache_dir().join("m4_7_6_e"),
-    };
-    base.join(format!("{}_{}", label, Uuid::new_v4()))
+    atenia_engine::demo::cache_dir_for(label)
 }
 
-// ---------------- Pressure probes ----------------
-
-/// Returns total=1000, used=100 → memory_pressure ≈ 0.10. Below
-/// the M4.6 SimpleMemoryPressureGuard threshold (0.65) and the
-/// M4.7.5 dual_memory_pressure threshold (0.85), so no autonomous
-/// migration fires while these probes are active.
-struct LowPressureVramProbe;
-impl VramProbeApi for LowPressureVramProbe {
-    fn snapshot(&self) -> Result<VramSnapshot, VramProbeError> {
-        Ok(VramSnapshot { total_bytes: 1000, free_bytes: 900, used_bytes: 100 })
-    }
-}
-struct LowPressureRamProbe;
-impl RamProbeApi for LowPressureRamProbe {
-    fn snapshot(&self) -> Result<RamSnapshot, RamProbeError> {
-        Ok(RamSnapshot { total_bytes: 1000, available_bytes: 900, used_bytes: 100 })
-    }
-}
-
-/// One-shot high-pressure probe pair. Returns 0.95 used (above
-/// the 0.85 dual_memory_pressure threshold) on the FIRST `n_high`
-/// snapshot calls; returns 0.10 used (below threshold) thereafter.
-///
-/// Why: a permanently high probe causes the M4.6 guard to fire
-/// `Degrade` (and the `dual_memory_pressure` site to promote it
-/// to `DeepDegrade`) at *every* node checkpoint, not just once.
-/// The continuous spill churns activation tensors mid-forward
-/// and exposes a known M4.7.5.e gap where one consumer arm
-/// reads `as_cpu_slice` without first calling `ensure_cpu` on a
-/// tensor the spill freshly migrated to disk. That gap is real
-/// but out of scope for the .e killer-demo run — fixing it is
-/// a Subsequent Investigation Item (queue for M5+ alongside the
-/// other ensure_cpu arms surfaced by M4.7.5.e).
-///
-/// The one-shot pattern keeps the contract intact: DeepDegrade
-/// fires *autonomously* at the first guard checkpoint (node 0),
-/// migrates 1732 tensors to disk, then pressure drops back to
-/// low and the forward completes via the well-tested lazy-
-/// restore path (the same path M4.7.5.f re-validated on the four
-/// 1B-class models). The "argmax(B) == argmax(A)" contract is
-/// the demo's correctness gate; the trigger mechanism is a probe
-/// callback either way.
-struct OneShotHighPressureVramProbe {
-    high_remaining: AtomicUsize,
-}
-impl VramProbeApi for OneShotHighPressureVramProbe {
-    fn snapshot(&self) -> Result<VramSnapshot, VramProbeError> {
-        let prev = self.high_remaining.load(Ordering::Relaxed);
-        if prev > 0 {
-            self.high_remaining.fetch_sub(1, Ordering::Relaxed);
-            Ok(VramSnapshot { total_bytes: 1000, free_bytes: 50, used_bytes: 950 })
-        } else {
-            Ok(VramSnapshot { total_bytes: 1000, free_bytes: 900, used_bytes: 100 })
-        }
-    }
-}
-struct OneShotHighPressureRamProbe {
-    high_remaining: AtomicUsize,
-}
-impl RamProbeApi for OneShotHighPressureRamProbe {
-    fn snapshot(&self) -> Result<RamSnapshot, RamProbeError> {
-        let prev = self.high_remaining.load(Ordering::Relaxed);
-        if prev > 0 {
-            self.high_remaining.fetch_sub(1, Ordering::Relaxed);
-            Ok(RamSnapshot { total_bytes: 1000, available_bytes: 50, used_bytes: 950 })
-        } else {
-            Ok(RamSnapshot { total_bytes: 1000, available_bytes: 900, used_bytes: 100 })
-        }
-    }
-}
-
-fn permissive_contract() -> ExecutionContract {
-    ExecutionContract {
-        bias: DecisionBias {
-            risk_weight: 0.3,
-            latency_weight: 0.4,
-            stability_weight: 0.5,
-            memory_pressure_weight: 0.5,
-            offload_cost_weight: 0.4,
-        },
-        runtime_snapshot: RuntimeState {
-            memory_headroom: 0.8,
-            is_stable: true,
-            recent_recovery: false,
-            offload_supported: true,
-        },
-        allowed_backends: vec![ExecutionBackend::Local],
-        forbidden_backends: vec![],
-        max_aggressiveness: 0.5,
-        require_fallback: false,
-        require_stability: false,
-        constraints: Constraints { items: vec![] },
-    }
-}
-
-fn make_context(
-    cache_dir: PathBuf,
-    high_pressure: bool,
-) -> ReactiveExecutionContext {
-    let bus = if high_pressure {
-        // Allow up to 4 high-pressure reads — covers the bus's
-        // "collect all signals" pre-checkpoint sweep (vram + ram
-        // + a couple of derived reads) and lets the FIRST guard
-        // checkpoint produce a Degrade → DeepDegrade promotion.
-        // Any subsequent checkpoint sees the low values and
-        // returns Continue, so the forward proceeds with the
-        // single-shot spill in effect.
-        Arc::new(SignalBus::with_probes(
-            None,
-            None,
-            None,
-            None,
-            Some(Arc::new(OneShotHighPressureVramProbe {
-                high_remaining: AtomicUsize::new(4),
-            })),
-            Some(Arc::new(OneShotHighPressureRamProbe {
-                high_remaining: AtomicUsize::new(4),
-            })),
-        ))
-    } else {
-        Arc::new(SignalBus::with_probes(
-            None,
-            None,
-            None,
-            None,
-            Some(Arc::new(LowPressureVramProbe)),
-            Some(Arc::new(LowPressureRamProbe)),
-        ))
-    };
-    let guards: Vec<Box<dyn ExecutionGuard>> =
-        vec![Box::new(SimpleMemoryPressureGuard::new())];
-    let gm = GuardManager::new(guards);
-    ReactiveExecutionContext::new_without_gc(bus, permissive_contract(), gm)
-        .with_cache_dir(cache_dir)
-}
-
-// ---------------- Shared scaffolding ----------------
-
-/// argmax across the seq=1 logits row. Returns `(token_id, logit)`.
-fn argmax_row(slice: &[f32], vocab: usize) -> (usize, f32) {
-    assert_eq!(slice.len(), vocab);
-    slice
-        .iter()
-        .enumerate()
-        .max_by(|(_, x), (_, y)| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal))
-        .map(|(i, v)| (i, *v))
-        .unwrap()
-}
-
+/// Test-side wrapper: keeps the existing call sites
+/// `let (graph, cfg) = build_and_load_13b(&model_dir)` working
+/// after the public API moved to
+/// `atenia_engine::demo::build_and_load_llama(model_dir, runtime,
+/// verbose)`. The runtime is hard-coded at `seq = 1` (the
+/// canonical M4.7.6.e setting); `verbose = true` preserves the
+/// pre-M4.9.b progress prints.
 fn build_and_load_13b(
-    model_dir: &Path,
-) -> (atenia_engine::amg::graph::Graph, LlamaConfig) {
-    println!("Reading config.json ...");
-    let cfg = LlamaConfig::from_json_file(&model_dir.join("config.json"))
-        .expect("config.json must parse");
+    model_dir: &std::path::Path,
+) -> (atenia_engine::amg::graph::Graph, atenia_engine::nn::llama::LlamaConfig) {
     let runtime = LlamaRuntime { batch: 1, seq: 1 };
-
-    println!(
-        "Building Llama 2 13B graph at seq=1 ({} layers, hidden {}, vocab {}) ...",
-        cfg.num_hidden_layers, cfg.hidden_size, cfg.vocab_size
+    let (graph, metrics): (
+        atenia_engine::amg::graph::Graph,
+        LlamaLoadMetrics,
+    ) = build_and_load_llama(model_dir, runtime, /*verbose=*/ true);
+    assert_eq!(
+        metrics.param_count, 363,
+        "Llama 2 13B Chat must build 363 parameter nodes"
     );
-    let build_start = Instant::now();
-    let mut gb = GraphBuilder::new();
-    let token_input_id = gb.input();
-    let handles = build_llama(&mut gb, &cfg, &runtime, token_input_id);
-    let _ = gb.output(handles.logits_id);
-    let mut graph = gb.build();
-    println!(
-        "Graph built in {:.2}s ({} parameter nodes)",
-        build_start.elapsed().as_secs_f32(),
-        handles.param_ids.len(),
+    assert_eq!(
+        metrics.tensors_loaded, 363,
+        "Llama 2 13B Chat must load all 363 tensors"
     );
-    assert_eq!(handles.param_ids.len(), 363);
-
-    println!(
-        "Loading weights from {} (BF16 storage) ...",
-        model_dir.display()
-    );
-    let load_start = Instant::now();
-    let sharded =
-        ShardedSafetensorsReader::open(&model_dir.join("model.safetensors.index.json"))
-            .expect("open sharded reader");
-    let mut mapper =
-        llama_weight_mapper(&cfg, &handles.param_names, &handles.param_ids)
-            .expect("llama weight mapper");
-    mapper.set_store_params_as_bf16(true);
-    let report = sharded.load_into(&mut graph, &mapper).expect("load");
-    let load_secs = load_start.elapsed().as_secs_f32();
-    assert_eq!(report.loaded, 363);
-    println!(
-        "Loaded {} tensors in {:.2}s (~{:.0} MB/s)",
-        report.loaded,
-        load_secs,
-        26_000.0 / load_secs.max(0.01),
-    );
-
-    (graph, cfg)
+    let _ = metrics.build_secs;
+    let _ = metrics.load_secs;
+    let _ = metrics.tensors_skipped;
+    (graph, metrics.config)
 }
 
 // ---------------- Mode B: autonomous LRU spill trigger ----------------
