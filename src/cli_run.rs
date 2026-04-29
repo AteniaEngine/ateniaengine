@@ -17,7 +17,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::demo::{argmax_row, build_and_load_llama};
+use crate::demo::{
+    argmax_row, build_and_load_llama, cache_dir_for, make_context,
+};
 use crate::nn::llama::LlamaRuntime;
 use crate::tensor::tensor::Tensor;
 
@@ -504,18 +506,260 @@ fn run_mode_b(args: RunArgs) -> i32 {
     2
 }
 
+// ============================================================
+// Mode C — forced 50 % LRU spill ("momento guau" canonical)
+// ============================================================
+
 fn run_mode_c(args: RunArgs) -> i32 {
-    // Touch the cache dir helper so it stays linked when M4.9.d
-    // wires the actual Mode C runner; surface to the operator
-    // that we noticed the flag.
-    if let Some(ref dir) = args.cache_dir {
-        let _ = cache_dir_disk_probe(dir);
+    let total_start = Instant::now();
+
+    // Mode C uses seq=1 by default per M4.7.6.e to cap
+    // wall-clock per mode. Operator can override via --seq;
+    // the contract `argmax(pre) == argmax(post)` holds at any
+    // seq > 0 because attention pos 0 is purely
+    // self-attention.
+    let effective_seq = if args.seq == 4 { 1 } else { args.seq };
+    if args.seq == 4 {
+        eprintln!(
+            "note: --seq defaulted from 4 to 1 for Mode C (M4.7.6.e\n\
+             canonical setting; --seq <other> overrides)."
+        );
     }
-    eprintln!("error: `atenia run --mode c` lands in M4.9.d. Until then, use:");
+    let runtime = LlamaRuntime { batch: 1, seq: effective_seq };
+
+    // Token pattern: BOS for seq=1; ascending integers for
+    // seq>1. Same convention as Mode A.
+    let token_pattern: Vec<f32> = match effective_seq {
+        1 => vec![1.0],
+        n => {
+            let mut v = vec![1.0];
+            for i in 1..n {
+                v.push((i as f32) * 100.0);
+            }
+            v
+        }
+    };
+
+    // Resolve cache directory.
+    let cache_dir = match args.cache_dir.as_ref() {
+        Some(p) => p.clone(),
+        None => cache_dir_for("atenia_run_mode_c"),
+    };
+    if let Err(e) = std::fs::create_dir_all(&cache_dir) {
+        eprintln!(
+            "error: could not create cache directory {}: {}",
+            cache_dir.display(), e,
+        );
+        return 1;
+    }
+
+    eprintln!("=== Atenia v20 Killer Demo — Mode C (forced 50% LRU spill) ===");
+    eprintln!();
+    eprintln!("Cache dir:      {}", cache_dir.display());
+
+    let _ = cache_dir_disk_probe(&cache_dir);
+
     eprintln!(
-        "  cargo test --release --test m4_7_6_e_llama2_13b_modes_b_c_test \\"
+        "Loading {} (this typically takes ~3 min on NVMe) ...",
+        args.model.display(),
     );
-    eprintln!("    -- --ignored --nocapture --test-threads=1 \\");
-    eprintln!("       llama2_13b_mode_c_forced_lru_spill_preserves_argmax");
-    2
+
+    let hb = if !args.no_progress {
+        Some(Heartbeat::start(2_000))
+    } else {
+        None
+    };
+    let (mut graph, metrics) = build_and_load_llama(
+        &args.model,
+        runtime,
+        /*verbose=*/ false,
+    );
+    if let Some(hb) = hb {
+        hb.stop();
+    }
+
+    eprintln!(
+        "Loaded {} parameters in {:.1}s.",
+        metrics.param_count, metrics.load_secs,
+    );
+
+    // Attach a low-pressure reactive context so the LRU
+    // populates during warmup but no autonomous trigger
+    // fires. Mode C's spill must be *forced* by the explicit
+    // `deep_degrade_with_lru` call below.
+    let ctx = make_context(cache_dir.clone(), /*high_pressure=*/ false);
+    graph.set_reactive_context(ctx);
+
+    let tokens = Tensor::new_cpu(vec![1, effective_seq], token_pattern);
+
+    // ---- Warmup forward ----
+    eprintln!("[1/3] Warmup forward (no spill yet) ...");
+    let hb = if !args.no_progress {
+        Some(Heartbeat::start(2_000))
+    } else {
+        None
+    };
+    let warmup_start = Instant::now();
+    let warmup_outputs = graph.execute(vec![tokens.clone()]);
+    let warmup_secs = warmup_start.elapsed().as_secs_f32();
+    if let Some(hb) = hb {
+        hb.stop();
+    }
+    let warmup_logits = warmup_outputs[0].as_cpu_slice().to_vec();
+    let vocab = metrics.config.vocab_size;
+    assert_eq!(
+        warmup_logits.len(),
+        effective_seq * vocab,
+        "warmup logits length mismatch"
+    );
+    let (pre_id, pre_logit) = argmax_row(&warmup_logits[..vocab], vocab);
+    eprintln!(
+        "Warmup forward: {:.1}s   argmax(pos 0) = {} logit {:.4}",
+        warmup_secs, pre_id, pre_logit,
+    );
+
+    // ---- Force the M4.7.5.d 50 % LRU spill ----
+    eprintln!("[2/3] Forcing deep_degrade_with_lru (SPILL_FRACTION = 0.5) ...");
+    let spill_start = Instant::now();
+    let migration_result = graph.deep_degrade_with_lru(&cache_dir);
+    let spill_secs = spill_start.elapsed().as_secs_f32();
+    let migration = match migration_result {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("error: deep_degrade_with_lru failed: {:?}", e);
+            return 1;
+        }
+    };
+    eprintln!(
+        "Forced spill: {} migrated, {} skipped, {:.1}s",
+        migration.tensors_migrated, migration.tensors_skipped, spill_secs,
+    );
+
+    // ---- Post-spill forward ----
+    eprintln!("[3/3] Post-spill forward (lazy restore through ensure_cpu) ...");
+    let hb = if !args.no_progress {
+        Some(Heartbeat::start(2_000))
+    } else {
+        None
+    };
+    let post_start = Instant::now();
+    let mut post_outputs = graph.execute(vec![tokens]);
+    let post_secs = post_start.elapsed().as_secs_f32();
+    if let Some(hb) = hb {
+        hb.stop();
+    }
+    // Output may have been migrated to disk during the
+    // forward by a guard re-trigger; lazy-restore before
+    // reading. M4.7.6.e Mode B's `ensure_cpu` defensive call
+    // generalised to Mode C as well.
+    if let Err(e) = post_outputs[0].ensure_cpu() {
+        eprintln!("error: ensure_cpu on post-spill output failed: {:?}", e);
+        return 1;
+    }
+    let post_logits = post_outputs[0].as_cpu_slice().to_vec();
+    assert_eq!(
+        post_logits.len(),
+        effective_seq * vocab,
+        "post-spill logits length mismatch",
+    );
+    let (post_id, post_logit) = argmax_row(&post_logits[..vocab], vocab);
+    eprintln!(
+        "Post-spill forward: {:.1}s   argmax(pos 0) = {} logit {:.4}",
+        post_secs, post_id, post_logit,
+    );
+
+    // ---- Transparency contract ----
+    let bit_exact = pre_id == post_id && pre_logit == post_logit;
+
+    // Compose per-position argmax for the JSON / text report
+    // (post-spill row is the "live" one for downstream
+    // consumers; the contract block carries the pre/post
+    // comparison explicitly).
+    let mut argmax_entries = Vec::with_capacity(effective_seq);
+    for pos in 0..effective_seq {
+        let row = &post_logits[pos * vocab..(pos + 1) * vocab];
+        let (id, logit) = argmax_row(row, vocab);
+        argmax_entries.push(ArgmaxEntry { position: pos, token_id: id, logit });
+    }
+
+    let max_abs = post_logits.iter().map(|v| v.abs()).fold(0.0_f32, f32::max);
+    let mean_abs: f32 =
+        post_logits.iter().map(|v| v.abs()).sum::<f32>() / post_logits.len() as f32;
+    let finite = post_logits.iter().filter(|v| v.is_finite()).count();
+
+    let total_seconds = total_start.elapsed().as_secs_f64();
+
+    let report = DemoReport {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        mode: "c",
+        seq: effective_seq,
+        model: ModelReport {
+            path: args.model.clone(),
+            layers: metrics.config.num_hidden_layers,
+            hidden_size: metrics.config.hidden_size,
+            intermediate_size: metrics.config.intermediate_size,
+            vocab_size: metrics.config.vocab_size,
+            param_count: metrics.param_count,
+            storage: "bf16",
+        },
+        phases: PhasesReport {
+            build_seconds: metrics.build_secs,
+            load_seconds: metrics.load_secs,
+            load_throughput_mb_s_estimate: 26_000.0
+                / metrics.load_secs.max(0.01),
+            forward_seconds: post_secs,
+            spill_seconds: Some(spill_secs),
+            spill_tensors_migrated: Some(migration.tensors_migrated),
+            warmup_forward_seconds: Some(warmup_secs),
+        },
+        argmax: argmax_entries,
+        logit_stats: LogitStats {
+            max_abs,
+            mean_abs,
+            finite,
+            total: post_logits.len(),
+        },
+        contract: Some(TransparencyContract {
+            name: "transparency",
+            pre: ArgmaxEntry {
+                position: 0,
+                token_id: pre_id,
+                logit: pre_logit,
+            },
+            post: ArgmaxEntry {
+                position: 0,
+                token_id: post_id,
+                logit: post_logit,
+            },
+            bit_exact,
+            description: if bit_exact {
+                "argmax(pre-spill) == argmax(post-spill) bit-exactly — \
+                 the LRU spill + lazy-restore cycle is mathematically \
+                 transparent at this parameter scale."
+            } else {
+                "argmax(pre-spill) != argmax(post-spill) — TRANSPARENCY \
+                 VIOLATION. The spill + restore cycle changed the model's \
+                 output. This indicates a regression in the M4.7.4.d / \
+                 M4.7.5 spill primitives."
+            },
+        }),
+        total_seconds,
+    };
+
+    render(&report, args.output);
+
+    // Best-effort cleanup of the cache directory if we
+    // created it ourselves (i.e. user did not pass --cache-dir).
+    if args.cache_dir.is_none() {
+        let _ = std::fs::remove_dir_all(&cache_dir);
+    }
+
+    if bit_exact {
+        0
+    } else {
+        // Exit code 3: mathematical contract violation.
+        // Distinguished from runtime errors (1) and config
+        // errors (2) so CI scripts can detect the difference.
+        3
+    }
 }
