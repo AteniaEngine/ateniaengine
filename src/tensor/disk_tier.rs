@@ -72,11 +72,98 @@
 
 use std::fs;
 use std::io;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use uuid::Uuid;
+
+/// M4.7.4.b — chunk size used by the streaming readers
+/// (`read_f32_tensor`, `read_bf16_tensor`). 4 MiB is large enough
+/// to amortise per-syscall overhead on Windows / NTFS and to land
+/// inside one CPU L3 slice on the dev-target hardware, but small
+/// enough that the per-call peak allocation stays bounded
+/// regardless of tensor size — a 13B-class checkpoint that
+/// previously required a single 26 GB `Vec<u8>` at restore time
+/// now fits inside one of these chunks plus the destination
+/// `Vec<f32>` / `Vec<u16>`.
+const STREAM_CHUNK_BYTES: usize = 4 * 1024 * 1024;
+
+/// Read `expected_bytes` from `path` directly into the byte view
+/// of `out`, in [`STREAM_CHUNK_BYTES`]-sized batches (M4.7.4.b).
+///
+/// `out` must already be sized so its byte-view length equals
+/// `expected_bytes`; the caller is responsible for the
+/// `numel * width` arithmetic and for picking a `T` whose layout
+/// matches the on-disk encoding.
+///
+/// Why a streaming read instead of a single `fs::read`:
+///
+/// - **Bounded peak allocation.** Whole-file `fs::read` allocates
+///   a fresh `Vec<u8>` of the file's full size before producing
+///   the destination `Vec<T>`, so the restore of a 26 GB tensor
+///   takes ~52 GB of transient RAM at the worst possible moment
+///   (the moment the reactive loop fired the spill because RAM
+///   was already saturated). Streaming reads write directly into
+///   the destination buffer, capping transient overhead at one
+///   chunk plus the `File` handle.
+/// - **Open-and-stream is idiomatic in `std`.** `File::open` +
+///   `read_exact` works on every platform without a new dep
+///   (`memmap2` was rejected — see module docstring rationale).
+/// - **NTFS / USB-tier friendliness.** A 4 MiB chunk is two NTFS
+///   default extents; sequential reads at this granularity
+///   saturate consumer NVMe and stay well within the SLC-cache
+///   working set on USB-attached storage.
+///
+/// On a partial / truncated file the final `read_exact` returns
+/// `UnexpectedEof`; the caller surfaces this as `InvalidData` with
+/// the size-mismatch message it already produced before M4.7.4.b
+/// (the size check is now a redundant safety net inside the
+/// `_into` helper itself).
+fn stream_read_exact_into_bytes(
+    path: &Path,
+    expected_bytes: usize,
+    out_bytes: &mut [u8],
+) -> io::Result<()> {
+    if out_bytes.len() != expected_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "stream_read_exact_into_bytes: out buffer is {} bytes, expected {}",
+                out_bytes.len(),
+                expected_bytes
+            ),
+        ));
+    }
+
+    // Validate file size up-front so a truncated file is rejected
+    // before we issue the first read syscall — preserves the
+    // pre-M4.7.4.b error semantics (size mismatch returns
+    // `InvalidData`, not `UnexpectedEof`).
+    let metadata = fs::metadata(path)?;
+    let actual_bytes = metadata.len();
+    if actual_bytes != expected_bytes as u64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "disk tensor size mismatch: file={} bytes, expected={} bytes",
+                actual_bytes, expected_bytes
+            ),
+        ));
+    }
+
+    let mut file = fs::File::open(path)?;
+
+    let mut offset = 0usize;
+    while offset < expected_bytes {
+        let chunk_end = (offset + STREAM_CHUNK_BYTES).min(expected_bytes);
+        let chunk = &mut out_bytes[offset..chunk_end];
+        file.read_exact(chunk)?;
+        offset = chunk_end;
+    }
+    Ok(())
+}
 
 /// On-disk dtype of a spilled tensor (M4.7.4.a).
 ///
@@ -320,39 +407,26 @@ pub fn read_f32_tensor(handle: &DiskTensorHandle) -> io::Result<Vec<f32>> {
             ),
         ));
     }
-    let bytes = fs::read(handle.path())?;
     let expected_bytes = handle.numel().checked_mul(4).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             "disk tensor numel * 4 overflows usize",
         )
     })?;
-    if bytes.len() != expected_bytes {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "disk tensor size mismatch: file={} bytes, expected={} bytes ({} floats)",
-                bytes.len(),
-                expected_bytes,
-                handle.numel()
-            ),
-        ));
-    }
 
     let mut out = vec![0f32; handle.numel()];
-    // SAFETY: `out` has capacity `handle.numel() * 4` bytes, and
-    // we have just checked that `bytes.len()` equals that. `bytes`
-    // and `out` do not alias (distinct allocations). `f32` has no
-    // alignment constraints beyond 4 bytes; `copy_nonoverlapping`
-    // does not require source alignment, only that the ranges are
-    // valid for reads and writes respectively, which they are.
-    unsafe {
-        std::ptr::copy_nonoverlapping(
-            bytes.as_ptr(),
+    // SAFETY: `out` has capacity `handle.numel() * 4` bytes; the
+    // byte-view length matches `expected_bytes`. `out` and the file
+    // do not alias by definition. `f32` does not require alignment
+    // beyond 4 bytes; the byte-view re-interpretation imposes no
+    // additional constraint.
+    let out_bytes = unsafe {
+        std::slice::from_raw_parts_mut(
             out.as_mut_ptr() as *mut u8,
-            bytes.len(),
-        );
-    }
+            std::mem::size_of_val(&*out),
+        )
+    };
+    stream_read_exact_into_bytes(handle.path(), expected_bytes, out_bytes)?;
     Ok(out)
 }
 
@@ -377,39 +451,24 @@ pub fn read_bf16_tensor(handle: &DiskTensorHandle) -> io::Result<Vec<u16>> {
             ),
         ));
     }
-    let bytes = fs::read(handle.path())?;
     let expected_bytes = handle.numel().checked_mul(2).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             "disk tensor numel * 2 overflows usize",
         )
     })?;
-    if bytes.len() != expected_bytes {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "disk tensor size mismatch: file={} bytes, expected={} bytes ({} bf16 elements)",
-                bytes.len(),
-                expected_bytes,
-                handle.numel()
-            ),
-        ));
-    }
 
     let mut out = vec![0u16; handle.numel()];
-    // SAFETY: `out` has capacity `handle.numel() * 2` bytes, and we
-    // have just checked that `bytes.len()` equals that. The same
-    // aliasing / validity argument as `read_f32_tensor` applies
-    // with width 2 instead of 4. `u16` has alignment 2; no
-    // alignment constraint on the source pointer for
-    // `copy_nonoverlapping`.
-    unsafe {
-        std::ptr::copy_nonoverlapping(
-            bytes.as_ptr(),
+    // SAFETY: same justification as `read_f32_tensor`'s byte-view
+    // re-interpretation, with width 2 instead of 4. `u16` has
+    // alignment 2; the byte-view imposes no additional constraint.
+    let out_bytes = unsafe {
+        std::slice::from_raw_parts_mut(
             out.as_mut_ptr() as *mut u8,
-            bytes.len(),
-        );
-    }
+            std::mem::size_of_val(&*out),
+        )
+    };
+    stream_read_exact_into_bytes(handle.path(), expected_bytes, out_bytes)?;
     Ok(out)
 }
 
@@ -923,6 +982,99 @@ mod tests {
     fn test_disk_dtype_bytes_per_element() {
         assert_eq!(DiskDtype::F32.bytes_per_element(), 4);
         assert_eq!(DiskDtype::BF16.bytes_per_element(), 2);
+    }
+
+    // ------------------------------------------------------------
+    // M4.7.4.b — streaming reader tests
+    // ------------------------------------------------------------
+
+    #[test]
+    fn test_streaming_read_handles_tensor_larger_than_chunk() {
+        // The streaming reader's contract is "produces the same
+        // Vec<f32> regardless of how many chunks the file is split
+        // into". Build a tensor whose byte size strictly exceeds
+        // STREAM_CHUNK_BYTES so the read loop has to iterate more
+        // than once, then verify bit-exact bytes.
+        let dir = test_cache_dir("stream_large");
+
+        // 1.5x chunk size in bytes → 1.5 MiB worth of f32 elements.
+        // (STREAM_CHUNK_BYTES is currently 4 MiB; this gives us a
+        // 1.5-iteration-equivalent read at f32 width.)
+        let n_floats = (STREAM_CHUNK_BYTES / 4) + (STREAM_CHUNK_BYTES / 8);
+        let data: Vec<f32> = (0..n_floats).map(|i| (i as f32) * 0.001 - 7.5).collect();
+
+        let handle = write_f32_tensor(&dir, &data).expect("write");
+        let read = read_f32_tensor(&handle).expect("streaming read");
+
+        assert_eq!(read.len(), data.len());
+        // Bit-exact f32 round-trip — the bytes on disk are a memcpy
+        // of `data`, the streaming reader is also a memcpy, so the
+        // result is identical.
+        for (i, (a, b)) in data.iter().zip(read.iter()).enumerate() {
+            assert_eq!(
+                a.to_bits(),
+                b.to_bits(),
+                "streaming read mismatch at index {}",
+                i
+            );
+        }
+
+        drop(handle);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn test_streaming_bf16_read_handles_tensor_larger_than_chunk() {
+        // Counterpart for bf16: 1.5x chunk size at u16 width.
+        let dir = test_cache_dir("stream_large_bf16");
+        let n_u16 = (STREAM_CHUNK_BYTES / 2) + (STREAM_CHUNK_BYTES / 4);
+        // Pseudo-deterministic pattern so a bug that swapped two
+        // chunks would surface as a value mismatch instead of an
+        // off-by-one.
+        let data: Vec<u16> = (0..n_u16).map(|i| (i as u16).wrapping_mul(73)).collect();
+
+        let handle = write_bf16_tensor(&dir, &data).expect("write");
+        let read = read_bf16_tensor(&handle).expect("streaming read");
+
+        assert_eq!(read.len(), data.len());
+        assert_eq!(read, data, "bf16 streaming round-trip must be bit-exact");
+
+        drop(handle);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn test_streaming_read_truncated_file_surfaces_invalid_data() {
+        // Truncate the file *after* the handle was created so the
+        // size mismatch is real on the filesystem but the handle's
+        // cached numel still claims the original count. The reader
+        // must surface InvalidData (not UnexpectedEof) — preserves
+        // the pre-streaming error semantics.
+        let dir = test_cache_dir("stream_truncated");
+        let data: Vec<f32> = vec![1.0_f32; 1024];
+        let handle = write_f32_tensor(&dir, &data).expect("write");
+
+        // Truncate to half the original byte size.
+        let path = handle.path().to_path_buf();
+        let f = fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("open for truncate");
+        f.set_len((data.len() * 4 / 2) as u64).expect("truncate");
+        drop(f);
+
+        let result = read_f32_tensor(&handle);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::InvalidData,
+            "truncated read must surface InvalidData, got: {:?}",
+            err
+        );
+
+        drop(handle);
+        cleanup(&dir);
     }
 
     #[test]
