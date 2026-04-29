@@ -67,11 +67,13 @@ Atenia Engine is implemented in Rust. The project follows an APX (Adaptive Execu
 
 Real, executable, deterministic:
 
-**Real LLM inference (APX v20 M4.5–M4.7.5)**
+**Real LLM inference (APX v20 M4.5–M4.7)**
 
-- **🤖 Four production LLMs run end-to-end on CPU.** TinyLlama 1.1B Chat, SmolLM2 1.7B Instruct, Qwen 2.5 1.5B Instruct, and Llama 3.2 1B Instruct load from HuggingFace `.safetensors` and produce logits validated against PyTorch F64 ground truth per [ADR-004](./docs/decisions/ADR-004-f64-reference-as-default.md). Atenia F32 drift sits between **1.32×10⁻⁴ and 1.45×10⁻³** — three-to-four orders of magnitude closer to mathematical truth than industry-default BF16 inference on the same checkpoints. Argmax matches F64 on every position of every model.
-- **📦 Sharded safetensors loader.** Multi-file HuggingFace checkpoints (`model-NNNNN-of-NNNNN.safetensors` + `index.json`) load via `ShardedSafetensorsReader` with drop-after-decode. Verified on Mistral 7B v0.3 (14.5 GB across 3 shards); peak RAM stays bounded by the largest single shard, not the sum.
-- **💾 Native BF16 parameter storage.** `TensorStorage::CpuBf16(Vec<u16>)` halves the persistent RAM footprint of model parameters (verified at exactly 50.0% on TinyLlama). All four production checkpoints re-validated under BF16 storage active — drift bit-exact identical to the precision-floor spike, all under the ADR-004 threshold.
+- **🚀 Llama 2 13B Chat runs end-to-end on dev-class hardware.** RTX 4070 Laptop with 8 GB VRAM and 32 GB RAM — a workload that **does not fit in VRAM**, **does not fit in RAM alone** (BF16 weights ≈ 26 GB), and is mediated by Atenia's M3-e reaction loop with VRAM ↔ RAM ↔ disk offload. The transparency contract is exact: `argmax(clean RAM) == argmax(after forced 50 % LRU spill) == 1, logit 4.7747` **bit-exactly**, on the same input. The selective LRU spill + lazy-restore cycle (M4.7.5.d + M4.7.4.d) writes 13 GB to NVMe at 150 MB/s and restores it to memory through the `ensure_cpu` Disk-arm without changing one bit of the output. The v20 thesis "adapt execution to hardware reality, not the other way around" is demonstrated against a real workload, not synthetic memory-pressure injection. See [HANDOFF M4.7](./docs/HANDOFF_APX_V20_M4.7.md) for the full empirical baseline.
+- **🤖 Four production LLMs run end-to-end on CPU.** TinyLlama 1.1B Chat, SmolLM2 1.7B Instruct, Qwen 2.5 1.5B Instruct, and Llama 3.2 1B Instruct load from HuggingFace `.safetensors` and produce logits validated against PyTorch F64 ground truth per [ADR-004](./docs/decisions/ADR-004-f64-reference-as-default.md). Atenia F32 drift sits between **1.32×10⁻⁴ and 1.45×10⁻³** — three-to-four orders of magnitude closer to mathematical truth than industry-default BF16 inference on the same checkpoints. Argmax matches F64 on every position of every model. Each of these four is also re-validated bit-exact under M4.7's BF16 storage + GPU dispatch + disk spill + LRU policy (the entire reaction-loop cycle is mathematically transparent at 1B-class scale).
+- **📦 Sharded safetensors loader.** Multi-file HuggingFace checkpoints (`model-NNNNN-of-NNNNN.safetensors` + `index.json`) load via `ShardedSafetensorsReader` with drop-after-decode. Verified on Mistral 7B v0.3 (14.5 GB across 3 shards) and Llama 2 13B Chat (26.0 GB across 3 shards); peak RAM stays bounded by the largest single shard, not the sum.
+- **💾 Native BF16 parameter storage.** `TensorStorage::CpuBf16(Vec<u16>)` halves the persistent RAM footprint of model parameters (verified at exactly 50.0 % on TinyLlama). All four 1B-class production checkpoints re-validated under BF16 storage active — drift bit-exact identical to the precision-floor spike, all under the ADR-004 threshold. The same storage variant carries the 26 GB Llama 2 13B parameter set on a 32 GB box.
+- **🌊 RAM ↔ SSD streaming with LRU eviction.** `migrate_selected_cpu_to_disk` spills the bottom 50 % of the M4.7.5.b touch order on `DeepDegrade` verdicts; `ensure_cpu` Disk-arm dispatches on the on-disk dtype (`DiskDtype::F32` or `BF16`) and lazy-restores BF16 bytes as F32 on-CPU at the next consumer. Files keep the 50 % footprint contract on disk too (BF16 spilled at native 2-byte width, not upcast to F32). Validated bit-exact on every 1B-class model and on the 13 B demo target.
 
 **Engine foundations**
 
@@ -130,14 +132,14 @@ Architecture in place, full end-to-end wiring in progress:
 - **M4.6 ✅** — Llama-family expansion. SmolLM2 1.7B (tied embeddings), Qwen 2.5 1.5B (QKV biases, model_type-aware defaults), Llama 3.2 1B (`rope_scaling: "llama3"` with F64-internal piecewise compute). All four M4.6-scope models F64-validated per ADR-004. See [HANDOFF M4.6](./docs/HANDOFF_APX_V20_M4.6.md).
 - **M4.6.1 ✅** — Retroactive F64 validation for TinyLlama (drift 0.000141, ratio 5198× vs BF16).
 - **M4.6.2** *(deferred until after M4.7 — priority, not feasibility)* — Phi 3.5 mini. Architectural deltas identified (longrope, fused qkv_proj / gate_up_proj); technically viable but lower impact than M4.7.
-- **M4.7** *(in progress)* — Beyond-VRAM execution. Target: RTX 4070 Laptop with **8 GB VRAM, 32 GB RAM, project on USB SSD**. A 13B BF16 model (~26 GB) fits in neither VRAM nor RAM alone but runs end-to-end via VRAM ↔ RAM ↔ disk offload. Six sub-phases:
-  - **M4.7.1 ✅** — Sharded safetensors loader (Mistral 7B v0.3, 3 shards, 14.5 GB).
-  - **M4.7.2 ✅** — Native BF16 parameter storage. 50% RAM savings, all four M4.6 checkpoints re-validated under BF16 active.
+- **M4.7 ✅** — Beyond-VRAM execution. Target hardware: RTX 4070 Laptop with **8 GB VRAM, 32 GB RAM, project on USB SSD (F:), runtime data on internal NVMe (D:)**. A 13B BF16 model (~26 GB) fits in neither VRAM nor RAM alone but runs end-to-end via VRAM ↔ RAM ↔ disk offload. Six sub-phases, all closed:
+  - **M4.7.1 ✅** — Sharded safetensors loader (Mistral 7B v0.3, 3 shards, 14.5 GB; reused for Llama 2 13 B at 3 shards / 26.0 GB).
+  - **M4.7.2 ✅** — Native BF16 parameter storage. 50 % RAM savings, all four M4.6 checkpoints re-validated under BF16 active.
   - **M4.7.3 ✅** — GPU MatMul + BatchMatMul with resident operands and per-storage gating in the executor arms; defensive `ensure_cpu` audit across every CPU-only kernel arm; F64 4-model re-validation under M4.7.3 dispatch (counters added to `gpu::dispatch::hooks` so the validation gates a silent CPU-fallback regression).
-  - **M4.7.4 ✅** — RAM ↔ SSD streaming primitive: BF16-aware disk format (`DiskDtype` flag on the handle, files keep the M4.7.2 50 % footprint contract), chunked streaming reader (4 MiB per chunk, no `memmap2` dep), `migrate_all_cpu_to_disk` BF16 arm (was silently skipping every CpuBf16 tensor), `ensure_cpu` Disk arm dispatching on the on-disk dtype. F64 4-model re-validation under disk spill: drift bit-exact identical to the M4.7.3 baseline (TinyLlama 1.41e-4, SmolLM2 1.45e-3, Qwen 2.91e-2, Llama 3.2 1.32e-4), argmax 4/4 on every model. NVMe-backed `ATENIA_DISK_TIER_DIR` documented as the runtime prerequisite for the demo.
-  - **M4.7.5 ✅** — M3-e policy upgrade. Per-tensor LRU eviction (`TouchOrder` populated from `NodeTimingRecorder::drop`), `migrate_selected_cpu_to_disk` primitive with `SelectiveMigrationReport` accumulating per-tensor failures, `Graph::deep_degrade_with_lru` orchestrator wiring the `DeepDegrade` arm to spill only the bottom 50 % of the touch order (`pub const SPILL_FRACTION = 0.5`), defensive `ensure_cpu` guards on Add / Sub / Mul (closing the M4.7.3.d audit hole reachable post-spill), probe-cache amortisation audit closing the historical `TODO(PERF)`. F64 4-model re-validation under LRU spill: drift bit-exact identical to M4.7.4.f, argmax 4/4 on every model, and `warmup_logits == post_spill_logits` on every model (the selective spill + lazy restore cycle is mathematically transparent). Prefetch deferred to M4.7.6 — the file-lifecycle hazard on `Arc<InnerDiskFile>` needs the demo's real workload to falsify.
-  - **M4.7.6** — First end-to-end run on Llama 2 13B (or Mistral 7B v0.3 fallback) + F64 validation.
-- **M5+** — Inference UX: tokenizer, KV cache, token-by-token generation.
+  - **M4.7.4 ✅** — RAM ↔ SSD streaming primitive: BF16-aware disk format (`DiskDtype` flag on the handle), chunked streaming reader, `migrate_all_cpu_to_disk` BF16 arm, `ensure_cpu` Disk arm dispatching on the on-disk dtype. F64 4-model re-validation drift bit-exact identical to M4.7.3 baseline.
+  - **M4.7.5 ✅** — M3-e policy upgrade. Per-tensor LRU eviction (`TouchOrder` populated from `NodeTimingRecorder::drop`), `migrate_selected_cpu_to_disk` primitive, `Graph::deep_degrade_with_lru` orchestrator with `pub const SPILL_FRACTION = 0.5`, defensive `ensure_cpu` guards on Add / Sub / Mul. F64 4-model re-validation under LRU spill — drift bit-exact identical to M4.7.4.f, argmax 4/4 on every model, `warmup_logits == post_spill_logits` on every model.
+  - **M4.7.6 ✅** — Llama 2 13B Chat killer demo, five sub-steps. Configuration + builder (.a), F16 decode validation closing Risk #3 (.b), GPU MatMul wired to the Llama hot path with the 64 MiB pool capacity check (.c), first end-to-end forward in Mode A — clean RAM, no spill (.d), and Modes B + C (autonomous LRU spill trigger + forced 50 % LRU spill, transparency contract closed at `argmax = 1, logit = 4.7747` bit-exactly pre/post spill on the same input) (.e).
+- **M5+** *(next active milestone)* — Inference UX: tokenizer, KV cache, token-by-token generation. Becomes meaningfully easier post-M4.7 because every model in scope is now numerically validated and the storage / spill / restore primitives are in place; the M5+ "13 B GPU acceleration" sub-milestone (non-pooled `cuda_matmul` for tensors > 64 MB + `apx4::gpu_context::gpu_available()` reactivation + `ensure_cpu` activation-arm coverage under continuous pressure) lands inside M5.
 
 > **Forward performance is deferred until after M4.7.** Current release-mode forward times sit between 21 s (Qwen 2.5) and 50 s (SmolLM2) at seq=4 on a 24-thread AVX2 CPU — slower than expected for the GFLOP count, suggesting the matmul dispatcher misses the AVX2 microkernel on some shapes. Optimising before the beyond-VRAM workload runs risks chasing the wrong bottleneck. The principle "make it work, make it right, make it fast" applies in order: M4.5 closed *work*, M4.6 closed *right*, *fast* follows M4.7.
 
@@ -166,7 +168,7 @@ The build script auto-detects CUDA Toolkit and MSVC BuildTools installation path
 
 ### Test coverage
 
-The repository ships **~1100 `#[test]` functions across ~350 test files**, covering:
+The repository ships **~1200 `#[test]` functions across ~370 test files**, covering:
 
 - Tensor operations and autograd correctness
 - Graph construction and execution (CPU + CUDA numerical equivalence where applicable)
@@ -227,6 +229,7 @@ Atenia is designed to sit **below** ML frameworks and **above** raw hardware exe
 - [HANDOFF M4](./docs/HANDOFF_APX_V20_M4.md) — Safetensors loader
 - [HANDOFF M4.5](./docs/HANDOFF_APX_V20_M4.5.md) — TinyLlama end-to-end
 - [HANDOFF M4.6](./docs/HANDOFF_APX_V20_M4.6.md) — Llama-family expansion + F64 validation methodology
+- [HANDOFF M4.7](./docs/HANDOFF_APX_V20_M4.7.md) — Beyond-VRAM killer demo (Llama 2 13B Chat on 8 GB VRAM + 32 GB RAM, transparency contract closed)
 
 **Architectural Decision Records (ADRs)**
 
