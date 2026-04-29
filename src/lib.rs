@@ -181,14 +181,64 @@ pub fn init_apx() {
 }
 
 /// Returns the current APX mode as configured by the environment.
-/// Defaults to "4.19" when ATENIA_APX_MODE is not set.
+///
+/// **M4.8.b**: default lifted from `"4.19"` to `"7.2"`.
+///
+/// The pre-M4.8 default `"4.19"` made `apx_mode_at_least("6.3")`
+/// return `false` under the legacy lexicographic comparison
+/// (`'4' < '6'`), which routed every MatMul through the
+/// `dispatch_matmul_apx3_8` chain at the bottom of
+/// `matmul_dispatcher.rs`. Combined with `avx2_matmul` being
+/// registered behind a compile-time `#[cfg(target_feature
+/// = "avx2")]` (also fixed in M4.8.b), the production path
+/// resolved to the scalar triple-loop registered as
+/// `scalar_matmul`. M4.8.a's `bench_matmul` harness measured
+/// the resulting throughput at 0.30–0.44 GFLOPS, ~600× below
+/// the dev box's ~1.5 TFLOPS theoretical FP32 peak.
+///
+/// `"7.2"` activates the M4.7-era PGL (Parallel GEMM Layer),
+/// the M4.6 ATO (Auto-Tiling Optimizer), and every AVX2 / FMA
+/// branch in `matmul_dispatcher.rs`. `"7.2"` was selected
+/// (rather than the higher `"7.5+"` parallel-executor modes)
+/// because the parallel-executor paths
+/// (`apx7::hpge` / `hls_deep` / `ule`) reshape graph
+/// scheduling in ways the M4.7.5.f F64 family validation has
+/// not yet re-run; M4.8.d will add explicit rayon
+/// partitioning at the dispatcher layer instead, leaving the
+/// graph executor on the M4.7-validated `run_plan` path.
+///
+/// Override via `ATENIA_APX_MODE`. Tests / benches that need
+/// the legacy scalar baseline can set `ATENIA_APX_MODE=4.19`
+/// and re-run.
 pub fn apx_mode() -> String {
-    std::env::var("ATENIA_APX_MODE").unwrap_or_else(|_| "4.19".to_string())
+    std::env::var("ATENIA_APX_MODE").unwrap_or_else(|_| "7.2".to_string())
 }
 
+/// Compare the current APX mode against a target version.
+///
+/// **M4.8.b**: switched from lexicographic to numeric
+/// comparison. The old implementation (`mode == target ||
+/// mode > target.to_string()`) was a hidden bug: lex order
+/// considers `"4.19" < "6.3"` (because `'4' < '6'`) but
+/// also `"6.10" < "6.3"` (because `'1' < '3'`). The first
+/// false-negative made the AVX2 path unreachable at the old
+/// default mode; the second would have broken the dispatcher
+/// the moment any milestone shipped a `"6.10+"` mode.
+///
+/// `parse_mode` parses every dot-separated segment as a
+/// `u32` and compares lexicographically over the resulting
+/// `Vec<u32>` — i.e. `(6, 10) > (6, 3)` and `(7, 2) > (4, 19)`
+/// both hold. Non-numeric segments parse to 0, so a sentinel
+/// like `"prod"` resolves to `(0,)` and never satisfies any
+/// `at_least(numeric)` check (intentional — sentinels should
+/// route through their own gates, not numeric comparisons).
 pub fn apx_mode_at_least(target: &str) -> bool {
-    let mode = apx_mode();
-    mode == target || mode > target.to_string()
+    fn parse_mode(s: &str) -> Vec<u32> {
+        s.split('.').map(|seg| seg.parse::<u32>().unwrap_or(0)).collect()
+    }
+    let mode_v = parse_mode(&apx_mode());
+    let target_v = parse_mode(target);
+    mode_v >= target_v
 }
 
 #[ctor::ctor]
@@ -306,14 +356,45 @@ pub fn init_kernels() {
         }),
     );
 
-    // AVX2 matmul if available.
-    #[cfg(target_feature = "avx2")]
-    reg.register(
-        "avx2_matmul",
-        Arc::new(|a, b, out, m, k, n| unsafe {
-            crate::simd_kernels::avx2::matmul_avx2(a, b, out, m, k, n)
-        }),
-    );
+    // M4.8.b: AVX2 matmul registered when the **runtime CPU**
+    // supports it, regardless of the compile-time
+    // `target_feature` cfg. The previous gate
+    // (`#[cfg(target_feature = "avx2")]`) only fires when the
+    // build itself enables AVX2 — i.e. only with
+    // `RUSTFLAGS="-C target-cpu=native"` or
+    // `-C target-feature=+avx2`. Default `cargo build --release`
+    // on `x86_64-pc-windows-msvc` does not set `target_feature
+    // = "avx2"`, so the registration was silently a no-op and
+    // the dispatcher fell through to `scalar_matmul`. M4.8.a
+    // measured the consequence: 0.30 GFLOPS on a 1×5120×5120
+    // shape on default builds.
+    //
+    // The runtime check below uses
+    // `is_x86_feature_detected!`, which inspects CPUID at
+    // program start and is hoisted by LLVM to a single
+    // boolean load on every call. The kernel itself is
+    // `unsafe fn` over raw `_mm256_*` intrinsics, which the
+    // backend compiles regardless of the build's enabled
+    // target features (the `unsafe` is the contract that the
+    // operator has gated the call site on the runtime
+    // detection). The Closure body re-asserts the precondition
+    // via `is_x86_feature_detected!` for defence in depth on
+    // a hypothetical future caller path that bypasses the
+    // dispatcher gate.
+    if std::is_x86_feature_detected!("avx2") {
+        reg.register(
+            "avx2_matmul",
+            Arc::new(|a, b, out, m, k, n| {
+                debug_assert!(
+                    std::is_x86_feature_detected!("avx2"),
+                    "avx2_matmul reached without AVX2 — registry should have fallen through to scalar_matmul"
+                );
+                unsafe {
+                    crate::simd_kernels::avx2::matmul_avx2(a, b, out, m, k, n)
+                }
+            }),
+        );
+    }
 
     // APX 8.7: register GPU mini-kernels v0 in the GPU kernel registry.
     {
