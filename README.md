@@ -16,6 +16,66 @@
 
 ---
 
+## 🚀 The killer demo — reproducible in one command
+
+Llama 2 13B Chat — a 26 GB BF16 model — runs end-to-end on a developer laptop with **8 GB of VRAM and 32 GB of RAM**. It does not fit in VRAM, does not fit in RAM alone, and is mediated by Atenia's M3-e reaction loop with VRAM ↔ RAM ↔ disk offload.
+
+**The transparency contract is bit-exact**: the model's output before and after a forced 50 % LRU spill to disk is **identical** down to the last bit (`argmax = 1, logit = 4.7747` on both sides of the spill). The engine adapts execution to hardware reality; the model output does not change.
+
+**6.9 minutes wall-clock on the dev box** (RTX 4070 Laptop, 32 GB RAM, NVMe spill cache):
+
+```
+Phases:
+  Build graph    ....   ~1s
+  Load weights   .... ~165s   (~156 MB/s)
+  Warmup forward .... 200s
+  Force LRU spill ... 19s     (866 tensors migrated)
+  Post-spill fwd .... 23s
+Transparency contract:
+  argmax(pre)  = 1, logit 4.7747
+  argmax(post) = 1, logit 4.7747
+  [PASS] ✓ argmax(pre-spill) == argmax(post-spill) bit-exactly —
+          the LRU spill + lazy-restore cycle is mathematically
+          transparent at this parameter scale.
+Total wall-clock: 6.9 minutes.
+```
+
+Reproduce with one command after `git clone` (requires HuggingFace auth for the model download):
+
+```bash
+git clone https://github.com/AteniaEngine/ateniaengine.git
+cd ateniaengine
+
+# Download Llama 2 13B Chat (~26 GB).
+huggingface-cli download meta-llama/Llama-2-13b-chat-hf \
+    --local-dir ./models/llama-2-13b-chat \
+    --include '*.safetensors' '*.json' 'tokenizer*'
+
+cargo install --path .
+
+atenia run --mode c \
+           --model ./models/llama-2-13b-chat \
+           --cache-dir ./atenia-cache
+```
+
+Three modes are available; full CLI reference in [docs/CLI.md](./docs/CLI.md):
+
+- `--mode a` — clean RAM, no spill (baseline; ~5.4 min on the dev box).
+- `--mode b` — autonomous LRU spill triggered by simulated memory pressure (~8 min; trigger plumbing validation).
+- `--mode c` — forced 50 % LRU spill, the canonical transparency-contract path (~6.9 min on the dev box).
+
+**Hardware prerequisites for reproduction:**
+
+- **CPU**: x86-64 with AVX2 + FMA (Intel since Haswell 2013, AMD since Excavator 2015). ARM/Apple Silicon support is on the v24 roadmap.
+- **RAM**: 32 GB recommended, 28 GB minimum. The CLI warns below 28 GB but does not abort.
+- **Disk for spill cache** (`--cache-dir`): NVMe at ≥ 200 MB/s sustained write. The CLI runs a 100 MB benchmark at startup and warns if the chosen path is below the floor.
+- **GPU**: not required. The 13 B forward currently runs on CPU per the M4.7.6.d / M5+ pool-block ceiling.
+- **Disk space**: ~30 GB for the model checkpoint, ~14 GB for the spill cache.
+
+The full empirical baseline lives in [HANDOFF M4.7](./docs/HANDOFF_APX_V20_M4.7.md) (the original beyond-VRAM execution work) and [HANDOFF M4.8](./docs/HANDOFF_APX_V20_M4.8.md) (the 3.5× performance pass that brought the wall-clock from 18.75 min to demoable). The CLI surface is documented in [HANDOFF M4.9](./docs/HANDOFF_APX_V20_M4.9.md).
+
+---
+
 ## 🎯 Vision
 
 Modern AI runtimes assume stable hardware.
@@ -71,7 +131,7 @@ Real, executable, deterministic:
 
 - **🚀 Llama 2 13B Chat runs end-to-end on dev-class hardware in 6.9 minutes, reproducible with one command.** RTX 4070 Laptop with 8 GB VRAM and 32 GB RAM — a workload that **does not fit in VRAM**, **does not fit in RAM alone** (BF16 weights ≈ 26 GB), and is mediated by Atenia's M3-e reaction loop with VRAM ↔ RAM ↔ disk offload. The transparency contract is exact: `argmax(clean RAM) == argmax(after forced 50 % LRU spill) == 1, logit 4.7747` **bit-exactly**, on the same input. The selective LRU spill + lazy-restore cycle (M4.7.5.d + M4.7.4.d) writes 13 GB across **866 tensors** to NVMe in 19 s, then restores them through the `ensure_cpu` Disk-arm during a 23 s post-spill forward — without changing a single bit of the output. End-to-end wall-clock on the dev box: warmup forward 200 s, spill 19 s, post-spill forward 23 s — **6.9 minutes total** from `atenia run --mode c` to `[PASS] ✓`. The v20 thesis "adapt execution to hardware reality, not the other way around" is demonstrated against a real workload, not synthetic memory-pressure injection. See [HANDOFF M4.7](./docs/HANDOFF_APX_V20_M4.7.md) for the full empirical baseline and [HANDOFF M4.9](./docs/HANDOFF_APX_V20_M4.9.md) for the public reproduction surface.
 - **⚡ Performance optimization (M4.8) — 49.5× speedup on the production matmul shape.** The 18.75-minute baseline 13B forward dropped to **5.38 minutes** (3.49× cumulative) via a six-step rewrite of the CPU matmul path: numeric `apx_mode_at_least` comparison closing a latent lex-compare bug, runtime `is_x86_feature_detected!("avx2")` registration replacing a compile-time `#[cfg]` gate, 8-lane AVX2 BF16 → F32 SIMD decode (5.71 → 15.77 GB/s), rayon `par_chunks_mut` for BatchMatMul (7.1× over serial) and per-row MatMul partitioning, and `matrixmultiply::sgemm` cache-blocked panels for shapes ≥ 1 MFLOP. Per-shape gains on the bench harness: `4×5120×13824` **49.5× (1954 → 39 ms)**, `1×5120×5120` 13.4×, `1×4096×32000` 9.2×, BatchMatMul `40×4×128×128` 4.25×. Vendor-agnostic by construction: AVX2 + FMA baseline (Intel **and** AMD x86-64), NEON-ready for Apple Silicon (v24), **no MKL** anywhere in the dep graph. F64 four-model drift improved on every M4.6 family model under the new path. See [HANDOFF M4.8](./docs/HANDOFF_APX_V20_M4.8.md) for the full sub-step breakdown.
-- **🖥 Public CLI (M4.9) — `atenia run --mode c` reproduces the *momento guau* in one command.** Single binary with three subcommands: `probe` (cross-vendor hardware enumeration, gated behind `hw-probe` feature), `run --mode {a|b|c}` (the tri-mode killer-demo runner), and `explain` (legacy v13 narrative explainer, preserved). Mode A is the clean-RAM baseline (5.4 min on the dev box), Mode B validates the autonomous LRU spill trigger (~8 min, panic absorbed via `catch_unwind`), Mode C is the canonical transparency-contract path (6.9 min on the dev box, exit code 3 on contract violation). Output in human-readable text or stable-schema JSON for scripted reproduction. Heartbeat dots stream to stderr during long phases; final report goes to stdout so `--output json | jq …` works cleanly. Hardware soft-warning when total RAM < 28 GB; cache-dir disk-throughput probe with 200 MB/s warning floor. **No new env vars introduced** — overrides go via CLI flags. See [docs/CLI.md](./docs/CLI.md) for the full reference and [HANDOFF M4.9](./docs/HANDOFF_APX_V20_M4.9.md) for the closing notes.
+- **🖥 Public CLI (M4.9) — `atenia run --mode c` reproduces the killer demo in one command.** Single binary with three subcommands: `probe` (cross-vendor hardware enumeration, gated behind `hw-probe` feature), `run --mode {a|b|c}` (the tri-mode killer-demo runner), and `explain` (legacy v13 narrative explainer, preserved). Mode A is the clean-RAM baseline (5.4 min on the dev box), Mode B validates the autonomous LRU spill trigger (~8 min, panic absorbed via `catch_unwind`), Mode C is the canonical transparency-contract path (6.9 min on the dev box, exit code 3 on contract violation). Output in human-readable text or stable-schema JSON for scripted reproduction. Heartbeat dots stream to stderr during long phases; final report goes to stdout so `--output json | jq …` works cleanly. Hardware soft-warning when total RAM < 28 GB; cache-dir disk-throughput probe with 200 MB/s warning floor. **No new env vars introduced** — overrides go via CLI flags. See [docs/CLI.md](./docs/CLI.md) for the full reference and [HANDOFF M4.9](./docs/HANDOFF_APX_V20_M4.9.md) for the closing notes.
 - **🤖 Four production LLMs run end-to-end on CPU.** TinyLlama 1.1B Chat, SmolLM2 1.7B Instruct, Qwen 2.5 1.5B Instruct, and Llama 3.2 1B Instruct load from HuggingFace `.safetensors` and produce logits validated against PyTorch F64 ground truth per [ADR-004](./docs/decisions/ADR-004-f64-reference-as-default.md). Atenia F32 drift sits between **1.32×10⁻⁴ and 1.45×10⁻³** — three-to-four orders of magnitude closer to mathematical truth than industry-default BF16 inference on the same checkpoints. Argmax matches F64 on every position of every model. Each of these four is also re-validated bit-exact under M4.7's BF16 storage + GPU dispatch + disk spill + LRU policy and again under M4.8's parallel matmul stack — the entire reaction-loop + perf cycle is mathematically transparent at 1B-class scale.
 - **📦 Sharded safetensors loader.** Multi-file HuggingFace checkpoints (`model-NNNNN-of-NNNNN.safetensors` + `index.json`) load via `ShardedSafetensorsReader` with drop-after-decode. Verified on Mistral 7B v0.3 (14.5 GB across 3 shards) and Llama 2 13B Chat (26.0 GB across 3 shards); peak RAM stays bounded by the largest single shard, not the sum.
 - **💾 Native BF16 parameter storage.** `TensorStorage::CpuBf16(Vec<u16>)` halves the persistent RAM footprint of model parameters (verified at exactly 50.0 % on TinyLlama). All four 1B-class production checkpoints re-validated under BF16 storage active — drift bit-exact identical to the precision-floor spike, all under the ADR-004 threshold. The same storage variant carries the 26 GB Llama 2 13B parameter set on a 32 GB box.
@@ -142,7 +202,7 @@ Architecture in place, full end-to-end wiring in progress:
   - **M4.7.5 ✅** — M3-e policy upgrade. Per-tensor LRU eviction (`TouchOrder` populated from `NodeTimingRecorder::drop`), `migrate_selected_cpu_to_disk` primitive, `Graph::deep_degrade_with_lru` orchestrator with `pub const SPILL_FRACTION = 0.5`, defensive `ensure_cpu` guards on Add / Sub / Mul. F64 4-model re-validation under LRU spill — drift bit-exact identical to M4.7.4.f, argmax 4/4 on every model, `warmup_logits == post_spill_logits` on every model.
   - **M4.7.6 ✅** — Llama 2 13B Chat killer demo, five sub-steps. Configuration + builder (.a), F16 decode validation closing Risk #3 (.b), GPU MatMul wired to the Llama hot path with the 64 MiB pool capacity check (.c), first end-to-end forward in Mode A — clean RAM, no spill (.d), and Modes B + C (autonomous LRU spill trigger + forced 50 % LRU spill, transparency contract closed at `argmax = 1, logit = 4.7747` bit-exactly pre/post spill on the same input) (.e).
 - **M4.8 ✅** — Performance optimisation. Six sub-steps: bench harness (.a), default-mode + cfg fixes (.b), SIMD BF16 decode (.c), parallel BatchMatMul + parallel MatMul over rows (.d), `matrixmultiply::sgemm` integration for cache-blocked panels (.e), 13B Mode A re-validation (.f). Cumulative on the production matmul shape `4×5120×13824`: **49.5×** speedup (1954 → 39 ms, 0.34 → 14.35 GFLOPS); on the 13B Mode A forward as a whole: **3.5×** (18.75 min → 5.38 min). F64 4-model drift improved on every M4.6 family model. Vendor-agnostic by design (Intel + AMD AVX2/FMA, NEON for v24, no MKL). See [HANDOFF M4.8](./docs/HANDOFF_APX_V20_M4.8.md).
-- **M4.9 ✅** — Public CLI demo. Single `atenia` binary with `probe`, `run`, and `explain` subcommands. `atenia run --mode c --model <path> --cache-dir <path>` reproduces the *momento guau* in 6.9 min on the dev box: warmup forward 200 s, 866-tensor LRU spill 19 s, post-spill forward 23 s, transparency contract `[PASS] ✓`. Mode A baseline (no spill) at 5.4 min; Mode B validates the autonomous trigger plumbing in 8 min. Stable JSON schema for scripted reproduction. See [HANDOFF M4.9](./docs/HANDOFF_APX_V20_M4.9.md) and [docs/CLI.md](./docs/CLI.md).
+- **M4.9 ✅** — Public CLI demo. Single `atenia` binary with `probe`, `run`, and `explain` subcommands. `atenia run --mode c --model <path> --cache-dir <path>` reproduces the killer demo in 6.9 min on the dev box: warmup forward 200 s, 866-tensor LRU spill 19 s, post-spill forward 23 s, transparency contract `[PASS] ✓`. Mode A baseline (no spill) at 5.4 min; Mode B validates the autonomous trigger plumbing in 8 min. Stable JSON schema for scripted reproduction. See [HANDOFF M4.9](./docs/HANDOFF_APX_V20_M4.9.md) and [docs/CLI.md](./docs/CLI.md).
 - **M5+** *(next active milestone)* — Inference UX: tokenizer, KV cache, token-by-token generation. Becomes meaningfully easier post-M4.9 because every model in scope is now numerically validated, the storage / spill / restore / parallel matmul primitives are in place, and the public reproduction surface is locked. The M5+ "13 B GPU acceleration" sub-milestone (non-pooled `cuda_matmul` for tensors > 64 MB + `apx4::gpu_context::gpu_available()` reactivation + `ensure_cpu` activation-arm coverage under continuous pressure) lands inside M5.
 
 > **Forward performance is deferred until after M4.7.** Current release-mode forward times sit between 21 s (Qwen 2.5) and 50 s (SmolLM2) at seq=4 on a 24-thread AVX2 CPU — slower than expected for the GFLOP count, suggesting the matmul dispatcher misses the AVX2 microkernel on some shapes. Optimising before the beyond-VRAM workload runs risks chasing the wrong bottleneck. The principle "make it work, make it right, make it fast" applies in order: M4.5 closed *work*, M4.6 closed *right*, *fast* follows M4.7.
@@ -156,65 +216,6 @@ Architecture in place, full end-to-end wiring in progress:
 - **v25** — Distributed execution, autonomous runtime
 
 Full, current roadmap: [ROADMAP.md](./ROADMAP.md).
-
----
-
-## 🚀 Reproduce the *momento guau* in one command
-
-The shortest path from `git clone` to a green transparency contract on dev-box hardware (RTX 4070 Laptop, 8 GB VRAM, 32 GB RAM, NVMe):
-
-```bash
-git clone https://github.com/AteniaEngine/ateniaengine.git
-cd ateniaengine
-
-# Download Llama 2 13B Chat (requires HuggingFace auth).
-huggingface-cli download meta-llama/Llama-2-13b-chat-hf \
-    --local-dir ./models/llama-2-13b-chat \
-    --include '*.safetensors' '*.json' 'tokenizer*'
-
-cargo install --path .
-
-atenia run --mode c \
-           --model ./models/llama-2-13b-chat \
-           --cache-dir ./atenia-cache
-```
-
-Expected output (~6.9 minutes wall-clock on the dev-box hardware):
-
-```
-=== Atenia v20 Killer Demo — Llama-family — Mode C ===
-Phases:
-  Build graph ....................   ~1s
-  Load weights .................   ~165s    (~156 MB/s)
-  Warmup forward ...............   200s
-  Force LRU spill ................  19s     (866 tensors migrated)
-  Forward ......................   23s
-Per-position argmax:
-  Pos 0: argmax id =     1   logit = 4.7747
-Transparency contract:
-  argmax(pre)  = 1, logit 4.7747
-  argmax(post) = 1, logit 4.7747
-  [PASS] ✓ argmax(pre-spill) == argmax(post-spill) bit-exactly —
-          the LRU spill + lazy-restore cycle is mathematically
-          transparent at this parameter scale.
-Total wall-clock: 6.9 minutes.
-```
-
-Three modes are available:
-
-- `--mode a` — clean RAM, no spill (baseline; ~5.4 min on the dev box).
-- `--mode b` — autonomous LRU spill triggered by simulated memory pressure (~8 min; trigger plumbing validation).
-- `--mode c` — forced 50 % LRU spill, the canonical *momento guau* path (~6.9 min on the dev box; transparency contract).
-
-**Hardware prerequisites for reproduction:**
-
-- **CPU**: x86-64 with AVX2 + FMA (Intel since Haswell 2013, AMD since Excavator 2015). ARM/Apple Silicon is on the v24 roadmap, not yet supported.
-- **RAM**: 32 GB recommended; 28 GB minimum. The CLI emits a soft warning below 28 GB but does not abort.
-- **Disk for spill cache** (`--cache-dir`): NVMe-class device at ≥ 200 MB/s sustained write. The CLI runs a 100 MB benchmark at startup and warns if the chosen path is below the floor. **USB HDDs / spinning disks / slow SD cards make the demo wall-clock impractical.**
-- **GPU**: not required. The 13B forward currently runs on CPU per the M4.7.6.d / M5+ pool-block ceiling.
-- **Disk space**: ~30 GB free for the model checkpoint + ~14 GB free on the cache dir for spill.
-
-Full CLI reference: [docs/CLI.md](./docs/CLI.md). Each `atenia` subcommand also responds to `--help`.
 
 ---
 
@@ -294,7 +295,7 @@ Atenia is designed to sit **below** ML frameworks and **above** raw hardware exe
 - [HANDOFF M4.6](./docs/HANDOFF_APX_V20_M4.6.md) — Llama-family expansion + F64 validation methodology
 - [HANDOFF M4.7](./docs/HANDOFF_APX_V20_M4.7.md) — Beyond-VRAM killer demo (Llama 2 13B Chat on 8 GB VRAM + 32 GB RAM, transparency contract closed)
 - [HANDOFF M4.8](./docs/HANDOFF_APX_V20_M4.8.md) — Performance optimisation (3.5× on 13B Mode A; 49.5× on the production matmul shape; vendor-agnostic AVX2/FMA + matrixmultiply)
-- [HANDOFF M4.9](./docs/HANDOFF_APX_V20_M4.9.md) — Public CLI demo (`atenia run --mode c` reproduces the momento guau in 6.9 min via one command)
+- [HANDOFF M4.9](./docs/HANDOFF_APX_V20_M4.9.md) — Public CLI demo (`atenia run --mode c` reproduces the killer demo in 6.9 min via one command)
 
 **Architectural Decision Records (ADRs)**
 
