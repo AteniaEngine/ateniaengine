@@ -142,11 +142,24 @@ impl Graph {
         &mut self,
         node_id: usize,
     ) -> Result<(), ExecutionAbortReason> {
-        // TODO(PERF): `collect_guard_conditions` runs two subprocess
-        // reads (nvidia-smi + sysinfo) per call, ~40 ms. Without a
-        // cache this makes a 1000-node graph take minutes just on
-        // probing. Must be resolved before APX v20 M5 (first real
-        // model end-to-end). See ROADMAP.
+        // M4.7.5.a — verified resolved. The historical TODO at this
+        // site flagged `collect_guard_conditions` as ~40 ms per call
+        // (two `nvidia-smi` subprocess reads + sysinfo refresh per
+        // call), which would have made a 1850-node Llama 2 13B
+        // forward burn 60+ seconds on probing alone. The
+        // `SignalBus::probe_cache` introduced in M3-e (see
+        // `SIGNAL_BUS_CACHE_TTL = 100 ms` at
+        // `crate::amm::signal_bus::SIGNAL_BUS_CACHE_TTL`) caches the
+        // full `ProbeValues` bundle and the cache hit returns
+        // without spawning any subprocess. The cost is therefore
+        // bounded by `wall_clock / 100 ms × probe_cost` ≈ a few
+        // hundred ms over a 30 s forward, regardless of node count.
+        // The audit test
+        // `tests/m4_7_5_a_probe_cache_amortisation_test.rs`
+        // asserts `probe_calls_count <= ceil(elapsed_ms / 90)`
+        // (slight slack vs the 100 ms TTL to absorb scheduler
+        // jitter) and stands as the regression gate for any future
+        // cache-bypass change.
         //
         // The verdict is collected in an inner block so the shared
         // borrow of `self.reactive_context` ends before the arms below
