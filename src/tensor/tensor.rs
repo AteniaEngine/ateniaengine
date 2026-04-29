@@ -649,12 +649,19 @@ impl Tensor {
             TensorStorage::CpuBf16(bits) => {
                 // Decode-on-access (M4.7.2): materialise a fresh F32 vec
                 // by upcasting every BF16 bit pattern. The upcast
-                // `f32::from_bits((b as u32) << 16)` is lossless. No
-                // cache: each call allocates a new Vec<f32>; callers
-                // that need to reuse the F32 view across multiple ops
-                // should hold the returned Vec, or transition the
-                // storage via `ensure_cpu`.
-                bits.iter().map(|&b| bf16_bits_to_f32(b)).collect()
+                // `f32::from_bits((b as u32) << 16)` is lossless.
+                //
+                // M4.8.c: routed through `bf16_decode_bulk` (8-lane
+                // AVX2 when available, scalar fallback otherwise) so
+                // every consumer of `copy_to_cpu_vec` benefits from
+                // the same decode-bandwidth lift `ensure_cpu` got.
+                // No cache: each call allocates a new Vec<f32>;
+                // callers that need to reuse the F32 view across
+                // multiple ops should hold the returned Vec, or
+                // transition the storage via `ensure_cpu`.
+                let mut out = vec![0.0_f32; bits.len()];
+                crate::simd_kernels::avx2::bf16_decode_bulk(bits, &mut out);
+                out
             }
             TensorStorage::Cuda(g) => g
                 .to_cpu()
@@ -681,7 +688,10 @@ impl Tensor {
                             "copy_to_cpu_vec: disk read (bf16) failed — use ensure_cpu \
                              for structured error handling.",
                         );
-                        bits.iter().map(|&b| bf16_bits_to_f32(b)).collect()
+                        // M4.8.c: SIMD bulk decode (see ensure_cpu BF16 arm).
+                        let mut out = vec![0.0_f32; bits.len()];
+                        crate::simd_kernels::avx2::bf16_decode_bulk(&bits, &mut out);
+                        out
                     }
                 }
             }
@@ -715,6 +725,14 @@ impl Tensor {
                 // is dropped. Use this when a consumer needs `&[f32]`
                 // residency rather than a transient decoded copy.
                 //
+                // M4.8.c: bulk decode via the SIMD-accelerated
+                // `bf16_decode_bulk` (8-lane AVX2 when available,
+                // scalar fallback otherwise). M4.8.a measured the
+                // pre-M4.8.c scalar `iter().map().collect()` path at
+                // 5.75 GB/s on a 70.78 M element tensor (49 ms);
+                // M4.8.c's bulk decode targets ~30+ GB/s on the same
+                // shape on the dev box.
+                //
                 // The `dtype` tag is also flipped to `F32` to match
                 // the new storage. Downstream ops (e.g. `with_layout`
                 // output construction in `MatMul`, the
@@ -726,7 +744,8 @@ impl Tensor {
                 // first inter-op boundary. Sweeping the tag here
                 // keeps the contract local: after `ensure_cpu`, the
                 // tensor is F32 in every observable sense.
-                let cpu_vec: Vec<f32> = bits.iter().map(|&b| bf16_bits_to_f32(b)).collect();
+                let mut cpu_vec: Vec<f32> = vec![0.0; bits.len()];
+                crate::simd_kernels::avx2::bf16_decode_bulk(bits, &mut cpu_vec);
                 self.storage = TensorStorage::Cpu(cpu_vec);
                 self.dtype = DType::F32;
                 Ok(self)
@@ -765,7 +784,12 @@ impl Tensor {
                     disk_tier::DiskDtype::BF16 => {
                         let bits = disk_tier::read_bf16_tensor(handle)
                             .map_err(|e| StorageTransferError::DiskReadFailed(e.to_string()))?;
-                        bits.iter().map(|&b| bf16_bits_to_f32(b)).collect()
+                        // M4.8.c: SIMD bulk decode replaces scalar
+                        // `iter().map().collect()`. The transient
+                        // BF16 buffer is dropped after the call.
+                        let mut out = vec![0.0_f32; bits.len()];
+                        crate::simd_kernels::avx2::bf16_decode_bulk(&bits, &mut out);
+                        out
                     }
                 };
                 if data.len() != expected {

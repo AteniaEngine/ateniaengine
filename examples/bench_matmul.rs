@@ -56,6 +56,7 @@ use atenia_engine::apx6::matmul_tiled_6_3b::{matmul_tiled_6_3b, matmul_tiled_6_3
 use atenia_engine::apx6_4::matmul_4x8_avx2;
 use atenia_engine::matmul_dispatcher::{batch_matmul_dispatch, matmul_dispatch};
 use atenia_engine::simd_kernels::avx2::matmul_avx2;
+use atenia_engine::simd_kernels::avx2::bf16_decode_bulk;
 use atenia_engine::tensor::tensor::{bf16_bits_to_f32, f32_to_bf16_bits};
 
 const WARMUP_ITERS: usize = 1;
@@ -388,13 +389,31 @@ fn bench_bf16_and_alloc() {
         .map(|i| f32_to_bf16_bits((i as f32 * 1e-5).sin()))
         .collect();
 
-    // Cost #1: scalar BF16 → F32 decode (the current
-    // `Tensor::ensure_cpu` BF16 arm at `tensor.rs:729`).
+    // Cost #1a: scalar BF16 → F32 decode (the pre-M4.8.c
+    // `Tensor::ensure_cpu` BF16 arm — `bits.iter().map(...)
+    // .collect()`). Kept as the regression baseline so future
+    // sub-phases can confirm the SIMD path stays ahead.
     let (m_s, mn_s) = time_iters(TIMED_ITERS, || {
         let _decoded: Vec<f32> = bf16_payload.iter().map(|&b| bf16_bits_to_f32(b)).collect();
     });
     println!(
         "    scalar bf16→f32 decode + alloc:        {:>10.3} ms (min {:>8.3} ms)   {:>6.2} GB/s decode",
+        m_s * 1000.0, mn_s * 1000.0,
+        n_elems as f64 * 4.0 / m_s / 1.0e9,
+    );
+
+    // Cost #1b: M4.8.c SIMD bulk decode (`bf16_decode_bulk`,
+    // 8-lane AVX2 with scalar tail). The current
+    // `Tensor::ensure_cpu` BF16 arm and `copy_to_cpu_vec`
+    // BF16 arm both route through this kernel. Decode-only
+    // cost: write into a pre-allocated `Vec<f32>` so the
+    // measurement excludes the M4.8.c-unrelated allocation.
+    let mut scratch = vec![0.0_f32; n_elems];
+    let (m_s, mn_s) = time_iters(TIMED_ITERS, || {
+        bf16_decode_bulk(&bf16_payload, &mut scratch);
+    });
+    println!(
+        "    SIMD bf16→f32 decode (M4.8.c):         {:>10.3} ms (min {:>8.3} ms)   {:>6.2} GB/s decode",
         m_s * 1000.0, mn_s * 1000.0,
         n_elems as f64 * 4.0 / m_s / 1.0e9,
     );
