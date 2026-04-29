@@ -495,15 +495,347 @@ fn run_mode_a(args: RunArgs) -> i32 {
 // Mode B / C stubs (M4.9.d / .e)
 // ============================================================
 
+// ============================================================
+// Mode B — autonomous LRU spill trigger validation
+// ============================================================
+
+/// Sum the byte size of every regular file under `dir`. Used
+/// to report "spilled bytes" for the Mode B observability
+/// surface; matches the helper that lived inline in
+/// `tests/m4_7_6_e_*` pre-M4.9.e.
+fn total_bytes_in(dir: &Path) -> u64 {
+    fn walk(p: &Path, acc: &mut u64) {
+        if let Ok(rd) = std::fs::read_dir(p) {
+            for entry in rd.flatten() {
+                let path = entry.path();
+                if let Ok(md) = entry.metadata() {
+                    if md.is_file() {
+                        *acc += md.len();
+                    } else if md.is_dir() {
+                        walk(&path, acc);
+                    }
+                }
+            }
+        }
+    }
+    let mut acc = 0u64;
+    walk(dir, &mut acc);
+    acc
+}
+
+#[derive(Serialize)]
+struct ModeBReport {
+    version: String,
+    mode: &'static str,
+    seq: usize,
+    model: ModelReport,
+    phases: ModeBPhases,
+    /// Number of `DeepDegrade` events recorded by the reactive
+    /// context's counter — equals the number of times the
+    /// guard fired before pressure dropped back below
+    /// threshold (or before the documented activation-arm
+    /// panic absorbed the forward).
+    deep_degrade_events: u64,
+    /// Bytes written to the cache directory across the run —
+    /// observability that the spill primitive went all the
+    /// way to disk, not just to the counter.
+    spilled_bytes: u64,
+    /// Whether the `catch_unwind` around `graph.execute`
+    /// returned Ok (full forward completed) or absorbed a
+    /// panic (the documented M4.7.5.e activation-arm gap).
+    /// Both outcomes are valid for Mode B; the close
+    /// criterion is "trigger fired", not "forward
+    /// completed".
+    forward_completed: bool,
+    /// Verbatim panic message when `forward_completed` is
+    /// false. None when the forward completed cleanly.
+    panic_message: Option<String>,
+    total_seconds: f64,
+}
+
+#[derive(Serialize)]
+struct ModeBPhases {
+    build_seconds: f32,
+    load_seconds: f32,
+    load_throughput_mb_s_estimate: f32,
+    /// Time inside the `catch_unwind` block — covers both the
+    /// trigger checkpoint and (when the forward completes)
+    /// the entire forward.
+    forward_seconds: f32,
+}
+
 fn run_mode_b(args: RunArgs) -> i32 {
-    let _ = args;
-    eprintln!("error: `atenia run --mode b` lands in M4.9.e. Until then, use:");
+    use std::panic::AssertUnwindSafe;
+
+    let total_start = Instant::now();
+
+    // Mode B uses seq=1 by default per M4.7.6.e.
+    let effective_seq = if args.seq == 4 { 1 } else { args.seq };
+    if args.seq == 4 {
+        eprintln!(
+            "note: --seq defaulted from 4 to 1 for Mode B (M4.7.6.e\n\
+             canonical setting; --seq <other> overrides)."
+        );
+    }
+    let runtime = LlamaRuntime { batch: 1, seq: effective_seq };
+
+    let token_pattern: Vec<f32> = match effective_seq {
+        1 => vec![1.0],
+        n => {
+            let mut v = vec![1.0];
+            for i in 1..n {
+                v.push((i as f32) * 100.0);
+            }
+            v
+        }
+    };
+
+    // Resolve cache directory.
+    let cache_dir = match args.cache_dir.as_ref() {
+        Some(p) => p.clone(),
+        None => cache_dir_for("atenia_run_mode_b"),
+    };
+    if let Err(e) = std::fs::create_dir_all(&cache_dir) {
+        eprintln!(
+            "error: could not create cache directory {}: {}",
+            cache_dir.display(), e,
+        );
+        return 1;
+    }
+
     eprintln!(
-        "  cargo test --release --test m4_7_6_e_llama2_13b_modes_b_c_test \\"
+        "=== Atenia v20 Killer Demo — Mode B (autonomous LRU spill trigger) ==="
     );
-    eprintln!("    -- --ignored --nocapture --test-threads=1 \\");
-    eprintln!("       llama2_13b_mode_b_autonomous_trigger_fires_under_high_pressure");
-    2
+    eprintln!();
+    eprintln!("Cache dir:      {}", cache_dir.display());
+
+    let _ = cache_dir_disk_probe(&cache_dir);
+
+    eprintln!(
+        "Loading {} (this typically takes ~3 min on NVMe) ...",
+        args.model.display(),
+    );
+
+    let hb = if !args.no_progress {
+        Some(Heartbeat::start(2_000))
+    } else {
+        None
+    };
+    let (mut graph, metrics) = build_and_load_llama(
+        &args.model,
+        runtime,
+        /*verbose=*/ false,
+    );
+    if let Some(hb) = hb {
+        hb.stop();
+    }
+
+    eprintln!(
+        "Loaded {} parameters in {:.1}s.",
+        metrics.param_count, metrics.load_secs,
+    );
+
+    // Attach a high-pressure context. The M4.6 guard fires
+    // `Degrade` on its first checkpoint; `dual_memory_pressure`
+    // promotes it to `DeepDegrade` and `deep_degrade_with_lru`
+    // runs autonomously before any meaningful node body
+    // executes.
+    let high_ctx = make_context(cache_dir.clone(), /*high_pressure=*/ true);
+    graph.set_reactive_context(high_ctx);
+
+    eprintln!("Triggering autonomous DeepDegrade via high-pressure probes ...");
+    let tokens = Tensor::new_cpu(vec![1, effective_seq], token_pattern);
+
+    // Wrap the forward in catch_unwind. The first guard
+    // checkpoint fires DeepDegrade (the trigger we want to
+    // observe); a downstream activation node may then hit the
+    // documented M4.7.5.e ensure_cpu gap and panic. Both
+    // outcomes are valid for Mode B; the close criterion is
+    // counters-side, not forward-completion.
+    let hb = if !args.no_progress {
+        Some(Heartbeat::start(2_000))
+    } else {
+        None
+    };
+    let trigger_start = Instant::now();
+    let exec_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let _ = graph.execute(vec![tokens]);
+    }));
+    let trigger_secs = trigger_start.elapsed().as_secs_f32();
+    if let Some(hb) = hb {
+        hb.stop();
+    }
+
+    let (forward_completed, panic_message) = match exec_result {
+        Ok(()) => (true, None),
+        Err(payload) => {
+            // Best-effort downcast of the panic payload to a
+            // readable string. Most std panics produce
+            // `&'static str` or `String`.
+            let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+                (*s).to_string()
+            } else if let Some(s) = payload.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "<non-string panic payload>".to_string()
+            };
+            (false, Some(msg))
+        }
+    };
+
+    let dd_events = graph
+        .reactive_context()
+        .map(|ctx| ctx.deep_degrade_events_count())
+        .unwrap_or(0);
+    let spilled_bytes = total_bytes_in(&cache_dir);
+
+    eprintln!(
+        "catch_unwind result: {} after {:.1}s",
+        if forward_completed {
+            "OK (full forward completed)".to_string()
+        } else {
+            "panic absorbed (M4.7.5.e activation-arm gap — expected)".to_string()
+        },
+        trigger_secs,
+    );
+    eprintln!(
+        "Reactive counters:   deep_degrade_events_count = {}   spilled bytes = {:.1} MB",
+        dd_events,
+        (spilled_bytes as f64) / 1_000_000.0,
+    );
+
+    let total_seconds = total_start.elapsed().as_secs_f64();
+
+    // Mode B's success contract: the autonomous trigger
+    // plumbing fired and the spill primitive wrote to disk.
+    // The forward itself is allowed to panic (M4.7.5.e gap;
+    // the transparency contract is owned by Mode C).
+    let trigger_ok = dd_events > 0 && spilled_bytes > 0;
+
+    let report = ModeBReport {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        mode: "b",
+        seq: effective_seq,
+        model: ModelReport {
+            path: args.model.clone(),
+            layers: metrics.config.num_hidden_layers,
+            hidden_size: metrics.config.hidden_size,
+            intermediate_size: metrics.config.intermediate_size,
+            vocab_size: metrics.config.vocab_size,
+            param_count: metrics.param_count,
+            storage: "bf16",
+        },
+        phases: ModeBPhases {
+            build_seconds: metrics.build_secs,
+            load_seconds: metrics.load_secs,
+            load_throughput_mb_s_estimate: 26_000.0
+                / metrics.load_secs.max(0.01),
+            forward_seconds: trigger_secs,
+        },
+        deep_degrade_events: dd_events,
+        spilled_bytes,
+        forward_completed,
+        panic_message: panic_message.clone(),
+        total_seconds,
+    };
+
+    render_mode_b(&report, args.output);
+
+    if args.cache_dir.is_none() {
+        let _ = std::fs::remove_dir_all(&cache_dir);
+    }
+
+    if trigger_ok { 0 } else { 1 }
+}
+
+fn render_mode_b(r: &ModeBReport, format: OutputFormat) {
+    match format {
+        OutputFormat::Json => {
+            match serde_json::to_string_pretty(r) {
+                Ok(s) => println!("{}", s),
+                Err(e) => eprintln!("error: failed to serialise report: {}", e),
+            }
+        }
+        OutputFormat::Text => {
+            println!();
+            println!(
+                "=== Atenia v20 Killer Demo — Llama-family — Mode B ==="
+            );
+            println!();
+            println!("Run:");
+            println!("  atenia version: {}", r.version);
+            println!("  Model:          {}", r.model.path.display());
+            println!(
+                "                  {} layers × hidden {} × intermediate {} (vocab {})",
+                r.model.layers, r.model.hidden_size,
+                r.model.intermediate_size, r.model.vocab_size,
+            );
+            println!(
+                "  Parameters:     {} ({} storage)",
+                r.model.param_count, r.model.storage,
+            );
+            println!("  Sequence:       {}", r.seq);
+            println!();
+            println!("Phases:");
+            println!(
+                "  Build graph .................... {:>6.2}s",
+                r.phases.build_seconds,
+            );
+            println!(
+                "  Load weights ................. {:>8.2}s   (~{:.0} MB/s)",
+                r.phases.load_seconds, r.phases.load_throughput_mb_s_estimate,
+            );
+            println!(
+                "  Forward (catch_unwind) ....... {:>8.2}s",
+                r.phases.forward_seconds,
+            );
+            println!();
+            println!("Trigger plumbing:");
+            println!("  DeepDegrade events:          {}", r.deep_degrade_events);
+            println!(
+                "  Spilled to disk:             {:.1} MB",
+                (r.spilled_bytes as f64) / 1_000_000.0,
+            );
+            let trigger_passed =
+                r.deep_degrade_events > 0 && r.spilled_bytes > 0;
+            println!(
+                "  {} {}",
+                if trigger_passed {
+                    "[PASS] ✓"
+                } else {
+                    "[FAIL] ✗"
+                },
+                "autonomous Degrade → DeepDegrade promotion fired and the spill primitive wrote to disk",
+            );
+            println!();
+            println!("Forward absorbed:");
+            if r.forward_completed {
+                println!("  Full forward completed cleanly. argmax not reported by Mode B");
+                println!("  (the transparency contract is owned by Mode C; Mode B validates");
+                println!("   the trigger plumbing only).");
+            } else {
+                println!(
+                    "  catch_unwind absorbed a downstream panic — the documented"
+                );
+                println!("  M4.7.5.e activation-arm `ensure_cpu` gap (M5+ follow-up).");
+                println!("  This is expected and does NOT indicate a Mode B failure.");
+                if let Some(msg) = &r.panic_message {
+                    println!();
+                    println!("  Panic message (verbatim):");
+                    for line in msg.lines() {
+                        println!("    {}", line);
+                    }
+                }
+            }
+            println!();
+            println!(
+                "Total wall-clock: {:.1} seconds ({:.1} minutes).",
+                r.total_seconds,
+                r.total_seconds / 60.0,
+            );
+            println!();
+        }
+    }
 }
 
 // ============================================================
