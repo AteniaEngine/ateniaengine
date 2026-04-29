@@ -2786,6 +2786,24 @@ impl Graph {
                     return;
                 }
 
+                // M4.7.3.c: defensive Cuda → Cpu materialisation before
+                // the legacy AVX2 / `dispatch_matmul_gpu` paths. Reaching
+                // here with Cuda operands is only possible on the
+                // `in_gpu_segment` skip-path or when CUDA is unavailable
+                // mid-run; both legacy paths read via `as_cpu_slice` and
+                // would panic on `TensorStorage::Cuda`. The `ensure_cpu`
+                // call is a no-op when storage is already Cpu, so the
+                // BF16-decoded all-Cpu hot path pays nothing extra.
+                a.ensure_cpu().expect(
+                    "MatMul (legacy fallback): Cuda → Cpu materialisation failed for operand A",
+                );
+                b.ensure_cpu().expect(
+                    "MatMul (legacy fallback): Cuda → Cpu materialisation failed for operand B",
+                );
+                out.ensure_cpu().expect(
+                    "MatMul (legacy fallback): Cuda → Cpu materialisation failed for output",
+                );
+
                 // APX 5.2 / 6.2: use KernelPlanner to decide the matmul target.
                 // In modes >= 6.2 we can force the CPU AVX2 path (CpuFastAvx2);
                 // otherwise we use the usual APX 4 dispatcher with CPU/GPU/Auto.
@@ -2986,7 +3004,13 @@ impl Graph {
 
                 let src = inputs[0];
                 let x_opt = self.nodes[src].output.as_ref();
-                if let Some(x) = x_opt.cloned() {
+                if let Some(mut x) = x_opt.cloned() {
+                    // M4.7.3.d: defensive decode-on-access. `reshape_tensor`
+                    // ultimately reads via `as_cpu_slice` to build the new
+                    // contiguous buffer.
+                    x.ensure_cpu().expect(
+                        "Reshape: BF16/Cuda/Disk → Cpu materialisation failed",
+                    );
                     let out = reshape_tensor(&x, &target);
                     self.nodes[node_id].set_output(out.clone());
 
@@ -3015,7 +3039,12 @@ impl Graph {
                     return;
                 }
                 let src = op_inputs[0];
-                if let Some(x) = self.nodes[src].output.clone() {
+                if let Some(mut x) = self.nodes[src].output.clone() {
+                    // M4.7.3.d: defensive decode-on-access for the Cpu-only
+                    // `permute` helper.
+                    x.ensure_cpu().expect(
+                        "Permute: BF16/Cuda/Disk → Cpu materialisation failed",
+                    );
                     let perm_clone: Vec<usize> = perm.clone();
                     let out = permute(&x, &perm_clone);
                     self.nodes[node_id].set_output(out);
@@ -3036,11 +3065,16 @@ impl Graph {
             }
             NodeType::TransposeLastTwo => {
                 let src = self.nodes[node_id].inputs[0];
-                let x = self.nodes[src]
+                let mut x = self.nodes[src]
                     .output
                     .as_ref()
                     .expect("TransposeLastTwo missing input")
                     .clone();
+                // M4.7.3.d: defensive decode-on-access for the Cpu-only
+                // `transpose_last_two` helper.
+                x.ensure_cpu().expect(
+                    "TransposeLastTwo: BF16/Cuda/Disk → Cpu materialisation failed",
+                );
                 let out = transpose_last_two(&x);
                 self.nodes[node_id].set_output(out.clone());
 
@@ -3211,6 +3245,26 @@ impl Graph {
                     }
                     return;
                 }
+
+                // M4.7.3.c: defensive Cuda → Cpu materialisation before
+                // the legacy CPU/GPU dispatch paths. Reaching here with
+                // any Cuda operand is only possible on mixed storage
+                // (one Cuda, one Cpu) or when CUDA went unavailable
+                // mid-run; both legacy paths (`dispatch_batch_matmul_cuda`'s
+                // host fallback inside `cuda_batch_matmul` and the pure
+                // `batch_matmul`) read via `as_cpu_slice` and would
+                // panic on `TensorStorage::Cuda`. `ensure_cpu` is a
+                // no-op when already Cpu, so the all-Cpu hot path
+                // pays nothing.
+                a.ensure_cpu().expect(
+                    "BatchMatMul (legacy fallback): Cuda → Cpu materialisation failed for operand A",
+                );
+                b.ensure_cpu().expect(
+                    "BatchMatMul (legacy fallback): Cuda → Cpu materialisation failed for operand B",
+                );
+                out.ensure_cpu().expect(
+                    "BatchMatMul (legacy fallback): Cuda → Cpu materialisation failed for output",
+                );
 
                 // Target selection via APX 5.2 (KernelPlanner) already computed
                 // in 'plan'. We use the same mapping logic as in MatMul.
@@ -3394,11 +3448,16 @@ impl Graph {
                 let inputs = self.nodes[node_id].inputs.clone();
                 assert_eq!(inputs.len(), 1, "LogSoftmax expects a single input");
 
-                let x = self.nodes[inputs[0]]
+                let mut x = self.nodes[inputs[0]]
                     .output
                     .as_ref()
                     .expect("LogSoftmax missing input")
                     .clone();
+                // M4.7.3.d: defensive decode-on-access for the Cpu-only
+                // `log_softmax_last_dim` kernel.
+                x.ensure_cpu().expect(
+                    "LogSoftmax: BF16/Cuda/Disk → Cpu materialisation failed",
+                );
 
                 let out = log_softmax_last_dim(&x);
                 let out_clone = out.clone();
@@ -3444,16 +3503,24 @@ impl Graph {
                 let inputs = self.nodes[node_id].inputs.clone();
                 assert_eq!(inputs.len(), 2, "Gather expects data and indices inputs");
 
-                let data = self.nodes[inputs[0]]
+                let mut data = self.nodes[inputs[0]]
                     .output
                     .as_ref()
                     .expect("Gather missing data input")
                     .clone();
-                let indices = self.nodes[inputs[1]]
+                let mut indices = self.nodes[inputs[1]]
                     .output
                     .as_ref()
                     .expect("Gather missing indices input")
                     .clone();
+                // M4.7.3.d: defensive decode-on-access for the Cpu-only
+                // `gather_last_dim` kernel.
+                data.ensure_cpu().expect(
+                    "Gather: BF16/Cuda/Disk → Cpu materialisation failed for data",
+                );
+                indices.ensure_cpu().expect(
+                    "Gather: BF16/Cuda/Disk → Cpu materialisation failed for indices",
+                );
 
                 let out = gather_last_dim(&data, &indices);
                 self.nodes[node_id].set_output(out);
@@ -3488,16 +3555,24 @@ impl Graph {
                 let inputs = self.nodes[node_id].inputs.clone();
                 assert_eq!(inputs.len(), 2, "CrossEntropyLoss expects log_probs and targets");
 
-                let log_probs = self.nodes[inputs[0]]
+                let mut log_probs = self.nodes[inputs[0]]
                     .output
                     .as_ref()
                     .expect("CrossEntropyLoss missing log probs")
                     .clone();
-                let targets = self.nodes[inputs[1]]
+                let mut targets = self.nodes[inputs[1]]
                     .output
                     .as_ref()
                     .expect("CrossEntropyLoss missing targets")
                     .clone();
+                // M4.7.3.d: defensive decode-on-access. The body reads
+                // both operands via `as_cpu_slice`.
+                log_probs.ensure_cpu().expect(
+                    "CrossEntropyLoss: BF16/Cuda/Disk → Cpu materialisation failed for log_probs",
+                );
+                targets.ensure_cpu().expect(
+                    "CrossEntropyLoss: BF16/Cuda/Disk → Cpu materialisation failed for targets",
+                );
 
                 let last_dim = *log_probs
                     .shape
@@ -3569,12 +3644,12 @@ impl Graph {
                     "Linear node expects 2 or 3 inputs"
                 );
 
-                let x = self.nodes[inputs[0]]
+                let mut x = self.nodes[inputs[0]]
                     .output
                     .as_ref()
                     .expect("Linear missing x")
                     .clone();
-                let w = self.nodes[inputs[1]]
+                let mut w = self.nodes[inputs[1]]
                     .output
                     .as_ref()
                     .expect("Linear missing weight")
@@ -3582,7 +3657,7 @@ impl Graph {
                 // APX 4.11: per-operator direct GPU execution attempt only for
                 // nodes outside planned GPU segments.
                 let use_bias = inputs.len() == 3;
-                let b_opt = if use_bias {
+                let mut b_opt = if use_bias {
                     Some(
                         self.nodes[inputs[2]]
                             .output
@@ -3593,6 +3668,24 @@ impl Graph {
                 } else {
                     None
                 };
+
+                // M4.7.3.d: defensive decode-on-access. `try_gpu_linear`
+                // is hard-disabled (see `gpu_hooks::try_gpu_linear`),
+                // and `nn_linear::linear` reads via `as_cpu_slice`, so
+                // BF16 weights and any future Cuda residency on x or w
+                // would panic without these guards. No-op when storage
+                // is already Cpu.
+                x.ensure_cpu().expect(
+                    "Linear: BF16/Cuda/Disk → Cpu materialisation failed for x",
+                );
+                w.ensure_cpu().expect(
+                    "Linear: BF16/Cuda/Disk → Cpu materialisation failed for weight",
+                );
+                if let Some(ref mut bias) = b_opt {
+                    bias.ensure_cpu().expect(
+                        "Linear: BF16/Cuda/Disk → Cpu materialisation failed for bias",
+                    );
+                }
 
                 // APX 5.4: optional timing measurement for adaptive Linear statistics.
                 let apx_mode_local = crate::apx_mode();
@@ -3799,11 +3892,16 @@ impl Graph {
                 let inputs = self.nodes[node_id].inputs.clone();
                 assert_eq!(inputs.len(), 1, "Activation expects a single input");
 
-                let x = self.nodes[inputs[0]]
+                let mut x = self.nodes[inputs[0]]
                     .output
                     .as_ref()
                     .expect("Activation missing input")
                     .clone();
+                // M4.7.3.d: defensive decode-on-access for Cpu-only
+                // `nn_act` kernels (ReLU/SiLU/GELU).
+                x.ensure_cpu().expect(
+                    "Activation: BF16/Cuda/Disk → Cpu materialisation failed",
+                );
 
                 let out = match act {
                     crate::amg::nodes::ActType::ReLU => nn_act::relu(&x),
@@ -3823,27 +3921,41 @@ impl Graph {
                     "FusedLinearActivation expects 2 or 3 inputs",
                 );
 
-                let x = self.nodes[inputs[0]]
+                let mut x = self.nodes[inputs[0]]
                     .output
                     .as_ref()
                     .expect("FusedLinearActivation missing x")
                     .clone();
-                let w = self.nodes[inputs[1]]
+                let mut w = self.nodes[inputs[1]]
                     .output
                     .as_ref()
                     .expect("FusedLinearActivation missing weight")
                     .clone();
 
-                let b_opt = if inputs.len() == 3 {
-                    Some(
-                        self.nodes[inputs[2]]
-                            .output
-                            .as_ref()
-                            .expect("FusedLinearActivation missing bias"),
-                    )
+                let b_owned = if inputs.len() == 3 {
+                    let mut b = self.nodes[inputs[2]]
+                        .output
+                        .as_ref()
+                        .expect("FusedLinearActivation missing bias")
+                        .clone();
+                    // M4.7.3.d: defensive decode-on-access.
+                    b.ensure_cpu().expect(
+                        "FusedLinearActivation: BF16/Cuda/Disk → Cpu materialisation failed for bias",
+                    );
+                    Some(b)
                 } else {
                     None
                 };
+                // M4.7.3.d: defensive decode-on-access for the Cpu-only
+                // `nn_linear::linear` and `apx4_8::exec_fused_linear_silu`
+                // helpers below.
+                x.ensure_cpu().expect(
+                    "FusedLinearActivation: BF16/Cuda/Disk → Cpu materialisation failed for x",
+                );
+                w.ensure_cpu().expect(
+                    "FusedLinearActivation: BF16/Cuda/Disk → Cpu materialisation failed for weight",
+                );
+                let b_opt = b_owned.as_ref();
 
                 let lin = nn_linear::linear(&x, &w, b_opt);
 
@@ -3890,7 +4002,13 @@ impl Graph {
                 }
 
                 let x_opt = self.nodes[inputs[0]].output.as_ref();
-                if let Some(x) = x_opt.cloned() {
+                if let Some(mut x) = x_opt.cloned() {
+                    // M4.7.3.d: defensive decode-on-access. `nn_norm::rms_norm`
+                    // is a Cpu-only F32 kernel; BF16/Disk/Cuda would panic
+                    // inside `as_cpu_slice`. No-op when storage is already Cpu.
+                    x.ensure_cpu().expect(
+                        "RmsNorm: BF16/Cuda/Disk → Cpu materialisation failed",
+                    );
                     let out = nn_norm::rms_norm(&x, eps);
                     self.nodes[node_id].set_output(out);
                 }
@@ -3903,7 +4021,12 @@ impl Graph {
                 }
 
                 let x_opt = self.nodes[inputs[0]].output.as_ref();
-                if let Some(x) = x_opt.cloned() {
+                if let Some(mut x) = x_opt.cloned() {
+                    // M4.7.3.d: defensive decode-on-access for the Cpu-only
+                    // `nn_act::silu` kernel.
+                    x.ensure_cpu().expect(
+                        "SiLU: BF16/Cuda/Disk → Cpu materialisation failed",
+                    );
                     let out = nn_act::silu(&x);
                     self.nodes[node_id].set_output(out);
 
@@ -3939,7 +4062,12 @@ impl Graph {
                 }
 
                 let x_opt = self.nodes[inputs[0]].output.as_ref();
-                if let Some(x) = x_opt.cloned() {
+                if let Some(mut x) = x_opt.cloned() {
+                    // M4.7.3.d: defensive decode-on-access for the Cpu-only
+                    // `nn_softmax::softmax_last_dim` kernel.
+                    x.ensure_cpu().expect(
+                        "Softmax: BF16/Cuda/Disk → Cpu materialisation failed",
+                    );
                     let out = nn_softmax::softmax_last_dim(&x);
                     self.nodes[node_id].set_output(out);
 
@@ -4023,7 +4151,12 @@ impl Graph {
                     ),
                 };
                 let x_opt = self.nodes[inputs[0]].output.as_ref();
-                if let Some(x) = x_opt.cloned() {
+                if let Some(mut x) = x_opt.cloned() {
+                    // M4.7.3.d: defensive decode-on-access for the Cpu-only
+                    // `nn_rope::apply_rope_with_inv_freqs` kernel.
+                    x.ensure_cpu().expect(
+                        "RoPE: BF16/Cuda/Disk → Cpu materialisation failed",
+                    );
                     let out = nn_rope::apply_rope_with_inv_freqs(&x, head_dim, &inv_freqs);
                     self.nodes[node_id].set_output(out);
 
@@ -4071,24 +4204,35 @@ impl Graph {
             }
             NodeType::Conv2D(cfg) => {
                 let inputs = self.nodes[node_id].inputs.clone();
-                let input_t = self.nodes[inputs[0]]
+                let mut input_t = self.nodes[inputs[0]]
                     .output
                     .clone()
                     .expect("Conv2D: input tensor missing");
-                let weight_t = self.nodes[inputs[1]]
+                let mut weight_t = self.nodes[inputs[1]]
                     .output
                     .clone()
                     .expect("Conv2D: weight tensor missing");
                 let bias_t = if inputs.len() == 3 {
-                    Some(
-                        self.nodes[inputs[2]]
-                            .output
-                            .clone()
-                            .expect("Conv2D: bias tensor missing"),
-                    )
+                    let mut b = self.nodes[inputs[2]]
+                        .output
+                        .clone()
+                        .expect("Conv2D: bias tensor missing");
+                    // M4.7.3.d: defensive decode-on-access.
+                    b.ensure_cpu().expect(
+                        "Conv2D: BF16/Cuda/Disk → Cpu materialisation failed for bias",
+                    );
+                    Some(b)
                 } else {
                     None
                 };
+                // M4.7.3.d: defensive decode-on-access for the Cpu-only
+                // `execute_conv2d` kernel.
+                input_t.ensure_cpu().expect(
+                    "Conv2D: BF16/Cuda/Disk → Cpu materialisation failed for input",
+                );
+                weight_t.ensure_cpu().expect(
+                    "Conv2D: BF16/Cuda/Disk → Cpu materialisation failed for weight",
+                );
                 let out = crate::amg::ops::conv2d::execute_conv2d(
                     &input_t,
                     &weight_t,
@@ -4131,10 +4275,15 @@ impl Graph {
             }
             NodeType::MaxPool2D(cfg) => {
                 let inputs = self.nodes[node_id].inputs.clone();
-                let input_t = self.nodes[inputs[0]]
+                let mut input_t = self.nodes[inputs[0]]
                     .output
                     .clone()
                     .expect("MaxPool2D: input tensor missing");
+                // M4.7.3.d: defensive decode-on-access for the Cpu-only
+                // `execute_maxpool2d` kernel.
+                input_t.ensure_cpu().expect(
+                    "MaxPool2D: BF16/Cuda/Disk → Cpu materialisation failed for input",
+                );
                 let out = crate::amg::ops::maxpool2d::execute_maxpool2d(&input_t, &cfg);
                 self.nodes[node_id].set_output(out);
 
