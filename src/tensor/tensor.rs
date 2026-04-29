@@ -665,11 +665,25 @@ impl Tensor {
                 // non-mutating accessor by contract. Callers that
                 // want the storage transitioned should call
                 // `ensure_cpu` instead.
-                disk_tier::read_f32_tensor(handle).expect(
-                    "copy_to_cpu_vec: disk read failed — use ensure_cpu for \
-                     structured error handling, or verify that the underlying \
-                     file still exists and the handle's numel is accurate.",
-                )
+                //
+                // M4.7.4.d: dispatch on the on-disk dtype. BF16
+                // files are upcast to f32 here, mirroring what
+                // `ensure_cpu` does on its Disk arm — the
+                // contract is "produce a Vec<f32>".
+                match handle.dtype() {
+                    disk_tier::DiskDtype::F32 => disk_tier::read_f32_tensor(handle).expect(
+                        "copy_to_cpu_vec: disk read failed — use ensure_cpu for \
+                         structured error handling, or verify that the underlying \
+                         file still exists and the handle's numel is accurate.",
+                    ),
+                    disk_tier::DiskDtype::BF16 => {
+                        let bits = disk_tier::read_bf16_tensor(handle).expect(
+                            "copy_to_cpu_vec: disk read (bf16) failed — use ensure_cpu \
+                             for structured error handling.",
+                        );
+                        bits.iter().map(|&b| bf16_bits_to_f32(b)).collect()
+                    }
+                }
             }
         }
     }
@@ -725,9 +739,35 @@ impl Tensor {
                 Ok(self)
             }
             TensorStorage::Disk(handle) => {
+                // M4.7.4.d: dispatch on the on-disk dtype tagged
+                // by the M4.7.4.a writer. The Disk arm always
+                // restores to `Cpu(Vec<f32>)` per decision #4 of
+                // the M4.7.4 plan — `ensure_cpu` is the F32
+                // residency primitive; a future M5
+                // `ensure_resident` may keep the BF16 view for
+                // memory-pressured intermediate tensors.
+                //
+                // For `DiskDtype::BF16` the upcast is a per-element
+                // bf16 → f32 expansion (shift the 16 bits left by
+                // 16, plus zero-fill of the trailing mantissa
+                // bits — same arithmetic the M4.7.2 BF16
+                // decode-on-access path uses). The transient
+                // `Vec<u16>` returned by `read_bf16_tensor` lives
+                // only across the `map` and is dropped before the
+                // Cpu storage is assigned, so peak transient
+                // memory is one BF16 buffer + one F32 buffer
+                // (1.5 × the F32 footprint, no worse than the
+                // M4.7.2 BF16 → F32 decode itself).
                 let expected = self.numel();
-                let data = disk_tier::read_f32_tensor(handle)
-                    .map_err(|e| StorageTransferError::DiskReadFailed(e.to_string()))?;
+                let data: Vec<f32> = match handle.dtype() {
+                    disk_tier::DiskDtype::F32 => disk_tier::read_f32_tensor(handle)
+                        .map_err(|e| StorageTransferError::DiskReadFailed(e.to_string()))?,
+                    disk_tier::DiskDtype::BF16 => {
+                        let bits = disk_tier::read_bf16_tensor(handle)
+                            .map_err(|e| StorageTransferError::DiskReadFailed(e.to_string()))?;
+                        bits.iter().map(|&b| bf16_bits_to_f32(b)).collect()
+                    }
+                };
                 if data.len() != expected {
                     return Err(StorageTransferError::DiskSizeMismatch {
                         expected,
@@ -739,6 +779,14 @@ impl Tensor {
                 // `Arc<InnerDiskFile>`. If this was the last clone,
                 // `InnerDiskFile::Drop` removes the file from disk.
                 self.storage = TensorStorage::Cpu(data);
+                // M4.7.4.d: a BF16-spilled tensor whose `dtype`
+                // was still `DType::BF16` (it was Cpu-bf16 at
+                // spill time) now has F32 storage; flip the
+                // logical dtype tag to match. Same rationale as
+                // the M4.7.2 CpuBf16 → Cpu arm above: downstream
+                // ops read `dtype` to dispatch and would panic
+                // on a BF16-tagged tensor whose bytes are F32.
+                self.dtype = DType::F32;
                 Ok(self)
             }
         }
