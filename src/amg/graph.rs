@@ -2788,7 +2788,21 @@ impl Graph {
                 let a_opt = self.nodes[inputs[0]].output.as_ref();
                 let b_opt = self.nodes[inputs[1]].output.as_ref();
 
-                if let (Some(a), Some(b)) = (a_opt.cloned(), b_opt.cloned()) {
+                if let (Some(mut a), Some(mut b)) = (a_opt.cloned(), b_opt.cloned()) {
+                    // M4.7.5.e: defensive decode-on-access. The
+                    // `Tensor::add` Tensor method assumes Cpu
+                    // storage; under M4.7.5.d's selective spill
+                    // a parameter that just landed on Disk would
+                    // surface as a panic inside `as_cpu_slice`
+                    // unless we materialise it back here. The
+                    // M4.7.4.d Disk arm of `ensure_cpu` handles
+                    // both DiskDtype::F32 and DiskDtype::BF16.
+                    a.ensure_cpu().expect(
+                        "Add: Disk/BF16/Cuda → Cpu materialisation failed for A",
+                    );
+                    b.ensure_cpu().expect(
+                        "Add: Disk/BF16/Cuda → Cpu materialisation failed for B",
+                    );
                     self.nodes[node_id].set_output(a.add(&b));
 
                     if record_tape {
@@ -2832,16 +2846,26 @@ impl Graph {
                 let a_id = self.nodes[node_id].inputs[0];
                 let b_id = self.nodes[node_id].inputs[1];
 
-                let a = self.nodes[a_id]
+                let mut a = self.nodes[a_id]
                     .output
                     .as_ref()
                     .expect("Sub missing input A")
                     .clone();
-                let b = self.nodes[b_id]
+                let mut b = self.nodes[b_id]
                     .output
                     .as_ref()
                     .expect("Sub missing input B")
                     .clone();
+
+                // M4.7.5.e: defensive decode-on-access on the
+                // Tensor::sub host-only path. Same rationale as
+                // the Add arm above.
+                a.ensure_cpu().expect(
+                    "Sub: Disk/BF16/Cuda → Cpu materialisation failed for A",
+                );
+                b.ensure_cpu().expect(
+                    "Sub: Disk/BF16/Cuda → Cpu materialisation failed for B",
+                );
 
                 self.nodes[node_id].set_output(a.sub(&b));
 
@@ -2871,8 +2895,17 @@ impl Graph {
                 let b_opt = self.nodes[inputs[1]].output.as_ref();
 
                 if let (Some(a), Some(b)) = (a_opt, b_opt) {
-                    let a = a.clone();
-                    let b = b.clone();
+                    let mut a = a.clone();
+                    let mut b = b.clone();
+
+                    // M4.7.5.e: defensive decode-on-access on the
+                    // Tensor::mul host-only path.
+                    a.ensure_cpu().expect(
+                        "Mul: Disk/BF16/Cuda → Cpu materialisation failed for A",
+                    );
+                    b.ensure_cpu().expect(
+                        "Mul: Disk/BF16/Cuda → Cpu materialisation failed for B",
+                    );
 
                     self.nodes[node_id].set_output(a.mul(&b));
 
