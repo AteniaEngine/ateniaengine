@@ -67,7 +67,7 @@ Atenia Engine is implemented in Rust. The project follows an APX (Adaptive Execu
 
 Real, executable, deterministic:
 
-**Real LLM inference (APX v20 M4.5–M4.7.3)**
+**Real LLM inference (APX v20 M4.5–M4.7.4)**
 
 - **🤖 Four production LLMs run end-to-end on CPU.** TinyLlama 1.1B Chat, SmolLM2 1.7B Instruct, Qwen 2.5 1.5B Instruct, and Llama 3.2 1B Instruct load from HuggingFace `.safetensors` and produce logits validated against PyTorch F64 ground truth per [ADR-004](./docs/decisions/ADR-004-f64-reference-as-default.md). Atenia F32 drift sits between **1.32×10⁻⁴ and 1.45×10⁻³** — three-to-four orders of magnitude closer to mathematical truth than industry-default BF16 inference on the same checkpoints. Argmax matches F64 on every position of every model.
 - **📦 Sharded safetensors loader.** Multi-file HuggingFace checkpoints (`model-NNNNN-of-NNNNN.safetensors` + `index.json`) load via `ShardedSafetensorsReader` with drop-after-decode. Verified on Mistral 7B v0.3 (14.5 GB across 3 shards); peak RAM stays bounded by the largest single shard, not the sum.
@@ -134,7 +134,7 @@ Architecture in place, full end-to-end wiring in progress:
   - **M4.7.1 ✅** — Sharded safetensors loader (Mistral 7B v0.3, 3 shards, 14.5 GB).
   - **M4.7.2 ✅** — Native BF16 parameter storage. 50% RAM savings, all four M4.6 checkpoints re-validated under BF16 active.
   - **M4.7.3 ✅** — GPU MatMul + BatchMatMul with resident operands and per-storage gating in the executor arms; defensive `ensure_cpu` audit across every CPU-only kernel arm; F64 4-model re-validation under M4.7.3 dispatch (counters added to `gpu::dispatch::hooks` so the validation gates a silent CPU-fallback regression).
-  - **M4.7.4** — RAM ↔ SSD streaming (mmap, chunked pull).
+  - **M4.7.4 ✅** — RAM ↔ SSD streaming primitive: BF16-aware disk format (`DiskDtype` flag on the handle, files keep the M4.7.2 50 % footprint contract), chunked streaming reader (4 MiB per chunk, no `memmap2` dep), `migrate_all_cpu_to_disk` BF16 arm (was silently skipping every CpuBf16 tensor), `ensure_cpu` Disk arm dispatching on the on-disk dtype. F64 4-model re-validation under disk spill: drift bit-exact identical to the M4.7.3 baseline (TinyLlama 1.41e-4, SmolLM2 1.45e-3, Qwen 2.91e-2, Llama 3.2 1.32e-4), argmax 4/4 on every model. NVMe-backed `ATENIA_DISK_TIER_DIR` documented as the runtime prerequisite for the demo.
   - **M4.7.5** — M3-e policy upgrade (LRU, probe cache, prefetch).
   - **M4.7.6** — First end-to-end run on Llama 2 13B (or Mistral 7B v0.3 fallback) + F64 validation.
 - **M5+** — Inference UX: tokenizer, KV cache, token-by-token generation.
