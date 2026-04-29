@@ -38,8 +38,10 @@ use atenia_engine::nn::llama::{
     build_llama, LlamaConfig, LlamaRuntime,
 };
 
-const MODEL_DIR: &str =
-    "F:/Proyectos/artenia_engine/atenia-engine/models/llama-2-13b-chat";
+/// Llama 2 13B Chat lives on the **internal NVMe (D:)** for the
+/// demo per the M4.7.4 / M4.7.5 drive policy — F: USB HDD is
+/// too slow. Override via `ATENIA_LLAMA2_13B_DIR` env var.
+const MODEL_DIR: &str = "D:/Atenia/models/llama-2-13b-chat";
 
 #[test]
 #[ignore = "requires Llama 2 13B Chat checkpoint at MODEL_DIR"]

@@ -34,6 +34,14 @@ fn apx_trace_enabled() -> bool {
 /// are observability-only.
 static GPU_MATMUL_RESIDENT_COUNT: AtomicUsize = AtomicUsize::new(0);
 static GPU_MATMUL_ROUNDTRIP_COUNT: AtomicUsize = AtomicUsize::new(0);
+/// M4.7.6.d — legacy `dispatch_matmul_gpu` (apx4) path counter.
+/// See `apx4::gpu_dispatch::record_legacy_gpu_matmul` for the
+/// rationale. Incremented every time `gpu_matmul` (apx4) is
+/// called via the legacy dispatch path — the path Llama 2 13B's
+/// hot path actually uses because the 64 MiB pool block size
+/// excludes its 100-270 MB weight tensors from the M4.7.3
+/// residency-aware code path.
+static GPU_MATMUL_LEGACY_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 /// Returns the count of MatMul invocations that took the residency
 /// (all-Cuda → device-pointer) path inside `try_gpu_matmul`.
@@ -46,6 +54,38 @@ pub fn gpu_matmul_resident_count() -> usize {
 /// `try_gpu_matmul`.
 pub fn gpu_matmul_roundtrip_count() -> usize {
     GPU_MATMUL_ROUNDTRIP_COUNT.load(Ordering::Relaxed)
+}
+
+/// M4.7.6.d — count of MatMul invocations that took the legacy
+/// `dispatch_matmul_gpu` → `gpu_matmul` path (apx4). This path
+/// handles MatMul shapes whose weight tensor exceeds the
+/// `DEFAULT_BLOCK_SIZE = 64 MiB` pool block — the M4.7.3
+/// residency-aware path is unreachable for those shapes today,
+/// so the legacy path is the only GPU route for 13B-class
+/// models.
+pub fn gpu_matmul_legacy_count() -> usize {
+    GPU_MATMUL_LEGACY_COUNT.load(Ordering::Relaxed)
+}
+
+/// M4.7.6.d — union of the three GPU MatMul counters.
+/// `total > 0` answers "did GPU MatMul fire at all on this
+/// model" without forcing the caller to know which dispatch
+/// path was taken. Use this in tests / demos that should be
+/// agnostic to whether the M4.7.3 residency path or the legacy
+/// apx4 path served the work.
+pub fn gpu_matmul_total_count() -> usize {
+    GPU_MATMUL_RESIDENT_COUNT.load(Ordering::Relaxed)
+        + GPU_MATMUL_ROUNDTRIP_COUNT.load(Ordering::Relaxed)
+        + GPU_MATMUL_LEGACY_COUNT.load(Ordering::Relaxed)
+}
+
+/// M4.7.6.d — internal increment used by
+/// `apx4::gpu_dispatch::dispatch_matmul`. `pub` so the apx4
+/// module can call it without a circular dep on hooks.rs's
+/// private statics; the function name is more specific than
+/// the public reads to discourage accidental external bumps.
+pub fn increment_legacy_gpu_matmul_counter() {
+    GPU_MATMUL_LEGACY_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Simple heuristic to decide whether it is worth using the CUDA MatMul kernel.
