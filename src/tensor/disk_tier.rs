@@ -12,11 +12,19 @@
 //! arms across the codebase are updated. The current commit only
 //! exercises the infrastructure in its own unit tests.
 //!
-//! ## File format — raw f32 bytes
+//! ## File format — raw bytes, dtype on the handle (M4.7.4.a)
 //!
 //! Tensors are serialized as the raw little-endian (native) byte
-//! layout of their `Vec<f32>` contents. No header, no magic number,
-//! no dtype tag. Rationale:
+//! layout of their underlying buffer:
+//!
+//! - [`DiskDtype::F32`]: 4 bytes per element, the original M3-e.11.1
+//!   format. Bit-exact backward-compatible.
+//! - [`DiskDtype::BF16`]: 2 bytes per element. The buffer is the
+//!   `Vec<u16>` storage shared with [`crate::tensor::TensorStorage::CpuBf16`].
+//!
+//! No header, no magic number, no dtype tag inside the file. The
+//! dtype lives on the [`DiskTensorHandle`] alongside `numel`, the
+//! same pattern that already worked in M3-e.11.1. Rationale:
 //!
 //! - **Zero new deps**: the project does not use `serde`, `bincode`,
 //!   `safetensors`, or `bytemuck`; adding one for ephemeral spillover
@@ -30,9 +38,10 @@
 //!   worst possible moment. Raw bytes give the best I/O throughput
 //!   achievable without OS tuning.
 //!
-//! The tensor's shape / dtype / layout live on the owning [`Tensor`][crate::tensor::Tensor]
+//! The tensor's shape / layout live on the owning [`Tensor`][crate::tensor::Tensor]
 //! and are not duplicated in the file. The [`DiskTensorHandle`] caches
-//! `numel` for a size-check at read time; the shape is never persisted.
+//! `numel` and `dtype` for a size-check at read time; the shape is
+//! never persisted.
 //!
 //! ## Cache directory
 //!
@@ -69,6 +78,37 @@ use std::time::{Duration, SystemTime};
 
 use uuid::Uuid;
 
+/// On-disk dtype of a spilled tensor (M4.7.4.a).
+///
+/// Lives on the [`DiskTensorHandle`], not in the file itself. The
+/// reader picks the right deserializer (`read_f32_tensor` or
+/// `read_bf16_tensor`) based on the value cached here at write time.
+///
+/// Adding a new variant is a backward-compatible operation: existing
+/// `F32` handles keep working, the on-disk byte layout for the new
+/// variant is the raw little-endian buffer of the corresponding Rust
+/// integer width.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiskDtype {
+    /// 4-byte IEEE-754 single-precision float, the original M3-e.11.1
+    /// format. Round-trip via [`write_f32_tensor`] / [`read_f32_tensor`].
+    F32,
+    /// 2-byte bfloat16, raw `u16` bits; the same encoding the
+    /// [`crate::tensor::TensorStorage::CpuBf16`] variant carries.
+    /// Round-trip via [`write_bf16_tensor`] / [`read_bf16_tensor`].
+    BF16,
+}
+
+impl DiskDtype {
+    /// Bytes per element on disk. F32 = 4, BF16 = 2.
+    pub fn bytes_per_element(self) -> usize {
+        match self {
+            DiskDtype::F32 => 4,
+            DiskDtype::BF16 => 2,
+        }
+    }
+}
+
 /// Owning record of an on-disk tensor file. Drop removes the file
 /// on a best-effort basis. Not cloneable on its own — use
 /// [`DiskTensorHandle`] (which wraps it in `Arc`) if you need
@@ -77,6 +117,10 @@ use uuid::Uuid;
 pub struct InnerDiskFile {
     path: PathBuf,
     numel: usize,
+    /// On-disk dtype. Defaults to [`DiskDtype::F32`] for handles
+    /// constructed via the legacy `write_f32_tensor` path, preserving
+    /// bit-exact M3-e.11.1 behaviour.
+    dtype: DiskDtype,
 }
 
 impl Drop for InnerDiskFile {
@@ -110,11 +154,20 @@ impl DiskTensorHandle {
         &self.inner.path
     }
 
-    /// Number of `f32` elements stored in the file. Cached at
-    /// creation time; used by [`read_f32_tensor`] for a size
-    /// consistency check.
+    /// Number of elements stored in the file. Cached at creation
+    /// time; used by [`read_f32_tensor`] / [`read_bf16_tensor`] for
+    /// a size consistency check (`numel * dtype.bytes_per_element()
+    /// == file_size`).
     pub fn numel(&self) -> usize {
         self.inner.numel
+    }
+
+    /// On-disk dtype of this handle (M4.7.4.a). Determines whether
+    /// callers should route to [`read_f32_tensor`] or
+    /// [`read_bf16_tensor`]. Set at write time; immutable for the
+    /// lifetime of the file.
+    pub fn dtype(&self) -> DiskDtype {
+        self.inner.dtype
     }
 }
 
@@ -200,6 +253,48 @@ pub fn write_f32_tensor(
         inner: Arc::new(InnerDiskFile {
             path,
             numel: data.len(),
+            dtype: DiskDtype::F32,
+        }),
+    })
+}
+
+/// Serialize a `bf16`-as-`u16` slice to a fresh file under
+/// `cache_dir` and return a [`DiskTensorHandle`] tagged with
+/// [`DiskDtype::BF16`] (M4.7.4.a).
+///
+/// Mirrors [`write_f32_tensor`]: same UUID file naming, same
+/// `create_dir_all` behaviour, same "the file is owned by the
+/// returned handle's Arc Drop". The only difference is that each
+/// element is serialized as 2 raw little-endian bytes instead of 4.
+///
+/// The 2-byte width matches [`crate::tensor::TensorStorage::CpuBf16`]
+/// so the spill / restore cycle preserves the M4.7.2 50% RAM
+/// footprint win on disk too — a 13B-class checkpoint stays at
+/// ~26 GB on disk under BF16 spill instead of inflating to ~52 GB
+/// via F32 upcast.
+pub fn write_bf16_tensor(
+    cache_dir: &Path,
+    data: &[u16],
+) -> io::Result<DiskTensorHandle> {
+    fs::create_dir_all(cache_dir)?;
+
+    let name = format!("tensor_{}.bin", Uuid::new_v4());
+    let path = cache_dir.join(name);
+
+    // SAFETY: `u16` is `Copy + 'static`, 2 bytes wide with a stable
+    // memory layout. The justification is identical to the f32 path
+    // above with width 2 instead of 4. Lifetime / aliasing constraints
+    // are enforced by the `&[u16]` argument type.
+    let bytes: &[u8] = unsafe {
+        std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(data))
+    };
+    fs::write(&path, bytes)?;
+
+    Ok(DiskTensorHandle {
+        inner: Arc::new(InnerDiskFile {
+            path,
+            numel: data.len(),
+            dtype: DiskDtype::BF16,
         }),
     })
 }
@@ -208,7 +303,23 @@ pub fn write_f32_tensor(
 /// `Vec<f32>`. Validates that the on-disk byte count matches
 /// `handle.numel() * 4` and returns `InvalidData` on mismatch —
 /// typical cause is a file truncated by a crash mid-write.
+///
+/// Asserts `handle.dtype() == DiskDtype::F32`. Use
+/// [`read_bf16_tensor`] for BF16-tagged handles. The dtype check
+/// is a defence-in-depth against a caller routing a BF16 handle
+/// here by mistake — the size validation alone would silently
+/// "succeed" on a file whose `numel * 4` happens to match a
+/// different real size, returning garbage floats.
 pub fn read_f32_tensor(handle: &DiskTensorHandle) -> io::Result<Vec<f32>> {
+    if handle.dtype() != DiskDtype::F32 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "read_f32_tensor called on {:?} handle; route via read_bf16_tensor instead",
+                handle.dtype()
+            ),
+        ));
+    }
     let bytes = fs::read(handle.path())?;
     let expected_bytes = handle.numel().checked_mul(4).ok_or_else(|| {
         io::Error::new(
@@ -235,6 +346,63 @@ pub fn read_f32_tensor(handle: &DiskTensorHandle) -> io::Result<Vec<f32>> {
     // alignment constraints beyond 4 bytes; `copy_nonoverlapping`
     // does not require source alignment, only that the ranges are
     // valid for reads and writes respectively, which they are.
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            bytes.as_ptr(),
+            out.as_mut_ptr() as *mut u8,
+            bytes.len(),
+        );
+    }
+    Ok(out)
+}
+
+/// Deserialize the file referenced by `handle` into an owned
+/// `Vec<u16>` of bf16 bits (M4.7.4.a).
+///
+/// Mirrors [`read_f32_tensor`] with width 2: validates
+/// `bytes.len() == handle.numel() * 2`, then `copy_nonoverlapping`
+/// into a fresh `Vec<u16>`. Asserts `handle.dtype() ==
+/// DiskDtype::BF16`. No upcast to f32 here — that is the caller's
+/// (and `ensure_cpu`'s) responsibility, and intentionally so:
+/// callers that just need to keep the BF16 view around (e.g. moving
+/// an in-flight BF16 parameter back from disk into a `CpuBf16`
+/// storage in a future M5 milestone) avoid the doubled allocation.
+pub fn read_bf16_tensor(handle: &DiskTensorHandle) -> io::Result<Vec<u16>> {
+    if handle.dtype() != DiskDtype::BF16 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "read_bf16_tensor called on {:?} handle; route via read_f32_tensor instead",
+                handle.dtype()
+            ),
+        ));
+    }
+    let bytes = fs::read(handle.path())?;
+    let expected_bytes = handle.numel().checked_mul(2).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "disk tensor numel * 2 overflows usize",
+        )
+    })?;
+    if bytes.len() != expected_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "disk tensor size mismatch: file={} bytes, expected={} bytes ({} bf16 elements)",
+                bytes.len(),
+                expected_bytes,
+                handle.numel()
+            ),
+        ));
+    }
+
+    let mut out = vec![0u16; handle.numel()];
+    // SAFETY: `out` has capacity `handle.numel() * 2` bytes, and we
+    // have just checked that `bytes.len()` equals that. The same
+    // aliasing / validity argument as `read_f32_tensor` applies
+    // with width 2 instead of 4. `u16` has alignment 2; no
+    // alignment constraint on the source pointer for
+    // `copy_nonoverlapping`.
     unsafe {
         std::ptr::copy_nonoverlapping(
             bytes.as_ptr(),
@@ -393,6 +561,7 @@ mod tests {
             inner: Arc::new(InnerDiskFile {
                 path: good.path().to_path_buf(),
                 numel: 7, // file has 10 floats, not 7
+                dtype: DiskDtype::F32,
             }),
         };
         let result = read_f32_tensor(&bad);
@@ -603,5 +772,169 @@ mod tests {
         let removed =
             gc_orphan_disk_tensors(&dir, 10).expect("gc must return Ok on missing dir");
         assert_eq!(removed, 0);
+    }
+
+    // ------------------------------------------------------------
+    // M4.7.4.a — BF16 round-trip + dtype-tag tests
+    // ------------------------------------------------------------
+
+    #[test]
+    fn test_bf16_write_read_roundtrip_bit_exact() {
+        let dir = test_cache_dir("bf16_roundtrip");
+        // Mix of representative bf16 patterns: zero, +/- finite,
+        // a denormal-ish small magnitude, +/- infinity, NaN. The
+        // encoding is the upper 16 bits of the f32 representation,
+        // produced inline so we don't depend on a runtime helper.
+        let f32_pattern: [f32; 6] = [
+            0.0_f32,
+            -2.5_f32,
+            3.14159_f32,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::from_bits(0x7FC00000), // canonical quiet NaN
+        ];
+        let bf16: Vec<u16> = f32_pattern
+            .iter()
+            .map(|f| (f.to_bits() >> 16) as u16)
+            .collect();
+
+        let handle = write_bf16_tensor(&dir, &bf16).expect("write must succeed");
+        assert_eq!(handle.numel(), bf16.len());
+        assert_eq!(handle.dtype(), DiskDtype::BF16);
+        assert!(handle.path().exists(), "file must exist after write");
+
+        let read = read_bf16_tensor(&handle).expect("read must succeed");
+        assert_eq!(read.len(), bf16.len());
+        // Bit-exact: bf16 is a u16 lane, no rounding involved on
+        // round-trip.
+        assert_eq!(read, bf16);
+
+        drop(handle);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn test_bf16_file_is_half_the_size_of_f32() {
+        // 50 % footprint saving is the M4.7.2 contract carried into
+        // the disk tier. Any future format change must keep this.
+        let dir = test_cache_dir("bf16_size");
+        let n = 1024_usize;
+        let f32_data = vec![0.5_f32; n];
+        let bf16_data: Vec<u16> = f32_data
+            .iter()
+            .map(|f| (f.to_bits() >> 16) as u16)
+            .collect();
+
+        let h_f32 = write_f32_tensor(&dir, &f32_data).expect("f32 write");
+        let h_bf16 = write_bf16_tensor(&dir, &bf16_data).expect("bf16 write");
+
+        let f32_size = fs::metadata(h_f32.path()).expect("f32 meta").len();
+        let bf16_size = fs::metadata(h_bf16.path()).expect("bf16 meta").len();
+
+        assert_eq!(f32_size as usize, n * 4, "f32 file = numel * 4 bytes");
+        assert_eq!(bf16_size as usize, n * 2, "bf16 file = numel * 2 bytes");
+        assert_eq!(
+            bf16_size * 2,
+            f32_size,
+            "bf16 file must be exactly half the f32 file"
+        );
+
+        drop(h_f32);
+        drop(h_bf16);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn test_read_f32_refuses_bf16_handle() {
+        // Cross-routing must be a hard error, not a silent garbage
+        // read. This is the dtype defence-in-depth from the
+        // function docstring.
+        let dir = test_cache_dir("cross_route_bf16");
+        let bf16 = vec![0x4040_u16; 4]; // arbitrary
+        let handle = write_bf16_tensor(&dir, &bf16).expect("write ok");
+        let result = read_f32_tensor(&handle);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+
+        drop(handle);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn test_read_bf16_refuses_f32_handle() {
+        // Symmetric counterpart of the f32 → bf16 cross-route guard.
+        let dir = test_cache_dir("cross_route_f32");
+        let data = vec![1.0_f32, 2.0, 3.0, 4.0];
+        let handle = write_f32_tensor(&dir, &data).expect("write ok");
+        let result = read_bf16_tensor(&handle);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+
+        drop(handle);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn test_bf16_handle_drop_deletes_file() {
+        // Same Arc-Drop lifecycle as the f32 path; verifies the
+        // BF16 write path does not regress the cleanup contract.
+        let dir = test_cache_dir("bf16_drop");
+        let path_holder = {
+            let handle =
+                write_bf16_tensor(&dir, &[0xBF80_u16; 8]).expect("write ok");
+            let p = handle.path().to_path_buf();
+            assert!(p.exists());
+            p
+        };
+        assert!(
+            !path_holder.exists(),
+            "bf16 file must be removed after handle drop"
+        );
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn test_bf16_size_mismatch_detected() {
+        // Synthesize a BF16 handle that claims more elements than
+        // the file actually holds. Read must surface InvalidData.
+        let dir = test_cache_dir("bf16_size_mismatch");
+        let bf16 = vec![0x4080_u16; 6]; // file has 6 u16 = 12 bytes
+        let good = write_bf16_tensor(&dir, &bf16).expect("write ok");
+
+        let bad = DiskTensorHandle {
+            inner: Arc::new(InnerDiskFile {
+                path: good.path().to_path_buf(),
+                numel: 9, // file has 6 u16, not 9
+                dtype: DiskDtype::BF16,
+            }),
+        };
+        let result = read_bf16_tensor(&bad);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+
+        drop(bad);
+        drop(good);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn test_disk_dtype_bytes_per_element() {
+        assert_eq!(DiskDtype::F32.bytes_per_element(), 4);
+        assert_eq!(DiskDtype::BF16.bytes_per_element(), 2);
+    }
+
+    #[test]
+    fn test_f32_handle_default_dtype_is_f32() {
+        // Backward-compatibility lock: the legacy `write_f32_tensor`
+        // path must produce a handle tagged DiskDtype::F32 so any
+        // code that reaches for `handle.dtype()` (M4.7.4.d and on)
+        // dispatches correctly without an explicit migration.
+        let dir = test_cache_dir("default_dtype");
+        let h = write_f32_tensor(&dir, &[1.0_f32, 2.0, 3.0]).expect("write");
+        assert_eq!(h.dtype(), DiskDtype::F32);
+        drop(h);
+        cleanup(&dir);
     }
 }
