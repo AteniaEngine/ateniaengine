@@ -130,6 +130,22 @@ APX v20 connects the completed telemetry and decision infrastructure to real ext
       Out of scope and explicitly deferred to M5+: non-pooled `cuda_matmul` for tensors > 64 MB; `apx4::gpu_context::gpu_available()` reactivation; activation-arm `ensure_cpu` coverage under continuous spill pressure. Out of scope and explicitly deferred to v21: adaptive memory-pressure threshold below the OS pagefile trigger on RAM-loaded boxes (Mode A pagefile saturation on the dev box was the empirical falsifier — threshold 0.85 sits above the dev box's pagefile trigger because the 13 B model dominates RAM and the OS pages first).
   - **M4.7 cumulative status**: M4.7.1 through M4.7.6 are all **closed under their respective budgets**. The killer demo target (Llama 2 13B Chat) is validated end-to-end with the transparency contract `argmax(Mode A) == argmax(Mode C)` holding bit-exactly at 13 B parameter scale. The M4.7 milestone is closed. See [HANDOFF M4.7](./docs/HANDOFF_APX_V20_M4.7.md) for the full architectural-decisions ledger and the M5 resume guide.
 
+### Pending sub-phases (post-M4.7, pre-M5)
+
+The momento guau is closed but the demo's wall-clock is impractical for a public reproduction (Mode A 18.7 min on CPU, Mode C ~24 min). Two sub-milestones land before M5 to make the result both fast and reproducible:
+
+- **M4.8 — Performance optimization** *(prerequisite for M4.9)*. The 13 B Llama 2 forward currently runs single-threaded on a single CPU core's worth of throughput (~5 GFLOPS effective on TinyLlama vs hundreds of theoretical GFLOPS available). The 18.7-minute Mode A wall-clock is dominated by matmul throughput on shapes the dispatcher does not currently service through its AVX2 / FMA path. Scope: multi-threaded forward execution, AVX2 / FMA microkernels for the matmul shapes Llama-family models actually use, parallelism in the hot path (attention heads, batched matmul row partitioning), cache-aware blocking for matrices that exceed L3, memory-layout audit for SIMD alignment. **Target**: drop the 13 B Mode A forward from ~18.7 min to **2–4 min** on the same dev box (single-threaded wall-clock × 5–10×).
+
+  **Vendor-agnostic design constraint**: optimisations must run on Intel **and** AMD x86-64 (both ship AVX2 + FMA as the modern baseline). **Do not** introduce MKL — Intel-only, contradicts the multi-vendor v22 / v23 trajectory. Preferred candidates: pure-Rust SIMD via `matrixmultiply` / `faer`, or OpenBLAS as a vendored C dependency that is also AMD-optimised. Runtime CPUID detection promotes AVX-512 paths where available (Raptor Lake mobile typically does not ship AVX-512; Zen 4 does — the dispatcher must select per-machine, not per-build). Architecture must keep NEON (ARM, Apple Silicon v24) and AMX (x86 v22+) reachable as additional ISA lanes without reshaping the public interfaces — only the implementations are platform-specific.
+
+  Investigation-previa report lands first; no code before the report enumerates current dispatcher state, real bottleneck profile, and quick wins. Estimated complexity reference: ~M4.7.5-class once the investigation surfaces the highest-impact arms. Expected to ship across 4–6 commits.
+
+- **M4.9 — Public CLI demo** *(depends on M4.8)*. A single command anyone can run after `git clone` to reproduce the *momento guau* without writing a test harness. Minimum subcommands:
+  - `atenia probe` — surfaces real hardware capabilities (CPU + AVX flags, RAM, VRAM, NVMe vs HDD on the configured tier directory). Builds on the existing `hw-probe`.
+  - `atenia run --model <path> --mode {a|b|c}` — loads the checkpoint, runs the requested execution mode (clean RAM / autonomous LRU spill / forced 50 % LRU spill), prints the same metrics the M4.7.6 tests print (load throughput, forward wall-clock, GPU MatMul counters, spill/restore bytes and bandwidth, argmax bit-exact comparison across modes when applicable).
+
+  Output is human-legible plain text by default; `--json` flag emits machine-readable telemetry for scripted reproduction. The CLI consumes the same Atenia engine APIs the test suite consumes — no new "demo-only" code paths that could drift. Goal: a community member with a 32 GB / 8 GB box and a Llama 2 13B checkpoint reproduces the *momento guau* with **one command**.
+
   **Note on the BF16 spike (commit `a786837`, retained as regression gate)**: a precision-floor simulation gated by `ATENIA_BF16_PRECISION_FLOOR=1` lives in `WeightMapper::load_into`. With the env var off the code is bit-identical to the baseline; with it on, every parameter is round-tripped through BF16 quantisation before reaching the graph. M4.7.2.b's cross-path test asserts that this path produces bit-equal decoded values to the native BF16 storage path — preserving the spike as instrumentation defends against any future regression in the storage variant being silently masked.
 
 ### Out of scope for v20
@@ -147,7 +163,15 @@ APX v20 connects the completed telemetry and decision infrastructure to real ext
 
 ---
 
-## Next active milestone — M5: Inference UX
+## Next active milestone — M4.8: Performance optimization
+
+The momento guau is closed (M4.7.6.e) but its wall-clock is impractical for a public reproduction. M4.8 closes the gap between theoretical CPU peak (hundreds of GFLOPS on the i7-14650HX) and observed Atenia throughput (~5 GFLOPS effective on TinyLlama). Investigation-previa lands first per the M4.5 / M4.6 / M4.7 discipline; no code before the investigation report enumerates dispatcher state, real bottleneck profile, and quick wins. Vendor-agnostic by design — Intel and AMD x86-64 baseline, no MKL, with NEON/AMX hooks left open for v22 / v24.
+
+## After M4.8 — M4.9: Public CLI demo
+
+`atenia probe` + `atenia run --model <path> --mode {a|b|c}`. One command to reproduce the momento guau on a 32 GB / 8 GB box. Depends on M4.8 because the demo is not credible at 18.7-minute wall-clock — it is at 2–4 minutes.
+
+## After M4.9 — M5: Inference UX
 
 Tokenizer integration + KV cache + token-by-token generation. Becomes meaningfully easier post-M4.7 because every model in scope is now numerically validated and the storage / spill / restore primitives are in place; the unknowns collapse to UX rather than correctness or memory tiering. The M5+ technical-debt items deferred from M4.7 (non-pooled `cuda_matmul` for tensors > 64 MB; `apx4::gpu_context::gpu_available()` reactivation; `ensure_cpu` activation-arm coverage under continuous pressure) land inside M5, scoped as a "13 B GPU acceleration" sub-milestone — they are not a prerequisite for the 1B-class generation work but they unblock the per-token wall-clock on the killer-demo target.
 
