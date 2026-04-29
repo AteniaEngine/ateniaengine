@@ -245,7 +245,20 @@ impl Graph {
                     ctx.record_deep_degrade_event();
                 }
 
-                let migrate_result = self.migrate_all_to_disk(&cache_dir);
+                // M4.7.5.d: LRU-driven selective spill. The
+                // `DeepDegrade` arm now spills the bottom
+                // `SPILL_FRACTION` (50 % default) of the LRU
+                // touch order — i.e. the least-recently-used
+                // half of the graph nodes — instead of the
+                // whole graph. Falls back to the legacy
+                // whole-graph spill (`migrate_all_to_disk`)
+                // when the LRU is empty (first-call case before
+                // any node has executed) or when the
+                // fraction-driven slice is empty for any
+                // reason — preserves the M3-e.11.5 contract
+                // that DeepDegrade always *attempts* to relieve
+                // pressure.
+                let migrate_result = self.deep_degrade_with_lru(&cache_dir);
 
                 if !crate::apx_is_silent() {
                     let mem_frag =
@@ -807,6 +820,114 @@ impl Graph {
         // as-is — the composite semantics match the caller's
         // intent ("everything that could reach disk did").
         self.migrate_all_cpu_to_disk(cache_dir)
+    }
+
+    /// M4.7.5.d — LRU-driven `DeepDegrade` reaction. Spills the
+    /// bottom [`crate::amg::reactive::SPILL_FRACTION`] of the
+    /// touch order (the least-recently-used `floor(len * 0.5)`
+    /// nodes by default) instead of the whole graph.
+    ///
+    /// Sequence:
+    ///
+    /// 1. Cuda → Cpu via [`Graph::migrate_all_cuda_to_cpu`].
+    ///    VRAM is small (8 GB on the dev box) and the live set
+    ///    is one layer at a time; whole-graph eviction is
+    ///    correct here.
+    /// 2. Snapshot the LRU touch order from
+    ///    `reactive_context.lru_touch_order()`. Front of the
+    ///    deque is LRU, back is MRU.
+    /// 3. Slice the bottom `SPILL_FRACTION` of the snapshot.
+    ///    Pass that slice to [`Graph::migrate_selected_cpu_to_disk`].
+    ///    The selective primitive's permissive contract lets
+    ///    out-of-range / non-Cpu ids in the snapshot land in
+    ///    `tensors_skipped` without aborting the walk.
+    ///
+    /// Falls back to the legacy whole-graph
+    /// [`Graph::migrate_all_to_disk`] when:
+    ///
+    /// - no `reactive_context` is attached (this path is only
+    ///   reachable via `check_guard_before_node` which already
+    ///   checked, but defence-in-depth);
+    /// - the LRU snapshot is empty (first call before any node
+    ///   has executed).
+    ///
+    /// Returns a `MigrationReport` so the existing `DeepDegrade`
+    /// arm logging surface in `check_guard_before_node` does
+    /// not have to learn a second report type. The
+    /// `SelectiveMigrationReport`'s `failures` Vec collapses
+    /// into `MigrationReport.failure` as `Some(first_failure)`
+    /// when non-empty — preserves the M3-e.11.5 single-failure
+    /// log shape; the full failure list lives on the selective
+    /// primitive for callers that need it.
+    pub fn deep_degrade_with_lru(
+        &mut self,
+        cache_dir: &std::path::Path,
+    ) -> Result<crate::amg::reactive::MigrationReport, StorageTransferError> {
+        use crate::amg::reactive::{MigrationReport, SPILL_FRACTION};
+
+        // Snapshot the LRU before mutating anything. Empty deque
+        // means we have nothing better than whole-graph spill —
+        // fall back to the legacy composite. Same contract for a
+        // missing `reactive_context`.
+        let lru_snapshot: Option<Vec<usize>> = self
+            .reactive_context
+            .as_ref()
+            .map(|ctx| ctx.lru_touch_order().snapshot());
+
+        let bottom_ids: Option<Vec<usize>> = lru_snapshot.and_then(|snap| {
+            if snap.is_empty() {
+                return None;
+            }
+            // Bottom `SPILL_FRACTION` = front of the deque (LRU
+            // end). `floor(len * fraction)` ensures we always
+            // pick at least one tensor for any non-empty deque
+            // when fraction > 0; for fraction = 0.5 and len = 1,
+            // floor = 0, so we pick zero — defensive but
+            // unlikely on real graphs (a forward of seq=4 has
+            // hundreds of nodes).
+            let bottom_len =
+                ((snap.len() as f32) * SPILL_FRACTION).floor() as usize;
+            if bottom_len == 0 {
+                return None;
+            }
+            Some(snap.into_iter().take(bottom_len).collect())
+        });
+
+        // Step 1: Cuda → Cpu. Same as `migrate_all_to_disk`. If
+        // it fails the composite bails before any disk write —
+        // zero side effects on disk.
+        let _cuda_report = self.migrate_all_cuda_to_cpu()?;
+
+        // Step 2: selective Cpu → Disk if we have an LRU
+        // bottom; whole-graph fallback otherwise.
+        match bottom_ids {
+            Some(ids) => {
+                let selective = self.migrate_selected_cpu_to_disk(&ids, cache_dir)?;
+                // Convert SelectiveMigrationReport →
+                // MigrationReport for the existing DeepDegrade
+                // log surface. First failure (if any) becomes
+                // the single `failure` field; the full list
+                // lives on the selective primitive's return
+                // type for callers that need it.
+                let failure = selective
+                    .failures
+                    .into_iter()
+                    .next()
+                    .map(|(idx, err)| (idx, err));
+                Ok(MigrationReport {
+                    tensors_migrated: selective.tensors_migrated,
+                    tensors_skipped: selective.tensors_skipped,
+                    failure,
+                })
+            }
+            None => {
+                // Empty LRU or no context — fall back to
+                // whole-graph `migrate_all_cpu_to_disk` (the
+                // pre-M4.7.5.d behaviour). No double Cuda → Cpu
+                // because we already ran step 1.
+                self.migrate_all_cpu_to_disk(cache_dir)
+            }
+        }
     }
 }
 

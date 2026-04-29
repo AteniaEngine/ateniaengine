@@ -185,6 +185,44 @@ pub struct ReactiveExecutionContext {
 /// caused by Atenia or by something else.
 pub const CPU_PRESSURE_TOTAL_THRESHOLD: f32 = 0.80;
 
+/// M4.7.5.d — fraction of the touch-order LRU tail that the
+/// `DeepDegrade` reaction spills to disk on each trigger.
+///
+/// `0.5` means "spill the bottom 50 % of the LRU (the
+/// least-recently-used half) and leave the top 50 % alone".
+/// Picked as the M4.7.5 default for three reasons:
+///
+/// 1. **Demo arithmetic** (M4.7.5 investigation, Demo arithmetic
+///    section). For a 13B model with N≈1850 nodes, spilling 50 %
+///    of the touch order is roughly the bottom half of the
+///    architectural depth — the layers furthest from the current
+///    forward step. Ahead-of-time prefetch (M4.7.6) can then
+///    bring those back as needed without re-spilling the live
+///    half.
+/// 2. **Bounded restoration cost.** A 50 % spill caps the
+///    cold-restore traffic per forward at 50 % of the parameter
+///    bytes, vs 100 % under whole-graph spill. On the dev box
+///    with NVMe SN770 at 1.35 GB/s sequential write but only
+///    50–160 MB/s effective restore (M4.7.4.f measurements),
+///    halving the cold set keeps the demo close to the no-spill
+///    baseline.
+/// 3. **Reactive symmetry.** A second `DeepDegrade` trigger after
+///    the first has already spilled 50 % will hit the new top-of-
+///    LRU (which contains the live set the first spill kept hot)
+///    and spill 50 % of *that*, converging on a steady-state
+///    where 75 % of the model lives on disk and 25 % stays hot.
+///    This is the desired behaviour for sustained pressure.
+///
+/// Layer-aware fractions (e.g. "spill all but the next K layers")
+/// require a `node_id → layer_idx` map that the Llama builder
+/// does not expose; deferred to M5+. Dynamic fractions (spill
+/// until pressure < threshold − hysteresis) require a feedback
+/// loop also deferred to M5+.
+///
+/// Tested under:
+/// `tests/m4_7_5_d_lru_deep_degrade_test.rs`.
+pub const SPILL_FRACTION: f32 = 0.5;
+
 /// M3-e.6: minimum share `self / total` that attributes CPU pressure
 /// to Atenia. Below this, Atenia is considered **not responsible** —
 /// some other process is loading the CPU and migrating more work to
