@@ -3088,11 +3088,51 @@ impl Graph {
                     return;
                 }
 
-                // APX 4.11: per-operator direct GPU execution attempt only for
-                // nodes outside planned GPU segments. This path is kept as-is
-                // to guarantee compatibility.
-                if !in_gpu_segment
-                    && gpu_hooks::gpu_can_run_matmul(m, k, n)
+                // M4.7.6.c — `!in_gpu_segment` removed.
+                //
+                // The pre-M4.7.6.c gate kept this path off whenever
+                // the node belonged to any planned GPU segment. The
+                // M4.7.5 investigation (and its M4.7.3.e counter
+                // observability) showed that **every** Llama MatMul
+                // node ends up as its own 1-node `GpuSegment` because
+                // `is_cuda_available_for(NodeType::MatMul) == true`
+                // and the surrounding RmsNorm / Permute / Reshape ops
+                // break the segment run. So at default APX mode 4.19
+                // `in_gpu_segment` is always true on the Llama hot
+                // path and `try_gpu_matmul` never fired, falling
+                // through to the legacy APX 5.2 / 6.2
+                // `dispatch_matmul_gpu` path that calls the older
+                // `gpu_matmul` (apx4) function instead of the
+                // residency-aware `cuda_matmul_inplace` /
+                // `cuda_matmul` introduced in M4.7.3.
+                //
+                // Removing the constraint is safe because:
+                //   - The legacy `exec_gpu_segment` path (which
+                //     currently calls `cuda_matmul` non-residency)
+                //     is gated on `!record_tape` (graph.rs ~2305) and
+                //     therefore unreachable on the default
+                //     `run_plan(true)` Llama inference path. No
+                //     double execution.
+                //   - `Linear` and `FusedLinearActivation(SiLU)` arms
+                //     inside `exec_gpu_segment` are unreachable on
+                //     Llama (Linear is hard-disabled in
+                //     `try_gpu_linear` per APX 4.11 MiniFlux at
+                //     `gpu/dispatch/hooks.rs:175-179`;
+                //     `FusedLinearActivation` does not appear in the
+                //     Llama builder).
+                //   - Numerical drift: `cuda_matmul_inplace` measured
+                //     ~5e-5 absolute vs the legacy `cuda_matmul` in
+                //     M4.7.3. The four M4.7.5.f drifts (TinyLlama
+                //     1.41e-4, SmolLM2 1.45e-3, Qwen 2.91e-2, Llama
+                //     3.2 1.32e-4) sit well under the ADR-004 0.5
+                //     threshold even with that wiggle stacked.
+                //
+                // Validation gate: the `gpu_matmul_resident_count` /
+                // `gpu_matmul_roundtrip_count` atomics in
+                // `gpu/dispatch/hooks.rs` now fire on every Llama
+                // MatMul. The M4.7.6.c family-level F64 harness
+                // asserts both `>0` after the forward.
+                if gpu_hooks::gpu_can_run_matmul(m, k, n)
                     && gpu_hooks::try_gpu_matmul(&a, &b, &mut out)
                 {
                     device_chosen = DeviceTarget::GPU;

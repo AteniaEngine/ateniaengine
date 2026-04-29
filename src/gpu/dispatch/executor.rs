@@ -29,9 +29,10 @@
 use crate::amg::graph::Graph;
 use crate::amg::nodes::NodeType;
 use crate::apx4_3::{gpu_enabled, log_gpu, gpu_plan::GpuSegment};
-use crate::cuda::matmul::cuda_matmul;
+use crate::cuda::matmul::cuda_matmul_inplace;
 use crate::cuda::linear::cuda_linear;
 use crate::cuda::fused_linear_silu::cuda_fused_linear_silu;
+use crate::tensor::{Device, Layout, Tensor, TensorStorage};
 
 impl Graph {
     pub fn exec_gpu_segment(&mut self, seg: &GpuSegment) {
@@ -64,8 +65,8 @@ impl Graph {
     pub fn exec_gpu_matmul(&mut self, id: usize) {
         let a_id = self.nodes[id].inputs[0];
         let b_id = self.nodes[id].inputs[1];
-        let a = self.nodes[a_id].output.as_ref().expect("MatMul missing A");
-        let b = self.nodes[b_id].output.as_ref().expect("MatMul missing B");
+        let a = self.nodes[a_id].output.as_ref().expect("MatMul missing A").clone();
+        let b = self.nodes[b_id].output.as_ref().expect("MatMul missing B").clone();
 
         assert_eq!(a.shape.len(), 2);
         assert_eq!(b.shape.len(), 2);
@@ -74,9 +75,43 @@ impl Graph {
         assert_eq!(b.shape[0], k);
         let n = b.shape[1];
 
-        let gpu_out = cuda_matmul(a, b, m, k, n);
+        // M4.7.6.c: retarget from the legacy whole-roundtrip
+        // `cuda_matmul` to the residency-aware
+        // `cuda_matmul_inplace`. The dispatch logic lives inside
+        // `cuda_matmul_inplace`: when both operands are Cuda it
+        // takes the device-pointer path; otherwise it falls back
+        // to a CPU-Cpu round-trip equivalent to the pre-M4.7.6.c
+        // behaviour. We pre-allocate the output buffer with the
+        // right storage variant (Cuda when both operands resident,
+        // Cpu otherwise) so the kernel writes in place.
+        //
+        // This path is currently unreachable on the Llama hot
+        // path (gated by `!record_tape` upstream in
+        // `Graph::execute_single_inner`), but the retarget
+        // eliminates the regression surface for any future code
+        // that re-enables segment execution under record_tape=true.
+        let both_cuda = matches!(
+            (&a.storage, &b.storage),
+            (TensorStorage::Cuda(_), TensorStorage::Cuda(_))
+        );
+        let mut out = if both_cuda {
+            match Tensor::zeros_new_cuda(&[m, n]) {
+                Ok(t) => t,
+                Err(_) => Tensor::with_layout(
+                    vec![m, n],
+                    0.0,
+                    Device::CPU,
+                    Layout::Contiguous,
+                    a.dtype,
+                ),
+            }
+        } else {
+            Tensor::with_layout(vec![m, n], 0.0, Device::CPU, Layout::Contiguous, a.dtype)
+        };
 
-        self.nodes[id].output = Some(gpu_out);
+        cuda_matmul_inplace(&a, &b, &mut out, m, k, n);
+
+        self.nodes[id].output = Some(out);
     }
 
     pub fn exec_gpu_linear(&mut self, id: usize) {

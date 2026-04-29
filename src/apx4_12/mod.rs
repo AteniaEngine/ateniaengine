@@ -7,7 +7,13 @@ use self::gpu_memory_pool::GpuMemoryPool;
 pub static GPU_MEMORY_POOL: OnceLock<Mutex<GpuMemoryPool>> = OnceLock::new();
 
 // Default configuration used for lazy initialization.
-const DEFAULT_BLOCK_SIZE: usize = 64 * 1024 * 1024; // 64 MB
+//
+// **M4.7.6.c**: `DEFAULT_BLOCK_SIZE` is consulted by
+// `gpu_can_run_matmul` to decide whether a given GEMM's
+// per-allocation budget fits in a single pool block. Any GEMM
+// where one of A / B / output exceeds this size routes around the
+// pool via `dispatch_matmul_gpu` (the legacy non-pool allocator).
+pub const DEFAULT_BLOCK_SIZE: usize = 64 * 1024 * 1024; // 64 MB
 const DEFAULT_BLOCKS: usize = 8;
 
 fn get_pool() -> &'static Mutex<GpuMemoryPool> {

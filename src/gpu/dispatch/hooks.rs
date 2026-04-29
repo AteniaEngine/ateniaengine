@@ -49,6 +49,21 @@ pub fn gpu_matmul_roundtrip_count() -> usize {
 }
 
 /// Simple heuristic to decide whether it is worth using the CUDA MatMul kernel.
+///
+/// **M4.7.6.c — pool capacity check added.** The CPU-roundtrip path
+/// inside `try_gpu_matmul` allocates 3 device buffers via the
+/// fixed-size APX 4.12 pool (`DEFAULT_BLOCK_SIZE = 64 MiB`, see
+/// `crate::apx4_12::DEFAULT_BLOCK_SIZE`). A single allocation request
+/// larger than the block size cannot be served — the buffer is
+/// undersized, the subsequent `cudaMemcpy` writes past the end, and
+/// the driver surfaces `TransferFailed`. Llama 2 13B's LM head
+/// (5120 × 32000 × 4 = 655 MB), Qwen 2.5's LM head (151936 × 1536
+/// × 4 = 933 MB), and similar large GEMMs are all above the 64 MiB
+/// limit. Pre-M4.7.6.c the `!in_gpu_segment` gate kept these out of
+/// `try_gpu_matmul`, masking the issue. With the gate gone in
+/// M4.7.6.c, the shape check has to take over: if any of the three
+/// buffers (A, B, output) would exceed one pool block, return false
+/// and let the caller's CPU / legacy `dispatch_matmul_gpu` path run.
 pub fn gpu_can_run_matmul(m: usize, k: usize, n: usize) -> bool {
     // Require a minimum amount of work to amortize host<->device overhead.
     let ops = m.saturating_mul(k).saturating_mul(n);
@@ -58,6 +73,18 @@ pub fn gpu_can_run_matmul(m: usize, k: usize, n: usize) -> bool {
 
     // The remaining validations (device, dtype, shapes) are performed in `try_gpu_matmul`.
     if !cuda::cuda_available() {
+        return false;
+    }
+
+    // M4.7.6.c — bail out when any of the three buffers would
+    // exceed the pool block size. The pool serves one block per
+    // allocation request, so an oversize request is unservable.
+    let f32_size = std::mem::size_of::<f32>();
+    let a_bytes = m.saturating_mul(k).saturating_mul(f32_size);
+    let b_bytes = k.saturating_mul(n).saturating_mul(f32_size);
+    let out_bytes = m.saturating_mul(n).saturating_mul(f32_size);
+    let max_per_alloc = a_bytes.max(b_bytes).max(out_bytes);
+    if max_per_alloc > crate::apx4_12::DEFAULT_BLOCK_SIZE {
         return false;
     }
 
