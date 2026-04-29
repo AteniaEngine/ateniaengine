@@ -646,6 +646,97 @@ impl fmt::Display for MigrationReport {
     }
 }
 
+/// M4.7.5.c — accumulating sibling of [`MigrationReport`] for the
+/// per-tensor `migrate_selected_cpu_to_disk` primitive.
+///
+/// The legacy [`MigrationReport`] carries a single
+/// `Option<(usize, StorageTransferError)>` because
+/// `migrate_all_cpu_to_disk` stops at the first failure. The
+/// selective primitive **continues past failures** so a single
+/// transient I/O hiccup on one tensor does not prevent the
+/// remaining N-1 tensors from being spilled — the M3-e reaction
+/// loop fires under memory pressure, and giving up on the rest of
+/// the eviction set when only one tensor failed defeats the
+/// pressure-relief goal. Each per-tensor failure lands in the
+/// `failures` vector with its node id; `tensors_migrated` counts
+/// the successes.
+///
+/// Risk #5 of the M4.7.5 investigation: a partial-progress
+/// contract built around a single `failure` field interacts badly
+/// with a per-tensor caller. This report shape is the explicit
+/// resolution.
+#[derive(Debug, Clone)]
+pub struct SelectiveMigrationReport {
+    /// Number of tensors that successfully reached
+    /// `TensorStorage::Disk` during this call.
+    pub tensors_migrated: usize,
+    /// Number of requested ids that were not migration candidates
+    /// (already on Disk, on Cuda, or `node.output == None`).
+    pub tensors_skipped: usize,
+    /// Per-tensor failures encountered during the walk. Empty on a
+    /// fully-successful run. Each entry is `(node_id, error)` and
+    /// the order is the order in which the failures were observed
+    /// (which is the order ids appear in the input slice).
+    pub failures: Vec<(usize, crate::tensor::StorageTransferError)>,
+}
+
+impl SelectiveMigrationReport {
+    pub fn new() -> Self {
+        Self {
+            tensors_migrated: 0,
+            tensors_skipped: 0,
+            failures: Vec::new(),
+        }
+    }
+
+    /// Every requested tensor that was a migration candidate
+    /// successfully reached disk. Skipped tensors do not count
+    /// against this — a request for an already-Disk tensor is a
+    /// "complete" outcome.
+    pub fn is_complete(&self) -> bool {
+        self.failures.is_empty()
+    }
+
+    /// At least one tensor moved AND at least one failed.
+    pub fn is_partial(&self) -> bool {
+        self.tensors_migrated > 0 && !self.failures.is_empty()
+    }
+
+    /// Total number of input ids that were processed
+    /// (successes + skipped + failures).
+    pub fn total_processed(&self) -> usize {
+        self.tensors_migrated + self.tensors_skipped + self.failures.len()
+    }
+}
+
+impl Default for SelectiveMigrationReport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for SelectiveMigrationReport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.failures.is_empty() {
+            write!(
+                f,
+                "Selective migration: {} migrated, {} skipped, 0 failures",
+                self.tensors_migrated, self.tensors_skipped
+            )
+        } else {
+            write!(
+                f,
+                "Selective migration: {} migrated, {} skipped, {} failures \
+                 (first at node {})",
+                self.tensors_migrated,
+                self.tensors_skipped,
+                self.failures.len(),
+                self.failures[0].0,
+            )
+        }
+    }
+}
+
 /// Reasons why a checked execution may abort before a given node runs.
 ///
 /// Produced only when the graph has a `reactive_context` set. When the

@@ -479,6 +479,11 @@ impl Graph {
     /// Returns `Err` on the first `ensure_cpu` failure and stops; earlier
     /// migrations in the same call are not rolled back (the tensors that
     /// already moved stay on CPU, which is the safe direction).
+    // M4.7.5.c — `MigrationStep` declaration moved here as a sibling
+    // type to the migration methods below. Kept private to the impl
+    // because it is the shared return type of `try_migrate_one_to_disk`,
+    // not part of the public API.
+
     pub fn migrate_all_cuda_to_cpu(
         &mut self,
     ) -> Result<crate::amg::reactive::DegradeReport, StorageTransferError> {
@@ -588,52 +593,24 @@ impl Graph {
             )));
         }
 
-        for (idx, node) in self.nodes.iter_mut().enumerate() {
-            let Some(tensor) = node.output.as_mut() else {
-                continue;
-            };
-
-            // M4.7.4.c: both Cpu (F32) and CpuBf16 are migration
-            // candidates. Cuda gets skipped (caller should compose
-            // with migrate_all_cuda_to_cpu first via
-            // migrate_all_to_disk). Disk is already in the target
-            // tier.
-            //
-            // Pre-M4.7.4.c the CpuBf16 arm fell into `tensors_skipped`,
-            // which silently defeated the M4.7.2 50% RAM win the
-            // moment the reactive loop tried to spill: a 13B-class
-            // checkpoint stored as CpuBf16 reported migration
-            // success while leaving every parameter in RAM. The
-            // BF16 arm now spills via the dtype-tagged
-            // `write_bf16_tensor` from disk_tier (M4.7.4.a), so the
-            // 50% saving propagates to disk too.
-            let handle_result = match &tensor.storage {
-                TensorStorage::Cpu(v) => {
-                    let data = v.clone();
-                    crate::tensor::disk_tier::write_f32_tensor(cache_dir, &data)
-                }
-                TensorStorage::CpuBf16(v) => {
-                    let data = v.clone();
-                    crate::tensor::disk_tier::write_bf16_tensor(cache_dir, &data)
-                }
-                _ => {
-                    // Cuda / Disk — already-resident or already-
-                    // spilled, see arm comment above.
-                    report.tensors_skipped += 1;
-                    continue;
-                }
-            };
-
-            // Write-before-swap: the disk file is created first;
-            // only after we have a valid handle do we replace
-            // `tensor.storage`. If the write errors, the tensor
-            // stays in its source tier and the report either
-            // becomes partial (if earlier tensors migrated) or we
-            // return Err (if nothing migrated yet).
-            let handle = match handle_result {
-                Ok(h) => h,
-                Err(e) => {
-                    let err = StorageTransferError::DiskWriteFailed(e.to_string());
+        for idx in 0..self.nodes.len() {
+            // M4.7.5.c: per-node migration logic extracted into
+            // `try_migrate_one_to_disk` so the new selective
+            // primitive shares the same write-before-swap and
+            // dtype-dispatch arms. The legacy semantics here
+            // (stop at first failure, return Err on no-progress,
+            // Ok(partial) on some-progress) are preserved
+            // exactly bit-exact: the helper returns three
+            // outcomes and we react to them with the original
+            // M4.7.4.c control flow.
+            match self.try_migrate_one_to_disk(idx, cache_dir) {
+                MigrationStep::Migrated => report.tensors_migrated += 1,
+                MigrationStep::Skipped => report.tensors_skipped += 1,
+                // Legacy contract: `node.output.is_none()` was a
+                // silent continue, not a counted skip. Preserved
+                // bit-exact via the `NoOutput` arm here.
+                MigrationStep::NoOutput => continue,
+                MigrationStep::Failed(err) => {
                     if report.tensors_migrated > 0 {
                         // Partial progress — preserve what we have,
                         // surface the failure inside the report.
@@ -644,19 +621,138 @@ impl Graph {
                         return Err(err);
                     }
                 }
-            };
-
-            // Atomic swap: the Arc<InnerDiskFile> from `handle`
-            // becomes the owner. The previous Cpu Vec<f32> /
-            // CpuBf16 Vec<u16> drops (its memory is released as
-            // usual). The dtype tag on the handle records which
-            // path produced the file so `ensure_cpu` can route
-            // correctly on restore (M4.7.4.d).
-            tensor.storage = TensorStorage::Disk(handle);
-            report.tensors_migrated += 1;
+            }
         }
 
         Ok(report)
+    }
+
+    /// M4.7.5.c — per-tensor selective sibling of
+    /// [`Graph::migrate_all_cpu_to_disk`]. Spills only the listed
+    /// `node_ids` to disk, in the order given. Used by the LRU-driven
+    /// `DeepDegrade` policy that lands in M4.7.5.d to evict the
+    /// bottom of the touch order without touching the most recently
+    /// used tensors.
+    ///
+    /// **Failure semantics**: continues past per-tensor failures.
+    /// Each failure lands in `report.failures` with its node id;
+    /// the walk does not abort. This is intentional — the reactive
+    /// loop fires under memory pressure, and abandoning the rest
+    /// of the eviction set when one tensor fails to spill (e.g.
+    /// transient I/O glitch) defeats the pressure-relief goal.
+    /// The legacy [`Graph::migrate_all_cpu_to_disk`] still stops
+    /// at the first failure, preserving its M4.7.4.c contract.
+    ///
+    /// `node_ids` may contain repeats and out-of-range indices —
+    /// repeats produce duplicate skips (no double-spill), and
+    /// out-of-range indices land in `tensors_skipped`. This
+    /// permissive contract lets the caller pass a snapshot of an
+    /// LRU directly without filtering.
+    ///
+    /// Returns `Err(StorageTransferError)` only when the cache
+    /// directory itself cannot be created. Per-tensor failures
+    /// do not bubble; they are aggregated into the report.
+    pub fn migrate_selected_cpu_to_disk(
+        &mut self,
+        node_ids: &[usize],
+        cache_dir: &std::path::Path,
+    ) -> Result<crate::amg::reactive::SelectiveMigrationReport, StorageTransferError>
+    {
+        use crate::amg::reactive::SelectiveMigrationReport;
+
+        let mut report = SelectiveMigrationReport::new();
+
+        if let Err(e) = std::fs::create_dir_all(cache_dir) {
+            return Err(StorageTransferError::DiskWriteFailed(format!(
+                "cannot create cache dir {:?}: {}",
+                cache_dir, e
+            )));
+        }
+
+        for &idx in node_ids {
+            match self.try_migrate_one_to_disk(idx, cache_dir) {
+                MigrationStep::Migrated => report.tensors_migrated += 1,
+                MigrationStep::Skipped => report.tensors_skipped += 1,
+                // Selective caller's permissive contract: count
+                // out-of-range ids and `output.is_none()` nodes
+                // as `tensors_skipped`. The whole-graph caller
+                // does not see these because it walks
+                // `0..self.nodes.len()` directly.
+                MigrationStep::NoOutput => report.tensors_skipped += 1,
+                MigrationStep::Failed(err) => {
+                    report.failures.push((idx, err));
+                    // Continue past this failure. See docstring
+                    // and Risk #5 for the rationale.
+                }
+            }
+        }
+
+        Ok(report)
+    }
+
+    /// M4.7.5.c — internal helper used by both
+    /// [`Graph::migrate_all_cpu_to_disk`] and
+    /// [`Graph::migrate_selected_cpu_to_disk`]. Produces the
+    /// per-tensor outcome (migrated / skipped / failed) without
+    /// imposing a stop-or-continue policy on the caller.
+    ///
+    /// Bit-exactness for the legacy whole-graph caller: every
+    /// observable side effect (write before swap, file format,
+    /// dtype dispatch, `tensor.storage = Disk(handle)` assignment)
+    /// is identical to the pre-M4.7.5.c inline body. The only
+    /// observable change is that the caller now decides what to
+    /// do with a `Failed` outcome; the helper itself is purely
+    /// declarative.
+    fn try_migrate_one_to_disk(
+        &mut self,
+        idx: usize,
+        cache_dir: &std::path::Path,
+    ) -> MigrationStep {
+        let Some(node) = self.nodes.get_mut(idx) else {
+            return MigrationStep::NoOutput;
+        };
+        let Some(tensor) = node.output.as_mut() else {
+            return MigrationStep::NoOutput;
+        };
+
+        // M4.7.4.c: both Cpu (F32) and CpuBf16 are migration
+        // candidates. Cuda gets skipped (caller should compose
+        // with migrate_all_cuda_to_cpu first via
+        // migrate_all_to_disk). Disk is already in the target
+        // tier.
+        let handle_result = match &tensor.storage {
+            TensorStorage::Cpu(v) => {
+                let data = v.clone();
+                crate::tensor::disk_tier::write_f32_tensor(cache_dir, &data)
+            }
+            TensorStorage::CpuBf16(v) => {
+                let data = v.clone();
+                crate::tensor::disk_tier::write_bf16_tensor(cache_dir, &data)
+            }
+            _ => return MigrationStep::Skipped,
+        };
+
+        // Write-before-swap: the disk file is created first;
+        // only after we have a valid handle do we replace
+        // `tensor.storage`. If the write errors, the tensor
+        // stays in its source tier (no side effect).
+        let handle = match handle_result {
+            Ok(h) => h,
+            Err(e) => {
+                return MigrationStep::Failed(StorageTransferError::DiskWriteFailed(
+                    e.to_string(),
+                ));
+            }
+        };
+
+        // Atomic swap: the Arc<InnerDiskFile> from `handle`
+        // becomes the owner. The previous Cpu Vec<f32> /
+        // CpuBf16 Vec<u16> drops (its memory is released as
+        // usual). The dtype tag on the handle records which
+        // path produced the file so `ensure_cpu` can route
+        // correctly on restore (M4.7.4.d).
+        tensor.storage = TensorStorage::Disk(handle);
+        MigrationStep::Migrated
     }
 
     /// M3-e.11.4: composite migration for the dual-pressure case.
@@ -736,6 +832,45 @@ impl Graph {
 /// `reactive_context` is attached. `reactive_context: None` runs
 /// the graph exactly as before M3-e.10, modulo the hpge timing
 /// coverage improvement.
+/// M4.7.5.c — outcome of a single per-tensor disk-spill attempt.
+/// Used by `Graph::try_migrate_one_to_disk` to factor the
+/// per-node logic out of `migrate_all_cpu_to_disk` and
+/// `migrate_selected_cpu_to_disk`. Private to the module: it is
+/// an implementation detail of the migration helpers, not part of
+/// the public reactive API (which surfaces `MigrationReport` and
+/// `SelectiveMigrationReport`).
+///
+/// Three "non-success" variants exist because the legacy
+/// pre-M4.7.5.c whole-graph contract distinguished them
+/// observationally:
+///
+/// - `node.output.is_none()` is a *silent continue* (legacy did
+///   not bump any counter). `NoOutput` preserves that.
+/// - `tensor.storage` is Cuda or Disk (already-resident or
+///   already-spilled) is a *counted skip* (legacy did
+///   `tensors_skipped += 1`). `Skipped` preserves that.
+/// - Out-of-range id (only reachable via the M4.7.5.c selective
+///   primitive) also routes through `NoOutput` because the
+///   selective caller decides whether to count it (it does — see
+///   the docstring on `migrate_selected_cpu_to_disk`).
+enum MigrationStep {
+    /// The tensor was Cpu or CpuBf16 and is now `Disk` on this
+    /// graph node. Caller should bump its `tensors_migrated`.
+    Migrated,
+    /// The tensor was already on Cuda or Disk (already-resident
+    /// or already-spilled). Caller should bump `tensors_skipped`.
+    Skipped,
+    /// The graph node had no output tensor (`output == None`),
+    /// or the index was out of range. The legacy whole-graph
+    /// caller silently continues on this; the selective caller
+    /// counts it as a skip per its permissive contract.
+    NoOutput,
+    /// The disk write itself failed; the source storage is
+    /// untouched (write-before-swap). Caller decides whether to
+    /// stop (legacy) or continue (selective).
+    Failed(StorageTransferError),
+}
+
 struct NodeTimingRecorder {
     start: std::time::Instant,
     node_id: usize,
