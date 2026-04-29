@@ -67,7 +67,7 @@ Atenia Engine is implemented in Rust. The project follows an APX (Adaptive Execu
 
 Real, executable, deterministic:
 
-**Real LLM inference (APX v20 M4.5–M4.7.2)**
+**Real LLM inference (APX v20 M4.5–M4.7.3)**
 
 - **🤖 Four production LLMs run end-to-end on CPU.** TinyLlama 1.1B Chat, SmolLM2 1.7B Instruct, Qwen 2.5 1.5B Instruct, and Llama 3.2 1B Instruct load from HuggingFace `.safetensors` and produce logits validated against PyTorch F64 ground truth per [ADR-004](./docs/decisions/ADR-004-f64-reference-as-default.md). Atenia F32 drift sits between **1.32×10⁻⁴ and 1.45×10⁻³** — three-to-four orders of magnitude closer to mathematical truth than industry-default BF16 inference on the same checkpoints. Argmax matches F64 on every position of every model.
 - **📦 Sharded safetensors loader.** Multi-file HuggingFace checkpoints (`model-NNNNN-of-NNNNN.safetensors` + `index.json`) load via `ShardedSafetensorsReader` with drop-after-decode. Verified on Mistral 7B v0.3 (14.5 GB across 3 shards); peak RAM stays bounded by the largest single shard, not the sum.
@@ -101,7 +101,7 @@ Architecture in place, full end-to-end wiring in progress:
 - **Fusion Selector (v6.10/6.11)** — `fused_qkv_us = 0` is a placeholder awaiting paired measurement.
 - **`FragmentationWarning`** — Intentionally not emitted (external proxies would be misleading). Deferred until Atenia exposes its own GPU allocator.
 - **MNIST pipeline** — Conv2D / MaxPool / Dense run end-to-end on synthetic data; real MNIST dataset + trained weights pending.
-- **GPU residency-aware execution** — CUDA kernels for matmul / batch_matmul / fused_linear_silu exist, but the executor still does CPU-roundtrip per call instead of consuming GPU-resident operands. Residency-aware dispatch is **M4.7.3** (in progress).
+- **GPU residency-aware MatMul / BatchMatMul** — shipped as **M4.7.3 ✅**. `cuda_matmul_inplace` / `cuda_batch_matmul` consume `(Cuda, Cuda, Cuda)` triples directly via device pointers; the MatMul and BatchMatMul executor arms allocate VRAM-resident outputs through `Tensor::zeros_new_cuda` when both operands live on VRAM and short-circuit ahead of the kernel-planner target switch. Linear residency stays gated behind the `try_gpu_linear` MiniFlux constraint and is a separate milestone.
 
 ### Roadmap (APX v18 → v25)
 
@@ -133,7 +133,7 @@ Architecture in place, full end-to-end wiring in progress:
 - **M4.7** *(in progress)* — Beyond-VRAM execution. Target: RTX 4070 Laptop with **8 GB VRAM, 32 GB RAM, project on USB SSD**. A 13B BF16 model (~26 GB) fits in neither VRAM nor RAM alone but runs end-to-end via VRAM ↔ RAM ↔ disk offload. Six sub-phases:
   - **M4.7.1 ✅** — Sharded safetensors loader (Mistral 7B v0.3, 3 shards, 14.5 GB).
   - **M4.7.2 ✅** — Native BF16 parameter storage. 50% RAM savings, all four M4.6 checkpoints re-validated under BF16 active.
-  - **M4.7.3** *(active)* — GPU MatMul with resident operands + executor device dispatch.
+  - **M4.7.3 ✅** — GPU MatMul + BatchMatMul with resident operands and per-storage gating in the executor arms; defensive `ensure_cpu` audit across every CPU-only kernel arm; F64 4-model re-validation under M4.7.3 dispatch (counters added to `gpu::dispatch::hooks` so the validation gates a silent CPU-fallback regression).
   - **M4.7.4** — RAM ↔ SSD streaming (mmap, chunked pull).
   - **M4.7.5** — M3-e policy upgrade (LRU, probe cache, prefetch).
   - **M4.7.6** — First end-to-end run on Llama 2 13B (or Mistral 7B v0.3 fallback) + F64 validation.

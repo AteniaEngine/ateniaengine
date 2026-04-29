@@ -11,6 +11,8 @@
 //! 4.11 (these hooks) and APX 4.12 (memory pool) are coevolutions and
 //! the hook consults the pool before spending VRAM.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use crate::tensor::{Tensor, TensorStorage};
 use crate::cuda::{
     self, matmul::cuda_matmul, matmul::cuda_matmul_inplace,
@@ -21,6 +23,29 @@ use crate::apx4_12::pool_dispatcher::try_gpu_with_pool;
 
 fn apx_trace_enabled() -> bool {
     matches!(std::env::var("APX_TRACE").as_deref(), Ok("1")) && !crate::apx_is_silent()
+}
+
+/// M4.7.3.e — process-wide counters for `try_gpu_matmul` execution
+/// path. Exposed for smoke / regression tests that need concrete
+/// evidence the GPU branch actually ran instead of falling back to
+/// CPU. Counts are monotonic across the process lifetime; tests that
+/// care about a delta should snapshot before, run, and snapshot
+/// after. No production behaviour depends on these counters — they
+/// are observability-only.
+static GPU_MATMUL_RESIDENT_COUNT: AtomicUsize = AtomicUsize::new(0);
+static GPU_MATMUL_ROUNDTRIP_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Returns the count of MatMul invocations that took the residency
+/// (all-Cuda → device-pointer) path inside `try_gpu_matmul`.
+pub fn gpu_matmul_resident_count() -> usize {
+    GPU_MATMUL_RESIDENT_COUNT.load(Ordering::Relaxed)
+}
+
+/// Returns the count of MatMul invocations that took the CPU-roundtrip
+/// (host alloc → upload → kernel → download) path inside
+/// `try_gpu_matmul`.
+pub fn gpu_matmul_roundtrip_count() -> usize {
+    GPU_MATMUL_ROUNDTRIP_COUNT.load(Ordering::Relaxed)
 }
 
 /// Simple heuristic to decide whether it is worth using the CUDA MatMul kernel.
@@ -90,6 +115,7 @@ pub fn try_gpu_matmul(a: &Tensor, b: &Tensor, out: &mut Tensor) -> bool {
     );
     if all_cuda {
         cuda_matmul_inplace(a, b, out, m, k, n);
+        GPU_MATMUL_RESIDENT_COUNT.fetch_add(1, Ordering::Relaxed);
         if apx_trace_enabled() {
             println!("[APX M4.7.3] GPU MatMul executed (residency-aware)");
         }
@@ -129,6 +155,7 @@ pub fn try_gpu_matmul(a: &Tensor, b: &Tensor, out: &mut Tensor) -> bool {
             if gpu_out.shape == out.shape {
                 out.as_cpu_slice_mut().clone_from_slice(gpu_out.as_cpu_slice());
                 ran_gpu = true;
+                GPU_MATMUL_ROUNDTRIP_COUNT.fetch_add(1, Ordering::Relaxed);
                 if apx_trace_enabled() {
                     println!("[APX 4.11] GPU MatMul executed (CPU-roundtrip)");
                 }
