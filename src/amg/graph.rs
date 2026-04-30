@@ -44,6 +44,27 @@ pub enum FusedOutput {
     },
 }
 
+/// M5.b — error surface for the mutable graph tensor path
+/// ([`Graph::overwrite_parameter`], D60).
+#[derive(Debug)]
+pub enum GraphMutationError {
+    NodeOutOfRange { node_id: usize, len: usize },
+    NotAParameter { node_id: usize, node_type: String },
+}
+
+impl std::fmt::Display for GraphMutationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GraphMutationError::NodeOutOfRange { node_id, len } =>
+                write!(f, "graph mutation: node id {node_id} out of range (graph has {len})"),
+            GraphMutationError::NotAParameter { node_id, node_type } =>
+                write!(f, "graph mutation: node {node_id} is not a Parameter (was {node_type:?})"),
+        }
+    }
+}
+
+impl std::error::Error for GraphMutationError {}
+
 pub struct Graph {
     pub nodes: Vec<Node>,
     pub plan: ExecutionPlan,
@@ -1134,6 +1155,50 @@ impl Clone for Graph {
 impl Graph {
     pub fn new(nodes: Vec<Node>) -> Self {
         Self::build(nodes)
+    }
+
+    /// M5.b — mutable graph tensor path (D60).
+    ///
+    /// Replace the backing tensor of an existing
+    /// `NodeType::Parameter` slot. Used by the M5.c decode
+    /// loop to push fresh KV-cache K, V tensors into the
+    /// graph parameter slots that the cache-aware attention
+    /// path reads on each step.
+    ///
+    /// ## Contract vs `WeightMapper::load_into`
+    ///
+    /// `WeightMapper::load_into` enforces a **load-once**
+    /// invariant on the parameter slots it touches: those
+    /// slots correspond to model weights and are written
+    /// exactly once at session start. This method is the
+    /// **separate** mutator the M5 plan (D60) carves out
+    /// for KV cells: the runtime owns those tensors,
+    /// rewrites them every decode step, and routes the
+    /// update through here. Call sites are expected to
+    /// confine themselves to slots they registered for
+    /// cache use; mixing the two contracts on one slot is
+    /// a programming error this method does not police.
+    ///
+    /// Returns `Err` if `node_id` is out of range or the
+    /// node is not a `NodeType::Parameter` slot. Returns
+    /// `Ok(())` on success; the previous `Tensor` (if any)
+    /// is dropped.
+    pub fn overwrite_parameter(
+        &mut self,
+        node_id: usize,
+        tensor: crate::tensor::Tensor,
+    ) -> Result<(), GraphMutationError> {
+        let len = self.nodes.len();
+        let node = self.nodes.get_mut(node_id)
+            .ok_or(GraphMutationError::NodeOutOfRange { node_id, len })?;
+        if !matches!(node.node_type, crate::amg::nodes::NodeType::Parameter) {
+            return Err(GraphMutationError::NotAParameter {
+                node_id,
+                node_type: format!("{:?}", node.node_type),
+            });
+        }
+        node.output = Some(tensor);
+        Ok(())
     }
 
     /// Build a graph from pre-constructed nodes.
