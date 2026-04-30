@@ -1,10 +1,3 @@
-// M6.c.1 — vendor-neutral Backend trait + CudaBackend
-// impl. M6's load-bearing abstraction; v22 adds a wgpu peer.
-pub mod backend;
-// M6.c.2 — pure-function planner that picks resident vs
-// streamed layers given a VRAM budget and per-layer cost.
-pub mod residency_planner;
-
 pub mod nvrtc;
 pub mod loader;
 pub mod memory;
