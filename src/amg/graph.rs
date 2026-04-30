@@ -1326,6 +1326,7 @@ impl Graph {
                 NodeType::FusedLinearActivationChain(_) => (3..=5).contains(&in_len),
                 NodeType::Conv2D(_) => in_len == 2 || in_len == 3,
                 NodeType::MaxPool2D(_) => in_len == 1,
+                NodeType::Concat { .. } => in_len == 2,
                 NodeType::NoOp => in_len == 1,
             };
 
@@ -2882,6 +2883,79 @@ impl Graph {
                             }),
                         });
                     }
+                }
+            }
+            NodeType::Concat { axis } => {
+                // M5.c — concatenate two tensors along `axis`.
+                // Both inputs must agree on every dimension
+                // except `axis`. Output shape equals
+                // `a.shape` with `axis` extended by `b.shape[axis]`.
+                let inputs = self.nodes[node_id].inputs.clone();
+                if inputs.len() != 2 {
+                    return;
+                }
+                let a_opt = self.nodes[inputs[0]].output.as_ref();
+                let b_opt = self.nodes[inputs[1]].output.as_ref();
+                if let (Some(mut a), Some(mut b)) = (a_opt.cloned(), b_opt.cloned()) {
+                    // Defensive decode-on-access (M4.7.5.e
+                    // pattern): a parameter that landed on Disk
+                    // or BF16 must be materialised before we
+                    // touch the raw f32 storage.
+                    a.ensure_cpu().expect(
+                        "Concat: Disk/BF16/Cuda → Cpu materialisation failed for A",
+                    );
+                    b.ensure_cpu().expect(
+                        "Concat: Disk/BF16/Cuda → Cpu materialisation failed for B",
+                    );
+                    if a.shape.len() != b.shape.len() {
+                        panic!(
+                            "Concat: rank mismatch ({:?} vs {:?})",
+                            a.shape, b.shape
+                        );
+                    }
+                    if axis >= a.shape.len() {
+                        panic!(
+                            "Concat: axis {axis} out of range for rank {}",
+                            a.shape.len()
+                        );
+                    }
+                    for (d, (sa, sb)) in a.shape.iter().zip(b.shape.iter()).enumerate() {
+                        if d != axis && sa != sb {
+                            panic!(
+                                "Concat: dim {d} mismatch ({sa} vs {sb}); axis = {axis}, shapes {:?} vs {:?}",
+                                a.shape, b.shape
+                            );
+                        }
+                    }
+
+                    // Build output shape: same as a.shape but
+                    // axis extended.
+                    let mut out_shape = a.shape.clone();
+                    out_shape[axis] = a.shape[axis] + b.shape[axis];
+
+                    // Materialised concat. Strategy: split the
+                    // tensors into "outer × axis × inner" slabs
+                    // and interleave at the outer level.
+                    //   outer = product(shape[..axis])
+                    //   inner = product(shape[axis+1..])
+                    //   per-outer-i: a's `axis_a × inner` floats,
+                    //                then b's `axis_b × inner`.
+                    let outer: usize = a.shape[..axis].iter().product();
+                    let inner: usize = a.shape[axis + 1..].iter().product();
+                    let axis_a = a.shape[axis];
+                    let axis_b = b.shape[axis];
+                    let a_data = a.copy_to_cpu_vec();
+                    let b_data = b.copy_to_cpu_vec();
+                    let mut out: Vec<f32> = Vec::with_capacity(out_shape.iter().product());
+                    for i in 0..outer {
+                        // a slab: i * axis_a * inner .. (i+1) * axis_a * inner
+                        let a_off = i * axis_a * inner;
+                        out.extend_from_slice(&a_data[a_off .. a_off + axis_a * inner]);
+                        let b_off = i * axis_b * inner;
+                        out.extend_from_slice(&b_data[b_off .. b_off + axis_b * inner]);
+                    }
+
+                    self.nodes[node_id].set_output(crate::tensor::Tensor::new_cpu(out_shape, out));
                 }
             }
             NodeType::NoOp => {

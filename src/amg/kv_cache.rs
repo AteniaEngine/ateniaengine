@@ -567,6 +567,67 @@ mod tests {
         assert!(h.per_layer.is_empty());
     }
 
+    /// Run a tiny graph with a single `Concat` node and
+    /// return the materialised output tensor. Helper for
+    /// the concat tests below.
+    fn run_concat(a: Tensor, b: Tensor, axis: usize) -> Tensor {
+        use crate::amg::builder::GraphBuilder;
+        let mut gb = GraphBuilder::new();
+        let a_id = gb.parameter(a);
+        let b_id = gb.parameter(b);
+        let c_id = gb.concat(a_id, b_id, axis);
+        let out = gb.output(c_id);
+        let _ = out;
+        let nodes = std::mem::take(&mut gb.nodes);
+        let mut g = crate::amg::graph::Graph::build(nodes);
+        let outs = g.execute(vec![]);
+        outs.into_iter().next().expect("graph produced no output")
+    }
+
+    #[test]
+    fn concat_axis_0_simple() {
+        // [2,3] concat [1,3] along axis 0 -> [3,3]
+        let a = Tensor::new_cpu(vec![2, 3], (1..=6).map(|x| x as f32).collect());
+        let b = Tensor::new_cpu(vec![1, 3], vec![100.0, 200.0, 300.0]);
+        let out = run_concat(a, b, 0);
+        assert_eq!(out.shape, vec![3, 3]);
+        assert_eq!(out.copy_to_cpu_vec(),
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 100.0, 200.0, 300.0]);
+    }
+
+    #[test]
+    fn concat_axis_1_interleaves_per_row() {
+        // [2,2] concat [2,3] along axis 1 -> [2,5]
+        let a = Tensor::new_cpu(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0]);
+        let b = Tensor::new_cpu(vec![2, 3], vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0]);
+        let out = run_concat(a, b, 1);
+        assert_eq!(out.shape, vec![2, 5]);
+        assert_eq!(out.copy_to_cpu_vec(),
+            vec![1.0, 2.0, 10.0, 20.0, 30.0, 3.0, 4.0, 40.0, 50.0, 60.0]);
+    }
+
+    #[test]
+    fn concat_axis_2_kv_cache_shape() {
+        // R2 foundation at the graph level: Concat axis=2
+        // on KV-cache-shaped tensors `[batch, n_kv, seq, head_dim]`
+        // matches the runtime KvCache::append behaviour
+        // bit-exactly.
+        let cfg = KvCacheConfig { batch: 1, num_layers: 1, num_kv_heads: 2, head_dim: 4 };
+        let mut cache = KvCache::new(cfg);
+
+        let cache_k = arange_tensor(vec![1, 2, 3, 4], 1.0);  // 3 cached tokens
+        let new_k   = arange_tensor(vec![1, 2, 2, 4], 100.0); // 2 new tokens
+        cache.append(0, &cache_k, &arange_tensor(vec![1, 2, 3, 4], 1.0)).unwrap();
+        cache.append(0, &new_k,   &arange_tensor(vec![1, 2, 2, 4], 100.0)).unwrap();
+        let (cached_k, _) = cache.get(0).unwrap();
+
+        let graph_concat = run_concat(cache_k, new_k, 2);
+
+        assert_eq!(graph_concat.shape, vec![1, 2, 5, 4]);
+        assert_eq!(graph_concat.copy_to_cpu_vec(), cached_k.copy_to_cpu_vec(),
+            "Concat node output != KvCache::append reference");
+    }
+
     #[test]
     fn graph_overwrite_parameter_replaces_backing_tensor() {
         // D60 falsifier: the mutable graph tensor path

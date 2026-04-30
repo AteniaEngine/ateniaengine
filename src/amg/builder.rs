@@ -108,6 +108,14 @@ impl GraphBuilder {
         self.add_node(NodeType::Output, vec![src])
     }
 
+    /// M5.c — concatenate two tensors along `axis`. See
+    /// [`NodeType::Concat`] for shape and semantics. Used by
+    /// the cache-aware attention path to splice the resident
+    /// KV cache to the current step's K, V projections.
+    pub fn concat(&mut self, a: usize, b: usize, axis: usize) -> usize {
+        self.add_node(NodeType::Concat { axis }, vec![a, b])
+    }
+
     /// Create a Linear node with required inputs [x, w] and optional bias.
     pub fn linear(&mut self, x_id: usize, w_id: usize, b_id: Option<usize>) -> usize {
         let mut inputs = vec![x_id, w_id];

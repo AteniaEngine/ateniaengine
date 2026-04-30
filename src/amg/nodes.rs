@@ -196,6 +196,28 @@ pub enum NodeType {
     Conv2D(Conv2DConfig),
     /// 2D max pooling (APX v20 M1). Inputs: `[input]`. Input layout: NCHW.
     MaxPool2D(MaxPool2DConfig),
+    /// Concatenate two tensors along the given axis (M5.c).
+    ///
+    /// Inputs: `[a, b]`. Both tensors must have the same rank
+    /// and agree on every dimension *except* `axis`. Output
+    /// shape equals `a.shape` with `out.shape[axis] =
+    /// a.shape[axis] + b.shape[axis]`.
+    ///
+    /// ## Primary use case
+    /// Cache-aware attention path (M5.c+): `K_full =
+    /// concat(cache_K, new_K, axis=2)` produces the
+    /// `[batch, n_kv_heads, cached_len + new_len, head_dim]`
+    /// tensor the attention kernels read at decode time.
+    ///
+    /// ## Implementation
+    /// Forward performs a contiguous data copy. Inputs are
+    /// materialised to CPU via `Tensor::ensure_cpu` before
+    /// concatenation; output is `Layout::Contiguous`. Backward
+    /// is a TODO (forward-only is sufficient for inference;
+    /// training-time gradient split lives in the autograd
+    /// tape extension that lands with the next training-mode
+    /// milestone).
+    Concat { axis: usize },
     /// No-op placeholder used for structurally removed nodes.
     NoOp,
     Output,
