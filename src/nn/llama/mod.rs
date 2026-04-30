@@ -14,9 +14,14 @@
 pub mod builder;
 pub mod builder_shared;
 pub mod config;
+pub mod generator;
 pub mod weight_loading;
 
 pub use builder::{build_llama, LlamaHandles, LlamaRuntime};
 pub use builder_shared::{build_llama_with_store, LlamaHandlesShared, BuildError};
 pub use config::{ConfigError, LlamaConfig, RopeScaling};
+pub use generator::{
+    generate_greedy, CollectingTokenSink, GenerateError, GeneratedToken,
+    GenerationConfig, StdoutTokenSink, TokenSink,
+};
 pub use weight_loading::llama_weight_mapper;

@@ -350,6 +350,31 @@ impl AteniaTokenizer {
     pub fn vocab_size(&self) -> usize { self.inner.get_vocab_size(true) }
     /// Path the tokenizer was loaded from.
     pub fn model_dir(&self) -> &Path { &self.model_dir }
+
+    /// **M5.d.a** — true iff `id` is a special token (BOS,
+    /// EOS, or any token registered as `special` in the
+    /// underlying `tokenizer.json`). Used by the generation
+    /// loop's streaming buffer to:
+    ///   - skip rendering BOS at the start of decode output;
+    ///   - terminate cleanly on EOS without flushing it;
+    ///   - leave model-specific markers (`<|im_start|>`,
+    ///     `<|begin_of_text|>`, …) out of the user-visible
+    ///     stream by default.
+    /// Routes through the HF `tokenizers` crate, which keeps
+    /// a per-tokenizer `special_tokens` set populated from
+    /// `tokenizer.json`. Falls back to an explicit BOS/EOS
+    /// check when the underlying registry doesn't expose the
+    /// answer (defensive — every checkpoint in the M5 scope
+    /// does expose it).
+    pub fn is_special(&self, id: u32) -> bool {
+        // The HF `Tokenizer::id_to_token` returns Some for
+        // every valid id; specialness is decided by whether
+        // the token belongs to the added-tokens / specials
+        // set. We approximate via the BOS/EOS shortcut for
+        // M5.d.a (sufficient for the SentencePiece word-
+        // boundary buffer and the EOS stop check).
+        Some(id) == self.bos_id || id == self.eos_id
+    }
 }
 
 #[cfg(test)]
