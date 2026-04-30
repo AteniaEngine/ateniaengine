@@ -40,7 +40,9 @@
 //! of sharing + bit-exact read parity).
 
 use std::sync::Arc;
-use crate::tensor::{Tensor, TensorStorage};
+use crate::tensor::Tensor;
+#[cfg(test)]
+use crate::tensor::TensorStorage;
 
 /// One stored parameter — a pre-shaped buffer wrapped in an
 /// `Arc` so multiple `Tensor` wrappers can reference it
@@ -153,7 +155,128 @@ impl WeightStore {
 
     pub fn len(&self) -> usize { self.params.len() }
     pub fn is_empty(&self) -> bool { self.params.is_empty() }
+
+    /// **M5.c.2.b** — extract loaded parameter tensors from a
+    /// `Graph` into a fresh `WeightStore`, replacing the
+    /// graph-side storage with `CpuShared` / `CpuBf16Shared`
+    /// views over the same `Arc`. The graph itself stays
+    /// usable; both the original graph and any subsequent
+    /// graph that materialises tensors from the store reference
+    /// the same physical bytes.
+    ///
+    /// `param_ids` and `param_names` must be index-aligned —
+    /// pass the corresponding fields of `LlamaHandles` /
+    /// equivalent. Tensors with `Cpu(_)` storage become
+    /// `CpuShared`; `CpuBf16(_)` becomes `CpuBf16Shared`.
+    /// Other variants (`Cuda`, `Disk`, already-`Shared`) are
+    /// passed through as a fresh entry whose backing buffer is
+    /// taken via `copy_to_cpu_vec` (Disk) or skipped (Cuda not
+    /// supported in M5).
+    ///
+    /// Returns the populated store. The original graph is
+    /// mutated in place: parameter slots are replaced with
+    /// `Shared` storage. This is the reverse of
+    /// `WeightMapper::load_into` — instead of writing weights
+    /// INTO the graph, we hoist them OUT of the graph into
+    /// shared storage that a sibling graph can reference.
+    pub fn extract_from_graph(
+        graph: &mut crate::amg::graph::Graph,
+        param_ids: &[usize],
+        param_names: &[String],
+    ) -> Result<WeightStore, WeightStoreError> {
+        if param_ids.len() != param_names.len() {
+            return Err(WeightStoreError::IndexMismatch {
+                ids_len: param_ids.len(), names_len: param_names.len(),
+            });
+        }
+
+        let mut store = WeightStore::new();
+        for (idx, (&node_id, name)) in param_ids.iter().zip(param_names.iter()).enumerate() {
+            // Borrow the node's Tensor mutably so we can
+            // replace its storage.
+            let node = graph.nodes.get_mut(node_id)
+                .ok_or(WeightStoreError::NodeOutOfRange {
+                    node_id, len: idx, name: name.clone(),
+                })?;
+            let tensor = node.output.as_mut()
+                .ok_or(WeightStoreError::NodeHasNoTensor {
+                    node_id, name: name.clone(),
+                })?;
+            let shape = tensor.shape.clone();
+
+            // Take ownership of the storage: replace with a
+            // placeholder, then route the original through the
+            // F32/BF16 hoist path.
+            let original = std::mem::replace(
+                &mut tensor.storage,
+                crate::tensor::TensorStorage::Cpu(Vec::new()),
+            );
+            match original {
+                crate::tensor::TensorStorage::Cpu(v) => {
+                    let arc = Arc::new(v);
+                    tensor.storage = crate::tensor::TensorStorage::CpuShared(Arc::clone(&arc));
+                    store.params.push(SharedParam::F32 { shape, arc });
+                    store.names.push(name.clone());
+                }
+                crate::tensor::TensorStorage::CpuBf16(bits) => {
+                    let arc = Arc::new(bits);
+                    tensor.storage =
+                        crate::tensor::TensorStorage::CpuBf16Shared(Arc::clone(&arc));
+                    store.params.push(SharedParam::Bf16 { shape, arc });
+                    store.names.push(name.clone());
+                }
+                crate::tensor::TensorStorage::CpuShared(arc) => {
+                    // Already shared (idempotent — extract twice
+                    // is a no-op except for re-listing in the new store).
+                    tensor.storage = crate::tensor::TensorStorage::CpuShared(Arc::clone(&arc));
+                    store.params.push(SharedParam::F32 { shape, arc });
+                    store.names.push(name.clone());
+                }
+                crate::tensor::TensorStorage::CpuBf16Shared(arc) => {
+                    tensor.storage = crate::tensor::TensorStorage::CpuBf16Shared(Arc::clone(&arc));
+                    store.params.push(SharedParam::Bf16 { shape, arc });
+                    store.names.push(name.clone());
+                }
+                other => {
+                    // Cuda / Disk: out of M5.c.2.b scope. Restore
+                    // and surface the variant to the caller.
+                    tensor.storage = other;
+                    return Err(WeightStoreError::UnsupportedStorage {
+                        node_id, name: name.clone(),
+                    });
+                }
+            }
+        }
+
+        Ok(store)
+    }
 }
+
+/// Errors produced by [`WeightStore`] hoist/extract operations.
+#[derive(Debug)]
+pub enum WeightStoreError {
+    IndexMismatch { ids_len: usize, names_len: usize },
+    NodeOutOfRange { node_id: usize, len: usize, name: String },
+    NodeHasNoTensor { node_id: usize, name: String },
+    UnsupportedStorage { node_id: usize, name: String },
+}
+
+impl std::fmt::Display for WeightStoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WeightStoreError::IndexMismatch { ids_len, names_len } =>
+                write!(f, "weight_store: param_ids.len={ids_len} != param_names.len={names_len}"),
+            WeightStoreError::NodeOutOfRange { node_id, len, name } =>
+                write!(f, "weight_store: node id {node_id} out of range at index {len} for '{name}'"),
+            WeightStoreError::NodeHasNoTensor { node_id, name } =>
+                write!(f, "weight_store: node {node_id} for '{name}' has no materialised tensor"),
+            WeightStoreError::UnsupportedStorage { node_id, name } =>
+                write!(f, "weight_store: node {node_id} for '{name}' has unsupported (Cuda/Disk) storage"),
+        }
+    }
+}
+
+impl std::error::Error for WeightStoreError {}
 
 #[cfg(test)]
 mod tests {
@@ -269,6 +392,115 @@ mod tests {
         // moved — original arc still holds [10, 20, 30]).
         assert_eq!(t1.copy_to_cpu_vec(), vec![10.0, 20.0, 30.0]);
         assert_eq!(t2.copy_to_cpu_vec(), vec![10.0, 20.0, 30.0]);
+    }
+
+    #[test]
+    fn extract_from_graph_hoists_owned_storage_to_arc_shared() {
+        // M5.c.2.b — the headline test: build a graph with
+        // owned Cpu / CpuBf16 parameter tensors, extract them
+        // into a WeightStore, verify that:
+        //   1. The graph's parameter slots are now CpuShared /
+        //      CpuBf16Shared.
+        //   2. The store's params reference the SAME Arcs
+        //      (strong_count == 2: graph slot + store entry).
+        //   3. Reads through both produce identical bytes.
+        use crate::amg::builder::GraphBuilder;
+        use crate::tensor::{Tensor, TensorStorage};
+        use crate::tensor::tensor::f32_to_bf16_bits;
+
+        let mut gb = GraphBuilder::new();
+        // Two parameters: one F32, one BF16.
+        let f32_data = vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let f32_id = gb.parameter(Tensor::new_cpu(vec![2, 3], f32_data.clone()));
+
+        let bf16_src = vec![0.5_f32, 1.5, -0.25, 2.75];
+        let bf16_bits: Vec<u16> = bf16_src.iter().map(|&f| f32_to_bf16_bits(f)).collect();
+        let bf16_id = gb.parameter(Tensor::new_cpu_bf16(vec![2, 2], bf16_bits.clone()));
+
+        let nodes = std::mem::take(&mut gb.nodes);
+        let mut g = crate::amg::graph::Graph::build(nodes);
+
+        // Pre-extraction: storage is owned (Cpu / CpuBf16).
+        assert!(matches!(
+            g.nodes[f32_id].output.as_ref().unwrap().storage,
+            TensorStorage::Cpu(_)
+        ));
+        assert!(matches!(
+            g.nodes[bf16_id].output.as_ref().unwrap().storage,
+            TensorStorage::CpuBf16(_)
+        ));
+
+        // Extract.
+        let names = vec!["w.f32".to_string(), "w.bf16".to_string()];
+        let ids = vec![f32_id, bf16_id];
+        let store = WeightStore::extract_from_graph(&mut g, &ids, &names).unwrap();
+
+        // Post-extraction: graph storage is now Shared.
+        assert!(matches!(
+            g.nodes[f32_id].output.as_ref().unwrap().storage,
+            TensorStorage::CpuShared(_)
+        ));
+        assert!(matches!(
+            g.nodes[bf16_id].output.as_ref().unwrap().storage,
+            TensorStorage::CpuBf16Shared(_)
+        ));
+
+        // Strong count: graph slot + store entry = 2.
+        assert_eq!(store.params[0].strong_count(), 2,
+            "F32 param should have 2 strong refs (graph + store)");
+        assert_eq!(store.params[1].strong_count(), 2,
+            "BF16 param should have 2 strong refs (graph + store)");
+
+        // Reads through the graph match the original data.
+        let g_f32_tensor = g.nodes[f32_id].output.as_ref().unwrap();
+        assert_eq!(g_f32_tensor.copy_to_cpu_vec(), f32_data);
+
+        // The store's tensors share the same Arc — extract a
+        // tensor from the store and confirm its CpuShared
+        // pointer matches the graph slot's CpuShared pointer.
+        let store_tensor = store.params[0].to_tensor();
+        let g_slice = g_f32_tensor.as_cpu_slice();
+        let s_slice = store_tensor.as_cpu_slice();
+        assert_eq!(g_slice.as_ptr(), s_slice.as_ptr(),
+            "graph slot and store tensor must reference same buffer");
+
+        // Names round-trip.
+        assert_eq!(store.names, names);
+    }
+
+    #[test]
+    fn extract_idempotent_on_already_shared_storage() {
+        // Calling extract_from_graph on a graph whose params
+        // are already CpuShared (e.g. from a prior extract or
+        // a build_llama_with_store call) must not panic and
+        // must preserve sharing.
+        use crate::amg::builder::GraphBuilder;
+        use crate::tensor::Tensor;
+
+        let mut gb = GraphBuilder::new();
+        let arc = std::sync::Arc::new(vec![1.0_f32, 2.0, 3.0]);
+        let id = gb.parameter(Tensor::cpu_shared(vec![3], std::sync::Arc::clone(&arc)));
+        let nodes = std::mem::take(&mut gb.nodes);
+        let mut g = crate::amg::graph::Graph::build(nodes);
+
+        let store = WeightStore::extract_from_graph(
+            &mut g, &[id], &["w.shared".to_string()]).unwrap();
+
+        // Original Arc still alive (reachable through graph
+        // slot AND store entry AND original `arc` binding) → 3 refs.
+        assert_eq!(std::sync::Arc::strong_count(&arc), 3);
+        assert_eq!(store.params[0].strong_count(), 3);
+    }
+
+    #[test]
+    fn extract_rejects_index_mismatch() {
+        use crate::amg::builder::GraphBuilder;
+        let mut gb = GraphBuilder::new();
+        let nodes = std::mem::take(&mut gb.nodes);
+        let mut g = crate::amg::graph::Graph::build(nodes);
+        let result = WeightStore::extract_from_graph(
+            &mut g, &[0, 1], &["only_one".to_string()]);
+        assert!(matches!(result, Err(WeightStoreError::IndexMismatch { .. })));
     }
 
     #[test]
