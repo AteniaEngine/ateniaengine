@@ -136,13 +136,6 @@ fn main() {
     // 3. Forward execute cost (pure math: Q/K/V/O projections,
     //    Concat with cache, attention BMM, softmax, V·attn,
     //    SwiGLU, residual + lm_head).
-    //
-    // **M6.a** — when built with `--features bench-trace`,
-    // the executor accumulates per-NodeType wall-clock that
-    // we dump after the forward to attribute the 99.9% box
-    // to specific ops. Without the feature, the bench prints
-    // a hint pointing at the rebuild flag.
-    atenia_engine::amg::bench_trace::reset();
     let token_input = Tensor::new_cpu(vec![1, 1], vec![0.0_f32]);
     let fwd_start = Instant::now();
     let logits = g.execute(vec![token_input]).into_iter().next()
@@ -150,33 +143,6 @@ fn main() {
     let fwd_ms = fwd_start.elapsed().as_secs_f64() * 1000.0;
     eprintln!("forward execute:       {fwd_ms:>10.2} ms");
     eprintln!();
-
-    // ---- Per-NodeType breakdown (M6.a) ----
-    if atenia_engine::amg::bench_trace::is_enabled() {
-        let snap = atenia_engine::amg::bench_trace::snapshot();
-        let total_ns: u64 = snap.iter().map(|(_, e)| e.total_ns).sum();
-        let total_ms = total_ns as f64 / 1e6;
-        eprintln!("=== Per-NodeType breakdown (bench-trace feature) ===");
-        eprintln!("{:<28} {:>10} {:>14} {:>10} {:>10}",
-            "op", "calls", "total_ms", "avg_us", "% of fwd");
-        for (op, e) in &snap {
-            let total_op_ms = e.total_ns as f64 / 1e6;
-            let avg_us = if e.calls > 0 {
-                (e.total_ns as f64) / (e.calls as f64) / 1000.0
-            } else { 0.0 };
-            let pct = if total_ms > 0.0 { total_op_ms / total_ms * 100.0 } else { 0.0 };
-            eprintln!("{:<28} {:>10} {:>14.3} {:>10.2} {:>9.2}%",
-                op, e.calls, total_op_ms, avg_us, pct);
-        }
-        eprintln!("{:<28} {:>10} {:>14.3}", "(sum)", "", total_ms);
-        eprintln!();
-    } else {
-        eprintln!("=== Per-NodeType breakdown ===");
-        eprintln!("(Per-op timing skipped: rebuild with");
-        eprintln!("    cargo build --release --example bench_decode --features bench-trace");
-        eprintln!(" to enable the executor's bench_trace accumulators.)");
-        eprintln!();
-    }
 
     let total_ms = build_ms + patch_ms + fwd_ms;
     eprintln!("--- step total:        {total_ms:>10.2} ms ({:.2} tok/s)",

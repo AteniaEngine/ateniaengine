@@ -10,12 +10,6 @@ pub mod fusions;
 pub mod ops;
 pub mod reactive;
 
-// M6.a — per-NodeType wall-clock accumulators for
-// `Graph::execute_single`. Always-pub but the recording
-// path is `cfg(feature = "bench-trace")`-gated; default
-// builds pay zero overhead.
-pub mod bench_trace;
-
 // M5.c.2.a — Arc-backed shared parameter store. Lets the
 // prefill and decode `Graph` instances reference the same
 // physical weight bytes without doubling RAM. Tensor surface
