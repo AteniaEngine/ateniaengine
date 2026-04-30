@@ -198,6 +198,11 @@ fn count_by_storage(graph: &atenia_engine::amg::graph::Graph) -> (usize, usize, 
                 // migration tests, but the tally must remain
                 // exhaustive over `TensorStorage`.
                 TensorStorage::CpuBf16(_) => cpu += 1,
+                // M5.c.2.a — Arc-shared variants. Tally as
+                // host-resident (the underlying Arc-wrapped
+                // buffers are CPU-resident).
+                TensorStorage::CpuShared(_) => cpu += 1,
+                TensorStorage::CpuBf16Shared(_) => cpu += 1,
                 TensorStorage::Cuda(_) => cuda += 1,
                 TensorStorage::Disk(_) => disk += 1,
             }

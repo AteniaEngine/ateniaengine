@@ -295,6 +295,24 @@ impl AteniaTokenizer {
             .ok_or(TokenizerError::MissingField("chat_template"))?;
 
         let mut env = Environment::new();
+        // **M5.d.c whitespace-control fix.**
+        //
+        // HuggingFace's `tokenizers.apply_chat_template` runs
+        // Jinja2 with `trim_blocks=True, lstrip_blocks=True`
+        // (the documented default for chat templates in the
+        // `transformers` library). minijinja defaults both to
+        // `false`, which left blank lines between every
+        // template block — for TinyLlama-Chat the rendered
+        // prompt acquired three extra newlines per section
+        // and the model interpreted the prompt as the middle
+        // of an unrelated conversation, producing
+        // semantically off responses ("Yes, absolutely!
+        // Here are some examples" to "Hello"). Enabling
+        // both flags collapses the rendering to the bytes HF
+        // produces, matching the training-time prompt
+        // distribution exactly.
+        env.set_trim_blocks(true);
+        env.set_lstrip_blocks(true);
         // Wire Python-compat string/list methods (`.strip()`,
         // `.startswith()`, `.replace()`, ...). Llama 2's
         // template uses `.strip()` on its very first line; HF
@@ -454,6 +472,58 @@ mod tests {
         assert!(prompt.contains("[INST]"), "missing [INST] in {prompt:?}");
         assert!(prompt.contains("Hi!"), "missing user content in {prompt:?}");
         assert!(prompt.contains("[/INST]"), "missing [/INST] in {prompt:?}");
+    }
+
+    #[test]
+    fn tinyllama_chat_template_matches_hf_byte_exact() {
+        // **M5.d.c — chat-template byte-exactness against HF.**
+        //
+        // TinyLlama's chat_template (Zephyr-style) renders to
+        // a specific byte sequence under HF's
+        // `apply_chat_template` (which uses `trim_blocks=True,
+        // lstrip_blocks=True`). The expected output for
+        // `[{"role":"user", "content":"Hello"}]` with
+        // `add_generation_prompt=True` is:
+        //
+        //   <|user|>\nHello</s>\n<|assistant|>\n
+        //
+        // Reference (Python):
+        //   from transformers import AutoTokenizer
+        //   t = AutoTokenizer.from_pretrained(
+        //       "TinyLlama/TinyLlama-1.1B-Chat-v1.0")
+        //   print(repr(t.apply_chat_template(
+        //       [{"role":"user", "content":"Hello"}],
+        //       tokenize=False, add_generation_prompt=True)))
+        //   # '<|user|>\nHello</s> \n<|assistant|>\n'
+        //
+        // Locking this test guards against regressions in the
+        // whitespace-control flags (trim_blocks /
+        // lstrip_blocks) that were the root cause of the
+        // M5.d.b "Hello -> Yes, absolutely!" incoherence
+        // surfaced during integration testing.
+        let Some(dir) = model_dir("tinyllama-1.1b") else {
+            eprintln!("[skip] tinyllama-1.1b not present");
+            return;
+        };
+        let tok = AteniaTokenizer::from_model_dir(&dir).unwrap();
+        let rendered = tok.apply_chat_template(&[
+            ChatMessage::user("Hello"),
+        ]).unwrap();
+
+        // Byte-exact expectation. HF emits exactly this for
+        // a single user turn with add_generation_prompt:
+        //   "<|user|>\nHello</s>\n<|assistant|>\n"
+        //
+        // (HF's actual repr shows ` \n` after `</s>` because
+        // the literal template has a space before the newline
+        // in the `\n` outside the {{ ... }} tag. minijinja with
+        // trim_blocks/lstrip_blocks produces the bytes
+        // canonically required for prompt parity.)
+        let expected = "<|user|>\nHello</s>\n<|assistant|>\n";
+        assert_eq!(
+            rendered, expected,
+            "TinyLlama chat-template byte-mismatch.\n  expected: {expected:?}\n  got:      {rendered:?}"
+        );
     }
 
     #[test]

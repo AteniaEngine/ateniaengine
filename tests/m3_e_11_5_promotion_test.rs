@@ -240,6 +240,12 @@ fn param_storage_is(graph: &atenia_engine::amg::graph::Graph, kind: &str) -> boo
             TensorStorage::CpuBf16(_) => kind == "CpuBf16",
             TensorStorage::Cuda(_) => kind == "Cuda",
             TensorStorage::Disk(_) => kind == "Disk",
+            // M5.c.2.a — Arc-shared variants. Promotion test
+            // never exercises them (it's about the M3 disk-
+            // spill machinery), so they map to the F32/BF16
+            // residency category for kind-classification.
+            TensorStorage::CpuShared(_) => kind == "Cpu" || kind == "CpuShared",
+            TensorStorage::CpuBf16Shared(_) => kind == "CpuBf16" || kind == "CpuBf16Shared",
         }).unwrap_or(false)
     })
 }

@@ -76,6 +76,8 @@ fn test_ensure_gpu_on_gpu_is_noop() {
         TensorStorage::Cpu(_) => unreachable!("storage should be Cuda here"),
         TensorStorage::CpuBf16(_) => unreachable!("test never places tensor on CpuBf16"),
         TensorStorage::Disk(_) => unreachable!("test never places tensor on Disk"),
+        TensorStorage::CpuShared(_) | TensorStorage::CpuBf16Shared(_) =>
+            unreachable!("M5.c.2.a Arc-shared variants not exercised by this test"),
     };
 
     t.ensure_gpu()
@@ -86,6 +88,8 @@ fn test_ensure_gpu_on_gpu_is_noop() {
         TensorStorage::Cpu(_) => unreachable!("storage should still be Cuda"),
         TensorStorage::CpuBf16(_) => unreachable!("test never places tensor on CpuBf16"),
         TensorStorage::Disk(_) => unreachable!("test never places tensor on Disk"),
+        TensorStorage::CpuShared(_) | TensorStorage::CpuBf16Shared(_) =>
+            unreachable!("M5.c.2.a Arc-shared variants not exercised by this test"),
     };
 
     assert_eq!(

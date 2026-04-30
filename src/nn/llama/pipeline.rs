@@ -259,19 +259,50 @@ impl GenerationPipeline {
             eos_token_id: self.tokenizer.eos_id(),
         };
 
-        // Detokenisation hook fed to `generate_greedy`. We do
-        // single-token decoding here (no SentencePiece word-
-        // boundary buffering yet — that's a small follow-up
-        // for M5.d.c when streaming UX is polished). Special
-        // tokens render as empty so the user-visible stream
-        // stays clean.
+        // **M5.d.c — incremental-context detokenisation.**
+        //
+        // SentencePiece tokens carry a leading `▁` (U+2581)
+        // marker for word starts. Calling `decode(&[id])` on
+        // a single id strips the marker without inserting a
+        // space — which is what the M5.d.b run produced
+        // ("Yes,absolutely!Herearesomeexamples"). Production
+        // streaming detokenisers run the decode in context:
+        // decode `tokens[..i+1]`, subtract `decode(tokens[..i])`,
+        // emit the diff as the new chunk. That yields the
+        // SentencePiece-correct spacing without per-token
+        // heuristics.
+        //
+        // We use FnMut state to track the running text so the
+        // closure surface stays trivial. Special tokens
+        // (BOS/EOS) decode to empty so the user stream stays
+        // clean.
         let tokenizer = &self.tokenizer;
+        let mut emitted_text = String::new();
+        let mut generated_ids: Vec<u32> = Vec::new();
         let decode = |id: u32| -> String {
             if tokenizer.is_special(id) {
-                String::new()
-            } else {
-                tokenizer.decode(&[id], true).unwrap_or_default()
+                return String::new();
             }
+            generated_ids.push(id);
+            let full = tokenizer.decode(&generated_ids, true)
+                .unwrap_or_default();
+            // Diff: bytes added by the latest token. Robust
+            // to multi-byte UTF-8 because we slice on
+            // `emitted_text.len()` (byte length) and the
+            // suffix is guaranteed to be a complete
+            // continuation of the prior decode.
+            let new_chunk = if full.len() > emitted_text.len() {
+                full[emitted_text.len()..].to_string()
+            } else {
+                // Defensive: if the new decode is shorter
+                // (token coalesced into a smaller string),
+                // emit nothing and reset state on next
+                // iteration. Should not happen for
+                // SentencePiece BPE.
+                String::new()
+            };
+            emitted_text = full;
+            new_chunk
         };
 
         // Wrap the user's sink with a recorder that builds

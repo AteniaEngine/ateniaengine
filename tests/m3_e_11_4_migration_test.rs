@@ -316,6 +316,8 @@ fn test_migrate_all_cpu_to_disk_atomicity_preserves_storage_on_failure() {
                 TensorStorage::CpuBf16(_) => "CpuBf16",
                 TensorStorage::Cuda(_) => "Cuda",
                 TensorStorage::Disk(_) => "Disk",
+                TensorStorage::CpuShared(_) => "CpuShared",
+                TensorStorage::CpuBf16Shared(_) => "CpuBf16Shared",
             })
         })
         .collect();
@@ -341,6 +343,8 @@ fn test_migrate_all_cpu_to_disk_atomicity_preserves_storage_on_failure() {
                 TensorStorage::CpuBf16(_) => "CpuBf16",
                 TensorStorage::Cuda(_) => "Cuda",
                 TensorStorage::Disk(_) => "Disk",
+                TensorStorage::CpuShared(_) => "CpuShared",
+                TensorStorage::CpuBf16Shared(_) => "CpuBf16Shared",
             })
         })
         .collect();
