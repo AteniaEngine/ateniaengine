@@ -74,6 +74,34 @@ Three modes are available; full CLI reference in [docs/CLI.md](./docs/CLI.md):
 
 The full empirical baseline lives in [HANDOFF M4.7](./docs/HANDOFF_APX_V20_M4.7.md) (the original beyond-VRAM execution work) and [HANDOFF M4.8](./docs/HANDOFF_APX_V20_M4.8.md) (the 3.5× performance pass that brought the wall-clock from 18.75 min to demoable). The CLI surface is documented in [HANDOFF M4.9](./docs/HANDOFF_APX_V20_M4.9.md).
 
+### Or: Atenia chats (M5 ✅)
+
+The same engine that proves the transparency contract also generates text. Same load command, different subcommand:
+
+```bash
+atenia generate \
+    --prompt "Hello, how are you?" \
+    --model ./models/llama-2-13b-chat \
+    --max-tokens 20
+```
+
+```text
+Loading model from ./models/llama-2-13b-chat ...
+....................................................
+Model loaded in 176.6s (363 parameters, 24.24 GiB resident).
+
+> Hello, how are you?
+
+Prefilling prompt and generating ...
+....................................................
+Hello! I'm just an AI, I don't have feelings or emotions
+
+---
+Generated: 20 tokens in ~280s (0.07 tok/s) [max-tokens reached]
+```
+
+The `24.24 GiB resident` line is the M5 architectural headline: prefill graph + per-step decode graph both reference the same parameter buffers via `Arc<TensorStorage>`. Naïve cloning would have landed at ~52 GiB → OOM on the 32 GiB dev box. Token throughput on CPU is the M6 target (forward compute dominates 99.9% of decode-step cost per the M5.f.a bench; GPU offload lifts this into the interactive range). See [HANDOFF M5](./docs/HANDOFF_APX_V20_M5.md) for the full sub-phase chain (M5.a–M5.f.a, eleven commits, twelve architectural decisions D58–D69).
+
 ---
 
 ## 🎯 Vision
@@ -127,7 +155,17 @@ Atenia Engine is implemented in Rust. The project follows an APX (Adaptive Execu
 
 Real, executable, deterministic:
 
-**Real LLM inference (APX v20 M4.5–M4.9)**
+**Real LLM inference (APX v20 M4.5–M5)**
+
+- **💬 Atenia chats. (M5 ✅)** `atenia generate --prompt "Hello, how are you?" --model models/llama-2-13b-chat --max-tokens 20` produces a recognisably conversational answer:
+
+  ```text
+  > Hello, how are you?
+
+  Hello! I'm just an AI, I don't have feelings or emotions
+  ```
+
+  Greedy decoding, token streaming to stdout, EOS halt, `--max-tokens` cap, JSON output mode. Behind the line: HF byte-exact chat-template rendering (Jinja2 with `trim_blocks` + `lstrip_blocks`), incremental-context detokenisation (correct SentencePiece spacing in the streamed output), KV-cache-aware attention via `NodeType::Concat axis=2` + RoPE position offset, prefill graph + per-step decode graph **sharing weights via `Arc<TensorStorage>`** so the BF16 13B model stays at **24.24 GiB resident** instead of duplicating to ~52 GiB. Twelve architectural decisions (D58–D69) locked across eleven sub-phase commits (M5.a → M5.f.a). R2 graph-level falsifier (3/3) proves the cache-aware path is mathematically equivalent to the no-cache reference; R6 generation contract (4/4) locks loop semantics; D67 determinism fixture reproduces bit-exact across runs. See [HANDOFF M5](./docs/HANDOFF_APX_V20_M5.md).
 
 - **🚀 Llama 2 13B Chat runs end-to-end on dev-class hardware in 6.9 minutes, reproducible with one command.** RTX 4070 Laptop with 8 GB VRAM and 32 GB RAM — a workload that **does not fit in VRAM**, **does not fit in RAM alone** (BF16 weights ≈ 26 GB), and is mediated by Atenia's M3-e reaction loop with VRAM ↔ RAM ↔ disk offload. The transparency contract is exact: `argmax(clean RAM) == argmax(after forced 50 % LRU spill) == 1, logit 4.7747` **bit-exactly**, on the same input. The selective LRU spill + lazy-restore cycle (M4.7.5.d + M4.7.4.d) writes 13 GB across **866 tensors** to NVMe in 19 s, then restores them through the `ensure_cpu` Disk-arm during a 23 s post-spill forward — without changing a single bit of the output. End-to-end wall-clock on the dev box: warmup forward 200 s, spill 19 s, post-spill forward 23 s — **6.9 minutes total** from `atenia run --mode c` to `[PASS] ✓`. The v20 thesis "adapt execution to hardware reality, not the other way around" is demonstrated against a real workload, not synthetic memory-pressure injection. See [HANDOFF M4.7](./docs/HANDOFF_APX_V20_M4.7.md) for the full empirical baseline and [HANDOFF M4.9](./docs/HANDOFF_APX_V20_M4.9.md) for the public reproduction surface.
 - **⚡ Performance optimization (M4.8) — 49.5× speedup on the production matmul shape.** The 18.75-minute baseline 13B forward dropped to **5.38 minutes** (3.49× cumulative) via a six-step rewrite of the CPU matmul path: numeric `apx_mode_at_least` comparison closing a latent lex-compare bug, runtime `is_x86_feature_detected!("avx2")` registration replacing a compile-time `#[cfg]` gate, 8-lane AVX2 BF16 → F32 SIMD decode (5.71 → 15.77 GB/s), rayon `par_chunks_mut` for BatchMatMul (7.1× over serial) and per-row MatMul partitioning, and `matrixmultiply::sgemm` cache-blocked panels for shapes ≥ 1 MFLOP. Per-shape gains on the bench harness: `4×5120×13824` **49.5× (1954 → 39 ms)**, `1×5120×5120` 13.4×, `1×4096×32000` 9.2×, BatchMatMul `40×4×128×128` 4.25×. Vendor-agnostic by construction: AVX2 + FMA baseline (Intel **and** AMD x86-64), NEON-ready for Apple Silicon (v24), **no MKL** anywhere in the dep graph. F64 four-model drift improved on every M4.6 family model under the new path. See [HANDOFF M4.8](./docs/HANDOFF_APX_V20_M4.8.md) for the full sub-step breakdown.
@@ -296,6 +334,7 @@ Atenia is designed to sit **below** ML frameworks and **above** raw hardware exe
 - [HANDOFF M4.7](./docs/HANDOFF_APX_V20_M4.7.md) — Beyond-VRAM killer demo (Llama 2 13B Chat on 8 GB VRAM + 32 GB RAM, transparency contract closed)
 - [HANDOFF M4.8](./docs/HANDOFF_APX_V20_M4.8.md) — Performance optimisation (3.5× on 13B Mode A; 49.5× on the production matmul shape; vendor-agnostic AVX2/FMA + matrixmultiply)
 - [HANDOFF M4.9](./docs/HANDOFF_APX_V20_M4.9.md) — Public CLI demo (`atenia run --mode c` reproduces the killer demo in 6.9 min via one command)
+- [HANDOFF M5](./docs/HANDOFF_APX_V20_M5.md) — Tokenizer + KV cache + token-by-token generation (`atenia generate` ships; Llama 2 13B Chat answers conversationally; Arc-shared weights at 24.24 GiB)
 
 **Architectural Decision Records (ADRs)**
 

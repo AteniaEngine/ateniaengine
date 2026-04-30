@@ -8,9 +8,9 @@ This roadmap communicates scope and priority, not calendar commitments. Versions
 
 ## Status overview
 
-Atenia Engine is currently working through APX v20 (Real Model Runtime Integration). Earlier versions (v12 through v19) are complete. The most recently closed sub-milestone is **M4.9: public CLI demo**. The full M4.7 → M4.8 → M4.9 trajectory is closed: Llama 2 13B Chat runs end-to-end on dev-class commodity hardware (RTX 4070 Laptop, 8 GB VRAM, 32 GB RAM, NVMe spill cache) with the LRU spill + lazy-restore transparency contract preserved bit-exactly; the matmul dispatcher is 49.5× faster on the production shape; and the entire reproduction surface fits in one CLI command (`atenia run --mode c --model <path>`) that completes in **6.9 minutes wall-clock** on the dev box. The v20 thesis "adapt execution to hardware reality, not the other way around" is now demonstrated against a real workload — and reproducible by anyone who clones the repo with the right hardware.
+Atenia Engine is currently working through APX v20 (Real Model Runtime Integration). Earlier versions (v12 through v19) are complete. The most recently closed sub-milestone is **M5: tokenizer + KV cache + token-by-token generation**. The full M4.7 → M4.8 → M4.9 → M5 trajectory is closed: Llama 2 13B Chat runs end-to-end on dev-class commodity hardware (RTX 4070 Laptop, 8 GB VRAM, 32 GB RAM, NVMe spill cache) with the LRU spill + lazy-restore transparency contract preserved bit-exactly; the matmul dispatcher is 49.5× faster on the production shape; the killer-demo reproduction fits in one CLI command (`atenia run --mode c`) that completes in 6.9 minutes; and **`atenia generate --prompt "Hello, how are you?" --model models/llama-2-13b-chat --max-tokens 20` produces a recognisably conversational response** ("Hello! I'm just an AI, I don't have feelings or emotions") with weights resident at **24.24 GiB** thanks to `Arc<TensorStorage>` sharing across prefill and decode graphs (vs ~52 GiB naïve = OOM on 32 GiB).
 
-**Next active milestone: M5** (tokenizer + KV cache + token-by-token generation). All v20 prerequisites are in place.
+**Next active milestone: M6** (decode-graph reuse + GPU acceleration for interactive 13B inference). The M5.f.a decode-step bench measured forward compute as 99.9% of per-step cost on TinyLlama at cached_len=8 (1.05 GFLOPS measured, vs ~14 GFLOPS achievable on the M4.8 production-shape matmul). M6 priority is GPU offload of the production matmuls before — or instead of — decode-graph reuse.
 
 Detailed closing notes per milestone live in the `docs/` directory:
 
@@ -21,6 +21,7 @@ Detailed closing notes per milestone live in the `docs/` directory:
 - [docs/HANDOFF_APX_V20_M4.7.md](./docs/HANDOFF_APX_V20_M4.7.md) — beyond-VRAM killer demo (Llama 2 13B Chat, transparency contract closed)
 - [docs/HANDOFF_APX_V20_M4.8.md](./docs/HANDOFF_APX_V20_M4.8.md) — performance optimisation (3.5× on 13B; 49.5× on the production matmul shape; vendor-agnostic AVX2/FMA + matrixmultiply)
 - [docs/HANDOFF_APX_V20_M4.9.md](./docs/HANDOFF_APX_V20_M4.9.md) — public CLI demo (`atenia run --mode c` reproduces the momento guau in 6.9 min via one command)
+- [docs/HANDOFF_APX_V20_M5.md](./docs/HANDOFF_APX_V20_M5.md) — tokenizer + KV cache + token-by-token generation (`atenia generate` ships; Llama 2 13B Chat answers conversationally; Arc-shared weights at 24.24 GiB)
 
 ---
 
@@ -202,23 +203,41 @@ The momento guau is closed but the demo's wall-clock is impractical for a public
 
 ---
 
-## Next active milestone — M5: Inference UX
+## M5 — Tokenizer + KV cache + token-by-token generation ✅
 
-The v20 reproduction surface is closed (M4.9 ✅): `atenia run --mode c` produces a `[PASS] ✓` transparency contract on Llama 2 13B Chat in ~6.9 minutes on the dev box. Every prerequisite for M5 is in place: every model in scope is numerically validated against PyTorch F64 (ADR-004), the storage / spill / restore / parallel-matmul primitives are wired and bit-exact, the public CLI is reproducible cross-platform, and the build is vendor-agnostic.
+Closed at commit `43b1b3e`. M5 produced **Atenia chats**: `atenia generate --prompt "Hello, how are you?" --model models/llama-2-13b-chat --max-tokens 20` returns
 
-**M5 scope:**
+```text
+> Hello, how are you?
 
-- **Tokenizer integration**. `tokenizers` crate (or sentencepiece-rs) wired so the demo accepts text input, not raw float-encoded token IDs. The current Mode A / Mode C harnesses prompt with `[1.0, 100.0, 200.0, 300.0]` (BOS + arbitrary IDs); M5 lifts that to "BOS + tokenized prompt".
-- **KV cache**. Per-layer K and V storage so token-by-token generation skips the prefix-prefill cost on each new token. Critical for any wall-clock that approximates "interactive". Memory cost: O(layers × seq × hidden) per sample; needs to integrate with the M4.7 spill / restore primitives so long contexts spill cleanly under pressure.
-- **Token-by-token generation loop**. `atenia generate --prompt "<text>" --max-tokens N` as a fourth `atenia run` mode (or a new `atenia generate` subcommand). Greedy decoding first; sampling (temperature, top-k, top-p) as a follow-up.
-- **13 B GPU acceleration sub-milestone** (deferred technical debt from M4.7):
-  - **Non-pooled `cuda_matmul` variant** for tensors > 64 MB. Direct `cudaMalloc` per invocation — bypasses the `apx4_12::DEFAULT_BLOCK_SIZE` pool ceiling that currently routes every Llama 2 13B layer (100–270 MB) to the CPU fallback. Tracked in HANDOFF M4.7 decision 34.
-  - **`apx4::gpu_context::gpu_available()` reactivation**. Hardcoded to `false` since pre-M4.6; lands together with the non-pooled variant or rejected tensors silently corrupt. Tracked in HANDOFF M4.7 decision 35.
-  - **`ensure_cpu` activation-arm coverage** under continuous spill pressure. M4.7.6.e Mode B exposed the gap; the M4.9 CLI absorbs it via `catch_unwind`. Closing the gap flips Mode B from "trigger validated, forward absorbed" to "trigger validated, forward completes". Tracked in HANDOFF M4.7 decision 38.
+Hello! I'm just an AI, I don't have feelings or emotions
+```
 
-The 13B GPU sub-milestone is **not** a prerequisite for the 1B-class generation work; it unblocks the per-token wall-clock on the killer-demo target. M5 ships the generation loop on the M4.7 / M4.8 stack as it stands; the GPU acceleration is the tail that makes 13B token-by-token generation interactive rather than 30 s/token.
+Empirically validated:
+- **24.24 GiB resident** for BF16 13B with two graphs sharing weights via `Arc<TensorStorage>` (vs ~52 GiB naïve). M5.c.2.a primitive locked at scale.
+- **R2 graph-level falsifier** (3/3 green): prefill + decode steps reproduce no-cache forward bit-exactly on a synthetic mini-Llama. The cache-aware attention path is mathematically equivalent to the reference.
+- **R6 generation contract** (4/4 green): greedy loop produces argmax-consistent tokens with the no-cache forward, EOS halt, max_tokens cap, streaming-sink ordering.
+- **D67 determinism fixture** locked: TinyLlama prompt "Hello" → first-8 token IDs reproduce bit-exact across runs.
+- **D68 decode-step bench**: forward dominates 99.9% of step cost on TinyLlama (1.05 GFLOPS measured); graph rebuild is <1 ms. M6 priority shifts to GPU offload over decode-graph reuse.
 
-See [HANDOFF M4.7](./docs/HANDOFF_APX_V20_M4.7.md) "How to resume on M5" and [HANDOFF M4.9](./docs/HANDOFF_APX_V20_M4.9.md) for the recommended sequencing.
+Twelve architectural decisions (D58–D69) locked across the M5.a–M5.f.a sub-phase chain. See [HANDOFF M5](./docs/HANDOFF_APX_V20_M5.md) for the full ledger.
+
+---
+
+## Next active milestone — M6: Interactive 13B inference
+
+M5 produces correct text at 0.07 tok/s on Llama 2 13B Chat (CPU-only). M6's headline goal is **interactive throughput** — the 2–10 tok/s range — by attacking the M5.f.a bench's measured bottleneck.
+
+**M6 scope, in priority order:**
+
+- **GPU offload of the production matmuls**. Non-pooled `cuda_matmul` (tracked since HANDOFF M4.7 decision 34) for tensors > 64 MB. Direct `cudaMalloc` per invocation — bypasses the `apx4_12::DEFAULT_BLOCK_SIZE` pool ceiling that currently routes every Llama 2 13B layer (100–270 MB) to the CPU fallback. The bench shows FFN matmuls dominate forward FLOPs; target those first.
+- **`apx4::gpu_context::gpu_available()` reactivation**. Hardcoded to `false` since pre-M4.6; lands together with the non-pooled variant.
+- **Decode-graph reuse**. Single decode graph built once per session at `seq = 1, max_cached_len = max_context` with a `valid_len` runtime mask. Cache slots stay resident; the unused tail is masked to -∞. Eliminates per-step rebuild cost. **Note from M5.f.a**: the bench showed rebuild is <1 ms on TinyLlama, ~2 s on 13B; this stops being the priority it looked like at M5 close. Lands as the second M6 lever, not the first.
+- **`ensure_cpu` activation-arm coverage** under continuous spill pressure (M4.7.6.e carryover). The `catch_unwind` absorption Mode B uses is M5+ tech debt — closing it flips Mode B from "trigger validated, forward absorbed" to "trigger validated, forward completes". Pair with the GPU offload work.
+- **BF16 KV cache** (D62 second phase, deferred from M5.f.b). F32 cache works; BF16 halves cache RAM at decode. Not on the M5 critical path because at seq=2048 on 13B, F32 cache is 3.2 GiB — irrelevant against 24 GiB of weights. Lands when GPU offload changes the precision economics.
+- **Perplexity validation** (D63, deferred from M5.f.b). Useful in M6 once GPU offload changes the numerics path; lands then to catch a class of regressions that doesn't apply yet at M5 close.
+
+See [HANDOFF M5](./docs/HANDOFF_APX_V20_M5.md) "How to resume on M6" for the file-by-file pointers.
 
 ---
 
