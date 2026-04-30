@@ -111,16 +111,24 @@ pub fn gpu_can_run_matmul(m: usize, k: usize, n: usize) -> bool {
         return false;
     }
 
-    // The remaining validations (device, dtype, shapes) are performed in `try_gpu_matmul`.
-    if !cuda::cuda_available() {
+    // **M6.c.7 fix 2** — kill-switch ordered FIRST.
+    //
+    // Pre-M6.c.7 the `cuda_available()` probe ran before
+    // the kill-switch check. With pre-M6.c.7's uncached
+    // probe (one nvidia-smi spawn per call), `ATENIA_GPU=0`
+    // was effectively a no-op for the overhead because the
+    // expensive work happened before the gate evaluated.
+    // M6.c.7 fix 1 cached `cuda_available`, so the
+    // ordering is no longer load-bearing for performance —
+    // but it is still cleaner to short-circuit on the
+    // env-var check (a single `getenv` syscall, faster
+    // than even the cache hit's atomic load).
+    if std::env::var("ATENIA_GPU").as_deref() == Ok("0") {
         return false;
     }
 
-    // **M6.b kill-switch.** Operators can force the CPU
-    // dispatch path with `ATENIA_GPU=0`, useful for
-    // debugging numeric drift suspected to come from the
-    // GPU side or for benchmarks that need a clean baseline.
-    if std::env::var("ATENIA_GPU").as_deref() == Ok("0") {
+    // The remaining validations (device, dtype, shapes) are performed in `try_gpu_matmul`.
+    if !cuda::cuda_available() {
         return false;
     }
 
@@ -304,19 +312,38 @@ pub fn try_gpu_matmul(a: &Tensor, b: &Tensor, out: &mut Tensor) -> bool {
         return false;
     }
 
-    // **M6.b** — pool-vs-non-pool routing.
+    // **M6.c.7 fix 3** — non-pooled CPU-CPU path is
+    // residency-only.
     //
-    // The pool serves at most `DEFAULT_BLOCK_SIZE` (64 MiB)
-    // per `pool_alloc()` call. Pre-M6.b this was a hard
-    // gate that rejected oversize shapes; M6.b lifts the
-    // rejection and adds a non-pooled path that runs
-    // `cudaMalloc`/`cudaFree` directly per call for
-    // shapes whose largest buffer would exceed the pool.
+    // Pre-M6.c.7 the all-Cpu branch unconditionally
+    // routed oversize shapes through `cuda_matmul_non_pooled`.
+    // The M6.c smoke run on Llama 2 13B Chat showed that
+    // path costs ~750 ms/matmul at the FFN-down 270 MB
+    // shape — the per-call cudaMalloc + 270 MB cudaMemcpy
+    // dominates compute by ~50000×. The M5.f.a CPU
+    // baseline (matrixmultiply AVX2/FMA from M4.8) lands
+    // the same shape at ~40 ms/matmul. **GPU per-call
+    // streaming is a regression at M=1 with weights >
+    // 64 MiB.**
     //
-    // Smaller shapes still route through the pool, which
-    // amortises the alloc/free cost across calls — pre-
-    // M6.b behaviour preserved bit-exactly for fits-in-pool
-    // shapes.
+    // Post-M6.c.7: `try_gpu_matmul` returns `false` for
+    // the all-Cpu oversize case → CPU dispatcher takes
+    // the call (the M4.8 path that hits ~40 ms). GPU is
+    // reserved for two cases that DO win:
+    //   1. Pool-fits CPU-roundtrip (pre-M6.b path,
+    //      ≤ 64 MiB; preserved bit-exactly for 1B-class).
+    //   2. Mixed residency (a=Cpu, b=Cuda) — the M6.c.4
+    //      path, the load-bearing M6.c speedup.
+    //
+    // The non-pooled path is kept as the M6.c.4 mixed-
+    // path implementation (its non-pooled FFI is what
+    // backs `Tensor::ensure_gpu` on resident-layer
+    // weights). It just stops being callable from the
+    // executor's all-Cpu dispatch.
+    //
+    // Operators who want to revisit non-pooled CPU-CPU
+    // streaming experimentally can opt in with
+    // `ATENIA_GPU_FORCE_NONPOOLED=1`. Default off.
     let f32_size = std::mem::size_of::<f32>();
     let a_bytes = m.saturating_mul(k).saturating_mul(f32_size);
     let b_bytes = k.saturating_mul(n).saturating_mul(f32_size);
@@ -325,27 +352,29 @@ pub fn try_gpu_matmul(a: &Tensor, b: &Tensor, out: &mut Tensor) -> bool {
     let pool_block = crate::apx4_12::DEFAULT_BLOCK_SIZE;
 
     if max_per_alloc > pool_block {
-        // Non-pooled path. Direct cudaMalloc per call.
-        // Used by the 13B FFN gate/up/down (270 MB B),
-        // QKVO (100 MB B), lm_head (655 MB B).
+        let force_nonpooled =
+            std::env::var("ATENIA_GPU_FORCE_NONPOOLED").as_deref() == Ok("1");
+        if !force_nonpooled {
+            // Default: skip GPU for this call. CPU dispatcher
+            // takes over via the caller's `false` handling.
+            if apx_trace_enabled() {
+                println!("[M6.c.7] all-Cpu oversize ({} MB) — defer to CPU dispatch",
+                    max_per_alloc / (1024 * 1024));
+            }
+            return false;
+        }
+        // Opt-in experimental path.
         match crate::cuda::matmul::cuda_matmul_non_pooled(a, b, m, k, n) {
             Some(gpu_out) if gpu_out.shape == out.shape => {
                 out.as_cpu_slice_mut().clone_from_slice(gpu_out.as_cpu_slice());
                 GPU_MATMUL_ROUNDTRIP_COUNT.fetch_add(1, Ordering::Relaxed);
                 if apx_trace_enabled() {
-                    println!("[M6.b] GPU MatMul executed (non-pooled, max alloc {} MB)",
+                    println!("[M6.b experimental] GPU MatMul (non-pooled forced, {} MB)",
                         max_per_alloc / (1024 * 1024));
                 }
                 return true;
             }
-            _ => {
-                // Driver/alloc/copy failure — fall through
-                // to CPU path below.
-                if apx_trace_enabled() {
-                    println!("[M6.b] non-pooled GPU matmul failed; CPU fallback");
-                }
-                return false;
-            }
+            _ => return false,
         }
     }
 

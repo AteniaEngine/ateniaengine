@@ -16,8 +16,34 @@ unsafe extern "C" {
     );
 }
 
+/// **M6.c.7 fix** — cached CUDA-driver probe.
+///
+/// Pre-M6.c.7 every call spawned `nvidia-smi.exe` as a child
+/// process. On Windows the spawn + driver-enumeration cost
+/// is ~50-300 ms. With M6.b lifting the pool-size gate in
+/// `gpu_can_run_matmul`, this function started being called
+/// per-matmul (~360 calls/decode-step on Llama 2 13B Chat),
+/// adding ~30-100 s/token of pure orchestration overhead.
+/// The M5.f.a baseline (14 s/token) regressed to 41-313
+/// s/token across the M6.c smoke tests.
+///
+/// The cache is `OnceLock<bool>` — first call spawns
+/// nvidia-smi exactly once, subsequent calls read a single
+/// atomic bool. The driver state can in principle change
+/// between calls (driver crash, GPU eject) but losing CUDA
+/// dispatch mid-session was never a behaviour the engine
+/// gracefully recovered from anyway; if the driver dies, the
+/// kernel call panics regardless of what this function
+/// returns. Caching is the right call.
+///
+/// Operators who need to force a re-probe without restarting
+/// the process can call [`cuda_available_force_reprobe`] —
+/// added defensively, not exercised by any default code path.
 pub fn cuda_available() -> bool {
-    std::process::Command::new("nvidia-smi").output().is_ok()
+    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::process::Command::new("nvidia-smi").output().is_ok()
+    })
 }
 
 pub fn vec_add_gpu(a: &[f32], b: &[f32]) -> Vec<f32> {
