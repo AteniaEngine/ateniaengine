@@ -34,6 +34,12 @@ pub mod demo;
 #[cfg(feature = "demo")]
 pub mod cli_run;
 
+// M5.a — public tokenizer surface (HF tokenizers + minijinja
+// chat templates). Always-on; the ~250 KB binary impact is
+// dwarfed by the rest of the engine and there's no scenario
+// where you'd want the runtime without tokenization.
+pub mod tokenizer;
+
 pub mod hal;
 pub mod tensor;
 pub mod amg;

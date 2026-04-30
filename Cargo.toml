@@ -90,6 +90,44 @@ serde_json = "1"
 # binary with `run --output json` working.
 serde = { version = "1", features = ["derive"] }
 
+# M5.a — tokenizer + chat-template support for the public
+# generation surface. Both crates are pure-Rust and preserve
+# the M4.8 vendor-agnostic / no-C-toolchain posture (rejected
+# `sentencepiece` here precisely because it links libsentencepiece
+# via cc; see HANDOFF M5.a for the comparison table).
+#
+# `tokenizers` reads `tokenizer.json` byte-exactly with the
+# Python `transformers` reference implementation, so the R1
+# falsifier (encode 5 fixed prompts, diff IDs vs HF) holds
+# across the five validated model families (Llama 2, Llama 3.2,
+# Qwen 2.5, SmolLM2, TinyLlama). `default-features = false`
+# strips `progressbar` (we already own the heartbeat surface)
+# and `esaxx_fast` (C++ Unigram training; inference never needs
+# it). `onig` stays on: it is the regex engine the `Split`
+# pretokenizer in tokenizer.json files actually targets, and
+# the alternative — `fancy-regex` via the `unstable_wasm`
+# umbrella — also drags `getrandom/js` which doesn't build on
+# x86_64-pc-windows-msvc. The M4.8 "vendor-agnostic" invariant
+# was about matmul backends (no MKL), not about every C dep
+# in the tree; `onig_sys` builds a small, stable C library
+# once via `cc` and stays out of the matmul hot path.
+#
+# `minijinja` renders the Jinja2 `chat_template` field that
+# every checkpoint ships in `tokenizer_config.json`. Generic
+# rendering across all five model families means no per-family
+# branching in M5.a (D65). Single dep, ~250 KB binary impact.
+tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
+minijinja = { version = "2", default-features = false, features = ["builtins", "serde"] }
+# `minijinja-contrib::pycompat` patches `Environment` so chat
+# templates from HF that call Python string methods like
+# `.strip()` / `.startswith()` / `.replace()` render correctly.
+# Llama 2's chat_template hits `content.strip()` on the very
+# first user message, which bare minijinja flags as unknown
+# method. The contrib crate's `pycompat::unknown_method_callback`
+# is a one-liner installation that mirrors the subset HF
+# templates actually exercise.
+minijinja-contrib = { version = "2", default-features = false, features = ["pycompat"] }
+
 # Optional deps, only pulled in with `--features hw-probe`.
 wgpu = { version = "22", optional = true }
 nvml-wrapper = { version = "0.10", optional = true }
