@@ -196,7 +196,20 @@ fn llama2_13b_responds_coherently_to_greeting() {
     };
 
     let prompt = "Hello, how are you?";
-    let max_new_tokens = 30usize;
+    // **Per-step rebuild constraint.** The decode graph is
+    // rebuilt at every step (M5.c.2.c policy — production
+    // decode-graph reuse is M6 territory). For 13B that
+    // build takes ~2.1s per step (M4.7.6.d benchmark) on top
+    // of the forward. 30 tokens = ~90s of pure build
+    // overhead even before counting the forward, which is
+    // why the original budget hung the test session.
+    //
+    // 5 tokens is enough to detect a regression like the
+    // pre-M5.d.c "Yes,absolutely!" symptom (which was a
+    // chat-template / detokenisation bug, not a model-
+    // capacity issue). With 5 tokens the wall-clock budget
+    // is ~30-60s post-load on the dev box.
+    let max_new_tokens = 5usize;
 
     eprintln!("generating {max_new_tokens} tokens for prompt {prompt:?}...");
     let mut sink = CollectingTokenSink::default();
