@@ -44,6 +44,47 @@ pub enum FusedOutput {
     },
 }
 
+/// **M6.a** — short stable static name for a `NodeType` for
+/// use as a `bench_trace` accumulator key. Variant data
+/// (axis, head_dim, perm, …) is intentionally dropped so
+/// per-NodeType aggregates roll up across the 360 calls of
+/// one decode forward.
+#[cfg(feature = "bench-trace")]
+pub(crate) fn node_type_name(t: &NodeType) -> &'static str {
+    match t {
+        NodeType::Input              => "Input",
+        NodeType::Parameter          => "Parameter",
+        NodeType::Add                => "Add",
+        NodeType::Sub                => "Sub",
+        NodeType::Mul                => "Mul",
+        NodeType::MatMul             => "MatMul",
+        NodeType::Transpose2D        => "Transpose2D",
+        NodeType::Permute { .. }     => "Permute",
+        NodeType::IndexSelect        => "IndexSelect",
+        NodeType::Reshape { .. }     => "Reshape",
+        NodeType::TransposeLastTwo   => "TransposeLastTwo",
+        NodeType::BatchMatMul        => "BatchMatMul",
+        NodeType::BroadcastAdd       => "BroadcastAdd",
+        NodeType::BroadcastMul       => "BroadcastMul",
+        NodeType::LogSoftmax         => "LogSoftmax",
+        NodeType::Gather             => "Gather",
+        NodeType::CrossEntropyLoss   => "CrossEntropyLoss",
+        NodeType::Linear             => "Linear",
+        NodeType::RmsNorm { .. }     => "RmsNorm",
+        NodeType::SiLU               => "SiLU",
+        NodeType::Softmax            => "Softmax",
+        NodeType::RoPE { .. }        => "RoPE",
+        NodeType::Activation(_)      => "Activation",
+        NodeType::FusedLinearActivation(_)        => "FusedLinearActivation",
+        NodeType::FusedLinearActivationChain(_)   => "FusedLinearActivationChain",
+        NodeType::Conv2D(_)          => "Conv2D",
+        NodeType::MaxPool2D(_)       => "MaxPool2D",
+        NodeType::Concat { .. }      => "Concat",
+        NodeType::NoOp               => "NoOp",
+        NodeType::Output             => "Output",
+    }
+}
+
 /// M5.b — error surface for the mutable graph tensor path
 /// ([`Graph::overwrite_parameter`], D60).
 #[derive(Debug)]
@@ -2181,7 +2222,22 @@ impl Graph {
             return crate::apx8::hybrid_dispatcher::HybridDispatcher::dispatch(self, node_id, op, record_tape);
         }
 
+        // M6.a — bench-trace instrumentation. Default builds
+        // emit zero overhead (the `cfg` block is dead code on
+        // off-builds, the compiler folds it out). With
+        // `--features bench-trace` we time each node and
+        // accumulate wall-clock by NodeType so the M6.a
+        // decode-step bench can attribute the 99.9% forward
+        // figure to specific ops.
+        #[cfg(feature = "bench-trace")]
+        let _bench_name: &'static str = node_type_name(&self.nodes[node_id].node_type);
+        #[cfg(feature = "bench-trace")]
+        let _bench_start = std::time::Instant::now();
+
         self.execute_single_inner(node_id, record_tape);
+
+        #[cfg(feature = "bench-trace")]
+        crate::amg::bench_trace::record(_bench_name, _bench_start.elapsed());
     }
 
     /// M3 debt cleanup: centralized dispatch for

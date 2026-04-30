@@ -31,6 +31,17 @@ default = ["demo"]
 # dependencies — the feature gates a module, not a dep tree.
 demo = []
 
+# M6.a — per-NodeType timing instrumentation in
+# `Graph::execute_single`. Off by default to keep the hot
+# path zero-overhead; flip on with
+# `cargo build --features bench-trace` for the M6.a
+# decode-step bench's per-op breakdown. Adds one
+# `Instant::now()` + atomic-add per executed node when
+# active. The companion runtime API
+# `atenia_engine::amg::bench_trace::*` exposes
+# accumulator dump + reset.
+bench-trace = []
+
 # Hardware-probe binary: cross-vendor GPU enumeration via wgpu, with
 # optional NVIDIA augmentation via NVML. Gated behind a feature so the
 # wgpu transitive-dep footprint (~50 crates, heavy first build) does
