@@ -116,17 +116,27 @@ pub fn gpu_can_run_matmul(m: usize, k: usize, n: usize) -> bool {
         return false;
     }
 
-    // M4.7.6.c — bail out when any of the three buffers would
-    // exceed the pool block size. The pool serves one block per
-    // allocation request, so an oversize request is unservable.
-    let f32_size = std::mem::size_of::<f32>();
-    let a_bytes = m.saturating_mul(k).saturating_mul(f32_size);
-    let b_bytes = k.saturating_mul(n).saturating_mul(f32_size);
-    let out_bytes = m.saturating_mul(n).saturating_mul(f32_size);
-    let max_per_alloc = a_bytes.max(b_bytes).max(out_bytes);
-    if max_per_alloc > crate::apx4_12::DEFAULT_BLOCK_SIZE {
+    // **M6.b kill-switch.** Operators can force the CPU
+    // dispatch path with `ATENIA_GPU=0`, useful for
+    // debugging numeric drift suspected to come from the
+    // GPU side or for benchmarks that need a clean baseline.
+    if std::env::var("ATENIA_GPU").as_deref() == Ok("0") {
         return false;
     }
+
+    // **M6.b** — pool-block size is no longer a hard gate.
+    // Shapes whose largest buffer exceeds
+    // `apx4_12::DEFAULT_BLOCK_SIZE` route through the
+    // non-pooled path (`cuda_matmul_non_pooled`) inside
+    // `try_gpu_matmul`. The check stays in `try_gpu_matmul`
+    // for routing; `gpu_can_run_matmul` no longer rejects
+    // on size alone.
+    //
+    // Pre-M6.b this returned `false` for every
+    // 13B FFN-class matmul (>= 100 MB), routing every call
+    // to CPU. Lifting the gate is the load-bearing change
+    // of M6.b — it makes the M6.c persistent-residency
+    // scheduler reachable on production shapes.
 
     true
 }
@@ -210,6 +220,53 @@ pub fn try_gpu_matmul(a: &Tensor, b: &Tensor, out: &mut Tensor) -> bool {
         return false;
     }
 
+    // **M6.b** — pool-vs-non-pool routing.
+    //
+    // The pool serves at most `DEFAULT_BLOCK_SIZE` (64 MiB)
+    // per `pool_alloc()` call. Pre-M6.b this was a hard
+    // gate that rejected oversize shapes; M6.b lifts the
+    // rejection and adds a non-pooled path that runs
+    // `cudaMalloc`/`cudaFree` directly per call for
+    // shapes whose largest buffer would exceed the pool.
+    //
+    // Smaller shapes still route through the pool, which
+    // amortises the alloc/free cost across calls — pre-
+    // M6.b behaviour preserved bit-exactly for fits-in-pool
+    // shapes.
+    let f32_size = std::mem::size_of::<f32>();
+    let a_bytes = m.saturating_mul(k).saturating_mul(f32_size);
+    let b_bytes = k.saturating_mul(n).saturating_mul(f32_size);
+    let out_bytes = m.saturating_mul(n).saturating_mul(f32_size);
+    let max_per_alloc = a_bytes.max(b_bytes).max(out_bytes);
+    let pool_block = crate::apx4_12::DEFAULT_BLOCK_SIZE;
+
+    if max_per_alloc > pool_block {
+        // Non-pooled path. Direct cudaMalloc per call.
+        // Used by the 13B FFN gate/up/down (270 MB B),
+        // QKVO (100 MB B), lm_head (655 MB B).
+        match crate::cuda::matmul::cuda_matmul_non_pooled(a, b, m, k, n) {
+            Some(gpu_out) if gpu_out.shape == out.shape => {
+                out.as_cpu_slice_mut().clone_from_slice(gpu_out.as_cpu_slice());
+                GPU_MATMUL_ROUNDTRIP_COUNT.fetch_add(1, Ordering::Relaxed);
+                if apx_trace_enabled() {
+                    println!("[M6.b] GPU MatMul executed (non-pooled, max alloc {} MB)",
+                        max_per_alloc / (1024 * 1024));
+                }
+                return true;
+            }
+            _ => {
+                // Driver/alloc/copy failure — fall through
+                // to CPU path below.
+                if apx_trace_enabled() {
+                    println!("[M6.b] non-pooled GPU matmul failed; CPU fallback");
+                }
+                return false;
+            }
+        }
+    }
+
+    // Pooled path (≤ 64 MiB max alloc) — pre-M6.b behaviour
+    // preserved bit-exactly.
     let mut ran_gpu = false;
     let bytes_needed = m
         .saturating_mul(n)

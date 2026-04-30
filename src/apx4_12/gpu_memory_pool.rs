@@ -67,6 +67,39 @@ unsafe extern "C" {
     fn cuda_free(ptr: *mut std::ffi::c_void);
 }
 
+/// **M6.b** — public crate-internal access to the raw
+/// `cuda_malloc` / `cuda_free` FFI for the non-pooled
+/// matmul path. Shapes that exceed `DEFAULT_BLOCK_SIZE`
+/// cannot be served by the pool (which serves one fixed-
+/// size block per allocation request); the non-pooled
+/// path bypasses the pool entirely with a direct
+/// `cudaMalloc`-then-`cudaFree` per call.
+///
+/// # Safety
+/// Same as the FFI `cuda_malloc`: caller must check the
+/// returned pointer for null (driver / OOM failure) and
+/// pair every successful alloc with exactly one
+/// `cuda_free_raw` to avoid VRAM leak.
+pub(crate) unsafe fn cuda_malloc_raw(bytes: usize) -> *mut std::ffi::c_void {
+    let mut ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+    unsafe { cuda_malloc(&mut ptr, bytes); }
+    ptr
+}
+
+/// **M6.b** — counterpart of [`cuda_malloc_raw`]. Free a
+/// pointer that was returned by `cuda_malloc_raw`. Calling
+/// on a null pointer is a no-op (matches the C-side
+/// implementation).
+///
+/// # Safety
+/// `ptr` must have been returned by `cuda_malloc_raw` and
+/// not yet freed.
+pub(crate) unsafe fn cuda_free_raw(ptr: *mut std::ffi::c_void) {
+    if !ptr.is_null() {
+        unsafe { cuda_free(ptr); }
+    }
+}
+
 // Safety: GpuMemoryPool only stores opaque device pointers and is always
 // accessed behind a Mutex in a global OnceLock, so we treat it as Send.
 unsafe impl Send for GpuMemoryPool {}
