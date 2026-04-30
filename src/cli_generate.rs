@@ -186,11 +186,32 @@ pub fn run(args: GenerateArgs) -> i32 {
 
     let result = match args.output {
         OutputFormat::Text => {
+            // **M5.e UX fix.** Prefill on 13B takes 3-5
+            // minutes on CPU with no intermediate output;
+            // before this fix users naturally interpreted
+            // the silent gap as a hang and ctrl-C'd. Show a
+            // visible "thinking" indicator that stops the
+            // moment the first token lands.
+            if !args.no_progress {
+                eprintln!("Prefilling prompt and generating ...");
+            }
+            let prefill_hb = if !args.no_progress {
+                Some(Heartbeat::start(2000))
+            } else {
+                None
+            };
             let mut combined = TextAndCollectSink {
                 stdout: StdoutTokenSink,
                 collect: &mut collected,
+                prefill_heartbeat: prefill_hb,
             };
-            run_generate(&pipe, &args, &mut combined)
+            let r = run_generate(&pipe, &args, &mut combined);
+            // If generation errored before any token landed,
+            // make sure the heartbeat is stopped.
+            if let Some(hb) = combined.prefill_heartbeat.take() {
+                hb.stop();
+            }
+            r
         }
         OutputFormat::Json => {
             run_generate(&pipe, &args, &mut collected)
@@ -268,13 +289,28 @@ fn run_generate<S: TokenSink>(
 /// and a collecting buffer. Used by the text path so the
 /// final stats line can be computed off the collected events
 /// while the user sees tokens stream live.
+///
+/// **M5.e UX fix.** Holds an optional [`Heartbeat`] that ticks
+/// dots to stderr during the long prefill phase (no output
+/// for 3-5 min on 13B is indistinguishable from a hang for
+/// the user). The first `on_token` call stops the heartbeat
+/// and clears the dots line so the streamed text starts on a
+/// fresh line. From the second token onward the heartbeat
+/// stays off and tokens stream live.
 struct TextAndCollectSink<'a> {
     stdout: StdoutTokenSink,
     collect: &'a mut CollectingTokenSink,
+    prefill_heartbeat: Option<Heartbeat>,
 }
 
 impl<'a> TokenSink for TextAndCollectSink<'a> {
     fn on_token(&mut self, t: &GeneratedToken) {
+        if let Some(hb) = self.prefill_heartbeat.take() {
+            // First token landed → prefill finished. Stop the
+            // dots and emit a newline so the generated text
+            // starts on a clean line.
+            hb.stop();
+        }
         self.stdout.on_token(t);
         self.collect.on_token(t);
     }
