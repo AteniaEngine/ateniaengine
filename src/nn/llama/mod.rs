@@ -15,6 +15,7 @@ pub mod builder;
 pub mod builder_shared;
 pub mod config;
 pub mod generator;
+pub mod pipeline;
 pub mod weight_loading;
 
 pub use builder::{build_llama, LlamaHandles, LlamaRuntime};
@@ -24,4 +25,5 @@ pub use generator::{
     generate_greedy, CollectingTokenSink, GenerateError, GeneratedToken,
     GenerationConfig, StdoutTokenSink, TokenSink,
 };
+pub use pipeline::{GenerationPipeline, PipelineError};
 pub use weight_loading::llama_weight_mapper;

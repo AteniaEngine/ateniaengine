@@ -1,0 +1,15 @@
+{
+  "prompt": "Hello",
+  "expected_token_ids": [
+    8241,
+    29892,
+    13312,
+    29991,
+    2266,
+    526,
+    777,
+    6455
+  ],
+  "expected_text": "Yes,absolutely!Herearesomeexamples",
+  "max_new_tokens": 8
+}
