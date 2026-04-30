@@ -163,6 +163,30 @@ impl GraphBuilder {
                 head_dim,
                 base_freq,
                 scaling: None,
+                position_offset: 0,
+            },
+            vec![x_id],
+        )
+    }
+
+    /// **M5.c.2.c** — RoPE at a non-zero starting position.
+    /// Used by decode-step graphs where Q at seq=1 must
+    /// rotate at the absolute position `cached_len`, not
+    /// position 0. `offset = 0` is bit-exact equivalent to
+    /// [`Self::rope`].
+    pub fn rope_with_offset(
+        &mut self,
+        x_id: usize,
+        head_dim: usize,
+        base_freq: u32,
+        position_offset: u32,
+    ) -> usize {
+        self.add_node(
+            NodeType::RoPE {
+                head_dim,
+                base_freq,
+                scaling: None,
+                position_offset,
             },
             vec![x_id],
         )
@@ -186,6 +210,29 @@ impl GraphBuilder {
                 head_dim,
                 base_freq,
                 scaling: Some(scaling),
+                position_offset: 0,
+            },
+            vec![x_id],
+        )
+    }
+
+    /// **M5.c.2.c** — Llama 3-scaled RoPE at a non-zero
+    /// starting position. Decode-step counterpart of
+    /// [`Self::rope_scaled`].
+    pub fn rope_scaled_with_offset(
+        &mut self,
+        x_id: usize,
+        head_dim: usize,
+        base_freq: u32,
+        scaling: super::nodes::RopeScalingLlama3,
+        position_offset: u32,
+    ) -> usize {
+        self.add_node(
+            NodeType::RoPE {
+                head_dim,
+                base_freq,
+                scaling: Some(scaling),
+                position_offset,
             },
             vec![x_id],
         )

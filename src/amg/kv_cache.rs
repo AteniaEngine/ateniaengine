@@ -296,15 +296,44 @@ pub struct KvCacheHandles {
     pub per_layer: Vec<KvLayerHandle>,
 }
 
-/// Per-layer graph-side handle. The two `param_id` fields
-/// are the AMG node IDs of the cache_K and cache_V slots
-/// the M5.c decode graph will register; the runtime
-/// updates them via [`crate::amg::graph::Graph::overwrite_parameter`]
-/// before each decode step.
+/// Per-layer graph-side handle. The `cache_*_param_id`
+/// fields are the AMG node IDs of the cache_K and cache_V
+/// **input** parameter slots the cache-aware decode graph
+/// reads at the start of attention; the runtime updates
+/// them via [`crate::amg::graph::Graph::overwrite_parameter`]
+/// before each step. The `*_full_node_id` fields are the
+/// **output** node IDs of K_full and V_full (post-Concat,
+/// post-attention permute) — read after the forward to
+/// repopulate the runtime [`KvCache`] for the next step's
+/// input.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct KvLayerHandle {
     pub cache_k_param_id: usize,
     pub cache_v_param_id: usize,
+    /// **M5.c.2.c** — graph node id of K_full
+    /// `[batch, n_heads, cached_len + s, head_dim]` AFTER
+    /// the Concat node, BEFORE the transpose / matmul into
+    /// attention scores. Read post-forward to harvest the
+    /// next step's cache state.
+    pub k_full_node_id: usize,
+    /// **M5.c.2.c** — graph node id of V_full
+    /// `[batch, n_heads, cached_len + s, head_dim]` AFTER
+    /// the Concat node, BEFORE the attention output matmul.
+    pub v_full_node_id: usize,
+}
+
+/// **M5.c.2.c** — build-time spec the cache-aware
+/// `build_llama_with_store` consumes. `cached_len` is the
+/// resident cache length AT THE TIME this graph is being
+/// built; per-step rebuilds bump it as new tokens land in
+/// the runtime [`KvCache`].
+#[derive(Debug, Clone, Copy)]
+pub struct KvCacheBuildSpec {
+    /// Number of cached tokens already resident across every
+    /// transformer layer when this graph is built. Prefill
+    /// builds with `cached_len = 0`; decode-step builds with
+    /// `cached_len = prompt_len + steps_so_far`.
+    pub cached_len: usize,
 }
 
 /// Errors surfaced by [`KvCache`] operations.

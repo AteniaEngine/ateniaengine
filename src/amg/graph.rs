@@ -4658,7 +4658,7 @@ impl Graph {
                     }
                 }
             }
-            NodeType::RoPE { head_dim, base_freq, scaling } => {
+            NodeType::RoPE { head_dim, base_freq, scaling, position_offset } => {
                 let inputs = self.nodes[node_id].inputs.clone();
                 if inputs.len() != 1 {
                     // Inconsistent graph (e.g., artificial trace tests):
@@ -4687,7 +4687,19 @@ impl Graph {
                     x.ensure_cpu().expect(
                         "RoPE: BF16/Cuda/Disk → Cpu materialisation failed",
                     );
-                    let out = nn_rope::apply_rope_with_inv_freqs(&x, head_dim, &inv_freqs);
+                    // M5.c.2.c — when `position_offset == 0` we route through
+                    // the original kernel for byte-identical numerics with
+                    // the M4.6 / M4.7 / M4.8 fixtures. Non-zero offsets go
+                    // through `apply_rope_with_offset_inv_freqs`, which is
+                    // bit-exact equivalent at offset=0 (locked by the
+                    // `rope_offset_zero_matches_no_offset` test).
+                    let out = if position_offset == 0 {
+                        nn_rope::apply_rope_with_inv_freqs(&x, head_dim, &inv_freqs)
+                    } else {
+                        nn_rope::apply_rope_with_offset_inv_freqs(
+                            &x, head_dim, &inv_freqs, position_offset,
+                        )
+                    };
                     self.nodes[node_id].set_output(out);
 
                     if record_tape {

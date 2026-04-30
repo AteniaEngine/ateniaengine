@@ -150,6 +150,67 @@ pub fn apply_rope(x: &Tensor, head_dim: usize, base_freq: u32) -> Tensor {
 /// schedule.
 ///
 /// `inv_freqs.len()` must equal `head_dim / 2`.
+/// **M5.c.2.c** — RoPE at a non-zero starting position.
+///
+/// Identical to [`apply_rope_with_inv_freqs`] but rotates each
+/// sequence position `s` against angle `(s + position_offset)
+/// * inv_freqs[i]` instead of `s * inv_freqs[i]`. With
+/// `position_offset = 0` the function is bit-exact equivalent
+/// to [`apply_rope_with_inv_freqs`] — verified by the
+/// `rope_offset_zero_matches_no_offset` test.
+///
+/// Used by decode-step graphs where Q at seq=1 must rotate at
+/// the absolute conversation position `cached_len`, not 0.
+pub fn apply_rope_with_offset_inv_freqs(
+    x: &Tensor,
+    head_dim: usize,
+    inv_freqs: &[f32],
+    position_offset: u32,
+) -> Tensor {
+    let shape = &x.shape;
+    validate_shape(shape, head_dim, "apply_rope_with_offset_inv_freqs");
+    assert_eq!(
+        inv_freqs.len(),
+        head_dim / 2,
+        "apply_rope_with_offset_inv_freqs: inv_freqs length {} != head_dim/2 ({})",
+        inv_freqs.len(),
+        head_dim / 2
+    );
+
+    let batch = shape[0];
+    let seq_len = shape[1];
+    let n_heads = shape[2];
+    let half = head_dim / 2;
+    let offset = position_offset as f32;
+
+    let x_slice = x.as_cpu_slice();
+    let mut output = vec![0.0_f32; x_slice.len()];
+
+    for b in 0..batch {
+        for s in 0..seq_len {
+            // M5.c.2.c — absolute position is `s + offset`.
+            // offset=0 collapses to `s as f32`, recovering the
+            // pre-M5 numeric sequence exactly.
+            let abs_pos = s as f32 + offset;
+            for h in 0..n_heads {
+                let base_offset =
+                    b * seq_len * n_heads * head_dim + s * n_heads * head_dim + h * head_dim;
+                for i in 0..half {
+                    let angle = abs_pos * inv_freqs[i];
+                    let cos_a = angle.cos();
+                    let sin_a = angle.sin();
+                    let x_first = x_slice[base_offset + i];
+                    let x_second = x_slice[base_offset + i + half];
+                    output[base_offset + i] = x_first * cos_a - x_second * sin_a;
+                    output[base_offset + i + half] = x_second * cos_a + x_first * sin_a;
+                }
+            }
+        }
+    }
+
+    Tensor::new_cpu(shape.clone(), output)
+}
+
 pub fn apply_rope_with_inv_freqs(x: &Tensor, head_dim: usize, inv_freqs: &[f32]) -> Tensor {
     let shape = &x.shape;
     validate_shape(shape, head_dim, "apply_rope_with_inv_freqs");
@@ -377,6 +438,113 @@ mod llama3_scaling_tests {
                 i,
                 scaled[i],
                 expected
+            );
+        }
+    }
+}
+
+/// **M5.c.2.c** — position-offset RoPE tests.
+///
+/// The headline guarantee for M5.c.2.c is that
+/// `apply_rope_with_offset_inv_freqs(..., offset = 0)` is
+/// bit-exact equivalent to `apply_rope_with_inv_freqs(...)`.
+/// Without this, every M4.6 / M4.7 / M4.8 forward fixture
+/// would shift slightly when the new kernel landed.
+#[cfg(test)]
+mod offset_tests {
+    use super::*;
+    use crate::tensor::Tensor;
+
+    fn arange_tensor(shape: Vec<usize>, start: f32) -> Tensor {
+        let n: usize = shape.iter().product();
+        let data = (0..n).map(|i| start + i as f32 * 0.01).collect();
+        Tensor::new_cpu(shape, data)
+    }
+
+    #[test]
+    fn rope_offset_zero_matches_no_offset() {
+        // Bit-exact contract: offset=0 must produce the same
+        // bytes as the offset-less kernel. Locks the invariant
+        // that landing this kernel doesn't shift any existing
+        // forward fixture.
+        let head_dim = 64;
+        let base_freq: u32 = 10_000;
+        let inv_freqs = compute_inv_freqs(head_dim, base_freq);
+
+        // Shape: [batch=2, seq=8, n_heads=4, head_dim=64]
+        // — covers a non-trivial cross-section of the
+        // multi-head reshape pattern the builder emits.
+        let x = arange_tensor(vec![2, 8, 4, 64], 0.5);
+
+        let baseline = apply_rope_with_inv_freqs(&x, head_dim, &inv_freqs);
+        let offset_zero =
+            apply_rope_with_offset_inv_freqs(&x, head_dim, &inv_freqs, 0);
+
+        assert_eq!(baseline.shape, offset_zero.shape);
+        let a = baseline.copy_to_cpu_vec();
+        let b = offset_zero.copy_to_cpu_vec();
+        assert_eq!(a.len(), b.len());
+        // Bit-exact (same arithmetic on the same operands).
+        for (i, (lhs, rhs)) in a.iter().zip(b.iter()).enumerate() {
+            assert_eq!(
+                lhs.to_bits(), rhs.to_bits(),
+                "offset=0 must match no-offset bit-exactly at index {i}: \
+                 {lhs:.10} vs {rhs:.10}"
+            );
+        }
+    }
+
+    #[test]
+    fn rope_offset_n_matches_seq_starting_at_n() {
+        // Conceptual contract: rotating a seq=1 tensor at
+        // offset=N must produce the same numerics as the row
+        // at position N of a seq=N+1 tensor rotated at offset
+        // 0. This is the property the M5.c.2.c decode-step
+        // attention path leans on — Q at the new token,
+        // rotated at cached_len, must match the rotation it
+        // would have received as the (cached_len)th row of a
+        // full prefill.
+        let head_dim = 32;
+        let base_freq: u32 = 10_000;
+        let inv_freqs = compute_inv_freqs(head_dim, base_freq);
+
+        // Build a prefill-style tensor at seq=4. Row index 3
+        // is the "current decode token" we'd be processing in
+        // a hypothetical decode at cached_len=3.
+        let seq = 4usize;
+        let n_heads = 2usize;
+        let prefill = arange_tensor(vec![1, seq, n_heads, head_dim], 1.0);
+        let prefill_rot = apply_rope_with_inv_freqs(&prefill, head_dim, &inv_freqs);
+
+        // Slice out the row at position 3 from `prefill`'s
+        // ORIGINAL data and treat it as a seq=1 tensor.
+        let prefill_data = prefill.copy_to_cpu_vec();
+        let row_stride = n_heads * head_dim;
+        let row_off = 3 * row_stride;
+        let row_data: Vec<f32> = prefill_data[row_off .. row_off + row_stride].to_vec();
+        let single_row = Tensor::new_cpu(vec![1, 1, n_heads, head_dim], row_data);
+
+        // Rotate it at offset=3 — should match the row 3 of
+        // the prefill rotation.
+        let single_rot = apply_rope_with_offset_inv_freqs(
+            &single_row, head_dim, &inv_freqs, 3,
+        );
+
+        // Compare against `prefill_rot[..., row=3, :, :]`.
+        let prefill_rot_data = prefill_rot.copy_to_cpu_vec();
+        let row3_rot = &prefill_rot_data[row_off .. row_off + row_stride];
+        let single_rot_data = single_rot.copy_to_cpu_vec();
+        assert_eq!(single_rot_data.len(), row3_rot.len());
+        for (i, (lhs, rhs)) in single_rot_data.iter().zip(row3_rot.iter()).enumerate() {
+            // Floating-point equality with a tiny tolerance —
+            // the two paths perform the same arithmetic in the
+            // same order (single nested loop, same inv_freqs),
+            // so they should be byte-identical, but we allow
+            // 1 ULP slack defensively.
+            assert!(
+                (lhs - rhs).abs() < 1e-6,
+                "decode-step rotation at offset=3 must match \
+                 prefill row 3 at index {i}: {lhs} vs {rhs}"
             );
         }
     }

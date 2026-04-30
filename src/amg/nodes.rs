@@ -161,10 +161,17 @@ pub enum NodeType {
     /// reference implementations.
     ///
     /// ## Position assumption
-    /// Positions are implicit `[0..seq_len)` for inference
-    /// without KV cache. KV cache support (planned M5+)
-    /// requires extending this NodeType to accept explicit
-    /// position offset.
+    /// Positions are `[position_offset..position_offset + seq_len)`.
+    /// For prefill (no cache, M4.6 / M4.7 / M4.8 / M4.9 path) the
+    /// offset is 0 and positions are `[0..seq_len)` — bit-exact
+    /// equivalent to the pre-M5 behaviour.
+    ///
+    /// **M5.c.2.c**: `position_offset` is the *cached_len* at
+    /// build time of a decode-step graph. Q at seq=1 with
+    /// offset=cached_len rotates at the correct absolute
+    /// position in the running conversation, which is what
+    /// the cached K already encodes (cache K was rotated at
+    /// its own original position when first projected).
     ///
     /// ## Parameters
     /// - `head_dim`: dimension of each attention head
@@ -180,10 +187,16 @@ pub enum NodeType {
     ///   activates the long-context scaling used by Llama 3.x.
     ///   See [`RopeScalingLlama3`] and
     ///   [`crate::nn::rope::compute_inv_freqs_llama3`].
+    /// - `position_offset`: M5.c.2.c addition. The first sequence
+    ///   position to rotate against; positions are
+    ///   `[position_offset..position_offset + seq_len)`. Default
+    ///   `0` reproduces pre-M5 behaviour bit-exactly across the
+    ///   M4.6 four-model fixtures and the M4.7 13B forward.
     RoPE {
         head_dim: usize,
         base_freq: u32,
         scaling: Option<RopeScalingLlama3>,
+        position_offset: u32,
     },
     /// Generic activation wrapper for APX 4.8+ (keeps SiLU variant for compat).
     Activation(ActType),
