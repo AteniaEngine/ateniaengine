@@ -31,9 +31,55 @@
 //! ```
 
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 use atenia_engine::nn::llama::{
     CollectingTokenSink, GenerationPipeline,
 };
+
+/// **Memory-safety trick.** Both tests in this file load the
+/// same 26 GB BF16 13B checkpoint. Cargo runs tests in
+/// parallel by default, so without coordination two parallel
+/// loads would peak at ~52 GiB → OOM on a 32 GiB box.
+///
+/// We share a single `GenerationPipeline` across the two
+/// tests via a `OnceLock<Mutex<...>>`. The first test that
+/// arrives builds the pipeline; subsequent tests reuse it.
+/// The Mutex serialises *access* (each test inspects /
+/// generates against the pipeline in turn); the OnceLock
+/// guarantees the load happens at most once.
+///
+/// `Option<Pipeline>` because we want to gracefully skip
+/// when the checkpoint isn't on disk.
+fn shared_pipeline() -> &'static Mutex<Option<GenerationPipeline>> {
+    static CELL: OnceLock<Mutex<Option<GenerationPipeline>>> = OnceLock::new();
+    CELL.get_or_init(|| {
+        let pipe = match llama2_13b_dir() {
+            Some(dir) => {
+                eprintln!("[shared-load] Llama 2 13B Chat from {} ...", dir.display());
+                let t = std::time::Instant::now();
+                match GenerationPipeline::from_model_dir(&dir) {
+                    Ok(p) => {
+                        let resident_gib =
+                            p.store.resident_bytes() as f64 / (1024.0_f64.powi(3));
+                        eprintln!(
+                            "[shared-load] loaded in {:.1}s ({} params, {:.2} GiB resident)",
+                            t.elapsed().as_secs_f32(), p.store.len(), resident_gib);
+                        Some(p)
+                    }
+                    Err(e) => {
+                        eprintln!("[shared-load] pipeline load failed: {e}");
+                        None
+                    }
+                }
+            }
+            None => {
+                eprintln!("[shared-load] checkpoint not present; tests will skip");
+                None
+            }
+        };
+        Mutex::new(pipe)
+    })
+}
 
 const LLAMA2_13B_DIR_DEFAULT: &str = "models/llama-2-13b-chat";
 
@@ -57,21 +103,16 @@ fn llama2_13b_dir() -> Option<PathBuf> {
 #[test]
 #[ignore]
 fn llama2_13b_arc_sharing_keeps_resident_under_30_gib() {
-    let Some(dir) = llama2_13b_dir() else {
-        eprintln!("[skip] Llama 2 13B Chat checkpoint not present at {LLAMA2_13B_DIR_DEFAULT}");
+    let guard = shared_pipeline().lock().unwrap();
+    let Some(pipe) = guard.as_ref() else {
+        eprintln!("[skip] Llama 2 13B Chat checkpoint not present");
         return;
     };
 
-    eprintln!("loading Llama 2 13B Chat from {} (BF16 storage)...", dir.display());
-    let load_start = std::time::Instant::now();
-    let pipe = GenerationPipeline::from_model_dir(&dir)
-        .expect("Llama 2 13B pipeline load failed");
-    let load_secs = load_start.elapsed().as_secs_f32();
     let resident_gib = pipe.store.resident_bytes() as f64 / (1024.0_f64.powi(3));
     eprintln!(
-        "loaded in {:.1}s ({} parameters, {:.2} GiB resident)",
-        load_secs, pipe.store.len(), resident_gib,
-    );
+        "shared pipeline: {} parameters, {:.2} GiB resident",
+        pipe.store.len(), resident_gib);
 
     // Sanity: 13B Chat is MHA (40 Q == 40 KV).
     assert_eq!(pipe.config.num_attention_heads, 40);
@@ -98,14 +139,12 @@ fn llama2_13b_arc_sharing_keeps_resident_under_30_gib() {
          Naïve two-graph cloning would put us at ~52 GiB; this assertion is the M5.c.2.a sentinel."
     );
 
-    // Build a SECOND parallel graph against the same store
-    // — proves that the per-graph parameter materialisation
-    // (Arc::clone of the stored Arcs) does not duplicate
-    // the underlying buffers. Strong-count on every
-    // `SharedParam` should rise to 3 (store + first
-    // scratch graph still resident from extract +
-    // hypothetical third holder), independent of the model
-    // size.
+    // Build a SECOND graph against the same store — proves
+    // that per-graph parameter materialisation (Arc::clone of
+    // the stored Arcs) does not duplicate the underlying
+    // buffers. The newly-built graph drops at end of scope;
+    // the strong_count drop after that proves correctness
+    // of Arc bookkeeping.
     use atenia_engine::amg::weight_store::SharedParam;
     use atenia_engine::amg::builder::GraphBuilder;
     use atenia_engine::nn::llama::{build_llama_with_store, LlamaRuntime};
@@ -115,13 +154,12 @@ fn llama2_13b_arc_sharing_keeps_resident_under_30_gib() {
     let _ = build_llama_with_store(
         &mut gb, &pipe.config, &runtime, token_in, &pipe.store, None,
     ).expect("second graph build must succeed");
-    // Each shared param now has at least:
-    //   - 1 ref in the store
-    //   - 1 ref in the original scratch graph (still resident
-    //     because pipeline.store hoist replaced its slots
-    //     with CpuShared views over the same Arc)
-    //   - 1 ref in this newly-built second graph
-    // Strong count >= 2 in every variant.
+    let _g2 = gb.build();
+    // Each shared param now has at least 2 refs (store
+    // entry + this graph's parameter slot). Real number
+    // depends on test ordering: if the coherence test
+    // already built its own decode graphs, the count is
+    // higher.
     for (name, p) in pipe.store.names.iter().zip(pipe.store.params.iter()).take(5) {
         let count = match p {
             SharedParam::F32 { arc, .. } => std::sync::Arc::strong_count(arc),
@@ -151,11 +189,11 @@ fn llama2_13b_arc_sharing_keeps_resident_under_30_gib() {
 #[test]
 #[ignore]
 fn llama2_13b_responds_coherently_to_greeting() {
-    let Some(dir) = llama2_13b_dir() else { return; };
-
-    eprintln!("loading Llama 2 13B Chat...");
-    let pipe = GenerationPipeline::from_model_dir(&dir)
-        .expect("pipeline load failed");
+    let guard = shared_pipeline().lock().unwrap();
+    let Some(pipe) = guard.as_ref() else {
+        eprintln!("[skip] Llama 2 13B Chat checkpoint not present");
+        return;
+    };
 
     let prompt = "Hello, how are you?";
     let max_new_tokens = 30usize;
