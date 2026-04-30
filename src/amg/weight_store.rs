@@ -44,105 +44,57 @@ use crate::tensor::Tensor;
 #[cfg(test)]
 use crate::tensor::TensorStorage;
 
-/// One stored parameter — a pre-shaped buffer wrapped in
-/// an `Arc` (host) or [`crate::gpu::tensor::tensor_gpu::TensorGPU`]
-/// (device) so multiple `Tensor` wrappers can reference it
+/// One stored parameter — a pre-shaped buffer wrapped in an
+/// `Arc` so multiple `Tensor` wrappers can reference it
 /// without copying.
 ///
-/// Storage is one of:
-///   - **F32** — host-resident, `Arc<Vec<f32>>`.
-///   - **Bf16** — host-resident, `Arc<Vec<u16>>` (raw BF16
-///     bit patterns).
-///   - **Gpu** *(M6.c.3)* — VRAM-resident, refcounted
-///     [`TensorGPU`]. Materialised by
-///     [`WeightStore::upload_resident_layers`] for
-///     parameters whose layer the residency planner picked.
-///
-/// Mixing within one parameter is not supported. The
-/// initial state is set by
-/// [`WeightMapper::store_params_as_bf16`]; the M6.c.3
-/// residency upload path is monotonic — host-side variants
-/// transition to `Gpu` and never come back (a session that
-/// teardowns the pipeline frees both sides).
+/// Storage is **either** F32 (`F32 { arc, .. }`) **or** BF16
+/// (`Bf16 { arc, .. }`). Mixing within one parameter is not
+/// supported — the `WeightMapper` writes one variant per
+/// parameter based on its `store_params_as_bf16` flag.
 #[derive(Debug, Clone)]
 pub enum SharedParam {
     F32 { shape: Vec<usize>, arc: Arc<Vec<f32>> },
     Bf16 { shape: Vec<usize>, arc: Arc<Vec<u16>> },
-    /// **M6.c.3** — VRAM-resident. The `TensorGPU`'s inner
-    /// `Arc<InnerGpuPtr>` refcounts the device allocation
-    /// across every `to_tensor()` call.
-    Gpu { shape: Vec<usize>, gpu: crate::gpu::tensor::tensor_gpu::TensorGPU },
 }
 
 impl SharedParam {
     /// Materialise a [`Tensor`] backed by this shared
     /// parameter. Cheap (Arc clone, no Vec copy).
-    /// M6.c.3 — `Gpu` variant returns a `TensorStorage::Cuda`
-    /// tensor sharing the underlying `TensorGPU` Arc.
     pub fn to_tensor(&self) -> Tensor {
         match self {
             SharedParam::F32 { shape, arc } =>
                 Tensor::cpu_shared(shape.clone(), Arc::clone(arc)),
             SharedParam::Bf16 { shape, arc } =>
                 Tensor::cpu_bf16_shared(shape.clone(), Arc::clone(arc)),
-            SharedParam::Gpu { shape, gpu } => {
-                // `TensorGPU::clone` is an Arc bump (cheap;
-                // M5.c.2.a-style sharing semantics). The
-                // resulting tensor's storage is
-                // `TensorStorage::Cuda`, ready for the
-                // residency-aware dispatch path in
-                // `try_gpu_matmul`.
-                let strides = Tensor::compute_strides(shape, &crate::tensor::Layout::Contiguous);
-                Tensor {
-                    shape: shape.clone(),
-                    storage: crate::tensor::TensorStorage::Cuda(gpu.clone()),
-                    device: crate::tensor::Device::GPU,
-                    dtype: crate::tensor::DType::F32,
-                    layout: crate::tensor::Layout::Contiguous,
-                    strides,
-                    grad: None,
-                    op: None,
-                }
-            }
         }
     }
 
     pub fn shape(&self) -> &[usize] {
         match self {
-            SharedParam::F32 { shape, .. }
-            | SharedParam::Bf16 { shape, .. }
-            | SharedParam::Gpu { shape, .. } => shape,
+            SharedParam::F32 { shape, .. } | SharedParam::Bf16 { shape, .. } => shape,
         }
     }
 
-    /// Bytes resident in the underlying buffer.
-    /// F32: 4×numel. BF16: 2×numel. Gpu: 4×numel (kernel
-    /// ABI is F32; BF16 GPU kernel is M6.f / v21).
+    /// Bytes resident in the underlying buffer (F32 = 4 ×
+    /// numel; BF16 = 2 × numel). Useful for the M5.c.2.b
+    /// telemetry that proves Arc-sharing actually saves RAM.
     pub fn resident_bytes(&self) -> usize {
         match self {
             SharedParam::F32 { arc, .. } => arc.len() * 4,
             SharedParam::Bf16 { arc, .. } => arc.len() * 2,
-            SharedParam::Gpu { gpu, .. } => gpu.size_bytes(),
         }
     }
 
-    /// True iff the parameter currently lives on GPU.
-    pub fn is_gpu(&self) -> bool {
-        matches!(self, SharedParam::Gpu { .. })
-    }
-
-    /// Strong-count over the inner `Arc` for host variants;
-    /// strong-count over the `TensorGPU` inner Arc for the
-    /// GPU variant. Used by tests that verify sharing.
+    /// Strong-count over the inner `Arc`. Two-graph
+    /// configurations expect 2 (or more) strong refs once
+    /// both graphs have materialised their parameter slots.
+    /// Useful for tests that verify sharing actually
+    /// happened.
     pub fn strong_count(&self) -> usize {
         match self {
             SharedParam::F32 { arc, .. } => Arc::strong_count(arc),
             SharedParam::Bf16 { arc, .. } => Arc::strong_count(arc),
-            // TensorGPU's Arc is private; clone is a bump.
-            // Strong-count introspection is not exposed —
-            // callers that need it should use the host
-            // variants. Return 1 as a defensive default.
-            SharedParam::Gpu { .. } => 1,
         }
     }
 }
@@ -203,94 +155,6 @@ impl WeightStore {
 
     pub fn len(&self) -> usize { self.params.len() }
     pub fn is_empty(&self) -> bool { self.params.is_empty() }
-
-    /// **M6.c.3** — upload a subset of parameters to VRAM
-    /// in-place, replacing the matching `SharedParam::F32`
-    /// or `Bf16` entries with `SharedParam::Gpu`.
-    ///
-    /// `should_upload` is a predicate keyed on the
-    /// HuggingFace parameter name. The
-    /// [`crate::gpu::residency_planner::ResidencyPlan`]
-    /// + `extract_layer_index_from_param_name` together
-    /// produce the predicate at the call site (the planner
-    /// knows layer indices, the name parser maps a name
-    /// like `"model.layers.27.self_attn.q_proj.weight"` to
-    /// `Some(27)`).
-    ///
-    /// Skips entries that are already `Gpu` (idempotent).
-    /// Returns `(uploaded_count, total_bytes_uploaded)`.
-    ///
-    /// Errors when the GPU upload fails (driver unavailable,
-    /// VRAM exhausted, host→device transfer failure). The
-    /// store is left in a consistent state — entries that
-    /// uploaded successfully stay `Gpu`; the failing entry
-    /// stays in its host variant; the operator can retry
-    /// with a smaller resident set or fall back to CPU
-    /// dispatch (`ATENIA_GPU=0`).
-    pub fn upload_resident_layers<F>(
-        &mut self,
-        mut should_upload: F,
-    ) -> Result<(usize, u64), WeightStoreError>
-    where
-        F: FnMut(&str) -> bool,
-    {
-        let mut count: usize = 0;
-        let mut bytes_uploaded: u64 = 0;
-        for i in 0..self.params.len() {
-            if !should_upload(&self.names[i]) { continue; }
-            if matches!(&self.params[i], SharedParam::Gpu { .. }) {
-                // Idempotent — already on GPU.
-                continue;
-            }
-
-            // Materialise a Tensor from the current
-            // host-resident SharedParam, ensure_gpu it,
-            // extract the TensorGPU.
-            let mut t = self.params[i].to_tensor();
-            t.ensure_gpu()
-                .map_err(|e| WeightStoreError::UploadFailed {
-                    name: self.names[i].clone(),
-                    message: format!("{:?}", e),
-                })?;
-            let shape = t.shape.clone();
-            let gpu = match t.storage {
-                crate::tensor::TensorStorage::Cuda(g) => g,
-                _ => {
-                    return Err(WeightStoreError::UploadFailed {
-                        name: self.names[i].clone(),
-                        message: "ensure_gpu did not transition to TensorStorage::Cuda".into(),
-                    });
-                }
-            };
-
-            // Replace the entry in place with the GPU variant.
-            // This drops the host-side Arc (since the store
-            // was the only strong ref pre-upload — the post-
-            // M5 generation loop builds fresh tensors per
-            // step from `to_tensor()`, never holding strong
-            // refs across calls).
-            bytes_uploaded += gpu.size_bytes() as u64;
-            self.params[i] = SharedParam::Gpu { shape, gpu };
-            count += 1;
-        }
-        Ok((count, bytes_uploaded))
-    }
-
-    /// Number of params currently materialised on the GPU.
-    pub fn num_gpu_resident(&self) -> usize {
-        self.params.iter().filter(|p| p.is_gpu()).count()
-    }
-
-    /// Total bytes resident on the GPU across every
-    /// `SharedParam::Gpu` entry.
-    pub fn gpu_resident_bytes(&self) -> u64 {
-        self.params.iter()
-            .filter_map(|p| match p {
-                SharedParam::Gpu { gpu, .. } => Some(gpu.size_bytes() as u64),
-                _ => None,
-            })
-            .sum()
-    }
 
     /// **M5.c.2.b** — extract loaded parameter tensors from a
     /// `Graph` into a fresh `WeightStore`, replacing the
@@ -395,10 +259,6 @@ pub enum WeightStoreError {
     NodeOutOfRange { node_id: usize, len: usize, name: String },
     NodeHasNoTensor { node_id: usize, name: String },
     UnsupportedStorage { node_id: usize, name: String },
-    /// **M6.c.3** — host→device upload failed during
-    /// `upload_resident_layers`. The store's other entries
-    /// are left in a consistent state.
-    UploadFailed { name: String, message: String },
 }
 
 impl std::fmt::Display for WeightStoreError {
@@ -412,39 +272,11 @@ impl std::fmt::Display for WeightStoreError {
                 write!(f, "weight_store: node {node_id} for '{name}' has no materialised tensor"),
             WeightStoreError::UnsupportedStorage { node_id, name } =>
                 write!(f, "weight_store: node {node_id} for '{name}' has unsupported (Cuda/Disk) storage"),
-            WeightStoreError::UploadFailed { name, message } =>
-                write!(f, "weight_store: GPU upload of '{name}' failed: {message}"),
         }
     }
 }
 
 impl std::error::Error for WeightStoreError {}
-
-/// **M6.c.3** — extract the transformer layer index from a
-/// HuggingFace parameter name, if any.
-///
-/// Returns `Some(i)` for names like:
-///   - `model.layers.{i}.self_attn.q_proj.weight`
-///   - `model.layers.{i}.mlp.gate_proj.weight`
-///   - `model.layers.{i}.input_layernorm.weight`
-///
-/// Returns `None` for names that don't belong to a
-/// transformer layer (`model.embed_tokens.weight`,
-/// `model.norm.weight`, `lm_head.weight`).
-///
-/// Used by the residency upload predicate at the
-/// `GenerationPipeline` level to map "layer i is resident"
-/// → "every parameter whose name parses to `Some(i)` is
-/// resident".
-pub fn extract_layer_index_from_param_name(name: &str) -> Option<usize> {
-    // HF convention: `model.layers.{i}.<rest>`. Strict prefix
-    // match keeps us safe from collisions with hypothetical
-    // future name schemes (e.g. `model.encoder.layers.X` if
-    // a new architecture ever ships).
-    let suffix = name.strip_prefix("model.layers.")?;
-    let dot = suffix.find('.')?;
-    suffix[..dot].parse::<usize>().ok()
-}
 
 #[cfg(test)]
 mod tests {
@@ -669,60 +501,6 @@ mod tests {
         let result = WeightStore::extract_from_graph(
             &mut g, &[0, 1], &["only_one".to_string()]);
         assert!(matches!(result, Err(WeightStoreError::IndexMismatch { .. })));
-    }
-
-    #[test]
-    fn extract_layer_index_parses_hf_names_correctly() {
-        // **M6.c.3** — predicate parser must round-trip the
-        // HuggingFace name convention without false positives.
-        assert_eq!(
-            extract_layer_index_from_param_name(
-                "model.layers.0.self_attn.q_proj.weight"),
-            Some(0));
-        assert_eq!(
-            extract_layer_index_from_param_name(
-                "model.layers.27.mlp.gate_proj.weight"),
-            Some(27));
-        assert_eq!(
-            extract_layer_index_from_param_name(
-                "model.layers.39.input_layernorm.weight"),
-            Some(39));
-        // Non-layer names → None.
-        assert_eq!(
-            extract_layer_index_from_param_name("model.embed_tokens.weight"),
-            None);
-        assert_eq!(
-            extract_layer_index_from_param_name("model.norm.weight"),
-            None);
-        assert_eq!(
-            extract_layer_index_from_param_name("lm_head.weight"),
-            None);
-        // Defensive: empty / malformed.
-        assert_eq!(extract_layer_index_from_param_name(""), None);
-        assert_eq!(extract_layer_index_from_param_name("model.layers."), None);
-        assert_eq!(extract_layer_index_from_param_name("model.layers.abc.weight"), None);
-    }
-
-    #[test]
-    fn upload_resident_layers_skips_when_predicate_returns_false() {
-        // **M6.c.3** — predicate-driven control. With a
-        // predicate that always returns false, the store
-        // must not try to upload anything (no GPU calls
-        // made, no error possible).
-        let mut store = WeightStore::new();
-        store.insert_f32("p1".into(), vec![2, 2], vec![1.0, 2.0, 3.0, 4.0]);
-        store.insert_bf16("p2".into(), vec![2, 2], vec![0; 4]);
-
-        let result = store.upload_resident_layers(|_| false);
-        let (count, bytes) = result.expect("predicate=false should never error");
-        assert_eq!(count, 0);
-        assert_eq!(bytes, 0);
-
-        // Both entries still on host.
-        assert!(matches!(store.params[0], SharedParam::F32 { .. }));
-        assert!(matches!(store.params[1], SharedParam::Bf16 { .. }));
-        assert_eq!(store.num_gpu_resident(), 0);
-        assert_eq!(store.gpu_resident_bytes(), 0);
     }
 
     #[test]
