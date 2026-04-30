@@ -4,11 +4,6 @@ mod gpu_memory_pool;
 pub mod pool_dispatcher;
 use self::gpu_memory_pool::GpuMemoryPool;
 
-// **M6.b** — re-export the raw cudaMalloc/cudaFree
-// wrappers so the non-pooled matmul path in
-// `src/cuda/matmul.rs` can call them.
-pub(crate) use self::gpu_memory_pool::{cuda_free_raw, cuda_malloc_raw};
-
 pub static GPU_MEMORY_POOL: OnceLock<Mutex<GpuMemoryPool>> = OnceLock::new();
 
 // Default configuration used for lazy initialization.

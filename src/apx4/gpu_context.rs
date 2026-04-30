@@ -9,27 +9,10 @@ pub struct ApxGpuContext {
 
 impl ApxGpuContext {
     pub fn new() -> Self {
-        // **M6.b.1** — runtime CUDA detection.
-        //
-        // Pre-M6.b this was hardcoded `available: false`
-        // (M4.7 decision 35 carryover, "placeholder until
-        // real CUDA integration"). M6.b lifts the gate by
-        // delegating to [`crate::cuda::cuda_available`],
-        // which probes the driver via `nvidia-smi`. On boxes
-        // without NVIDIA hardware / driver, the probe fails
-        // and the legacy CPU dispatch path
-        // (`apx4::gpu_dispatch::dispatch_matmul_gpu`) keeps
-        // the existing fallback semantics — bit-exact
-        // identical to the pre-M6.b build.
-        //
-        // The kill-switch `ATENIA_GPU=0` lives one level
-        // higher (in `gpu/dispatch/hooks.rs::try_gpu_matmul`)
-        // so operators can disable GPU dispatch without
-        // recompiling.
-        let available = crate::cuda::cuda_available();
+        // Placeholder until real CUDA integration (APX 4.0).
         Self {
-            available,
-            device_count: if available { 1 } else { 0 },
+            available: false,
+            device_count: 0,
         }
     }
 }
