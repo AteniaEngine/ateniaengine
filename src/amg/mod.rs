@@ -10,6 +10,13 @@ pub mod fusions;
 pub mod ops;
 pub mod reactive;
 
+// M5.c.2.a — Arc-backed shared parameter store. Lets the
+// prefill and decode `Graph` instances reference the same
+// physical weight bytes without doubling RAM. Tensor surface
+// consumed via `TensorStorage::CpuShared` /
+// `TensorStorage::CpuBf16Shared` (added in the same sub-phase).
+pub mod weight_store;
+
 // M5.b — KV cache runtime infrastructure.
 // Owns the third tensor category (D59 — Parameter /
 // Activation / KvCache), the runtime KvCache data structure

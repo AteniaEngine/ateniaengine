@@ -763,6 +763,14 @@ impl Graph {
                 let data = v.clone();
                 crate::tensor::disk_tier::write_bf16_tensor(cache_dir, &data)
             }
+            // M5.c.2.a — Arc-shared storage explicitly skipped:
+            // spilling would race with the sibling graph's view
+            // and the whole point of Arc-sharing is to keep the
+            // parameter resident across both graphs. Spill-aware
+            // sharing is M6 territory.
+            TensorStorage::CpuShared(_) | TensorStorage::CpuBf16Shared(_) => {
+                return MigrationStep::Skipped;
+            }
             _ => return MigrationStep::Skipped,
         };
 

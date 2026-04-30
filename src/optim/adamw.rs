@@ -71,6 +71,15 @@ impl AdamW {
                      reactive-path territory, not a training-loop steady \
                      state."
                 ),
+                crate::tensor::TensorStorage::CpuShared(_)
+                | crate::tensor::TensorStorage::CpuBf16Shared(_) => panic!(
+                    "AdamW: parameter is Arc-shared (CpuShared / \
+                     CpuBf16Shared); shared storage is read-only by \
+                     construction (M5.c.2.a) and cannot be mutated by \
+                     the optimizer. If a training scenario genuinely \
+                     needs to update a shared parameter, call \
+                     ensure_owned() first to clone-out into Cpu storage."
+                ),
                 crate::tensor::TensorStorage::CpuBf16(_) => panic!(
                     "AdamW: parameter is CpuBf16-resident; BF16 storage \
                      for trainable parameters is out of M4.7.2 scope \

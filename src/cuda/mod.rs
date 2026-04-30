@@ -75,6 +75,20 @@ pub(crate) fn cuda_device_ptr(
                  ensure_cpu then ensure_gpu first."
             )
         }
+        crate::tensor::TensorStorage::CpuShared(_)
+        | crate::tensor::TensorStorage::CpuBf16Shared(_) => {
+            // M5.c.2.a — Arc-shared host storage is intentionally
+            // host-only. GPU dispatch on shared parameters is M6+
+            // territory (paired with cuda_matmul non-pooled).
+            // The current Llama hot path runs entirely on CPU for
+            // 13B per the M4.7.6.c gating, so this arm is
+            // unreachable from the production graph.
+            unreachable!(
+                "cuda_device_ptr called on Arc-shared host storage. \
+                 Shared parameters are CPU-only in M5; GPU dispatch \
+                 lands with M6 (cuda_matmul non-pooled + offload)."
+            )
+        }
     }
 }
 
@@ -103,6 +117,17 @@ pub(crate) fn cuda_device_ptr_mut(
                 "cuda_device_ptr_mut called on CpuBf16 storage — M4.7.3 \
                  (residency-aware GPU kernels with BF16 host transfers) \
                  has not landed yet."
+            )
+        }
+        crate::tensor::TensorStorage::CpuShared(_)
+        | crate::tensor::TensorStorage::CpuBf16Shared(_) => {
+            // M5.c.2.a — Arc-shared storage is read-only by
+            // construction; mutating it would race with siblings.
+            unreachable!(
+                "cuda_device_ptr_mut called on Arc-shared host storage. \
+                 Shared parameters are read-only by construction \
+                 (M5.c.2.a) — call ensure_owned() first if mutation \
+                 is needed."
             )
         }
     }

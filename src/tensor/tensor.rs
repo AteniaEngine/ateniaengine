@@ -128,6 +128,44 @@ pub enum TensorStorage {
     /// that reuses `ensure_cpu` and then the pre-existing CPU → VRAM
     /// path.
     Disk(DiskTensorHandle),
+    /// **M5.c.2.a — host-resident shared F32 storage.**
+    ///
+    /// Identical contract to [`Self::Cpu`] for read access (the same
+    /// `&[f32]` semantics) but the underlying buffer is owned by an
+    /// [`Arc`] so multiple `Tensor` instances can reference the same
+    /// physical bytes without duplication. The load-bearing M5 use
+    /// case: prefill graph and decode graph register parameter slots
+    /// whose `Tensor::storage` both point at the same `Arc`, so a
+    /// 26 GB BF16 13B model stays at 26 GB even with two graphs
+    /// instead of doubling to 52 GB.
+    ///
+    /// **Read-only.** `as_cpu_slice_mut` panics on this variant —
+    /// the whole point of sharing is that no graph mutates the
+    /// underlying buffer. `ensure_cpu` is a no-op on this variant
+    /// (already CPU-resident); call sites that genuinely need a
+    /// mutable owned buffer should call [`Tensor::ensure_owned`]
+    /// first to clone-out into [`Self::Cpu`].
+    ///
+    /// **Spill is not supported.** The M4.7.5 selective-spill path
+    /// (`graph.rs::migrate_selected_cpu_to_disk`) treats this
+    /// variant as `Skipped`: spilling to disk would race with the
+    /// other graph's view, and the `Arc` makes the answer
+    /// "leave it where it is". M6 spill-aware sharing is out of
+    /// M5 scope.
+    CpuShared(std::sync::Arc<Vec<f32>>),
+    /// **M5.c.2.a — host-resident shared BF16 storage.**
+    ///
+    /// BF16 counterpart of [`Self::CpuShared`]. Same Arc-sharing
+    /// semantics; same decode-on-access contract as
+    /// [`Self::CpuBf16`] (`copy_to_cpu_vec` materialises a fresh
+    /// `Vec<f32>`; `as_cpu_slice` panics because exposing a
+    /// borrowed `&[f32]` over BF16 storage would require an
+    /// internal cache the M4.7.2 design deliberately rejects).
+    /// `ensure_cpu` upcasts the BF16 buffer into a fresh
+    /// owned `Cpu(Vec<f32>)` — this transitions the *owning*
+    /// `Tensor` away from the shared view; siblings that still
+    /// hold the `Arc` keep their BF16 view intact.
+    CpuBf16Shared(std::sync::Arc<Vec<u16>>),
 }
 
 /// Decode a `u16` BF16 bit pattern into the corresponding `f32`.
@@ -394,7 +432,12 @@ impl Tensor {
     pub fn ensure_decoded(&mut self) -> Result<&mut Self, StorageTransferError> {
         match &self.storage {
             TensorStorage::Cpu(_) | TensorStorage::Cuda(_) => Ok(self),
-            TensorStorage::CpuBf16(_) | TensorStorage::Disk(_) => self.ensure_cpu(),
+            // M5.c.2.a — CpuShared is already F32-decoded; no-op
+            // (sharing preserved). CpuBf16Shared decodes through
+            // `ensure_cpu`, which transitions away from sharing.
+            TensorStorage::CpuShared(_) => Ok(self),
+            TensorStorage::CpuBf16(_) | TensorStorage::Disk(_)
+            | TensorStorage::CpuBf16Shared(_) => self.ensure_cpu(),
         }
     }
 
@@ -511,6 +554,90 @@ impl Tensor {
     ///
     /// # Panics
     /// Panics if `bits.len() != shape.iter().product()`.
+    /// **M5.c.2.a** — construct a CPU-resident F32 tensor that
+    /// shares its underlying buffer with other tensors via
+    /// [`std::sync::Arc`]. The returned tensor's `storage` is
+    /// [`TensorStorage::CpuShared`]; cloning the tensor (or
+    /// constructing another tensor from `Arc::clone(&arc)`) does
+    /// not duplicate the F32 buffer.
+    ///
+    /// # Panics
+    /// Panics if `arc.len() != shape.iter().product()`.
+    pub fn cpu_shared(shape: Vec<usize>, arc: std::sync::Arc<Vec<f32>>) -> Self {
+        let expected: usize = shape.iter().product();
+        assert_eq!(
+            arc.len(),
+            expected,
+            "Tensor::cpu_shared: arc length {} does not match shape product {} (shape = {:?})",
+            arc.len(),
+            expected,
+            shape
+        );
+        let strides = Self::compute_strides(&shape, &Layout::Contiguous);
+        Self {
+            shape,
+            storage: TensorStorage::CpuShared(arc),
+            device: Device::CPU,
+            dtype: DType::F32,
+            layout: Layout::Contiguous,
+            strides,
+            grad: None,
+            op: None,
+        }
+    }
+
+    /// **M5.c.2.a** — BF16 counterpart of [`Self::cpu_shared`].
+    pub fn cpu_bf16_shared(shape: Vec<usize>, arc: std::sync::Arc<Vec<u16>>) -> Self {
+        let expected: usize = shape.iter().product();
+        assert_eq!(
+            arc.len(),
+            expected,
+            "Tensor::cpu_bf16_shared: arc length {} does not match shape product {} (shape = {:?})",
+            arc.len(),
+            expected,
+            shape
+        );
+        let strides = Self::compute_strides(&shape, &Layout::Contiguous);
+        Self {
+            shape,
+            storage: TensorStorage::CpuBf16Shared(arc),
+            device: Device::CPU,
+            dtype: DType::BF16,
+            layout: Layout::Contiguous,
+            strides,
+            grad: None,
+            op: None,
+        }
+    }
+
+    /// **M5.c.2.a** — break out of Arc-shared storage into an
+    /// owned `Cpu(Vec<f32>)`. No-op for non-shared variants.
+    /// After this call, mutating the tensor (`as_cpu_slice_mut`)
+    /// no longer requires going through `ensure_cpu` first; the
+    /// operation is also a one-shot transition that will not
+    /// silently revert to shared on subsequent operations.
+    pub fn ensure_owned(&mut self) -> Result<&mut Self, StorageTransferError> {
+        match &self.storage {
+            TensorStorage::CpuShared(arc) => {
+                // Try to take ownership cheaply if uniquely
+                // owned; otherwise clone the inner Vec.
+                let owned = match std::sync::Arc::try_unwrap(arc.clone()) {
+                    Ok(v) => v,
+                    Err(arc) => (*arc).clone(),
+                };
+                self.storage = TensorStorage::Cpu(owned);
+                Ok(self)
+            }
+            TensorStorage::CpuBf16Shared(_) => {
+                // Route through the existing BF16-decode path to
+                // get an owned Cpu(Vec<f32>). Same upcast as the
+                // ensure_cpu CpuBf16Shared arm.
+                self.ensure_cpu()
+            }
+            _ => Ok(self),
+        }
+    }
+
     pub fn new_cpu_bf16(shape: Vec<usize>, bits: Vec<u16>) -> Self {
         let expected: usize = shape.iter().product();
         assert_eq!(
@@ -589,6 +716,11 @@ impl Tensor {
     pub fn as_cpu_slice(&self) -> &[f32] {
         match &self.storage {
             TensorStorage::Cpu(v) => v.as_slice(),
+            // M5.c.2.a — shared F32 storage exposes the borrow
+            // through `Arc::as_ref`. The slice's lifetime is tied
+            // to `&self`, which is correct: we never extract the
+            // slice past the tensor's borrow.
+            TensorStorage::CpuShared(arc) => arc.as_slice(),
             TensorStorage::CpuBf16(_) => panic!(
                 "Tensor::as_cpu_slice called on a CpuBf16 tensor. \
                  CpuBf16 storage requires decode-on-access via \
@@ -596,6 +728,11 @@ impl Tensor {
                  storage variant); direct &[f32] borrow is not supported \
                  because exposing it would require an internal cache that \
                  M4.7.2 deliberately defers."
+            ),
+            TensorStorage::CpuBf16Shared(_) => panic!(
+                "Tensor::as_cpu_slice called on a CpuBf16Shared tensor. \
+                 Same decode-on-access contract as CpuBf16: route \
+                 through copy_to_cpu_vec() or ensure_cpu()."
             ),
             TensorStorage::Cuda(_) => panic!(
                 "Tensor::as_cpu_slice called on a GPU-resident tensor. \
@@ -615,6 +752,22 @@ impl Tensor {
     pub fn as_cpu_slice_mut(&mut self) -> &mut [f32] {
         match &mut self.storage {
             TensorStorage::Cpu(v) => v.as_mut_slice(),
+            // M5.c.2.a — Arc-shared storage is read-only by
+            // construction. The whole point of sharing is that
+            // no graph mutates the underlying buffer; if a caller
+            // genuinely needs `&mut [f32]` they must first call
+            // `ensure_owned()` to clone-out into Cpu storage.
+            TensorStorage::CpuShared(_) => panic!(
+                "Tensor::as_cpu_slice_mut called on CpuShared storage. \
+                 Arc-shared parameter buffers are read-only by \
+                 construction (M5.c.2.a). Call ensure_owned() first \
+                 to clone-out into Cpu storage if mutation is needed."
+            ),
+            TensorStorage::CpuBf16Shared(_) => panic!(
+                "Tensor::as_cpu_slice_mut called on CpuBf16Shared storage. \
+                 Both BF16 (precision-preservation) and Shared (read-only) \
+                 contracts forbid in-place mutation."
+            ),
             TensorStorage::CpuBf16(_) => panic!(
                 "Tensor::as_cpu_slice_mut called on a CpuBf16 tensor. \
                  BF16 parameters are read-only after load; mutating them \
@@ -646,6 +799,20 @@ impl Tensor {
     pub fn copy_to_cpu_vec(&self) -> Vec<f32> {
         match &self.storage {
             TensorStorage::Cpu(v) => v.clone(),
+            // M5.c.2.a — Arc-shared F32: clone the inner Vec.
+            // Same `O(n)` cost as the `Cpu` arm; the Arc just
+            // enables the *underlying buffer* to be shared
+            // across multiple Tensor wrappers without each
+            // wrapper holding its own copy.
+            TensorStorage::CpuShared(arc) => (**arc).clone(),
+            // M5.c.2.a — Arc-shared BF16: identical decode
+            // path to CpuBf16, just reading through the Arc.
+            TensorStorage::CpuBf16Shared(arc) => {
+                let bits = arc.as_slice();
+                let mut out = vec![0.0_f32; bits.len()];
+                crate::simd_kernels::avx2::bf16_decode_bulk(bits, &mut out);
+                out
+            }
             TensorStorage::CpuBf16(bits) => {
                 // Decode-on-access (M4.7.2): materialise a fresh F32 vec
                 // by upcasting every BF16 bit pattern. The upcast
@@ -719,6 +886,24 @@ impl Tensor {
     pub fn ensure_cpu(&mut self) -> Result<&mut Self, StorageTransferError> {
         match &self.storage {
             TensorStorage::Cpu(_) => Ok(self),
+            // M5.c.2.a — Arc-shared F32 is already CPU-resident.
+            // No-op; the Arc stays intact (siblings keep sharing).
+            // Callers that want to break sharing should call
+            // `ensure_owned()` instead.
+            TensorStorage::CpuShared(_) => Ok(self),
+            // M5.c.2.a — Arc-shared BF16: upcast into a fresh
+            // owned `Cpu(Vec<f32>)`. This transitions the *owning*
+            // tensor away from the shared view; siblings that
+            // still hold the Arc keep their BF16 view intact.
+            // Same upcast kernel as the CpuBf16 arm.
+            TensorStorage::CpuBf16Shared(arc) => {
+                let bits = arc.as_slice();
+                let mut cpu_vec: Vec<f32> = vec![0.0; bits.len()];
+                crate::simd_kernels::avx2::bf16_decode_bulk(bits, &mut cpu_vec);
+                self.storage = TensorStorage::Cpu(cpu_vec);
+                self.dtype = DType::F32;
+                Ok(self)
+            }
             TensorStorage::CpuBf16(bits) => {
                 // M4.7.2: eager upcast BF16 → F32. After this the
                 // storage is `Cpu(Vec<f32>)` and the original `Vec<u16>`
@@ -848,6 +1033,7 @@ impl Tensor {
         if matches!(
             self.storage,
             TensorStorage::Disk(_) | TensorStorage::CpuBf16(_)
+                | TensorStorage::CpuBf16Shared(_)
         ) {
             self.ensure_cpu()?;
             // Fall through to the Cpu branch below.
@@ -859,10 +1045,17 @@ impl Tensor {
 
         let cpu_data: &[f32] = match &self.storage {
             TensorStorage::Cpu(v) => v.as_slice(),
+            // M5.c.2.a — Arc-shared F32: GPU upload reads
+            // through the Arc; the shared tensor itself stays
+            // CPU-resident (this method takes &mut self and
+            // overwrites storage to Cuda below, breaking the
+            // sharing locally to the calling tensor).
+            TensorStorage::CpuShared(arc) => arc.as_slice(),
             // After the Disk → Cpu / CpuBf16 → Cpu hops above, we
             // are guaranteed Cpu here. Cuda was already handled by
             // the early return at the top of the function.
             TensorStorage::CpuBf16(_)
+            | TensorStorage::CpuBf16Shared(_)
             | TensorStorage::Cuda(_)
             | TensorStorage::Disk(_) => unreachable!(
                 "ensure_gpu reached a non-Cpu variant after the normalization step; \
