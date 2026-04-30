@@ -136,6 +136,25 @@ enum Command {
     /// for inspecting the v13 hybrid-execution-engine
     /// scaffolding; not part of the v20 killer-demo surface.
     Explain(ExplainArgs),
+
+    /// **M5.e** — generate text greedily from a Llama-family
+    /// checkpoint, streaming each token to stdout as it
+    /// lands.
+    ///
+    /// End-to-end glue around the M5 stack (M5.a tokenizer,
+    /// M5.b KV cache, M5.c.2 cache-aware attention + Arc-
+    /// shared weights, M5.d.a generation loop, M5.d.b
+    /// `GenerationPipeline`). Loads the checkpoint, applies
+    /// the model's chat template (unless `--no-chat-template`),
+    /// runs greedy decoding until EOS or `--max-tokens`,
+    /// prints stats on stderr.
+    ///
+    /// ```text
+    /// atenia generate --prompt "Hello, how are you?" \
+    ///     --model models/llama-2-13b-chat \
+    ///     --max-tokens 100
+    /// ```
+    Generate(GenerateArgs),
 }
 
 #[derive(clap::Args)]
@@ -213,6 +232,50 @@ struct RunArgs {
 }
 
 #[derive(clap::Args)]
+struct GenerateArgs {
+    /// Input prompt. Wrapped in the model's chat template
+    /// before encoding (see `--no-chat-template` to bypass).
+    #[arg(long)]
+    prompt: String,
+
+    /// Path to the model directory (config.json + tokenizer
+    /// files + safetensors). Falls back to
+    /// `ATENIA_LLAMA2_13B_DIR` for compatibility with the
+    /// `run` subcommand's environment.
+    #[arg(long, env = "ATENIA_LLAMA2_13B_DIR")]
+    model: PathBuf,
+
+    /// Maximum number of new tokens to generate. EOS halts
+    /// earlier when emitted.
+    #[arg(long, default_value_t = 100)]
+    max_tokens: usize,
+
+    /// Output format. `text` streams tokens to stdout and
+    /// prints stats on stderr; `json` accumulates and emits
+    /// a single structured report on stdout at end-of-run.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    output: OutputFormat,
+
+    /// Disk-tier scratch dir for spill (reserved for M6+;
+    /// currently unused by `generate` but kept for API
+    /// stability).
+    #[arg(long, env = "ATENIA_DISK_TIER_DIR")]
+    cache_dir: Option<PathBuf>,
+
+    /// Suppress the heartbeat dots that print during model
+    /// load. Stats line still prints when generation
+    /// finishes.
+    #[arg(long)]
+    no_progress: bool,
+
+    /// Skip `apply_chat_template`; feed `--prompt` to the
+    /// model verbatim. Useful for completion-style prompts
+    /// and for debugging tokenizer / template issues.
+    #[arg(long)]
+    no_chat_template: bool,
+}
+
+#[derive(clap::Args)]
 struct ExplainArgs {
     /// Hypothetical "GPU is available" flag for the learning
     /// snapshot. Determines which branch of the v13 self-
@@ -257,6 +320,7 @@ fn main() {
         Command::Probe(args) => run_probe(args),
         Command::Run(args) => run_demo(args),
         Command::Explain(args) => run_explain(args),
+        Command::Generate(args) => run_generate(args),
     };
 
     std::process::exit(exit_code);
@@ -358,6 +422,40 @@ fn run_demo(_args: RunArgs) -> i32 {
          cargo install --path .\n  \
          cargo build --release --bin atenia\n  \
          cargo run   --release --bin atenia -- run --model <PATH> --mode a"
+    );
+    2
+}
+
+// ============================================================
+// `atenia generate` — dispatches into atenia_engine::cli_generate
+// ============================================================
+
+#[cfg(feature = "demo")]
+fn run_generate(args: GenerateArgs) -> i32 {
+    use atenia_engine::cli_generate as cg;
+    let translated = cg::GenerateArgs {
+        prompt: args.prompt,
+        model: args.model,
+        max_tokens: args.max_tokens,
+        output: match args.output {
+            OutputFormat::Text => cg::OutputFormat::Text,
+            OutputFormat::Json => cg::OutputFormat::Json,
+        },
+        cache_dir: args.cache_dir,
+        no_progress: args.no_progress,
+        no_chat_template: args.no_chat_template,
+    };
+    cg::run(translated)
+}
+
+#[cfg(not(feature = "demo"))]
+fn run_generate(_args: GenerateArgs) -> i32 {
+    eprintln!(
+        "error: this build of `atenia` was compiled without the `demo` feature.\n\
+         The `generate` subcommand needs the `atenia_engine::cli_generate` and\n\
+         `atenia_engine::nn::llama::pipeline` modules. Rebuild with the default\n\
+         feature set:\n  \
+         cargo build --release --bin atenia"
     );
     2
 }

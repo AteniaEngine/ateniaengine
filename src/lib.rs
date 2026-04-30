@@ -34,6 +34,14 @@ pub mod demo;
 #[cfg(feature = "demo")]
 pub mod cli_run;
 
+// M5.e — `atenia generate` CLI runner. Greedy decoding +
+// token streaming over a `GenerationPipeline`. Lives behind
+// the `demo` feature because it depends on
+// `nn::llama::generator` / `pipeline`, both of which are
+// always-on in the default build via the demo feature gate.
+#[cfg(feature = "demo")]
+pub mod cli_generate;
+
 // M5.a — public tokenizer surface (HF tokenizers + minijinja
 // chat templates). Always-on; the ~250 KB binary impact is
 // dwarfed by the rest of the engine and there's no scenario

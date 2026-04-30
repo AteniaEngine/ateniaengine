@@ -1,14 +1,60 @@
 # Atenia CLI
 
-The `atenia` binary is the public reproduction surface for the
-v20 killer demo. Three subcommands:
+The `atenia` binary is the public reproduction surface for
+Atenia Engine. Four subcommands:
 
 - **`atenia probe`** — cross-vendor hardware enumeration
   (CPU + GPU + RAM). Behind the `hw-probe` Cargo feature.
 - **`atenia run`** — the tri-mode killer-demo runner
   (Modes A / B / C). Default-build feature.
+- **`atenia generate`** *(M5.e)* — greedy text generation
+  from a Llama-family checkpoint with token streaming.
+  Default-build feature.
 - **`atenia explain`** — pre-existing v13 self-trainer
   narrative explainer. Legacy surface, preserved.
+
+## `atenia generate` — quick reference
+
+```bash
+atenia generate \
+    --prompt "Hello, how are you?" \
+    --model models/llama-2-13b-chat \
+    --max-tokens 100
+```
+
+| Flag                  | Default | Description |
+|-----------------------|---------|-------------|
+| `--prompt <TEXT>`     | (required) | Input prompt; wrapped in the model's chat template before encoding. |
+| `--model <PATH>`      | (env `ATENIA_LLAMA2_13B_DIR`) | Path to the model directory. |
+| `--max-tokens <N>`    | 100 | Cap on new tokens (EOS halts earlier). |
+| `--output <text\|json>` | text | `text` streams tokens to stdout; `json` emits a structured report on stdout at end-of-run. |
+| `--cache-dir <PATH>`  | (env `ATENIA_DISK_TIER_DIR`) | Reserved for M6+ disk-tier spill. |
+| `--no-progress`       | off | Suppress heartbeat dots during model load. |
+| `--no-chat-template`  | off | Feed `--prompt` to the model verbatim (debugging / completion-style use). |
+
+Text mode prints loaded-model stats to stderr, the prompt
+echoed, the generated text streamed token-by-token, and a
+final stats line:
+
+```text
+Loading model from models/tinyllama-1.1b ...
+.................................
+Model loaded in 66.6s (201 parameters, 2.35 GiB resident).
+
+> Hello
+
+Certainly! Here
+
+---
+Generated: 5 tokens in 13.1s (0.38 tok/s) [max-tokens reached]
+```
+
+JSON mode (`--output json --no-progress`) emits a stable
+schema documented in
+`src/cli_generate.rs::GenerateReport` — `prompt`,
+`generated_text`, `tokens`, `token_ids`,
+`tokens_generated`, `total_seconds`, `tokens_per_second`,
+`eos_reached`.
 
 Build:
 
