@@ -70,7 +70,11 @@
 use std::path::{Path, PathBuf};
 
 use crate::amg::builder::GraphBuilder;
-use crate::amg::weight_store::{WeightStore, WeightStoreError};
+use crate::amg::weight_store::{
+    extract_layer_index_from_param_name, WeightStore, WeightStoreError,
+};
+use crate::gpu::backend::{Backend, CudaBackend};
+use crate::gpu::residency_planner::{parse_gpu_layers_env, plan_residency, PlannerInput};
 use crate::nn::llama::config::{ConfigError, LlamaConfig};
 use crate::nn::llama::weight_loading::llama_weight_mapper;
 use crate::tokenizer::{AteniaTokenizer, ChatMessage, TokenizerError};
@@ -206,11 +210,40 @@ impl GenerationPipeline {
         //    scratch graph's parameter slots are `Shared`
         //    views, so dropping the graph is safe — the
         //    parameter Arcs survive in the store.
-        let store = WeightStore::extract_from_graph(
+        let mut store = WeightStore::extract_from_graph(
             &mut scratch_graph,
             &handles.param_ids,
             &handles.param_names,
         )?;
+
+        // **M6.c.3** — opportunistic GPU residency upload.
+        //
+        // When a CUDA backend is available and the operator
+        // hasn't disabled it via `ATENIA_GPU=0`, run the
+        // M6.c.2 residency planner to pick the resident
+        // layer set, then upload those layers' weights to
+        // VRAM via `WeightStore::upload_resident_layers`.
+        // The decode-step graph's `to_tensor()` calls then
+        // materialise the resident params as
+        // `TensorStorage::Cuda` slots, and the M6.c.4
+        // mixed-storage matmul path takes care of the
+        // (a=Cpu, b=Cuda) executor case.
+        //
+        // Failures here are non-fatal: any error logs to
+        // stderr and the pipeline continues with a CPU-only
+        // store (bit-exact identical to the M5.f.a build).
+        if std::env::var("ATENIA_GPU").as_deref() != Ok("0") {
+            try_upload_resident_layers(&mut store, &config, &handles.param_names);
+        }
+
+        // After M6.c.3 the scratch graph's parameter slots
+        // for the resident layers are still `CpuShared` /
+        // `CpuBf16Shared` (the upload only updated the
+        // store's entries). The scratch graph is about to
+        // drop, so this divergence is harmless. Future
+        // graph builds via `build_llama_with_store` pull
+        // fresh `to_tensor()` results, which return
+        // `Cuda`-storage tensors for resident layers.
 
         // 6. Drop scratch graph. The Llama graph also holds
         //    the causal-mask Parameter (zero-shape-on-build)
@@ -319,6 +352,110 @@ impl GenerationPipeline {
         )?;
 
         Ok(joined)
+    }
+}
+
+/// **M6.c.3** — best-effort GPU residency upload.
+///
+/// Runs the residency planner over `config` + the live
+/// `CudaBackend`'s reported VRAM budget, then asks the
+/// store to upload every weight whose layer index is in
+/// the resident set.
+///
+/// Non-fatal: any error prints to stderr and returns —
+/// the caller's pipeline continues with whatever subset
+/// of layers successfully landed on GPU (zero if the very
+/// first upload failed). The kill-switch `ATENIA_GPU=0`
+/// is checked by the caller.
+///
+/// Per-layer byte size estimate at the model's storage
+/// dtype (BF16 by default after `from_model_dir`):
+///   - Q/K/V/O proj × 4 = 4 × hidden² bytes/dtype-byte
+///   - FFN gate/up × 2 + down × 1 = 3 × hidden×intermediate bytes/dtype-byte
+///   - input_layernorm + post_attention_layernorm = 2 × hidden bytes/dtype-byte
+///
+/// The estimate is printed to stderr alongside the planner
+/// decision so the operator can verify the resident set
+/// fits the VRAM budget before generation kicks off.
+fn try_upload_resident_layers(
+    store: &mut WeightStore,
+    config: &LlamaConfig,
+    param_names: &[String],
+) {
+    let backend = CudaBackend::global();
+    let Some(vram_bytes) = backend.available_vram_bytes() else {
+        eprintln!("[M6.c.3] CUDA not available — skipping residency upload \
+                   (CPU-only mode, bit-exact with M5.f.a).");
+        return;
+    };
+
+    // Reserve ~20% of available VRAM for working buffers
+    // (lm_head, transient activations, output downloads).
+    // M6.c is conservative; M6.f can re-tune after live
+    // measurement.
+    let working_buffer_bytes: u64 = vram_bytes / 5;
+    let budget_bytes = vram_bytes.saturating_sub(working_buffer_bytes);
+
+    // Bytes per resident layer at the store's storage dtype.
+    // After `from_model_dir(bf16=true)` the host params are
+    // BF16 (2 B/elt), but `upload_resident_layers` converts
+    // to F32 (4 B/elt) on upload via `Tensor::ensure_gpu`
+    // (the BF16 GPU kernel is M6.f / v21). So the planner
+    // budgets in F32 bytes — what actually lands in VRAM.
+    let h = config.hidden_size as u64;
+    let i = config.intermediate_size as u64;
+    let bytes_per_layer_f32: u64 =
+        (4 * h * h + 3 * h * i + 2 * h) * 4 /* F32 */;
+
+    let user_override = parse_gpu_layers_env().unwrap_or(None);
+    let plan = plan_residency(&PlannerInput {
+        num_layers: config.num_hidden_layers,
+        bytes_per_layer: bytes_per_layer_f32,
+        vram_budget_bytes: budget_bytes,
+        user_override_count: user_override,
+    });
+
+    eprintln!(
+        "[M6.c.3] CUDA detected — {:.2} GiB VRAM free.",
+        vram_bytes as f64 / (1024.0_f64.powi(3))
+    );
+    eprintln!(
+        "[M6.c.3] Residency plan: {} resident, {} streamed (~{:.2} GiB resident at F32).",
+        plan.resident.len(), plan.streamed.len(),
+        plan.resident_bytes as f64 / (1024.0_f64.powi(3)),
+    );
+
+    if plan.resident.is_empty() {
+        eprintln!("[M6.c.3] No resident layers picked — every matmul streams (M6.b path).");
+        return;
+    }
+
+    // Build a HashSet for O(1) layer-index lookup. The
+    // upload predicate maps a param name → resident? via
+    // `extract_layer_index_from_param_name`.
+    let resident_set: std::collections::HashSet<usize> =
+        plan.resident.iter().copied().collect();
+    let _ = param_names; // names live inside the store; passed for symmetry / future hooks
+
+    match store.upload_resident_layers(|name| {
+        match extract_layer_index_from_param_name(name) {
+            Some(layer) => resident_set.contains(&layer),
+            None => false, // embed/norm/lm_head stay on CPU in M6.c
+        }
+    }) {
+        Ok((count, bytes)) => {
+            eprintln!(
+                "[M6.c.3] Uploaded {} parameters ({:.2} GiB) to VRAM.",
+                count, bytes as f64 / (1024.0_f64.powi(3))
+            );
+        }
+        Err(e) => {
+            eprintln!(
+                "[M6.c.3] GPU upload failed: {e}. Falling back to CPU dispatch \
+                 (M6.b non-pooled streaming for matmuls; same correctness, \
+                 lower throughput)."
+            );
+        }
     }
 }
 

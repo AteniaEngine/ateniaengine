@@ -199,6 +199,89 @@ pub fn try_gpu_matmul(a: &Tensor, b: &Tensor, out: &mut Tensor) -> bool {
         return true;
     }
 
+    // **M6.c.4** — mixed-storage path: activation on CPU,
+    // weight on GPU (the persistent-residency case).
+    //
+    // Pre-M6.c.4 this branch was unreachable because every
+    // weight stayed in `CpuShared` / `CpuBf16Shared` after
+    // `WeightStore::extract_from_graph`. M6.c.3 introduces
+    // `SharedParam::Gpu` for resident layers, whose
+    // `to_tensor()` produces `TensorStorage::Cuda` slots in
+    // the decode graph. The executor reaches here with
+    // `a` (the input activation, M=1, ~20 KB) on CPU and
+    // `b` (the weight, e.g. 270 MB FFN-down) already on
+    // GPU.
+    //
+    // The cheap part of the work — only `a` (~20 KB) and
+    // the output buffer (~20 KB at M=1) cross PCIe per
+    // call. The 270 MB B never moves. This is the
+    // load-bearing speedup vs the M6.b non-pooled path
+    // that paid the full B upload every step.
+    let a_cpu_b_cuda = matches!(
+        (&a.storage, &b.storage),
+        (TensorStorage::Cpu(_), TensorStorage::Cuda(_)),
+    );
+    let out_cpu = matches!(out.storage, TensorStorage::Cpu(_));
+
+    if a_cpu_b_cuda && out_cpu {
+        // Upload `a` to a temporary TensorGPU.
+        // Allocate `out_gpu` device-side. Run residency-
+        // path matmul. Download into the existing CPU
+        // `out` slot.
+        let a_data = a.copy_to_cpu_vec();
+        let a_gpu = match crate::gpu::tensor::tensor_gpu::TensorGPU::new_from_cpu(
+            &a_data, m, k,
+        ) {
+            Ok(g) => g,
+            Err(_) => {
+                if apx_trace_enabled() {
+                    println!("[M6.c.4] mixed: A upload failed; CPU fallback");
+                }
+                return false;
+            }
+        };
+        let out_gpu = match crate::gpu::tensor::tensor_gpu::TensorGPU::empty(m, n) {
+            Ok(g) => g,
+            Err(_) => {
+                if apx_trace_enabled() {
+                    println!("[M6.c.4] mixed: out alloc failed; CPU fallback");
+                }
+                return false;
+            }
+        };
+
+        // Build temporary tensors with Cuda storage so we
+        // can call `cuda_matmul_inplace` (the residency-
+        // aware kernel).
+        let a_dev = build_cuda_tensor(a_gpu, vec![m, k]);
+        let b_clone = b.clone(); // shallow Arc bump
+        let mut out_dev = build_cuda_tensor(out_gpu, vec![m, n]);
+
+        cuda_matmul_inplace(&a_dev, &b_clone, &mut out_dev, m, k, n);
+
+        // Pull the output back to host and write into the
+        // caller's CPU `out` slot.
+        let out_host = match &out_dev.storage {
+            TensorStorage::Cuda(g) => match g.to_cpu() {
+                Ok(v) => v,
+                Err(_) => {
+                    if apx_trace_enabled() {
+                        println!("[M6.c.4] mixed: D→H download failed; CPU fallback");
+                    }
+                    return false;
+                }
+            },
+            _ => return false,
+        };
+        out.as_cpu_slice_mut().clone_from_slice(&out_host);
+
+        GPU_MATMUL_RESIDENT_COUNT.fetch_add(1, Ordering::Relaxed);
+        if apx_trace_enabled() {
+            println!("[M6.c.4] GPU MatMul executed (mixed: a=Cpu+up, b=Cuda resident, out=Cpu+down)");
+        }
+        return true;
+    }
+
     // ---- CPU-roundtrip path: shape gate + pool budget ----
     let all_cpu = matches!(
         (&a.storage, &b.storage, &out.storage),
@@ -209,10 +292,11 @@ pub fn try_gpu_matmul(a: &Tensor, b: &Tensor, out: &mut Tensor) -> bool {
         )
     );
     if !all_cpu {
-        // Mixed storage. The executor arm normalises before reaching
-        // this hook (see `Tensor::ensure_decoded`); a mixed call
-        // signals a routing mistake. Bail out silently and let the
-        // caller's CPU path handle the operation.
+        // Mixed storage we don't yet handle (e.g. b=Cpu,
+        // a=Cuda — would happen only if an upstream
+        // activation got promoted to GPU mid-graph; not a
+        // pattern M5/M6 produces). Bail out silently and
+        // let the caller's CPU path handle the operation.
         return false;
     }
 
@@ -361,5 +445,27 @@ pub unsafe fn fused_linear_silu_gpu(
         let mut tmp = crate::nn::linear::linear(&x, &w, None);
         tmp = crate::nn::activations::silu(&tmp);
         graph.nodes[out_id].set_output(tmp);
+    }
+}
+
+/// **M6.c.4 helper** — wrap a `TensorGPU` in a `Tensor`
+/// shell with `TensorStorage::Cuda`. Used by the mixed-
+/// storage matmul path to feed the existing residency-
+/// path kernel `cuda_matmul_inplace` without changing
+/// its signature.
+fn build_cuda_tensor(
+    gpu: crate::gpu::tensor::tensor_gpu::TensorGPU,
+    shape: Vec<usize>,
+) -> Tensor {
+    let strides = Tensor::compute_strides(&shape, &crate::tensor::Layout::Contiguous);
+    Tensor {
+        shape,
+        storage: TensorStorage::Cuda(gpu),
+        device: crate::tensor::Device::GPU,
+        dtype: crate::tensor::DType::F32,
+        layout: crate::tensor::Layout::Contiguous,
+        strides,
+        grad: None,
+        op: None,
     }
 }
