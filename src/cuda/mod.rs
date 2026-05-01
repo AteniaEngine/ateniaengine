@@ -16,8 +16,71 @@ unsafe extern "C" {
     );
 }
 
+/// **M6 step 1** — cached CUDA-driver probe.
+///
+/// Previously this function spawned `nvidia-smi` on every call. On
+/// Windows the spawn + driver-enumeration cost is ~50–300 ms. With
+/// the gate G5 (pool 64 MiB ceiling) blocking the 13B path today,
+/// the spawn never happens on the Llama hot path — but any future
+/// step that lifts G5 (or routes more traffic through
+/// `gpu_can_run_matmul`) would call this per-matmul (~360
+/// calls/decode-step), adding tens of seconds/token of pure
+/// orchestration overhead. Caching is a strict prerequisite of any
+/// further GPU-path activation.
+///
+/// The cache is `OnceLock<bool>` — first call spawns `nvidia-smi`
+/// exactly once, subsequent calls read a single atomic bool. The
+/// driver state can in principle change between calls (driver crash,
+/// GPU eject) but losing CUDA dispatch mid-session was never a
+/// behaviour the engine gracefully recovered from anyway; if the
+/// driver dies, the kernel call panics regardless of what this
+/// function returns. Caching is the right call.
+///
+/// Behaviour contract:
+///   - First call: spawns `nvidia-smi`, returns `output().is_ok()`.
+///   - Subsequent calls: return the cached value, no spawn.
+///   - Result is identical to the pre-cache version on a stable
+///     driver.
 pub fn cuda_available() -> bool {
-    std::process::Command::new("nvidia-smi").output().is_ok()
+    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::process::Command::new("nvidia-smi").output().is_ok()
+    })
+}
+
+#[cfg(test)]
+mod cuda_available_tests {
+    use super::cuda_available;
+
+    /// Two consecutive calls must return the same value. With the
+    /// `OnceLock` cache, the second call must not spawn a process —
+    /// we assert behavioural equivalence (the operator can verify
+    /// no-spawn manually with Process Explorer if needed).
+    #[test]
+    fn cuda_available_is_stable_across_calls() {
+        let first = cuda_available();
+        let second = cuda_available();
+        assert_eq!(
+            first, second,
+            "cuda_available() must return the same value across calls"
+        );
+    }
+
+    /// Sanity: the cached value matches a fresh `nvidia-smi` probe at
+    /// test time. If the test host has CUDA, `cuda_available()`
+    /// returns true; if not, false. We compare against a direct
+    /// spawn so the test is self-validating on either kind of host.
+    #[test]
+    fn cuda_available_matches_direct_probe() {
+        let direct = std::process::Command::new("nvidia-smi")
+            .output()
+            .is_ok();
+        assert_eq!(
+            cuda_available(),
+            direct,
+            "cuda_available() result must match a fresh nvidia-smi probe"
+        );
+    }
 }
 
 pub fn vec_add_gpu(a: &[f32], b: &[f32]) -> Vec<f32> {
