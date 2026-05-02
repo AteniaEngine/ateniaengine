@@ -235,12 +235,23 @@ pub fn cuda_matmul_non_pooled(
 ) -> Option<Tensor> {
     use std::mem;
 
+    #[cfg(feature = "gpu-trace")]
+    eprintln!(
+        "[GPU-TRACE] cuda_matmul_non_pooled ENTRY: m={}, k={}, n={}, a.len={}, b.len={}",
+        m, k, n, a.len(), b.len()
+    );
+
     // Guard: refuse to issue a CUDA kernel call when the driver is
     // not available. Without this check, `cuda_malloc` (a no-op stub
     // on non-CUDA hosts) would still return non-null garbage and the
     // kernel launch would blow up. Mirrors the gate in
     // `gpu_can_run_matmul`.
-    if !super::cuda_available() {
+    let cuda_ok = super::cuda_available();
+    #[cfg(feature = "gpu-trace")]
+    eprintln!("[GPU-TRACE] cuda_matmul_non_pooled: cuda_available()={}", cuda_ok);
+    if !cuda_ok {
+        #[cfg(feature = "gpu-trace")]
+        eprintln!("[GPU-TRACE] cuda_matmul_non_pooled: EXIT=None (cuda_available=false)");
         return None;
     }
 
@@ -249,22 +260,72 @@ pub fn cuda_matmul_non_pooled(
     let out_len = m * n;
     let bytes_out = out_len * mem::size_of::<f32>();
 
+    #[cfg(feature = "gpu-trace")]
+    let t_alloc = std::time::Instant::now();
+
     let mut allocs = NonPooledAllocs::new();
-    let d_a = allocs.alloc(bytes_a)?;
-    let d_b = allocs.alloc(bytes_b)?;
-    let d_out = allocs.alloc(bytes_out)?;
+    let d_a = match allocs.alloc(bytes_a) {
+        Some(p) => p,
+        None => {
+            #[cfg(feature = "gpu-trace")]
+            eprintln!(
+                "[GPU-TRACE] cuda_matmul_non_pooled: EXIT=None (cuda_malloc A failed, bytes={})",
+                bytes_a
+            );
+            return None;
+        }
+    };
+    #[cfg(feature = "gpu-trace")]
+    eprintln!("[GPU-TRACE] cuda_malloc A ok: {:.1}MB", bytes_a as f64 / (1024.0 * 1024.0));
+
+    let d_b = match allocs.alloc(bytes_b) {
+        Some(p) => p,
+        None => {
+            #[cfg(feature = "gpu-trace")]
+            eprintln!(
+                "[GPU-TRACE] cuda_matmul_non_pooled: EXIT=None (cuda_malloc B failed, bytes={})",
+                bytes_b
+            );
+            return None;
+        }
+    };
+    #[cfg(feature = "gpu-trace")]
+    eprintln!("[GPU-TRACE] cuda_malloc B ok: {:.1}MB", bytes_b as f64 / (1024.0 * 1024.0));
+
+    let d_out = match allocs.alloc(bytes_out) {
+        Some(p) => p,
+        None => {
+            #[cfg(feature = "gpu-trace")]
+            eprintln!(
+                "[GPU-TRACE] cuda_matmul_non_pooled: EXIT=None (cuda_malloc OUT failed, bytes={})",
+                bytes_out
+            );
+            return None;
+        }
+    };
+    #[cfg(feature = "gpu-trace")]
+    {
+        eprintln!("[GPU-TRACE] cuda_malloc OUT ok: {:.1}MB", bytes_out as f64 / (1024.0 * 1024.0));
+        eprintln!("[GPU-TRACE] cuda_malloc total: {:.2}ms", t_alloc.elapsed().as_secs_f64() * 1000.0);
+    }
 
     // H→D: stage both inputs into VRAM. On any failure the RAII
     // guard frees every buffer allocated so far when this function
     // returns.
     unsafe {
+        #[cfg(feature = "gpu-trace")]
+        let t_h2d = std::time::Instant::now();
         let rc = cudaMemcpy(
             d_a,
             a.as_ptr() as *const c_void,
             bytes_a,
             CUDA_MEMCPY_HOST_TO_DEVICE,
         );
+        #[cfg(feature = "gpu-trace")]
+        eprintln!("[GPU-TRACE] cudaMemcpy H2D A: rc={}, {:.1}MB", rc, bytes_a as f64 / (1024.0 * 1024.0));
         if rc != 0 {
+            #[cfg(feature = "gpu-trace")]
+            eprintln!("[GPU-TRACE] cuda_matmul_non_pooled: EXIT=None (memcpy A failed, rc={})", rc);
             return None;
         }
         let rc = cudaMemcpy(
@@ -273,13 +334,21 @@ pub fn cuda_matmul_non_pooled(
             bytes_b,
             CUDA_MEMCPY_HOST_TO_DEVICE,
         );
+        #[cfg(feature = "gpu-trace")]
+        eprintln!("[GPU-TRACE] cudaMemcpy H2D B: rc={}, {:.1}MB", rc, bytes_b as f64 / (1024.0 * 1024.0));
         if rc != 0 {
+            #[cfg(feature = "gpu-trace")]
+            eprintln!("[GPU-TRACE] cuda_matmul_non_pooled: EXIT=None (memcpy B failed, rc={})", rc);
             return None;
         }
+        #[cfg(feature = "gpu-trace")]
+        eprintln!("[GPU-TRACE] H2D total: {:.2}ms", t_h2d.elapsed().as_secs_f64() * 1000.0);
 
         // Kernel launch. `matmul_f32_launch_device` returns void
         // and syncs internally; no error code is propagated, so we
         // assume success consistent with `cuda_matmul`.
+        #[cfg(feature = "gpu-trace")]
+        let t_kernel = std::time::Instant::now();
         matmul_f32_launch_device(
             d_a as *const f32,
             d_b as *const f32,
@@ -288,21 +357,34 @@ pub fn cuda_matmul_non_pooled(
             k as c_int,
             n as c_int,
         );
+        #[cfg(feature = "gpu-trace")]
+        eprintln!("[GPU-TRACE] kernel matmul_f32_launch_device: {:.2}ms", t_kernel.elapsed().as_secs_f64() * 1000.0);
 
         // D→H: pull the output back into a fresh host Vec. Allocated
         // here (rather than into a pre-built `Tensor::zeros_new`) so
         // the function has a single ownership chain that is easy to
         // reason about on the error paths.
         let mut out_host = vec![0.0_f32; out_len];
+        #[cfg(feature = "gpu-trace")]
+        let t_d2h = std::time::Instant::now();
         let rc = cudaMemcpy(
             out_host.as_mut_ptr() as *mut c_void,
             d_out,
             bytes_out,
             CUDA_MEMCPY_DEVICE_TO_HOST,
         );
+        #[cfg(feature = "gpu-trace")]
+        eprintln!("[GPU-TRACE] cudaMemcpy D2H OUT: rc={}, {:.1}MB, {:.2}ms",
+            rc, bytes_out as f64 / (1024.0 * 1024.0),
+            t_d2h.elapsed().as_secs_f64() * 1000.0);
         if rc != 0 {
+            #[cfg(feature = "gpu-trace")]
+            eprintln!("[GPU-TRACE] cuda_matmul_non_pooled: EXIT=None (memcpy D2H failed, rc={})", rc);
             return None;
         }
+
+        #[cfg(feature = "gpu-trace")]
+        eprintln!("[GPU-TRACE] cuda_matmul_non_pooled: EXIT=Some (success), 3x cuda_free pending on guard drop");
 
         // Guard drops here when `Some(...)` returns, freeing all 3
         // device buffers before the host Vec is wrapped into the

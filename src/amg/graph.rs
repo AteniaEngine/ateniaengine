@@ -3279,9 +3279,19 @@ impl Graph {
                 // `gpu/dispatch/hooks.rs` now fire on every Llama
                 // MatMul. The M4.7.6.c family-level F64 harness
                 // asserts both `>0` after the forward.
-                if gpu_hooks::gpu_can_run_matmul(m, k, n)
-                    && gpu_hooks::try_gpu_matmul(&a, &b, &mut out)
-                {
+                #[cfg(feature = "gpu-trace")]
+                eprintln!(
+                    "[GPU-TRACE] graph.MatMul ENTRY: shape m={}, k={}, n={}",
+                    m, k, n
+                );
+                let gate_pass = gpu_hooks::gpu_can_run_matmul(m, k, n);
+                let gpu_ran = gate_pass && gpu_hooks::try_gpu_matmul(&a, &b, &mut out);
+                #[cfg(feature = "gpu-trace")]
+                eprintln!(
+                    "[GPU-TRACE] graph.MatMul DECISION: gpu_can_run={} try_gpu_matmul={}",
+                    gate_pass, gpu_ran
+                );
+                if gpu_ran {
                     device_chosen = DeviceTarget::GPU;
 
                     // Register a sample only in 5.4 mode, without changing
@@ -3315,6 +3325,11 @@ impl Graph {
                     self.nodes[node_id].set_output(out);
                     return;
                 }
+
+                #[cfg(feature = "gpu-trace")]
+                eprintln!(
+                    "[GPU-TRACE] graph.MatMul FALLTHROUGH: try_gpu_matmul returned false, going to legacy CPU/dispatch_matmul_gpu path"
+                );
 
                 // M4.7.3.c: defensive Cuda → Cpu materialisation before
                 // the legacy AVX2 / `dispatch_matmul_gpu` paths. Reaching

@@ -42,6 +42,16 @@ hw-probe = [
     "dep:os_info",
 ]
 
+# M6 diagnostic — verbose stderr tracing of every gate and sub-path
+# inside the GPU MatMul dispatch surface (`gpu/dispatch/hooks.rs`,
+# `cuda/matmul.rs::cuda_matmul_non_pooled`, and the `MatMul` arm of
+# `amg/graph.rs`). Default-off so production builds pay zero overhead.
+# Enable with:
+#     cargo run --release --features gpu-trace --bin atenia ...
+# The trace lines are prefixed `[GPU-TRACE]` so they can be `findstr`-
+# filtered out of the rest of the binary's output.
+gpu-trace = []
+
 [dependencies]
 rand = "0.8"
 uuid = { version = "1", features = ["v4"] }

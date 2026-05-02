@@ -26,6 +26,23 @@ fn apx_trace_enabled() -> bool {
     matches!(std::env::var("APX_TRACE").as_deref(), Ok("1")) && !crate::apx_is_silent()
 }
 
+/// **M6 gpu-trace** — pretty name for a tensor's storage variant,
+/// used in the cfg-gated trace lines so the operator can see at a
+/// glance whether a MatMul operand is `Cpu`, `CpuBf16`, `CpuShared`,
+/// `CpuBf16Shared`, `Cuda`, or `Disk` at dispatch time. Returning a
+/// `&'static str` keeps the trace path allocation-free.
+#[cfg(feature = "gpu-trace")]
+pub(crate) fn storage_kind(t: &Tensor) -> &'static str {
+    match &t.storage {
+        TensorStorage::Cpu(_) => "Cpu",
+        TensorStorage::CpuBf16(_) => "CpuBf16",
+        TensorStorage::CpuShared(_) => "CpuShared",
+        TensorStorage::CpuBf16Shared(_) => "CpuBf16Shared",
+        TensorStorage::Cuda(_) => "Cuda",
+        TensorStorage::Disk(_) => "Disk",
+    }
+}
+
 /// M4.7.3.e — process-wide counters for `try_gpu_matmul` execution
 /// path. Exposed for smoke / regression tests that need concrete
 /// evidence the GPU branch actually ran instead of falling back to
@@ -126,9 +143,23 @@ pub fn increment_legacy_gpu_matmul_counter() {
 /// step 1 (`cuda::cuda_available`) means repeated calls cost a
 /// single atomic read.
 pub fn gpu_can_run_matmul(m: usize, k: usize, n: usize) -> bool {
+    #[cfg(feature = "gpu-trace")]
+    {
+        let f32_size = std::mem::size_of::<f32>();
+        let a_mb = (m.saturating_mul(k).saturating_mul(f32_size)) as f64 / (1024.0 * 1024.0);
+        let b_mb = (k.saturating_mul(n).saturating_mul(f32_size)) as f64 / (1024.0 * 1024.0);
+        let out_mb = (m.saturating_mul(n).saturating_mul(f32_size)) as f64 / (1024.0 * 1024.0);
+        eprintln!(
+            "[GPU-TRACE] gpu_can_run_matmul: shape m={}, k={}, n={} | A={:.1}MB B={:.1}MB out={:.1}MB",
+            m, k, n, a_mb, b_mb, out_mb
+        );
+    }
+
     // Require a minimum amount of work to amortize host<->device overhead.
     let ops = m.saturating_mul(k).saturating_mul(n);
     if ops <= 256 {
+        #[cfg(feature = "gpu-trace")]
+        eprintln!("[GPU-TRACE] gpu_can_run_matmul: REJECT (ops={} <= 256)", ops);
         return false;
     }
 
@@ -137,7 +168,12 @@ pub fn gpu_can_run_matmul(m: usize, k: usize, n: usize) -> bool {
     // after the first call. Must remain the last bail before
     // `try_gpu_matmul`'s shape-class routing — see S3 in
     // `INVESTIGATION_M6_DEEP.md`.
-    if !cuda::cuda_available() {
+    let cuda_ok = cuda::cuda_available();
+    #[cfg(feature = "gpu-trace")]
+    eprintln!("[GPU-TRACE] gpu_can_run_matmul: cuda_available()={}", cuda_ok);
+    if !cuda_ok {
+        #[cfg(feature = "gpu-trace")]
+        eprintln!("[GPU-TRACE] gpu_can_run_matmul: REJECT (cuda_available=false)");
         return false;
     }
 
@@ -148,6 +184,8 @@ pub fn gpu_can_run_matmul(m: usize, k: usize, n: usize) -> bool {
     // so the executor calls `try_gpu_matmul`, which then picks the
     // right sub-path.
 
+    #[cfg(feature = "gpu-trace")]
+    eprintln!("[GPU-TRACE] gpu_can_run_matmul: ACCEPT");
     true
 }
 
@@ -169,25 +207,43 @@ pub fn gpu_can_run_matmul(m: usize, k: usize, n: usize) -> bool {
 ///   before re-dispatching, so this branch is unreachable on the
 ///   Llama hot path; it stays as a defensive fallback.
 pub fn try_gpu_matmul(a: &Tensor, b: &Tensor, out: &mut Tensor) -> bool {
+    #[cfg(feature = "gpu-trace")]
+    eprintln!(
+        "[GPU-TRACE] try_gpu_matmul ENTRY: a.storage={} b.storage={} out.storage={} | a.dtype={:?} b.dtype={:?} out.dtype={:?} | a.shape={:?} b.shape={:?} out.shape={:?}",
+        storage_kind(a), storage_kind(b), storage_kind(out),
+        a.dtype, b.dtype, out.dtype,
+        a.shape, b.shape, out.shape,
+    );
+
     if a.dtype != b.dtype || a.dtype != out.dtype {
+        #[cfg(feature = "gpu-trace")]
+        eprintln!("[GPU-TRACE] try_gpu_matmul: REJECT (dtype mismatch)");
         return false;
     }
     if a.shape.len() != 2 || b.shape.len() != 2 {
+        #[cfg(feature = "gpu-trace")]
+        eprintln!("[GPU-TRACE] try_gpu_matmul: REJECT (rank != 2)");
         return false;
     }
 
     let m = a.shape[0];
     let k = a.shape[1];
     if b.shape[0] != k {
+        #[cfg(feature = "gpu-trace")]
+        eprintln!("[GPU-TRACE] try_gpu_matmul: REJECT (inner dim mismatch)");
         return false;
     }
     let n = b.shape[1];
 
     if out.shape != [m, n] {
+        #[cfg(feature = "gpu-trace")]
+        eprintln!("[GPU-TRACE] try_gpu_matmul: REJECT (out shape mismatch)");
         return false;
     }
 
     if !cuda::cuda_available() {
+        #[cfg(feature = "gpu-trace")]
+        eprintln!("[GPU-TRACE] try_gpu_matmul: REJECT (cuda_available=false)");
         return false;
     }
 
@@ -201,11 +257,15 @@ pub fn try_gpu_matmul(a: &Tensor, b: &Tensor, out: &mut Tensor) -> bool {
         )
     );
     if all_cuda {
+        #[cfg(feature = "gpu-trace")]
+        eprintln!("[GPU-TRACE] try_gpu_matmul: BRANCH=residency (all_cuda)");
         cuda_matmul_inplace(a, b, out, m, k, n);
         GPU_MATMUL_RESIDENT_COUNT.fetch_add(1, Ordering::Relaxed);
         if apx_trace_enabled() {
             println!("[APX M4.7.3] GPU MatMul executed (residency-aware)");
         }
+        #[cfg(feature = "gpu-trace")]
+        eprintln!("[GPU-TRACE] try_gpu_matmul: EXIT=true (residency)");
         return true;
     }
 
@@ -223,10 +283,17 @@ pub fn try_gpu_matmul(a: &Tensor, b: &Tensor, out: &mut Tensor) -> bool {
         // this hook (see `Tensor::ensure_decoded`); a mixed call
         // signals a routing mistake. Bail out silently and let the
         // caller's CPU path handle the operation.
+        #[cfg(feature = "gpu-trace")]
+        eprintln!(
+            "[GPU-TRACE] try_gpu_matmul: REJECT (mixed storage: a={} b={} out={})",
+            storage_kind(a), storage_kind(b), storage_kind(out),
+        );
         return false;
     }
 
     if !gpu_can_run_matmul(m, k, n) {
+        #[cfg(feature = "gpu-trace")]
+        eprintln!("[GPU-TRACE] try_gpu_matmul: REJECT (gpu_can_run_matmul=false)");
         return false;
     }
 
@@ -251,6 +318,11 @@ pub fn try_gpu_matmul(a: &Tensor, b: &Tensor, out: &mut Tensor) -> bool {
     let max_per_alloc = a_bytes.max(b_bytes).max(out_bytes);
 
     if max_per_alloc > crate::apx4_12::DEFAULT_BLOCK_SIZE {
+        #[cfg(feature = "gpu-trace")]
+        eprintln!(
+            "[GPU-TRACE] try_gpu_matmul: BRANCH=non_pooled (max_per_alloc={:.1}MB > 64MB)",
+            max_per_alloc as f64 / (1024.0 * 1024.0)
+        );
         // Non-pooled path. The all_cpu branch above guarantees both
         // operand storages are `Cpu`, so `as_cpu_slice` is safe.
         let a_slice = a.as_cpu_slice();
@@ -264,13 +336,29 @@ pub fn try_gpu_matmul(a: &Tensor, b: &Tensor, out: &mut Tensor) -> bool {
                     if apx_trace_enabled() {
                         println!("[APX M6.2b] GPU MatMul executed (non-pooled)");
                     }
+                    #[cfg(feature = "gpu-trace")]
+                    eprintln!("[GPU-TRACE] try_gpu_matmul: EXIT=true (non_pooled)");
                     return true;
                 }
+                #[cfg(feature = "gpu-trace")]
+                eprintln!(
+                    "[GPU-TRACE] try_gpu_matmul: EXIT=false (non_pooled returned shape mismatch: got {:?} want {:?})",
+                    gpu_out.shape, out.shape,
+                );
                 false
             }
-            None => false,
+            None => {
+                #[cfg(feature = "gpu-trace")]
+                eprintln!("[GPU-TRACE] try_gpu_matmul: EXIT=false (non_pooled returned None)");
+                false
+            }
         }
     } else {
+        #[cfg(feature = "gpu-trace")]
+        eprintln!(
+            "[GPU-TRACE] try_gpu_matmul: BRANCH=pool (max_per_alloc={:.1}MB <= 64MB)",
+            max_per_alloc as f64 / (1024.0 * 1024.0)
+        );
         let mut ran_gpu = false;
         let bytes_needed = m
             .saturating_mul(n)
@@ -295,6 +383,8 @@ pub fn try_gpu_matmul(a: &Tensor, b: &Tensor, out: &mut Tensor) -> bool {
             },
         );
 
+        #[cfg(feature = "gpu-trace")]
+        eprintln!("[GPU-TRACE] try_gpu_matmul: EXIT={} (pool)", ran_gpu);
         ran_gpu
     }
 }
