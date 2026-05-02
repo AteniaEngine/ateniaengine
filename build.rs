@@ -154,6 +154,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/cuda/linear_cuda.cu");
     println!("cargo:rerun-if-changed=src/cuda/batch_matmul.cu");
     println!("cargo:rerun-if-changed=src/cuda/fused_linear_silu.cu");
+    println!("cargo:rerun-if-changed=src/cuda/bf16_to_f32.cu");
 
     eprintln!("[DEBUG] Using NVCC path: {}", nvcc_path);
     eprintln!("[DEBUG] CU file path: {}", cu_path);
@@ -373,6 +374,52 @@ fn main() {
         String::from_utf8_lossy(&fls_lib.stderr)
     );
 
+    // Compile bf16_to_f32 CUDA kernel into separate static library
+    let bf16_out = Command::new(&nvcc_path)
+        .args(&[
+            "-ccbin",
+            msvc_bin.as_str(),
+            "-c",
+            "src/cuda/bf16_to_f32.cu",
+            "-o",
+            "bf16_to_f32.obj",
+            "-Xcompiler",
+            "/MD",
+            "-Xcompiler",
+            "/EHsc",
+        ])
+        .output()
+        .expect("Failed to run NVCC (bf16_to_f32)");
+
+    eprintln!("---- BF16_TO_F32 NVCC STATUS: {:?} ----", bf16_out.status.code());
+    eprintln!(
+        "---- BF16_TO_F32 NVCC STDOUT ----\n{}",
+        String::from_utf8_lossy(&bf16_out.stdout)
+    );
+    eprintln!(
+        "---- BF16_TO_F32 NVCC STDERR ----\n{}",
+        String::from_utf8_lossy(&bf16_out.stderr)
+    );
+
+    if !bf16_out.status.success() {
+        panic!("CUDA bf16_to_f32 kernel compilation failed");
+    }
+
+    let bf16_lib = Command::new(&lib_exe)
+        .args(&["/OUT:bf16_to_f32.lib", "bf16_to_f32.obj"])
+        .output()
+        .expect("Failed to create bf16_to_f32 library.");
+
+    eprintln!("---- BF16_TO_F32 LIB STATUS: {:?} ----", bf16_lib.status.code());
+    eprintln!(
+        "---- BF16_TO_F32 LIB STDOUT ----\n{}",
+        String::from_utf8_lossy(&bf16_lib.stdout)
+    );
+    eprintln!(
+        "---- BF16_TO_F32 LIB STDERR ----\n{}",
+        String::from_utf8_lossy(&bf16_lib.stderr)
+    );
+
     // Link against cudart from the same toolkit we used to compile kernels.
     let cuda_lib_dir = format!(r"{}\lib\x64", cuda_path);
     println!("cargo:rustc-link-search=native={}", cuda_lib_dir);
@@ -385,4 +432,5 @@ fn main() {
     println!("cargo:rustc-link-lib=static=linear_cuda");
     println!("cargo:rustc-link-lib=static=batch_matmul");
     println!("cargo:rustc-link-lib=static=fused_linear_silu");
+    println!("cargo:rustc-link-lib=static=bf16_to_f32");
 }
