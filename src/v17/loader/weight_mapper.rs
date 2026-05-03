@@ -94,6 +94,39 @@ pub fn vram_slow_path_count() -> usize {
     VRAM_SLOW_PATH_COUNT.load(Ordering::Relaxed)
 }
 
+/// **M7.0** — counters that record which Disk-tier write
+/// sub-path each parameter took during
+/// `load_one_shard_into_with_residency_plan`. The Disk arm
+/// has the same fast-path / slow-path structure that the Vram
+/// arm pioneered in M6 sub-fase 2 — but at this commit
+/// (M7.0) the **fast path is not yet implemented**: every
+/// Disk-tier entry currently goes through the slow path
+/// (decode to F32, then optionally re-encode to BF16, then
+/// `disk_tier::write_*_tensor`). The fast-path counter is
+/// reserved for M7.1 which will add a raw-bytes BF16 write
+/// path mirroring `bf16_to_f32_resident_in_vram_from_raw_bytes`.
+///
+/// Today's expectation: `disk_slow_path_count` increments
+/// once per Disk-tier entry; `disk_fast_path_count` stays
+/// at zero until M7.1 lands.
+static DISK_FAST_PATH_COUNT: AtomicUsize = AtomicUsize::new(0);
+static DISK_SLOW_PATH_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Returns the number of `Tier::Disk` writes that took the
+/// raw-bytes fast path. Reserved for M7.1; returns 0 today.
+pub fn disk_fast_path_count() -> usize {
+    DISK_FAST_PATH_COUNT.load(Ordering::Relaxed)
+}
+
+/// Returns the number of `Tier::Disk` writes that took the
+/// F32-transient slow path since process start. The M6 Disk
+/// arm always goes through this path; M7.1 will introduce a
+/// raw-bytes BF16-source-no-transforms fast path that bypasses
+/// the F32 transient entirely.
+pub fn disk_slow_path_count() -> usize {
+    DISK_SLOW_PATH_COUNT.load(Ordering::Relaxed)
+}
+
 /// A single transformation applied to a tensor's decoded float values
 /// between safetensors decode and graph copy. Multiple transforms are
 /// applied in the order they appear in [`WeightMapping::transforms`].
@@ -669,6 +702,14 @@ impl WeightMapper {
                     });
                     store.names.push(entry.name.to_string());
                     already_inserted.insert(entry.name.to_string());
+                    // **M7.0** — counter tag. Today the Disk arm
+                    // always uses the slow path (F32 transient
+                    // materialised by `entry.to_vec_f32()` before
+                    // this match block). M7.1 will add a fast-path
+                    // BF16 raw-bytes branch that bypasses the
+                    // transient and increments the matching
+                    // `DISK_FAST_PATH_COUNT` instead.
+                    DISK_SLOW_PATH_COUNT.fetch_add(1, Ordering::Relaxed);
                 }
                 Tier::Ram => {
                     // Existing graph-slot write path — kept
