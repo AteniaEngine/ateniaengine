@@ -29,7 +29,7 @@ use atenia_engine::tensor::tensor::{f32_to_bf16_bits, bf16_bits_to_f32, Tensor};
 use atenia_engine::tensor::DType;
 use atenia_engine::v17::loader::safetensors_reader::SafetensorsReader;
 use atenia_engine::v17::loader::weight_mapper::{
-    disk_slow_path_count, WeightMapper,
+    disk_fast_path_count, disk_slow_path_count, WeightMapper,
 };
 use safetensors::tensor::TensorView;
 use safetensors::Dtype as StDtype;
@@ -227,6 +227,101 @@ fn disk_tier_loader_arm_executes_and_round_trips_bit_exact() {
             r.to_bits(),
             e.to_bits(),
             "bit-exact mismatch at index {} (disk={:e}, expected={:e})",
+            i,
+            r,
+            e
+        );
+    }
+}
+
+/// **M7.1** — Disk fast-path validation. Same setup as the M7.0
+/// test above, but with the mapper configured for BF16 storage
+/// (`store_params_as_bf16(true)`). Under that mode + BF16 source
+/// + no transforms, the loader must take the fast path:
+///   - `DISK_FAST_PATH_COUNT` increments by 1.
+///   - `DISK_SLOW_PATH_COUNT` does NOT move.
+///   - The on-disk byte layout is bit-exact equivalent to what
+///     the slow path would produce (verified indirectly by
+///     reading back and comparing values).
+#[test]
+fn disk_fast_path_with_bf16_store_no_transforms() {
+    let _guard = DISK_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let disk_values: Vec<f32> = (0..16).map(|i| (i as f32) * 0.1 - 0.7).collect();
+    let ram_values: Vec<f32> = (0..16).map(|i| (i as f32) * 0.05 + 0.3).collect();
+    let entries = vec![
+        ("ram_resident_fp", vec![4, 4], ram_values.clone()),
+        ("disk_target_fp", vec![4, 4], disk_values.clone()),
+    ];
+
+    let buf = build_multi_bf16_safetensors(&entries);
+    let reader = SafetensorsReader::from_bytes(buf).expect("reader");
+
+    let (mut graph, param_ids, param_names) = build_graph_for_entries(&entries);
+    let mut mapper =
+        WeightMapper::from_param_names_and_ids(&param_names, &param_ids).unwrap();
+    // **Critical for the fast path**: enable BF16 storage on the
+    // mapper. The fast path only fires under this config because
+    // F32-on-disk requires the F32 transient anyway.
+    mapper.set_store_params_as_bf16(true);
+
+    let plan = handcrafted_plan("disk_target_fp", "ram_resident_fp");
+
+    let fast_before = disk_fast_path_count();
+    let slow_before = disk_slow_path_count();
+
+    let (store, _report) = mapper
+        .load_into_with_residency_plan(
+            &mut graph,
+            &reader,
+            &plan,
+            &param_ids,
+            &param_names,
+        )
+        .expect("load_into_with_residency_plan");
+
+    let fast_after = disk_fast_path_count();
+    let slow_after = disk_slow_path_count();
+
+    assert_eq!(
+        fast_after - fast_before,
+        1,
+        "DISK_FAST_PATH_COUNT must increment by 1 when source is BF16 \
+         + no transforms + store_params_as_bf16=true; got delta {}",
+        fast_after - fast_before
+    );
+    assert_eq!(
+        slow_after - slow_before,
+        0,
+        "DISK_SLOW_PATH_COUNT must NOT move on the fast-path scenario; \
+         got delta {} (a non-zero value means an F32 transient was \
+         materialised, defeating the M7.1 peak-RAM contract)",
+        slow_after - slow_before
+    );
+
+    // Bit-exact round-trip via to_tensor + copy_to_cpu_vec, same
+    // contract as the M7.0 slow-path test.
+    let disk_entry = store.get_by_name("disk_target_fp").unwrap();
+    assert!(matches!(disk_entry, SharedParam::Disk { .. }));
+    let disk_tensor = disk_entry.to_tensor();
+    let restored: Vec<f32> = disk_tensor.copy_to_cpu_vec();
+
+    let expected: Vec<f32> = disk_values
+        .iter()
+        .map(|&v| {
+            let bits = f32_to_bf16_bits(v);
+            bf16_bits_to_f32(bits)
+        })
+        .collect();
+
+    assert_eq!(restored.len(), expected.len());
+    for (i, (r, e)) in restored.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(
+            r.to_bits(),
+            e.to_bits(),
+            "fast-path bit-exact mismatch at index {} (disk={:e}, expected={:e})",
             i,
             r,
             e

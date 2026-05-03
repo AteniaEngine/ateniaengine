@@ -532,6 +532,70 @@ impl WeightMapper {
                 continue;
             }
 
+            // ----- M7.1 — DISK fast path: BF16 source + no transforms.
+            //
+            // Direct write of the raw safetensors bytes to NVMe via
+            // `disk_tier::write_bf16_from_raw_bytes`. No `Vec<f32>`,
+            // no `Vec<u16>`, no host transient beyond what the
+            // reader already paid for. Closes risk R3 (BSOD-class
+            // peak-RAM regression on the Disk-tier loader path):
+            // peak host RAM during this write is exactly the
+            // safetensors reader's owned bytes — no per-tensor
+            // 540 MB F32 transient that the slow path would
+            // materialise via `entry.to_vec_f32()`.
+            //
+            // Only applies when the mapper is configured to store
+            // params as BF16 (`store_params_as_bf16=true`). With
+            // `store_params_as_bf16=false`, the slow path's F32
+            // semantic on disk takes over (the source must be
+            // upcast to F32 before writing, which requires the
+            // F32 transient anyway).
+            if tier == Tier::Disk
+                && entry.dtype == DType::BF16
+                && mapping.transforms.is_empty()
+                && self.store_params_as_bf16
+            {
+                let numel: usize = entry.shape.iter().product();
+                let tensor = graph
+                    .nodes
+                    .get(node_id)
+                    .and_then(|n| n.output.as_ref())
+                    .ok_or_else(|| {
+                        LoaderError::InvalidFormat(format!(
+                            "mapper points '{}' at node_id {} but that node has no \
+                             materialized tensor in the graph",
+                            entry.name, node_id
+                        ))
+                    })?;
+                if entry.shape != tensor.shape.as_slice() {
+                    return Err(LoaderError::ShapeMismatch {
+                        tensor_name: entry.name.to_string(),
+                        expected: tensor.shape.clone(),
+                        actual: entry.shape.to_vec(),
+                    });
+                }
+
+                let cache_dir = crate::tensor::disk_tier::default_cache_dir();
+                let handle = crate::tensor::disk_tier::write_bf16_from_raw_bytes(
+                    &cache_dir,
+                    entry.raw_bytes,
+                    numel,
+                )
+                .map_err(|e| LoaderError::IoError(e.to_string()))?;
+
+                store.params.push(SharedParam::Disk {
+                    shape: entry.shape.to_vec(),
+                    handle,
+                });
+                store.names.push(entry.name.to_string());
+                already_inserted.insert(entry.name.to_string());
+
+                DISK_FAST_PATH_COUNT.fetch_add(1, Ordering::Relaxed);
+                outcome.loaded += 1;
+                satisfied.insert(entry.name.to_string());
+                continue;
+            }
+
             // ----- Slow path: F32 working buffer + transforms.
             //
             // Mirrors `load_one_shard_into`'s decode-transform

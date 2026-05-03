@@ -386,6 +386,71 @@ pub fn write_bf16_tensor(
     })
 }
 
+/// **M7.1** — zero-host-copy variant of [`write_bf16_tensor`].
+/// Takes a `&[u8]` of raw BF16 bytes (typically a slice into a
+/// safetensors reader's owned buffer) plus the logical element
+/// count, and writes the bytes directly to disk without first
+/// materialising a host-side `Vec<u16>` or `Vec<f32>`.
+///
+/// This is the load-time path used by
+/// `WeightMapper::load_into_with_residency_plan` when:
+/// - the source dtype is BF16,
+/// - the parameter has no `LoadTransform`s registered, and
+/// - the planner assigned it to [`crate::gpu::tier_plan::Tier::Disk`].
+///
+/// Under those conditions, the entire weight write happens
+/// without ever materialising a host-side F32 transient or a
+/// secondary `Vec<u16>`. The peak host-RAM cost is the
+/// safetensors reader's owned byte buffer (which the caller
+/// already paid for), no more — closing risk R3 (BSOD-class
+/// peak-RAM regression) for the Disk-tier loader path.
+///
+/// # Errors
+///
+/// - `InvalidInput` if `raw_bytes.len() != numel * 2`.
+/// - Whatever `fs::create_dir_all` / `fs::write` surface
+///   (write error, permission denied, disk full).
+///
+/// # Bit-exactness
+///
+/// The on-disk byte layout is identical to what
+/// [`write_bf16_tensor`] would produce given the same logical
+/// values, because both functions just memcpy the BF16 bits to
+/// disk in little-endian `u16` order. A round-trip via
+/// [`read_bf16_tensor`] returns the same `Vec<u16>` either way.
+pub fn write_bf16_from_raw_bytes(
+    cache_dir: &Path,
+    raw_bytes: &[u8],
+    numel: usize,
+) -> io::Result<DiskTensorHandle> {
+    if raw_bytes.len() != numel * 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "write_bf16_from_raw_bytes: raw_bytes.len()={} but \
+                 numel={} requires {} bytes",
+                raw_bytes.len(),
+                numel,
+                numel * 2
+            ),
+        ));
+    }
+
+    fs::create_dir_all(cache_dir)?;
+
+    let name = format!("tensor_{}.bin", Uuid::new_v4());
+    let path = cache_dir.join(name);
+    fs::write(&path, raw_bytes)?;
+
+    Ok(DiskTensorHandle {
+        inner: Arc::new(InnerDiskFile {
+            path,
+            numel,
+            dtype: DiskDtype::BF16,
+        }),
+    })
+}
+
 /// Deserialize the file referenced by `handle` into an owned
 /// `Vec<f32>`. Validates that the on-disk byte count matches
 /// `handle.numel() * 4` and returns `InvalidData` on mismatch —
