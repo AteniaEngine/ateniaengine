@@ -70,7 +70,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::amg::builder::GraphBuilder;
-use crate::amg::weight_store::{WeightStore, WeightStoreError};
+use crate::amg::weight_store::{UploadReport, WeightStore, WeightStoreError};
 use crate::nn::llama::config::{ConfigError, LlamaConfig};
 use crate::nn::llama::weight_loading::llama_weight_mapper;
 use crate::tokenizer::{AteniaTokenizer, ChatMessage, TokenizerError};
@@ -206,7 +206,7 @@ impl GenerationPipeline {
         //    scratch graph's parameter slots are `Shared`
         //    views, so dropping the graph is safe — the
         //    parameter Arcs survive in the store.
-        let store = WeightStore::extract_from_graph(
+        let mut store = WeightStore::extract_from_graph(
             &mut scratch_graph,
             &handles.param_ids,
             &handles.param_names,
@@ -218,6 +218,65 @@ impl GenerationPipeline {
         //    each new build via `build_llama_with_store`. No
         //    leak.
         drop(scratch_graph);
+
+        // 7. **M6 step 4c** — opt-in GPU residency.
+        //
+        // Default-off so production smokes stay bit-exact with
+        // the M5.f.a baseline. Operators set
+        // `ATENIA_GPU_RESIDENCY=1` to upload the first N layers
+        // of the model to VRAM. Each layer's BF16 parameters
+        // become `SharedParam::Cuda` and the original
+        // `Arc<Vec<u16>>` is dropped from the store, freeing
+        // host RAM (subject to whether any sibling reference
+        // survives — see `UploadReport.ram_bytes_freed` doc).
+        //
+        // The dispatch hook in `gpu/dispatch/hooks.rs::try_gpu_matmul`
+        // (M6 step 4d) detects the `Cuda` weight at matmul
+        // time and routes to a residency path that uploads the
+        // small activation (~20 KB) instead of the 270 MB
+        // weight, which is the throughput unlock this whole
+        // milestone is targeting.
+        //
+        // `n_layers` is hardcoded conservatively at 5 for the
+        // first runs — 5 × ~1.21 GiB F32 ≈ 6 GiB persistent
+        // VRAM, comfortably under the RTX 4070 Laptop's 8 GiB
+        // dedicated. A future sub-step can wire this to the
+        // safety gate's `DegradeToLayers` decision and to a
+        // user-facing env (e.g. `ATENIA_GPU_LAYERS=N`).
+        if std::env::var("ATENIA_GPU_RESIDENCY").as_deref() == Ok("1") {
+            let n_layers: usize = 5;
+            let mut total_report = UploadReport::default();
+            for layer_idx in 0..n_layers {
+                match store.upload_layer_bf16_to_vram(layer_idx) {
+                    Ok(report) => {
+                        eprintln!(
+                            "[M6] Layer {}: {} params to VRAM, \
+                             {:.2} GiB RAM freed",
+                            layer_idx,
+                            report.params_uploaded,
+                            report.ram_bytes_freed as f64 / 1024.0_f64.powi(3),
+                        );
+                        total_report.params_uploaded += report.params_uploaded;
+                        total_report.vram_bytes_used += report.vram_bytes_used;
+                        total_report.ram_bytes_freed += report.ram_bytes_freed;
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[M6] Layer {} upload failed: {} \
+                             — staying on CPU",
+                            layer_idx, e,
+                        );
+                    }
+                }
+            }
+            eprintln!(
+                "[M6] Residency total: {} params, {:.2} GiB in VRAM, \
+                 {:.2} GiB RAM freed",
+                total_report.params_uploaded,
+                total_report.vram_bytes_used as f64 / 1024.0_f64.powi(3),
+                total_report.ram_bytes_freed as f64 / 1024.0_f64.powi(3),
+            );
+        }
 
         Ok(Self { config, tokenizer, store, model_dir })
     }
