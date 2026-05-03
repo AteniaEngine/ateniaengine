@@ -100,7 +100,35 @@ Hello! I'm just an AI, I don't have feelings or emotions
 Generated: 20 tokens in ~280s (0.07 tok/s) [max-tokens reached]
 ```
 
-The `24.24 GiB resident` line is the M5 architectural headline: prefill graph + per-step decode graph both reference the same parameter buffers via `Arc<TensorStorage>`. Naïve cloning would have landed at ~52 GiB → OOM on the 32 GiB dev box. Token throughput on CPU is the M6 target (forward compute dominates 99.9% of decode-step cost per the M5.f.a bench; GPU offload lifts this into the interactive range). See [HANDOFF M5](./docs/HANDOFF_APX_V20_M5.md) for the full sub-phase chain (M5.a–M5.f.a, eleven commits, twelve architectural decisions D58–D69).
+The `24.24 GiB resident` line is the M5 architectural headline: prefill graph + per-step decode graph both reference the same parameter buffers via `Arc<TensorStorage>`. Naïve cloning would have landed at ~52 GiB → OOM on the 32 GiB dev box. See [HANDOFF M5](./docs/HANDOFF_APX_V20_M5.md) for the full sub-phase chain (M5.a–M5.f.a, eleven commits, twelve architectural decisions D58–D69).
+
+### Or: Atenia uses your GPU (M6 ✅)
+
+`ATENIA_TIER_AWARE_LOADER=1` flips on the tier-aware loader. The model's attention/FFN projection weights go straight to VRAM at load time; everything else stays in RAM. The M6 step 4d mixed-residency dispatch in `try_gpu_matmul` runs the matmul against the resident weight without re-uploading per call.
+
+```bash
+ATENIA_TIER_AWARE_LOADER=1 \
+atenia generate \
+    --prompt "Hello, how are you?" \
+    --model ./models/llama-2-7b-chat \
+    --max-tokens 5
+```
+
+```text
+[ATENIA] Tier-aware loader plan:
+  VRAM: 60 tensors (6.70 GiB)
+  RAM:  263 tensors (9.20 GiB)
+  Disk: 0 tensors (0.00 GiB)
+
+> Hello, how are you?
+
+Hello! I'
+
+---
+Generated: 5 tokens in 41.1s (0.12 tok/s) [max-tokens reached]
+```
+
+On the same dev-box hardware (RTX 4070 Laptop, 8 GB VRAM, 32 GB RAM) the default CPU path produces the bit-identical text in **60.1 s for 5 tokens (0.083 tok/s)**. The tier-aware path is **1.46× faster** at 0.122 tok/s — Atenia's first measured GPU acceleration of an LLM forward, with bit-identical output to the CPU baseline. See [HANDOFF M6](./docs/HANDOFF_APX_V20_M6.md) for the full architecture (load-time tier planner + direct-VRAM upload kernel + mixed-residency dispatch) and [INVESTIGATION_M6_REPLAN.md](./INVESTIGATION_M6_REPLAN.md) for the design-iteration history that led to the shipped result (a May 2 BSOD on the original post-load approach forced a structural redesign).
 
 ---
 
@@ -155,7 +183,9 @@ Atenia Engine is implemented in Rust. The project follows an APX (Adaptive Execu
 
 Real, executable, deterministic:
 
-**Real LLM inference (APX v20 M4.5–M5)**
+**Real LLM inference (APX v20 M4.5–M6)**
+
+- **🚀 Atenia uses your GPU. (M6 ✅)** `ATENIA_TIER_AWARE_LOADER=1 atenia generate --prompt "Hello, how are you?" --model models/llama-2-7b-chat --max-tokens 5` runs **1.46× faster** than the default CPU path on the dev-box hardware (RTX 4070 Laptop, 8 GB VRAM, 32 GB RAM): **8.22 s/tok vs 12.02 s/tok** on Llama 2 7B Chat, with bit-identical output. The tier-aware loader probes free RAM/VRAM at startup, builds a per-tensor residency plan, and routes `_proj.weight` attention/FFN tensors directly to VRAM (60 tensors, 6.7 GiB) while everything else stays in RAM (263 tensors, 9.2 GiB). The M6 step 4d mixed-residency dispatch in `try_gpu_matmul` consumes those resident weights without re-uploading per call. Atenia's first measured GPU acceleration of an LLM forward, with a load-time tier planner that survives 32 GiB-box BSOD scenarios by construction (a May 2 BSOD on the original post-load approach forced a structural redesign — see [INVESTIGATION_M6_REPLAN.md](./INVESTIGATION_M6_REPLAN.md)). Thirteen production commits across two design iterations. See [HANDOFF M6](./docs/HANDOFF_APX_V20_M6.md).
 
 - **💬 Atenia chats. (M5 ✅)** `atenia generate --prompt "Hello, how are you?" --model models/llama-2-13b-chat --max-tokens 20` produces a recognisably conversational answer:
 
