@@ -223,16 +223,27 @@ impl GenerationPipeline {
                 crate::gpu::safety::resource_check::probe_free_ram_bytes();
             let free_vram_bytes =
                 crate::gpu::safety::resource_check::probe_free_vram_bytes();
+            let total_ram_bytes =
+                crate::gpu::safety::resource_check::probe_total_ram_bytes();
 
             if index_path.exists() {
                 let sharded = ShardedSafetensorsReader::open(&index_path)?;
                 let metas = sharded.collect_tensor_metas()?;
+                let model_total_bytes = sum_model_bytes(&metas);
                 let plan_input = crate::gpu::tier_plan::TierPlanInput {
                     tensors: metas,
                     free_vram_bytes,
                     free_ram_bytes,
+                    model_total_bytes,
+                    total_ram_bytes,
                 };
                 let plan = crate::gpu::tier_plan::plan(&plan_input);
+                log_adaptive_headroom(
+                    plan_input.model_total_bytes,
+                    plan_input.free_ram_bytes,
+                    plan_input.total_ram_bytes,
+                    &plan,
+                );
                 log_tier_plan(&plan);
                 let (s, _report) = sharded.load_into_with_residency_plan(
                     &mut scratch_graph,
@@ -252,12 +263,21 @@ impl GenerationPipeline {
                         dtype: e.dtype,
                     })
                     .collect();
+                let model_total_bytes = sum_model_bytes(&metas);
                 let plan_input = crate::gpu::tier_plan::TierPlanInput {
                     tensors: metas,
                     free_vram_bytes,
                     free_ram_bytes,
+                    model_total_bytes,
+                    total_ram_bytes,
                 };
                 let plan = crate::gpu::tier_plan::plan(&plan_input);
+                log_adaptive_headroom(
+                    plan_input.model_total_bytes,
+                    plan_input.free_ram_bytes,
+                    plan_input.total_ram_bytes,
+                    &plan,
+                );
                 log_tier_plan(&plan);
                 let (s, _report) = mapper.load_into_with_residency_plan(
                     &mut scratch_graph,
@@ -468,6 +488,51 @@ impl GenerationPipeline {
 
         Ok(joined)
     }
+}
+
+/// **M7.2** — sum the source-dtype byte size across a tensor
+/// meta list. Feeds `TierPlanInput::model_total_bytes`. Mirrors
+/// `TensorMeta::ram_cost_bytes` (private to the planner module)
+/// — kept inline here so the loader path doesn't depend on
+/// internal helpers.
+fn sum_model_bytes(metas: &[crate::gpu::tier_plan::TensorMeta]) -> u64 {
+    metas
+        .iter()
+        .map(|m| {
+            let numel: u64 = m.shape.iter().product::<usize>() as u64;
+            numel * (m.dtype.size_in_bytes() as u64)
+        })
+        .sum()
+}
+
+/// **M7.2** — operator-facing log of the adaptive RAM headroom
+/// decision. Emits one line summarising:
+/// model size / free RAM / total RAM / headroom (base + overflow).
+/// Suppressed in `--silent` builds.
+fn log_adaptive_headroom(
+    model_total_bytes: u64,
+    free_ram_bytes: u64,
+    total_ram_bytes: u64,
+    plan: &crate::gpu::tier_plan::TierPlan,
+) {
+    if crate::apx_is_silent() {
+        return;
+    }
+    let gib = |b: u64| (b as f64) / (1024.0_f64.powi(3));
+    let base_gib = gib(crate::gpu::tier_plan::RAM_HEADROOM_BASE_BYTES);
+    let overflow_gib = gib(plan.ram_headroom_overflow_bytes);
+    let headroom_gib = gib(plan.ram_headroom_bytes);
+    eprintln!(
+        "[ATENIA] Adaptive headroom: model {:.2} GiB, free RAM {:.2} GiB, \
+         total RAM {:.2} GiB → RAM headroom {:.2} GiB ({:.2} base + {:.2} \
+         overflow protection)",
+        gib(model_total_bytes),
+        gib(free_ram_bytes),
+        gib(total_ram_bytes),
+        headroom_gib,
+        base_gib,
+        overflow_gib,
+    );
 }
 
 /// **M6 replan sub-fase 3** — operator-facing log of the

@@ -118,11 +118,30 @@ impl TensorMeta {
 /// Input to [`plan`]. The free-memory numbers are bytes, not
 /// MiB — keep the precision; the planner subtracts the
 /// headrooms internally before bin-packing.
+///
+/// **M7.2 — adaptive headroom**. `model_total_bytes` is the sum
+/// of `numel × dtype_size` across all input tensors (the on-disk
+/// BF16/F32 footprint of the model). `total_ram_bytes` is the
+/// box's installed physical RAM (not free). Together they let the
+/// planner detect "model dominates RAM" scenarios (e.g. 13B in a
+/// 32 GiB box, where the BF16 weights are ~25 GiB and free RAM
+/// is ~26 GiB) and inflate the RAM headroom proportionally so
+/// some tensors overflow to Disk by construction — the M6 fixed
+/// 8 GiB headroom would otherwise let everything fit in RAM and
+/// the Disk tier would never trigger.
 #[derive(Clone, Debug)]
 pub struct TierPlanInput {
     pub tensors: Vec<TensorMeta>,
     pub free_vram_bytes: u64,
     pub free_ram_bytes: u64,
+    /// Total raw byte size of the model in source dtype. Sum of
+    /// `numel × dtype.size_in_bytes()` across `tensors`. Used by
+    /// the adaptive-headroom rule.
+    pub model_total_bytes: u64,
+    /// Box's installed physical RAM. Probed via
+    /// `gpu::safety::resource_check::probe_total_ram_bytes`.
+    /// Logged for telemetry; the policy itself uses `free_ram_bytes`.
+    pub total_ram_bytes: u64,
 }
 
 /// Output of [`plan`]. Insertion order preserved for caller
@@ -136,6 +155,16 @@ pub struct TierPlan {
     pub vram_bytes_assigned: u64,
     pub ram_bytes_assigned: u64,
     pub disk_bytes_assigned: u64,
+    /// **M7.2** — RAM headroom actually applied by the planner.
+    /// Equals [`RAM_HEADROOM_BASE_BYTES`] in the small-model
+    /// case; bumped above it when `model_total > 0.7 × free_ram`.
+    /// Exposed so the caller can log the breakdown without
+    /// re-running the policy.
+    pub ram_headroom_bytes: u64,
+    /// **M7.2** — overflow component of `ram_headroom_bytes`
+    /// (i.e. `ram_headroom_bytes - RAM_HEADROOM_BASE_BYTES`).
+    /// Zero when the adaptive rule did not trigger.
+    pub ram_headroom_overflow_bytes: u64,
     /// Index for O(1) name → tier lookup. Populated alongside
     /// `assignments`.
     by_name: HashMap<String, Tier>,
@@ -173,7 +202,40 @@ impl TierPlan {
 }
 
 const VRAM_HEADROOM_BYTES: u64 = 1024 * 1024 * 1024;
-const RAM_HEADROOM_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+/// **M7.2** — base RAM headroom. Always reserved regardless of
+/// model size (matches the M6 fixed value). The adaptive rule
+/// below can only *increase* the headroom, never reduce it.
+pub const RAM_HEADROOM_BASE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+/// **M7.2** — adaptive trigger threshold. When `model_total
+/// > 0.7 × free_ram` the planner inflates the headroom by the
+/// excess so that some tensors are forced to overflow to Disk.
+/// Encoded as numerator/denominator to keep the math integer.
+const ADAPTIVE_TRIGGER_NUM: u64 = 7;
+const ADAPTIVE_TRIGGER_DEN: u64 = 10;
+
+/// **M7.2** — pure helper that computes the RAM headroom for a
+/// given `(model_total_bytes, free_ram_bytes)` pair. Returns
+/// `(ram_headroom_bytes, overflow_bytes)` where `overflow_bytes`
+/// is the amount above [`RAM_HEADROOM_BASE_BYTES`] (zero when
+/// the adaptive rule did not trigger).
+///
+/// Policy:
+/// - Threshold = `0.7 × free_ram_bytes`.
+/// - If `model_total_bytes > threshold`:
+///   `extra = model_total_bytes - threshold` and the headroom is
+///   `RAM_HEADROOM_BASE_BYTES + extra`.
+/// - Otherwise the headroom stays at the base value.
+pub fn adaptive_ram_headroom(model_total_bytes: u64, free_ram_bytes: u64) -> (u64, u64) {
+    let threshold = free_ram_bytes
+        .saturating_mul(ADAPTIVE_TRIGGER_NUM)
+        / ADAPTIVE_TRIGGER_DEN;
+    if model_total_bytes > threshold {
+        let extra = model_total_bytes - threshold;
+        (RAM_HEADROOM_BASE_BYTES + extra, extra)
+    } else {
+        (RAM_HEADROOM_BASE_BYTES, 0)
+    }
+}
 
 /// **GPU-eligible** classifier. Returns `true` if and only if the
 /// tensor is a Llama-family attention/FFN projection weight that
@@ -186,12 +248,17 @@ fn is_gpu_eligible(meta: &TensorMeta) -> bool {
 /// Pure function — no I/O, no logging, no allocation beyond the
 /// output `TierPlan`. Suitable for direct unit testing.
 pub fn plan(input: &TierPlanInput) -> TierPlan {
+    let (ram_headroom, overflow) =
+        adaptive_ram_headroom(input.model_total_bytes, input.free_ram_bytes);
+
     let mut vram_remaining = input.free_vram_bytes.saturating_sub(VRAM_HEADROOM_BYTES);
-    let mut ram_remaining = input.free_ram_bytes.saturating_sub(RAM_HEADROOM_BYTES);
+    let mut ram_remaining = input.free_ram_bytes.saturating_sub(ram_headroom);
 
     let mut out = TierPlan::default();
     out.assignments.reserve(input.tensors.len());
     out.by_name.reserve(input.tensors.len());
+    out.ram_headroom_bytes = ram_headroom;
+    out.ram_headroom_overflow_bytes = overflow;
 
     for meta in &input.tensors {
         let vram_cost = meta.vram_cost_bytes();
@@ -229,6 +296,12 @@ mod tests {
         }
     }
 
+    /// Helper — sum of source-dtype byte sizes across a tensor list.
+    /// Used by tests to feed the M7.2 `model_total_bytes` field.
+    fn sum_model_bytes(tensors: &[TensorMeta]) -> u64 {
+        tensors.iter().map(|t| t.ram_cost_bytes()).sum()
+    }
+
     /// Llama-family layer template — 4 attention proj + 3 FFN
     /// proj + 2 norms. Matches the HuggingFace naming convention
     /// used by Llama 2, Llama 3, Qwen 2.5, TinyLlama, SmolLM2.
@@ -251,12 +324,15 @@ mod tests {
     #[test]
     fn abundant_vram_routes_proj_to_vram_norms_to_ram() {
         let tensors = llama_layer(0, 4096, 11008, DType::BF16);
+        let model_total = sum_model_bytes(&tensors);
         // 16 GiB free VRAM, 32 GiB free RAM — enough for one layer's
         // ~1.5 GiB F32 projection footprint plus headrooms.
         let input = TierPlanInput {
             tensors,
             free_vram_bytes: 16 * 1024 * 1024 * 1024,
             free_ram_bytes: 32 * 1024 * 1024 * 1024,
+            model_total_bytes: model_total,
+            total_ram_bytes: 32 * 1024 * 1024 * 1024,
         };
         let p = plan(&input);
 
@@ -296,11 +372,14 @@ mod tests {
         // every norm.
         let mut tensors = llama_layer(0, 5120, 13824, DType::BF16);
         tensors.extend(llama_layer(1, 5120, 13824, DType::BF16));
+        let model_total = sum_model_bytes(&tensors);
 
         let input = TierPlanInput {
             tensors,
             free_vram_bytes: 25 * 1024 * 1024 * 1024 / 10, // 2.5 GiB
             free_ram_bytes: 32 * 1024 * 1024 * 1024,
+            model_total_bytes: model_total,
+            total_ram_bytes: 32 * 1024 * 1024 * 1024,
         };
         let p = plan(&input);
 
@@ -335,10 +414,13 @@ mod tests {
         // after the 8 GiB safety headroom → fits ~one tensor at
         // BF16, the rest go to Disk.
         let tensors = llama_layer(0, 5120, 13824, DType::BF16);
+        let model_total = sum_model_bytes(&tensors);
         let input = TierPlanInput {
             tensors,
             free_vram_bytes: 0,
             free_ram_bytes: (85 * 1024 * 1024 * 1024) / 10, // 8.5 GiB
+            model_total_bytes: model_total,
+            total_ram_bytes: 16 * 1024 * 1024 * 1024,
         };
         let p = plan(&input);
 
@@ -370,10 +452,13 @@ mod tests {
             make_meta("model.norm.weight", vec![4096], DType::BF16),
             make_meta("lm_head.weight", vec![32000, 4096], DType::BF16),
         ];
+        let model_total = sum_model_bytes(&tensors);
         let input = TierPlanInput {
             tensors,
             free_vram_bytes: 100 * 1024 * 1024 * 1024,
             free_ram_bytes: 100 * 1024 * 1024 * 1024,
+            model_total_bytes: model_total,
+            total_ram_bytes: 128 * 1024 * 1024 * 1024,
         };
         let p = plan(&input);
 
@@ -417,10 +502,13 @@ mod tests {
         // 7 / 1.21 ≈ 5.78 layers — but the planner iterates per-
         // tensor, so partial layers are possible. Verify at least
         // 5 layers' worth of proj weights landed on Vram.
+        let model_total = sum_model_bytes(&tensors);
         let input = TierPlanInput {
             tensors,
             free_vram_bytes: 8 * 1024 * 1024 * 1024,
             free_ram_bytes: 32 * 1024 * 1024 * 1024,
+            model_total_bytes: model_total,
+            total_ram_bytes: 32 * 1024 * 1024 * 1024,
         };
         let p = plan(&input);
 
@@ -472,5 +560,239 @@ mod tests {
             "expected 5..=7 GiB on Vram, got {:.2} GiB",
             vram_gib
         );
+    }
+
+    // ----------------------------------------------------------------
+    // M7.2 — adaptive RAM headroom tests.
+    //
+    // The fixed-headroom planner (M6) reserved exactly 8 GiB of RAM
+    // regardless of model size, which let a 13B BF16 model (~24 GiB)
+    // fit entirely in a 32 GiB box's RAM budget — meaning the Disk
+    // tier never triggered. M7.2 inflates the headroom proportionally
+    // when `model_total > 0.7 × free_ram` so genuine overflow scenarios
+    // route to NVMe by construction.
+    // ----------------------------------------------------------------
+
+    /// Build a synthetic 7B-class Llama (32 layers) for the
+    /// adaptive-headroom tests. Hidden=4096, intermediate=11008.
+    fn synth_7b_model() -> Vec<TensorMeta> {
+        let mut tensors = Vec::new();
+        tensors.push(make_meta(
+            "model.embed_tokens.weight",
+            vec![32000, 4096],
+            DType::BF16,
+        ));
+        for i in 0..32 {
+            tensors.extend(llama_layer(i, 4096, 11008, DType::BF16));
+        }
+        tensors.push(make_meta("model.norm.weight", vec![4096], DType::BF16));
+        tensors.push(make_meta("lm_head.weight", vec![32000, 4096], DType::BF16));
+        tensors
+    }
+
+    /// Build a synthetic 13B-class Llama (40 layers). Hidden=5120,
+    /// intermediate=13824. Same shape used in test 5 above.
+    fn synth_13b_model() -> Vec<TensorMeta> {
+        let mut tensors = Vec::new();
+        tensors.push(make_meta(
+            "model.embed_tokens.weight",
+            vec![32000, 5120],
+            DType::BF16,
+        ));
+        for i in 0..40 {
+            tensors.extend(llama_layer(i, 5120, 13824, DType::BF16));
+        }
+        tensors.push(make_meta("model.norm.weight", vec![5120], DType::BF16));
+        tensors.push(make_meta("lm_head.weight", vec![32000, 5120], DType::BF16));
+        tensors
+    }
+
+    /// 6. **13B en 32 GiB** — adaptive trigger fires; headroom
+    /// inflates above 8 GiB and forces Disk overflow.
+    ///
+    /// Model BF16 ≈ 24.24 GiB, free_ram = 26 GiB (realistic on a
+    /// 32 GiB box with OS/drivers using ~6 GiB). Threshold =
+    /// 0.7 × 26 = 18.2 GiB. Model exceeds threshold by ~6 GiB →
+    /// headroom bumps to ~14 GiB. With free_vram = 0 and budget
+    /// of ~12 GiB, the ~24 GiB BF16 model overflows ~12 GiB to Disk.
+    #[test]
+    fn m7_2_adaptive_13b_on_32gib_box_triggers_disk_overflow() {
+        let tensors = synth_13b_model();
+        let model_total = sum_model_bytes(&tensors);
+        let free_ram = 26 * 1024 * 1024 * 1024_u64;
+
+        let input = TierPlanInput {
+            tensors,
+            free_vram_bytes: 0,
+            free_ram_bytes: free_ram,
+            model_total_bytes: model_total,
+            total_ram_bytes: 32 * 1024 * 1024 * 1024,
+        };
+        let p = plan(&input);
+
+        // Adaptive trigger must fire — overflow > 0.
+        assert!(
+            p.ram_headroom_overflow_bytes > 0,
+            "expected adaptive headroom to trigger, got base headroom only"
+        );
+        assert!(
+            p.ram_headroom_bytes > RAM_HEADROOM_BASE_BYTES,
+            "expected ram_headroom > 8 GiB base, got {} bytes",
+            p.ram_headroom_bytes
+        );
+        // Some tensors must overflow to Disk.
+        assert!(
+            p.count(Tier::Disk) > 0,
+            "expected Disk overflow on 13B/32GiB box, got {} Disk assignments",
+            p.count(Tier::Disk)
+        );
+        assert!(
+            p.disk_bytes_assigned > 0,
+            "expected nonzero Disk bytes assigned, got {}",
+            p.disk_bytes_assigned
+        );
+    }
+
+    /// 7. **7B en 32 GiB** — adaptive does NOT trigger; behaviour
+    /// is identical to M6 (everything fits in RAM).
+    ///
+    /// Model BF16 ≈ 13 GiB, free_ram = 26 GiB. Threshold =
+    /// 18.2 GiB. Model is well below → headroom stays at 8 GiB.
+    /// 26 - 8 = 18 GiB budget > 13 GiB model → no Disk.
+    #[test]
+    fn m7_2_adaptive_7b_on_32gib_box_keeps_base_headroom() {
+        let tensors = synth_7b_model();
+        let model_total = sum_model_bytes(&tensors);
+
+        let input = TierPlanInput {
+            tensors,
+            free_vram_bytes: 0,
+            free_ram_bytes: 26 * 1024 * 1024 * 1024,
+            model_total_bytes: model_total,
+            total_ram_bytes: 32 * 1024 * 1024 * 1024,
+        };
+        let p = plan(&input);
+
+        assert_eq!(
+            p.ram_headroom_bytes, RAM_HEADROOM_BASE_BYTES,
+            "expected base 8 GiB headroom for 7B/32GiB, got {} bytes",
+            p.ram_headroom_bytes
+        );
+        assert_eq!(p.ram_headroom_overflow_bytes, 0);
+        assert_eq!(
+            p.count(Tier::Disk), 0,
+            "expected 0 Disk assignments for 7B/32GiB (M6 behaviour preserved)"
+        );
+    }
+
+    /// 8. **7B en 16 GiB** — RAM-constrained box, adaptive forces
+    /// Disk overflow.
+    ///
+    /// Model BF16 ≈ 13 GiB, free_ram = 12 GiB. Threshold =
+    /// 0.7 × 12 = 8.4 GiB. Model exceeds threshold by ~4.6 GiB →
+    /// headroom bumps to ~12.6 GiB. Budget = 12 - 12.6 saturates
+    /// to 0 → every tensor overflows to Disk.
+    #[test]
+    fn m7_2_adaptive_7b_on_16gib_box_forces_disk() {
+        let tensors = synth_7b_model();
+        let model_total = sum_model_bytes(&tensors);
+        let total_count = tensors.len();
+
+        let input = TierPlanInput {
+            tensors,
+            free_vram_bytes: 0,
+            free_ram_bytes: 12 * 1024 * 1024 * 1024,
+            model_total_bytes: model_total,
+            total_ram_bytes: 16 * 1024 * 1024 * 1024,
+        };
+        let p = plan(&input);
+
+        assert!(
+            p.ram_headroom_overflow_bytes > 0,
+            "expected adaptive trigger on 7B/16GiB box"
+        );
+        // RAM budget saturated — every tensor must land on Disk.
+        assert_eq!(
+            p.count(Tier::Disk), total_count,
+            "expected all {} tensors on Disk (RAM budget saturated to 0), got {}",
+            total_count,
+            p.count(Tier::Disk)
+        );
+        assert_eq!(p.count(Tier::Ram), 0);
+        assert_eq!(p.count(Tier::Vram), 0);
+    }
+
+    /// 9. **Modelo pequeño en hardware modesto** — model fits
+    /// comfortably; adaptive must NOT trigger.
+    ///
+    /// 1B-class synthetic model (~2 GiB BF16), free_ram = 6 GiB.
+    /// Threshold = 0.7 × 6 = 4.2 GiB. Model 2 < 4.2 → headroom
+    /// stays at 8 GiB base. (RAM budget saturates to 0 since
+    /// 6 - 8 < 0, but that's the M6 behaviour for any small box,
+    /// not an M7.2 regression — the test asserts the *headroom*,
+    /// not the placement.)
+    #[test]
+    fn m7_2_adaptive_small_model_keeps_base_headroom() {
+        // ~2 GiB BF16 of synthetic _proj.weight tensors.
+        // 16 × 64 MiB = 1024 MiB (one weight = 64 MiB BF16 →
+        // shape [4096, 8192], numel 33.5M, ×2 = 67.1 MB ≈ 64 MiB).
+        let mut tensors = Vec::new();
+        for i in 0..16 {
+            tensors.push(make_meta(
+                &format!("model.layers.{}.self_attn.q_proj.weight", i),
+                vec![4096, 8192],
+                DType::BF16,
+            ));
+        }
+        let model_total = sum_model_bytes(&tensors);
+        // Sanity: ~1 GiB BF16, well below the 4.2 GiB threshold.
+        assert!(model_total < 4 * 1024 * 1024 * 1024);
+
+        let input = TierPlanInput {
+            tensors,
+            free_vram_bytes: 0,
+            free_ram_bytes: 6 * 1024 * 1024 * 1024,
+            model_total_bytes: model_total,
+            total_ram_bytes: 8 * 1024 * 1024 * 1024,
+        };
+        let p = plan(&input);
+
+        assert_eq!(
+            p.ram_headroom_bytes, RAM_HEADROOM_BASE_BYTES,
+            "expected base headroom for small model, got {} bytes",
+            p.ram_headroom_bytes
+        );
+        assert_eq!(p.ram_headroom_overflow_bytes, 0);
+    }
+
+    /// 10. Pure-helper sanity — direct unit test of
+    /// `adaptive_ram_headroom` covering both branches and the
+    /// boundary condition.
+    #[test]
+    fn m7_2_adaptive_ram_headroom_helper_branches() {
+        let gib = 1024_u64 * 1024 * 1024;
+
+        // Below threshold → base headroom, zero overflow.
+        let (h, o) = adaptive_ram_headroom(10 * gib, 32 * gib);
+        assert_eq!(h, RAM_HEADROOM_BASE_BYTES);
+        assert_eq!(o, 0);
+
+        // Exactly at threshold (0.7 × 32 = 22.4 GiB) — must NOT
+        // trigger (rule is strict `>`).
+        let threshold = 32 * gib * 7 / 10;
+        let (h, o) = adaptive_ram_headroom(threshold, 32 * gib);
+        assert_eq!(h, RAM_HEADROOM_BASE_BYTES);
+        assert_eq!(o, 0);
+
+        // Above threshold → headroom bumps by exactly the excess.
+        let (h, o) = adaptive_ram_headroom(threshold + 5 * gib, 32 * gib);
+        assert_eq!(o, 5 * gib);
+        assert_eq!(h, RAM_HEADROOM_BASE_BYTES + 5 * gib);
+
+        // Zero free RAM → threshold is 0, any positive model
+        // triggers; whole model becomes the overflow.
+        let (h, o) = adaptive_ram_headroom(3 * gib, 0);
+        assert_eq!(o, 3 * gib);
+        assert_eq!(h, RAM_HEADROOM_BASE_BYTES + 3 * gib);
     }
 }

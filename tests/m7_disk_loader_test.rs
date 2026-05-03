@@ -121,11 +121,18 @@ fn handcrafted_plan(disk_name: &str, ram_name: &str) -> TierPlan {
             dtype: DType::BF16,
         },
     ];
+    // Both tensors are 32 bytes BF16; total 64 bytes. Far below the
+    // M7.2 adaptive threshold (0.7 × free_ram), so the headroom
+    // stays at the 8 GiB base and the calibration above remains
+    // valid: 1 Ram + 1 Disk in input order.
+    let model_total = 64_u64;
     let p = plan(&TierPlanInput {
         tensors: metas,
         free_vram_bytes: 0, // Force everything off VRAM.
         // 8 GiB headroom + room for exactly one 32-byte tensor.
         free_ram_bytes: 8 * 1024 * 1024 * 1024 + 32,
+        model_total_bytes: model_total,
+        total_ram_bytes: 16 * 1024 * 1024 * 1024,
     });
     assert_eq!(p.get(ram_name), Some(Tier::Ram));
     assert_eq!(p.get(disk_name), Some(Tier::Disk));

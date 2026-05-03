@@ -86,6 +86,19 @@ pub fn probe_free_ram_bytes() -> u64 {
     sys.available_memory()
 }
 
+/// Probe **total** physical RAM via [`sysinfo::System`]. Unlike
+/// [`probe_free_ram_bytes`] this does not depend on the current
+/// working set — it returns the box's installed memory. Consumed
+/// by the M7.2 adaptive-headroom planner to decide when a model's
+/// raw size overwhelms the host (13B+ on a 32 GiB box).
+/// Returns 0 on failure.
+pub fn probe_total_ram_bytes() -> u64 {
+    use sysinfo::System;
+    let mut sys = System::new();
+    sys.refresh_memory();
+    sys.total_memory()
+}
+
 /// Probe free VRAM via `nvidia-smi --query-gpu=memory.free`. Spawns
 /// a child process; cost is ~50-300 ms on Windows. Intended for
 /// use at upload time (once per session), not in a hot loop.
