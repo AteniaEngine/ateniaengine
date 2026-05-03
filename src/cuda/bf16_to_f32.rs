@@ -275,6 +275,86 @@ pub fn bf16_to_f32_resident_in_vram(
     Some(gpu_f32)
 }
 
+/// **M6 replan sub-fase 2** — zero-host-copy variant of
+/// [`bf16_to_f32_resident_in_vram`]. Takes a `&[u8]` of raw BF16
+/// bytes (typically a slice into the safetensors reader's owned
+/// byte buffer) and a logical element count. The bytes are
+/// shipped to VRAM via a single `cudaMemcpy` H→D that does **not**
+/// require host-side `&[u16]` alignment — the destination on
+/// the device is aligned by `cuda_malloc`, and the source is
+/// treated as opaque bytes by the cudart memcpy routine.
+///
+/// This is the load-time path used by
+/// `WeightMapper::load_into_with_residency_plan` when:
+/// - the source dtype is BF16,
+/// - the parameter has no `LoadTransform`s registered, and
+/// - the planner assigned it to [`crate::gpu::tier_plan::Tier::Vram`].
+///
+/// Under those conditions, the entire weight upload happens
+/// without ever materialising a host-side F32 transient or a
+/// secondary `Vec<u16>`. The peak host-RAM cost is the
+/// safetensors reader's owned byte buffer (which the caller
+/// already paid for), no more.
+///
+/// # Returns
+///
+/// `Some(TensorGPU)` whose F32 device buffer is `numel * 4` bytes,
+/// holding the upcast of the BF16 source. `None` on
+/// `cuda_available()` failure, length mismatch
+/// (`raw_bytes.len() != numel * 2`), `cuda_malloc` failure,
+/// `cudaMemcpy` failure, or kernel launch failure. Buffer
+/// cleanup on every error path is guaranteed by [`DeviceAllocs`]'s
+/// `Drop` and `TensorGPU`'s `Drop`.
+pub fn bf16_to_f32_resident_in_vram_from_raw_bytes(
+    raw_bytes: &[u8],
+    numel: usize,
+    shape: &[usize],
+) -> Option<TensorGPU> {
+    if !super::cuda_available() {
+        return None;
+    }
+
+    let bytes_bf16 = numel * std::mem::size_of::<u16>();
+    if raw_bytes.len() != bytes_bf16 {
+        // Length mismatch — refusing to upload would risk reading
+        // past the source slice on the device side. Caller falls
+        // back to CPU.
+        return None;
+    }
+    let shape_numel: usize = shape.iter().product();
+    if shape_numel != numel {
+        return None;
+    }
+
+    let mut transient = DeviceAllocs::new();
+    let d_bf16 = transient.alloc(bytes_bf16)?;
+
+    let gpu_f32 = TensorGPU::empty(numel, 1).ok()?;
+
+    unsafe {
+        let rc = cudaMemcpy(
+            d_bf16,
+            raw_bytes.as_ptr() as *const c_void,
+            bytes_bf16,
+            CUDA_MEMCPY_HOST_TO_DEVICE,
+        );
+        if rc != 0 {
+            return None;
+        }
+
+        let rc = bf16_to_f32_launch_device(
+            d_bf16,
+            gpu_f32.device_ptr() as *mut f32,
+            numel as c_int,
+        );
+        if rc != 0 {
+            return None;
+        }
+    }
+
+    Some(gpu_f32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::bf16_to_f32_on_device;

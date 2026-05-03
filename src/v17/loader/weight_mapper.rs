@@ -45,12 +45,54 @@
 //! in `src/nn/` can produce. TinyLlama-specific transform wiring
 //! lives in `src/nn/tinyllama/weight_loading.rs`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::amg::graph::Graph;
+use crate::amg::weight_store::{SharedParam, WeightStore, WeightStoreError};
+use crate::gpu::tier_plan::{Tier, TierPlan};
+use crate::tensor::DType;
 
 use super::loader_errors::LoaderError;
 use super::safetensors_reader::SafetensorsReader;
+
+/// **M6 replan sub-fase 2** — counters that record which
+/// upload sub-path each `Tier::Vram` parameter took during
+/// `load_into_with_residency_plan`.
+///
+/// Two paths exist:
+/// - **Fast** — BF16 source + zero `LoadTransform`s. The raw
+///   safetensors bytes are shipped to VRAM with a single H→D
+///   memcpy via
+///   [`crate::cuda::bf16_to_f32::bf16_to_f32_resident_in_vram_from_raw_bytes`].
+///   No host-side F32 transient.
+/// - **Slow** — F32 source, or BF16 + at least one transform.
+///   The transforms must run on F32 on the host
+///   (`Transpose2D`, `TileGroupedDim`, `Scale`); this path
+///   materialises a per-entry `Vec<f32>`, performs the
+///   transforms, down-converts to BF16 bits, and uploads the
+///   bits via the standard
+///   [`crate::cuda::bf16_to_f32::bf16_to_f32_resident_in_vram`]
+///   wrapper. The F32 transient drops at the end of the
+///   iteration.
+///
+/// Tests assert that an "all-BF16, no-transforms" plan goes
+/// 100% through the fast path — confirming no F32 transient
+/// was allocated for any Vram-tier upload.
+static VRAM_FAST_PATH_COUNT: AtomicUsize = AtomicUsize::new(0);
+static VRAM_SLOW_PATH_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Returns the number of `Tier::Vram` uploads that took the
+/// raw-bytes fast path since process start.
+pub fn vram_fast_path_count() -> usize {
+    VRAM_FAST_PATH_COUNT.load(Ordering::Relaxed)
+}
+
+/// Returns the number of `Tier::Vram` uploads that took the
+/// transforms / F32-source slow path since process start.
+pub fn vram_slow_path_count() -> usize {
+    VRAM_SLOW_PATH_COUNT.load(Ordering::Relaxed)
+}
 
 /// A single transformation applied to a tensor's decoded float values
 /// between safetensors decode and graph copy. Multiple transforms are
@@ -273,6 +315,399 @@ impl WeightMapper {
         report.skipped = outcome.skipped;
         report.missing = self.collect_missing(&satisfied);
         Ok(report)
+    }
+
+    /// **M6 replan sub-fase 2** — tier-aware load entry point.
+    ///
+    /// Iterates `reader`, applies transforms in F32 as the
+    /// classic [`Self::load_into`] does, then dispatches each
+    /// loaded parameter to one of three destinations based on
+    /// `plan.get(name)`:
+    ///
+    /// - [`Tier::Vram`] — the parameter is uploaded to VRAM and
+    ///   inserted into the returned [`WeightStore`] as
+    ///   [`SharedParam::Cuda`]. The graph slot is **left
+    ///   untouched**; the bytes flow through
+    ///   `cuda::bf16_to_f32::bf16_to_f32_resident_in_vram*`.
+    ///   For the common case of a BF16 source with no
+    ///   transforms, the raw safetensors bytes go directly to
+    ///   `bf16_to_f32_resident_in_vram_from_raw_bytes` and **no
+    ///   F32 transient is materialised on the host** — the
+    ///   "fast path." Otherwise the F32 working buffer is built
+    ///   exactly once per entry, transformed, down-converted to
+    ///   BF16 bits in place, uploaded, and dropped — the "slow
+    ///   path" (still no permanent F32 RAM footprint).
+    ///
+    /// - [`Tier::Ram`] — the parameter is written into the
+    ///   graph slot via the same `Cpu` / `CpuBf16` path that
+    ///   [`Self::load_one_shard_into`] uses. After the entry
+    ///   loop completes, a pass-2 hoist via
+    ///   [`WeightStore::extract_from_graph`] (filtered to the
+    ///   Ram-tier `param_ids`) lifts the slots into Arc-shared
+    ///   `SharedParam::F32` / `SharedParam::Bf16` entries.
+    ///
+    /// - [`Tier::Disk`] — the parameter's transformed bytes are
+    ///   serialised to NVMe via
+    ///   `disk_tier::write_{f32,bf16}_tensor` and inserted into
+    ///   the store as [`SharedParam::Disk`]. The graph slot is
+    ///   left untouched.
+    ///
+    /// The returned [`WeightStore`] therefore owns Arcs for Ram
+    /// entries (graph slots also hold a clone via `extract_from_graph`),
+    /// `TensorGPU` references for Vram entries (no host-side
+    /// remnant beyond the safetensors reader's owned bytes), and
+    /// `DiskTensorHandle`s for Disk entries (RAM is reclaimed
+    /// once the F32 transient drops at the end of the iteration).
+    ///
+    /// # Parameters
+    ///
+    /// - `param_ids` / `param_names` — index-aligned slices
+    ///   describing the graph's parameter slot layout, exactly
+    ///   as in [`WeightStore::extract_from_graph`]. Sourced from
+    ///   `LlamaHandles` in the production caller.
+    ///
+    /// # Errors
+    ///
+    /// Same surface as [`Self::load_into`] for the F32 path
+    /// (`ShapeMismatch`, `InvalidFormat`, `UnsupportedDType`,
+    /// `IoError`). Adds the Vram failure mode: a `cuda_malloc`
+    /// or kernel error during upload returns `InvalidFormat`
+    /// with the failing parameter name. Adds the Disk failure
+    /// mode: a `disk_tier::write_*_tensor` error returns
+    /// `IoError`.
+    ///
+    /// # Atomicity
+    ///
+    /// On error after some Vram or Disk entries have already
+    /// been inserted, those entries stay in the partially-built
+    /// store but the function returns `Err`. The caller is
+    /// expected to drop both the partial store and the graph;
+    /// `Drop` impls reclaim VRAM and disk-tier files. RAM-tier
+    /// entries are not yet hoisted at error time (they live in
+    /// the graph slot until pass 2) so dropping the graph
+    /// reclaims them automatically.
+    pub fn load_into_with_residency_plan(
+        &self,
+        graph: &mut Graph,
+        reader: &SafetensorsReader,
+        plan: &TierPlan,
+        param_ids: &[usize],
+        param_names: &[String],
+    ) -> Result<(WeightStore, LoadReport), LoaderError> {
+        let mut report = LoadReport::default();
+        let mut satisfied: HashSet<String> = HashSet::new();
+        let mut store = WeightStore::new();
+        let mut already_inserted: HashSet<String> = HashSet::new();
+        let mut outcome = ShardLoadOutcome::default();
+
+        for entry in reader.iter() {
+            let Some(mapping) = self.mapping.get(entry.name) else {
+                outcome.skipped.push(entry.name.to_string());
+                continue;
+            };
+            let node_id = mapping.node_id;
+            let tier = plan.get(entry.name).unwrap_or(Tier::Ram);
+
+            // ----- VRAM fast path: BF16 source + no transforms.
+            //
+            // Direct H→D memcpy of the raw safetensors bytes —
+            // no `Vec<f32>`, no `Vec<u16>`, no host transient
+            // beyond what the reader already paid for. This is
+            // the path the M6 replan was designed to enable; the
+            // peak-RAM contract is "BF16 source bytes only."
+            if tier == Tier::Vram
+                && entry.dtype == DType::BF16
+                && mapping.transforms.is_empty()
+            {
+                let numel: usize = entry.shape.iter().product();
+                let tensor = graph
+                    .nodes
+                    .get(node_id)
+                    .and_then(|n| n.output.as_ref())
+                    .ok_or_else(|| {
+                        LoaderError::InvalidFormat(format!(
+                            "mapper points '{}' at node_id {} but that node has no \
+                             materialized tensor in the graph",
+                            entry.name, node_id
+                        ))
+                    })?;
+                if entry.shape != tensor.shape.as_slice() {
+                    return Err(LoaderError::ShapeMismatch {
+                        tensor_name: entry.name.to_string(),
+                        expected: tensor.shape.clone(),
+                        actual: entry.shape.to_vec(),
+                    });
+                }
+
+                let gpu = crate::cuda::bf16_to_f32::bf16_to_f32_resident_in_vram_from_raw_bytes(
+                    entry.raw_bytes,
+                    numel,
+                    entry.shape,
+                )
+                .ok_or_else(|| {
+                    LoaderError::InvalidFormat(format!(
+                        "BF16→VRAM fast-path upload failed for '{}'",
+                        entry.name
+                    ))
+                })?;
+
+                store.params.push(SharedParam::Cuda {
+                    shape: entry.shape.to_vec(),
+                    gpu,
+                });
+                store.names.push(entry.name.to_string());
+                already_inserted.insert(entry.name.to_string());
+
+                VRAM_FAST_PATH_COUNT.fetch_add(1, Ordering::Relaxed);
+                outcome.loaded += 1;
+                satisfied.insert(entry.name.to_string());
+                continue;
+            }
+
+            // ----- Slow path: F32 working buffer + transforms.
+            //
+            // Mirrors `load_one_shard_into`'s decode-transform
+            // pipeline. The F32 vec exists only for the duration
+            // of this iteration; it is consumed by either
+            // `bf16_to_f32_resident_in_vram` (Vram slow path),
+            // `disk_tier::write_*_tensor` (Disk), or
+            // `tensor.set_cpu_bf16_bits` / `as_cpu_slice_mut`
+            // (Ram).
+            let mut values = entry.to_vec_f32()?;
+            let mut current_shape: Vec<usize> = entry.shape.to_vec();
+
+            for transform in &mapping.transforms {
+                match transform {
+                    LoadTransform::Transpose2D => {
+                        if current_shape.len() != 2 {
+                            return Err(LoaderError::InvalidFormat(format!(
+                                "tensor '{}': Transpose2D requires a 2D tensor, \
+                                 got rank {} (shape {:?})",
+                                entry.name,
+                                current_shape.len(),
+                                current_shape
+                            )));
+                        }
+                        let rows = current_shape[0];
+                        let cols = current_shape[1];
+                        values = transpose_2d_flat(&values, rows, cols);
+                        current_shape = vec![cols, rows];
+                    }
+                    LoadTransform::TileGroupedDim {
+                        dim,
+                        group_size,
+                        repeats,
+                    } => {
+                        values = tile_grouped_dim(
+                            &values,
+                            &current_shape,
+                            *dim,
+                            *group_size,
+                            *repeats,
+                        )
+                        .map_err(|msg| {
+                            LoaderError::InvalidFormat(format!(
+                                "tensor '{}': {}",
+                                entry.name, msg
+                            ))
+                        })?;
+                        current_shape[*dim] *= *repeats;
+                    }
+                    LoadTransform::Scale { factor } => {
+                        for v in values.iter_mut() {
+                            *v *= *factor;
+                        }
+                    }
+                    LoadTransform::Reshape { target } => {
+                        let target_numel: usize = target.iter().product();
+                        let current_numel: usize = current_shape.iter().product();
+                        if target_numel != current_numel {
+                            return Err(LoaderError::InvalidFormat(format!(
+                                "tensor '{}': Reshape target {:?} (numel {}) does not match \
+                                 current shape {:?} (numel {})",
+                                entry.name,
+                                target,
+                                target_numel,
+                                current_shape,
+                                current_numel
+                            )));
+                        }
+                        current_shape = target.clone();
+                    }
+                }
+            }
+
+            // Validate post-transform shape against the graph
+            // parameter slot. Same check as `load_one_shard_into`.
+            let tensor_shape = {
+                let tensor = graph
+                    .nodes
+                    .get(node_id)
+                    .and_then(|n| n.output.as_ref())
+                    .ok_or_else(|| {
+                        LoaderError::InvalidFormat(format!(
+                            "mapper points '{}' at node_id {} but that node has no \
+                             materialized tensor in the graph",
+                            entry.name, node_id
+                        ))
+                    })?;
+                tensor.shape.clone()
+            };
+            if current_shape != tensor_shape.as_slice() {
+                return Err(LoaderError::ShapeMismatch {
+                    tensor_name: entry.name.to_string(),
+                    expected: tensor_shape,
+                    actual: current_shape,
+                });
+            }
+
+            let dest_numel: usize = current_shape.iter().product();
+            if dest_numel != values.len() {
+                return Err(LoaderError::InvalidFormat(format!(
+                    "tensor '{}': element count {} after transforms does not match \
+                     graph parameter capacity {}",
+                    entry.name,
+                    values.len(),
+                    dest_numel
+                )));
+            }
+
+            // BF16 precision floor — same as `load_one_shard_into`.
+            if std::env::var("ATENIA_BF16_PRECISION_FLOOR")
+                .ok()
+                .as_deref()
+                == Some("1")
+            {
+                for v in values.iter_mut() {
+                    let bits = v.to_bits() & 0xFFFF_0000_u32;
+                    *v = f32::from_bits(bits);
+                }
+            }
+
+            match tier {
+                Tier::Vram => {
+                    // Slow path: produce BF16 bits, upload via
+                    // the standard wrapper, drop F32 transient
+                    // before returning to the loop.
+                    let bits: Vec<u16> = values
+                        .iter()
+                        .map(|&v| (v.to_bits() >> 16) as u16)
+                        .collect();
+                    drop(values);
+                    let gpu = crate::cuda::bf16_to_f32::bf16_to_f32_resident_in_vram(
+                        &bits,
+                        &current_shape,
+                    )
+                    .ok_or_else(|| {
+                        LoaderError::InvalidFormat(format!(
+                            "BF16→VRAM slow-path upload failed for '{}'",
+                            entry.name
+                        ))
+                    })?;
+                    store.params.push(SharedParam::Cuda {
+                        shape: current_shape.clone(),
+                        gpu,
+                    });
+                    store.names.push(entry.name.to_string());
+                    already_inserted.insert(entry.name.to_string());
+                    VRAM_SLOW_PATH_COUNT.fetch_add(1, Ordering::Relaxed);
+                }
+                Tier::Disk => {
+                    let cache_dir = crate::tensor::disk_tier::default_cache_dir();
+                    let handle = if self.store_params_as_bf16 {
+                        let bits: Vec<u16> = values
+                            .iter()
+                            .map(|&v| (v.to_bits() >> 16) as u16)
+                            .collect();
+                        drop(values);
+                        crate::tensor::disk_tier::write_bf16_tensor(&cache_dir, &bits)
+                            .map_err(|e| LoaderError::IoError(e.to_string()))?
+                    } else {
+                        let h = crate::tensor::disk_tier::write_f32_tensor(&cache_dir, &values)
+                            .map_err(|e| LoaderError::IoError(e.to_string()))?;
+                        drop(values);
+                        h
+                    };
+                    store.params.push(SharedParam::Disk {
+                        shape: current_shape.clone(),
+                        handle,
+                    });
+                    store.names.push(entry.name.to_string());
+                    already_inserted.insert(entry.name.to_string());
+                }
+                Tier::Ram => {
+                    // Existing graph-slot write path — kept
+                    // bit-exact with `load_one_shard_into`.
+                    let tensor = graph
+                        .nodes
+                        .get_mut(node_id)
+                        .and_then(|n| n.output.as_mut())
+                        .ok_or_else(|| {
+                            LoaderError::InvalidFormat(format!(
+                                "mapper points '{}' at node_id {} but that node has no \
+                                 materialized tensor in the graph",
+                                entry.name, node_id
+                            ))
+                        })?;
+                    if self.store_params_as_bf16 {
+                        let bits: Vec<u16> = values
+                            .iter()
+                            .map(|&v| (v.to_bits() >> 16) as u16)
+                            .collect();
+                        tensor.set_cpu_bf16_bits(bits);
+                    } else {
+                        let slice = tensor.as_cpu_slice_mut();
+                        slice.copy_from_slice(&values);
+                    }
+                }
+            }
+
+            outcome.loaded += 1;
+            satisfied.insert(entry.name.to_string());
+        }
+
+        report.loaded = outcome.loaded;
+        report.skipped = outcome.skipped;
+        report.missing = self.collect_missing(&satisfied);
+
+        // ----- Pass 2: hoist Ram-tier graph slots into the
+        // store. Filter `param_ids` / `param_names` to entries
+        // not already inserted as Vram or Disk. The filtered
+        // list goes through `extract_from_graph` to share
+        // ownership with the graph (the same Arc-sharing pattern
+        // the original M5.c.2.b path establishes).
+        let ram_indices: Vec<usize> = param_ids
+            .iter()
+            .zip(param_names.iter())
+            .filter(|(_, name)| !already_inserted.contains(*name))
+            .map(|(id, _)| *id)
+            .collect();
+        let ram_names: Vec<String> = param_ids
+            .iter()
+            .zip(param_names.iter())
+            .filter(|(_, name)| !already_inserted.contains(*name))
+            .map(|(_, name)| name.clone())
+            .collect();
+
+        let ram_store =
+            WeightStore::extract_from_graph(graph, &ram_indices, &ram_names).map_err(|e| {
+                LoaderError::InvalidFormat(format!(
+                    "Ram-tier extract_from_graph failed: {}",
+                    e
+                ))
+            })?;
+
+        for (i, p) in ram_store.params.into_iter().enumerate() {
+            store.params.push(p);
+            store.names.push(ram_store.names[i].clone());
+        }
+
+        // Suppress the `WeightStoreError` import warning when the
+        // file is built without the test cfg. Used as a type only
+        // through the `map_err` closure above.
+        let _ = std::marker::PhantomData::<WeightStoreError>;
+
+        Ok((store, report))
     }
 
     /// Per-shard load primitive. Iterates `reader`, decodes each
