@@ -8,9 +8,9 @@ This roadmap communicates scope and priority, not calendar commitments. Versions
 
 ## Status overview
 
-Atenia Engine is currently working through APX v20 (Real Model Runtime Integration). Earlier versions (v12 through v19) are complete. The most recently closed sub-milestone is **M6: tier-aware GPU loader (VRAM → RAM → NVMe)**. The full M4.7 → M4.8 → M4.9 → M5 → M6 trajectory is closed: Llama 2 13B Chat runs end-to-end on dev-class commodity hardware (RTX 4070 Laptop, 8 GB VRAM, 32 GB RAM, NVMe spill cache) with the LRU spill + lazy-restore transparency contract preserved bit-exactly; the matmul dispatcher is 49.5× faster on the production shape; the killer-demo reproduction fits in one CLI command (`atenia run --mode c`) that completes in 6.9 minutes; **`atenia generate` produces a recognisably conversational answer with weights resident at 24.24 GiB** (Arc-shared across prefill and decode graphs); and as of M6, **`ATENIA_TIER_AWARE_LOADER=1 atenia generate --model models/llama-2-7b-chat` runs 1.46× faster than the CPU baseline** (8.22 s/tok vs 12.02 s/tok on Llama 2 7B Chat) by routing 60 attention/FFN projection weights directly into the RTX 4070's VRAM at load time, with the rest in RAM, no Disk overflow, and bit-identical output to the default CPU path.
+Atenia Engine is currently working through APX v20 (Real Model Runtime Integration). Earlier versions (v12 through v19) are complete. The most recently closed sub-milestone is **M7: 13B-friendly tiers (automatic VRAM + RAM + NVMe placement)**. The full M4.7 → M4.8 → M4.9 → M5 → M6 → M7 trajectory is closed: Llama 2 13B Chat runs end-to-end on dev-class commodity hardware (RTX 4070 Laptop, 8 GB VRAM, 32 GB RAM, NVMe spill cache); the matmul dispatcher is 49.5× faster on the production shape; the killer-demo reproduction fits in one CLI command (`atenia run --mode c`) that completes in 6.9 minutes; **`atenia generate` produces a recognisably conversational answer with weights resident at 24.24 GiB** (Arc-shared across prefill and decode graphs); as of M6, the tier-aware loader runs Llama 2 7B Chat 1.46× faster than the CPU baseline with bit-identical output; and as of M7, **`ATENIA_TIER_AWARE_LOADER=1 atenia generate --model models/llama-2-13b-chat` places 38 tensors in VRAM, 126 in RAM and 239 directly on NVMe via the Disk fast-path, with adaptive RAM headroom protecting against the May 2 BSOD scenario** — the 13B smoke ran for 6:22 wall-clock with peak free RAM ≥ 7.36 GiB, no BSOD, no thrashing, and a coherent 5-token reply.
 
-**Next active milestone: M7** (13B-friendly tiers — Disk overflow, activation residency, BF16-resident VRAM, adaptive plan refresh, multi-GPU). M6 closes the tier-aware loader architecture; M7 extends it to where the 13B-class models become unblocked on hardware where the M6 default cannot place them. See [docs/HANDOFF_APX_V20_M6.md](./docs/HANDOFF_APX_V20_M6.md) for the closing notes and [INVESTIGATION_M6_REPLAN.md](./INVESTIGATION_M6_REPLAN.md) for the design-iteration history that led to the shipped result.
+**Next active milestone: M8** (performance optimisation of the 13B Disk-tier path: BF16-resident VRAM kernels, decode-on-read amortisation, eventually multi-GPU). M7 closes the tier-aware loader's hardware-adaptive placement; M8 attacks the per-token cost on the Disk-tier path that the M7.3 smoke surfaced (36.6 s/tok dominated by `bf16_to_f32` decode-on-read, not by NVMe I/O). **Optional predecessor: M7.4** (Disk LRU cache + prefetch) is reserved for activation if production deployments need < 10 s/tok on 13B before M8 lands. See [docs/HANDOFF_APX_V20_M7.md](./docs/HANDOFF_APX_V20_M7.md) for the closing notes.
 
 Detailed closing notes per milestone live in the `docs/` directory:
 
@@ -23,6 +23,7 @@ Detailed closing notes per milestone live in the `docs/` directory:
 - [docs/HANDOFF_APX_V20_M4.9.md](./docs/HANDOFF_APX_V20_M4.9.md) — public CLI demo (`atenia run --mode c` reproduces the momento guau in 6.9 min via one command)
 - [docs/HANDOFF_APX_V20_M5.md](./docs/HANDOFF_APX_V20_M5.md) — tokenizer + KV cache + token-by-token generation (`atenia generate` ships; Llama 2 13B Chat answers conversationally; Arc-shared weights at 24.24 GiB)
 - [docs/HANDOFF_APX_V20_M6.md](./docs/HANDOFF_APX_V20_M6.md) — tier-aware GPU loader (VRAM → RAM → NVMe planner; 1.46× speedup on Llama 2 7B Chat; bit-identical output)
+- [docs/HANDOFF_APX_V20_M7.md](./docs/HANDOFF_APX_V20_M7.md) — 13B-friendly tiers (Disk fast-path + adaptive RAM headroom; Llama 2 13B Chat end-to-end with 239 tensors on NVMe, 7.36 GiB RAM headroom, no BSOD)
 
 ---
 
@@ -225,20 +226,42 @@ Twelve architectural decisions (D58–D69) locked across the M5.a–M5.f.a sub-p
 
 ---
 
-## Next active milestone — M6: Interactive 13B inference
+## M6 — Tier-aware GPU loader ✅
 
-M5 produces correct text at 0.07 tok/s on Llama 2 13B Chat (CPU-only). M6's headline goal is **interactive throughput** — the 2–10 tok/s range — by attacking the M5.f.a bench's measured bottleneck.
+Closed at commit `8180160`. Tier-aware loader (VRAM → RAM → NVMe) routed 60 attention/FFN projection weights of Llama 2 7B Chat directly to the RTX 4070's VRAM at load time; the rest stayed in RAM; no Disk overflow; bit-identical output to the CPU baseline; **1.46× faster** end-to-end (8.22 s/tok vs 12.02 s/tok). The architecture replan that emerged from the May 2 BSOD on 13B + post-load upload is documented in [INVESTIGATION_M6_REPLAN.md](./INVESTIGATION_M6_REPLAN.md): the planner is a pure function of `(metadata, free_ram, free_vram)` and per-tensor placement happens at load time, never as post-load migration.
 
-**M6 scope, in priority order:**
+See [HANDOFF M6](./docs/HANDOFF_APX_V20_M6.md) for the closing notes.
 
-- **GPU offload of the production matmuls**. Non-pooled `cuda_matmul` (tracked since HANDOFF M4.7 decision 34) for tensors > 64 MB. Direct `cudaMalloc` per invocation — bypasses the `apx4_12::DEFAULT_BLOCK_SIZE` pool ceiling that currently routes every Llama 2 13B layer (100–270 MB) to the CPU fallback. The bench shows FFN matmuls dominate forward FLOPs; target those first.
-- **`apx4::gpu_context::gpu_available()` reactivation**. Hardcoded to `false` since pre-M4.6; lands together with the non-pooled variant.
-- **Decode-graph reuse**. Single decode graph built once per session at `seq = 1, max_cached_len = max_context` with a `valid_len` runtime mask. Cache slots stay resident; the unused tail is masked to -∞. Eliminates per-step rebuild cost. **Note from M5.f.a**: the bench showed rebuild is <1 ms on TinyLlama, ~2 s on 13B; this stops being the priority it looked like at M5 close. Lands as the second M6 lever, not the first.
-- **`ensure_cpu` activation-arm coverage** under continuous spill pressure (M4.7.6.e carryover). The `catch_unwind` absorption Mode B uses is M5+ tech debt — closing it flips Mode B from "trigger validated, forward absorbed" to "trigger validated, forward completes". Pair with the GPU offload work.
-- **BF16 KV cache** (D62 second phase, deferred from M5.f.b). F32 cache works; BF16 halves cache RAM at decode. Not on the M5 critical path because at seq=2048 on 13B, F32 cache is 3.2 GiB — irrelevant against 24 GiB of weights. Lands when GPU offload changes the precision economics.
-- **Perplexity validation** (D63, deferred from M5.f.b). Useful in M6 once GPU offload changes the numerics path; lands then to catch a class of regressions that doesn't apply yet at M5 close.
+---
 
-See [HANDOFF M5](./docs/HANDOFF_APX_V20_M5.md) "How to resume on M6" for the file-by-file pointers.
+## M7 — 13B-friendly tiers ✅
+
+Closed at commit `19fdcf8` (M7.2) plus the M7.3 integration smoke documented in [HANDOFF M7](./docs/HANDOFF_APX_V20_M7.md). Four sub-phases shipped, each gated behind the 5 mandatory regression suites (43 tests):
+
+- **M7.0** (`8f29233`) — NVMe bench + Disk weight bit-exact test. Measured 3.6 GB/s sustained, 37 ms cold read on a 13B FFN-down weight. Decision: Plan A (no Disk LRU cache needed for the 10.4 s/tok worst-case projection).
+- **M7.1** (`db5a49f`) — Disk fast-path. Raw BF16 bytes flow from the safetensors mmap directly into NVMe with zero F32 transient. Counters `disk_fast_path_count` / `disk_slow_path_count` validate the structural property.
+- **M7.2** (`19fdcf8`) — Adaptive RAM headrooms. When `model_total > 0.7 × free_ram`, the planner inflates the headroom by the excess so genuine overflow scenarios route to NVMe. Pure helper `adaptive_ram_headroom` plus 5 unit tests. The fixed 8 GiB headroom (M6) is preserved as the floor; only model-dominated boxes trigger the inflation.
+- **M7.3** — 13B integration smoke on the operator's hardware. **Llama 2 13B Chat ran end-to-end** with 38 tensors on VRAM (6.70 GiB), 126 on RAM (0.75 GiB), **239 on NVMe (20.14 GiB)** via the M7.1 fast-path. Peak free RAM 7.36 GiB throughout, `disk_busy_pct` bursty (max 1 s @ 100 %), 36.6 s/tok average for 5 tokens, coherent reply, no BSOD. The four success criteria all passed; no rollback criterion triggered.
+
+R3 (May 2 BSOD on 13B + GPU residency) and R5 (fixed headroom misroutes 13B) are closed by construction.
+
+---
+
+## Next active milestone — M8: Performance of the 13B Disk-tier path
+
+M7 made 13B execution structurally safe and automatic; M8's goal is to bring its **per-token cost** down. The M7.3 smoke pinned the bottleneck: `disk_busy_pct` was idle most of the time, so the 36.6 s/tok cost is decode-bound (`bf16_to_f32` per layer per step), not I/O-bound.
+
+**M8 scope, in priority order:**
+
+- **BF16-resident VRAM kernels**. Today the GPU upload path materialises F32 in VRAM because that is the only kernel ABI. A `__bfloat162float`-inside-the-kernel matmul would halve VRAM cost per weight (`numel × 2` instead of `numel × 4` in `vram_cost_bytes`) and let the planner place ~76 tensors on VRAM in the same 7 GiB usable budget instead of 38.
+- **Decode-on-read amortisation**. The Disk-tier read path today calls `disk_tier::read_bf16_tensor` → `Vec<u16>` → `bf16_to_f32_vec` per layer per step. Folding the upcast into the read (or into the consumer kernel) cuts at least one full-tensor traversal per matmul.
+- **Tier-2 KV cache**. The KV cache today lives in F32 in RAM. A BF16 cache halves RAM cost at decode and frees budget that the planner can give back to weights or activations.
+- **`ensure_cpu` activation-arm coverage** under continuous spill pressure (M4.7.6.e carryover that survived M5–M7). Pair with the BF16-resident work.
+- **Perplexity validation** (D63, deferred from M5.f.b through M7). Useful once the M8 numerics path changes; catches a class of regressions that does not apply at M7 close because the F32 path is unchanged.
+
+### Optional predecessor — M7.4 (Disk LRU cache + prefetch)
+
+Reserved for activation if production deployments need < 10 s/tok on 13B before M8 lands. Adds an explicit LRU cache layer over `disk_tier::read_bf16_tensor` so the OS page cache budget can be freed for activations. The M7.0 bench (3.6 GB/s NVMe) and the M7.3 smoke (idle disk most of the time) both indicate that the win comes from caching at the loader level, not from I/O optimisation. Close criterion: 13B sustained tok/s ≥ 5× the M7.3 baseline.
 
 ---
 

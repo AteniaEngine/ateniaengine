@@ -130,6 +130,41 @@ Generated: 5 tokens in 41.1s (0.12 tok/s) [max-tokens reached]
 
 On the same dev-box hardware (RTX 4070 Laptop, 8 GB VRAM, 32 GB RAM) the default CPU path produces the bit-identical text in **60.1 s for 5 tokens (0.083 tok/s)**. The tier-aware path is **1.46× faster** at 0.122 tok/s — Atenia's first measured GPU acceleration of an LLM forward, with bit-identical output to the CPU baseline. See [HANDOFF M6](./docs/HANDOFF_APX_V20_M6.md) for the full architecture (load-time tier planner + direct-VRAM upload kernel + mixed-residency dispatch) and [INVESTIGATION_M6_REPLAN.md](./INVESTIGATION_M6_REPLAN.md) for the design-iteration history that led to the shipped result (a May 2 BSOD on the original post-load approach forced a structural redesign).
 
+### Or: Atenia runs Llama 2 13B Chat on a 32 GiB box (M7 ✅)
+
+The same `ATENIA_TIER_AWARE_LOADER=1` flag, on a 13B-class model, now spills automatically to NVMe. M7 adds a Disk fast-path (raw BF16 bytes mmap → NVMe with no F32 transient) and an adaptive RAM headroom that inflates when the model dominates RAM. Set `ATENIA_DISK_TIER_DIR` to a fast SSD path so the cache lands where you want it.
+
+```powershell
+$env:ATENIA_TIER_AWARE_LOADER = "1"
+$env:ATENIA_DISK_TIER_DIR    = "D:\atenia-m7-cache"
+
+cargo run --release --bin atenia -- generate `
+    --prompt "Hello, how are you?" `
+    --model D:/Atenia/models/llama-2-13b-chat `
+    --max-tokens 5
+```
+
+```text
+[ATENIA] Adaptive headroom: model 24.24 GiB, free RAM 19.41 GiB,
+         total RAM 31.71 GiB → RAM headroom 18.65 GiB
+         (8.00 base + 10.65 overflow protection)
+[ATENIA] Tier-aware loader plan:
+  VRAM: 38 tensors (6.70 GiB)
+  RAM:  126 tensors (0.75 GiB)
+  Disk: 239 tensors (20.14 GiB)
+
+Model loaded in 198.9s (363 parameters, 27.59 GiB resident).
+
+> Hello, how are you?
+
+ Hello! I'
+
+---
+Generated: 5 tokens in 183.0s (0.03 tok/s) [max-tokens reached]
+```
+
+Llama 2 13B Chat — 24.24 GiB of BF16 weights — runs end-to-end on a 32 GiB Windows box with a single 8 GiB GPU. The planner placed 239 tensors directly on NVMe; peak free RAM stayed at **7.36 GiB throughout** the 6-minute run (rollback floor was 2 GiB); `disk_busy_pct` hit 100 % only for ~1 s total (rollback threshold > 30 s sustained); no BSOD; the reply is coherent. The May 2 BSOD scenario that forced the M6 replan is now closed by construction. See [HANDOFF M7](./docs/HANDOFF_APX_V20_M7.md) for the full sub-phase ledger (M7.0 NVMe bench → M7.1 Disk fast-path → M7.2 adaptive headroom → M7.3 13B smoke).
+
 ---
 
 ## 🎯 Vision
@@ -183,7 +218,9 @@ Atenia Engine is implemented in Rust. The project follows an APX (Adaptive Execu
 
 Real, executable, deterministic:
 
-**Real LLM inference (APX v20 M4.5–M6)**
+**Real LLM inference (APX v20 M4.5–M7)**
+
+- **🧱 Atenia runs Llama 2 13B Chat on a 32 GiB box. (M7 ✅)** `ATENIA_TIER_AWARE_LOADER=1` plus `ATENIA_DISK_TIER_DIR=D:\atenia-m7-cache` lets the planner overflow ~20 GiB of BF16 weights directly to NVMe via the M7.1 fast-path (raw bytes, no F32 transient), keep 6.7 GiB on VRAM and 0.75 GiB on RAM, and produce a coherent 5-token reply in 6:22 wall-clock. Peak free RAM stayed at **7.36 GiB throughout** the run; `disk_busy_pct` only saturated for 1 s total; no BSOD. The May 2 BSOD scenario that forced the M6 architectural replan is now closed by construction: M7.2's adaptive RAM headroom inflates from the M6 base of 8 GiB up to whatever the model demands (`headroom = 8 GiB + max(0, model_total − 0.7 × free_ram)`), so 13B-class models on 32 GiB boxes route the right number of tensors to NVMe instead of saturating RAM. Four sub-phases shipped each as one commit gated behind 43-test regression: M7.0 (NVMe bench, 3.6 GB/s sustained), M7.1 (Disk fast-path with `disk_fast_path_count` counters), M7.2 (adaptive headroom + 5 unit tests), M7.3 (the integration smoke). See [HANDOFF M7](./docs/HANDOFF_APX_V20_M7.md).
 
 - **🚀 Atenia uses your GPU. (M6 ✅)** `ATENIA_TIER_AWARE_LOADER=1 atenia generate --prompt "Hello, how are you?" --model models/llama-2-7b-chat --max-tokens 5` runs **1.46× faster** than the default CPU path on the dev-box hardware (RTX 4070 Laptop, 8 GB VRAM, 32 GB RAM): **8.22 s/tok vs 12.02 s/tok** on Llama 2 7B Chat, with bit-identical output. The tier-aware loader probes free RAM/VRAM at startup, builds a per-tensor residency plan, and routes `_proj.weight` attention/FFN tensors directly to VRAM (60 tensors, 6.7 GiB) while everything else stays in RAM (263 tensors, 9.2 GiB). The M6 step 4d mixed-residency dispatch in `try_gpu_matmul` consumes those resident weights without re-uploading per call. Atenia's first measured GPU acceleration of an LLM forward, with a load-time tier planner that survives 32 GiB-box BSOD scenarios by construction (a May 2 BSOD on the original post-load approach forced a structural redesign — see [INVESTIGATION_M6_REPLAN.md](./INVESTIGATION_M6_REPLAN.md)). Thirteen production commits across two design iterations. See [HANDOFF M6](./docs/HANDOFF_APX_V20_M6.md).
 
