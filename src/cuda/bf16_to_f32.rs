@@ -26,6 +26,8 @@
 use std::ffi::c_void;
 use std::os::raw::c_int;
 
+use crate::gpu::tensor::TensorGPU;
+
 // FFI symbols needed by this module. `bf16_to_f32_launch_device`
 // lives in the `bf16_to_f32` static library produced by
 // `build.rs`. `cudaMemcpy` lives in `cudart`. `cuda_malloc` /
@@ -175,6 +177,102 @@ pub fn bf16_to_f32_on_device(src: &[u16], dst_len: usize) -> Option<Vec<f32>> {
         // device buffers before the host Vec is handed back.
         Some(out)
     }
+}
+
+/// **M6 step 4b** — upload BF16 to VRAM, run the GPU upcast
+/// kernel, and **leave the resulting F32 buffer resident on the
+/// device**. The transient BF16 device buffer is freed before
+/// return; the F32 buffer is wrapped in a [`TensorGPU`] whose
+/// `Drop` impl will eventually `cuda_free` it through the engine.
+///
+/// This is the residency-true variant of [`bf16_to_f32_on_device`]:
+/// callers building a persistent VRAM weight store
+/// (`WeightStore::upload_layer_bf16_to_vram`, M6 step 4b) need
+/// the F32 buffer to outlive the call and serve subsequent
+/// matmuls without re-uploading. The non-residency wrapper
+/// downloads the F32 result back to host memory.
+///
+/// # Returns
+///
+/// `Some(TensorGPU)` whose underlying device buffer holds the F32
+/// upcast of `src`. Logical shape is given by the caller and
+/// preserved alongside the `TensorGPU` at the `SharedParam` layer
+/// (the `TensorGPU` itself stores `(rows = numel, cols = 1)` as
+/// the engine convention; see `Tensor::zeros_new_cuda`).
+///
+/// `None` if `cuda_available()` is false, the BF16 transient
+/// `cuda_malloc` fails, the F32 `TensorGPU::empty` fails, the
+/// H→D `cudaMemcpy` returns non-zero, or the kernel launcher
+/// returns non-zero. On any error path:
+/// - The BF16 transient is freed by the [`DeviceAllocs`] guard.
+/// - The F32 `TensorGPU` (if allocated) is dropped, which
+///   `cuda_free`s its buffer via `InnerGpuPtr::drop`.
+/// - No VRAM leak.
+///
+/// # Bit-exactness
+///
+/// The CUDA `__bfloat162float` intrinsic and the host AVX2
+/// formula `f32::from_bits((bf16_bits as u32) << 16)` produce
+/// identical F32 patterns for every BF16 input. Validated end
+/// to end on a 70.7M-element FFN-down weight in
+/// `examples/test_bf16_upload.rs` (0 mismatches over 70M
+/// elements).
+pub fn bf16_to_f32_resident_in_vram(
+    src: &[u16],
+    shape: &[usize],
+) -> Option<TensorGPU> {
+    if !super::cuda_available() {
+        return None;
+    }
+
+    let numel: usize = shape.iter().product();
+    if src.len() != numel {
+        // Caller-provided shape disagrees with the buffer size;
+        // refusing to upload is safer than truncating or
+        // over-reading. None lets the caller fall back to CPU.
+        return None;
+    }
+
+    let bytes_bf16 = numel * std::mem::size_of::<u16>();
+
+    // Allocate the BF16 transient via the same raw `cuda_malloc`
+    // path used by `cuda::matmul::cuda_matmul_non_pooled`. Will
+    // be freed by `DeviceAllocs::drop` on every return path.
+    let mut transient = DeviceAllocs::new();
+    let d_bf16 = transient.alloc(bytes_bf16)?;
+
+    // Allocate the F32 destination via the engine-managed
+    // `TensorGPU::empty` so the buffer's RAII lifecycle is
+    // consistent with the rest of the engine. If the call
+    // beyond this point fails, dropping `gpu_f32` triggers
+    // `InnerGpuPtr::drop` which frees the buffer.
+    let gpu_f32 = TensorGPU::empty(numel, 1).ok()?;
+
+    unsafe {
+        let rc = cudaMemcpy(
+            d_bf16,
+            src.as_ptr() as *const c_void,
+            bytes_bf16,
+            CUDA_MEMCPY_HOST_TO_DEVICE,
+        );
+        if rc != 0 {
+            return None;
+        }
+
+        let rc = bf16_to_f32_launch_device(
+            d_bf16,
+            gpu_f32.device_ptr() as *mut f32,
+            numel as c_int,
+        );
+        if rc != 0 {
+            return None;
+        }
+    }
+
+    // `transient` (BF16) drops here on success, freeing the
+    // staging buffer. `gpu_f32` is moved into the return value
+    // and survives.
+    Some(gpu_f32)
 }
 
 #[cfg(test)]

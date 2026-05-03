@@ -394,6 +394,31 @@ impl Tensor {
     /// Returns [`StorageTransferError::EngineUnavailable`] if no CUDA
     /// engine is available, or [`StorageTransferError::AllocationFailed`]
     /// if VRAM allocation fails.
+    /// **M6 step 4b** — build a Tensor wrapping an externally-
+    /// produced [`TensorGPU`] without touching VRAM. Used by
+    /// [`crate::amg::weight_store::SharedParam::Cuda`]'s `to_tensor`
+    /// to materialise a graph-side parameter slot whose storage
+    /// already lives on the device. Cheap: the `TensorGPU` is Arc-
+    /// based, so this is one Arc clone per call.
+    ///
+    /// Always F32 / Layout::Contiguous / Device::GPU. The `shape`
+    /// is taken from the caller (the `TensorGPU` itself only
+    /// records `rows × cols × 4`; logical shape is preserved at
+    /// the `SharedParam` layer).
+    pub fn from_cuda_gpu(shape: Vec<usize>, gpu: TensorGPU) -> Self {
+        let strides = Self::compute_strides(&shape, &Layout::Contiguous);
+        Self {
+            shape,
+            storage: TensorStorage::Cuda(gpu),
+            device: Device::GPU,
+            dtype: DType::F32,
+            layout: Layout::Contiguous,
+            strides,
+            grad: None,
+            op: None,
+        }
+    }
+
     pub fn zeros_new_cuda(shape: &[usize]) -> Result<Self, StorageTransferError> {
         let numel: usize = shape.iter().product();
         let gpu = TensorGPU::empty(numel, 1)

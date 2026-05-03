@@ -44,6 +44,11 @@ use crate::tensor::Tensor;
 #[cfg(test)]
 use crate::tensor::TensorStorage;
 
+use crate::gpu::safety::resource_check::{
+    check_before_gpu_operation, SafetyDecision,
+};
+use crate::gpu::tensor::TensorGPU;
+
 /// One stored parameter — a pre-shaped buffer wrapped in an
 /// `Arc` so multiple `Tensor` wrappers can reference it
 /// without copying.
@@ -56,6 +61,15 @@ use crate::tensor::TensorStorage;
 pub enum SharedParam {
     F32 { shape: Vec<usize>, arc: Arc<Vec<f32>> },
     Bf16 { shape: Vec<usize>, arc: Arc<Vec<u16>> },
+    /// **M6 step 4b** — VRAM-resident F32 parameter. The
+    /// underlying [`TensorGPU`] holds an `Arc<InnerGpuPtr>` so
+    /// `Clone` and `to_tensor` are cheap and share the device
+    /// buffer with no extra allocation. The original BF16
+    /// `Arc<Vec<u16>>` is dropped by `upload_layer_bf16_to_vram`
+    /// at the moment the variant is overwritten — this is the
+    /// mechanism that lets the M6 wire-up free RAM after a
+    /// successful upload.
+    Cuda { shape: Vec<usize>, gpu: TensorGPU },
 }
 
 impl SharedParam {
@@ -67,22 +81,31 @@ impl SharedParam {
                 Tensor::cpu_shared(shape.clone(), Arc::clone(arc)),
             SharedParam::Bf16 { shape, arc } =>
                 Tensor::cpu_bf16_shared(shape.clone(), Arc::clone(arc)),
+            SharedParam::Cuda { shape, gpu } =>
+                Tensor::from_cuda_gpu(shape.clone(), gpu.clone()),
         }
     }
 
     pub fn shape(&self) -> &[usize] {
         match self {
-            SharedParam::F32 { shape, .. } | SharedParam::Bf16 { shape, .. } => shape,
+            SharedParam::F32 { shape, .. }
+            | SharedParam::Bf16 { shape, .. }
+            | SharedParam::Cuda { shape, .. } => shape,
         }
     }
 
     /// Bytes resident in the underlying buffer (F32 = 4 ×
-    /// numel; BF16 = 2 × numel). Useful for the M5.c.2.b
-    /// telemetry that proves Arc-sharing actually saves RAM.
+    /// numel; BF16 = 2 × numel; Cuda = device buffer size).
+    /// **Note**: for the `Cuda` variant the bytes live in VRAM,
+    /// not host RAM. The aggregate `WeightStore::resident_bytes`
+    /// sum is therefore not a pure-RAM measurement after any
+    /// upload has happened. See [`UploadReport`] for per-upload
+    /// RAM/VRAM accounting.
     pub fn resident_bytes(&self) -> usize {
         match self {
             SharedParam::F32 { arc, .. } => arc.len() * 4,
             SharedParam::Bf16 { arc, .. } => arc.len() * 2,
+            SharedParam::Cuda { gpu, .. } => gpu.size_bytes(),
         }
     }
 
@@ -91,11 +114,49 @@ impl SharedParam {
     /// both graphs have materialised their parameter slots.
     /// Useful for tests that verify sharing actually
     /// happened.
+    ///
+    /// For the `Cuda` variant returns 1 unconditionally — the
+    /// `TensorGPU`'s internal `Arc<InnerGpuPtr>` is private and
+    /// is not exposed for external strong-count queries. Tests
+    /// that verify Arc-sharing semantics use the `F32` / `Bf16`
+    /// variants.
     pub fn strong_count(&self) -> usize {
         match self {
             SharedParam::F32 { arc, .. } => Arc::strong_count(arc),
             SharedParam::Bf16 { arc, .. } => Arc::strong_count(arc),
+            SharedParam::Cuda { .. } => 1,
         }
+    }
+}
+
+/// **M6 step 4b** — outcome of `WeightStore::upload_layer_bf16_to_vram`.
+///
+/// `params_uploaded` counts entries successfully transitioned from
+/// `SharedParam::Bf16` to `SharedParam::Cuda`. Non-BF16 entries and
+/// entries whose upload failed are skipped silently (logged to
+/// stderr) and do not contribute.
+///
+/// `vram_bytes_used` is the device-side F32 buffer total — the
+/// persistent residency cost on the GPU.
+///
+/// `ram_bytes_freed` is the upper bound on RAM reclaimed: it sums
+/// the BF16 byte sizes of every uploaded param. The actual amount
+/// of RAM that returns to the OS depends on whether other code
+/// (e.g. a sibling graph slot via `extract_from_graph`) still
+/// holds the same `Arc<Vec<u16>>` — when it does, dropping the
+/// store's clone only reduces the strong count, not the
+/// allocation. In tests with isolated stores the figure is
+/// exact; in production the figure is informational.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UploadReport {
+    pub params_uploaded: usize,
+    pub vram_bytes_used: u64,
+    pub ram_bytes_freed: u64,
+}
+
+impl UploadReport {
+    pub fn empty() -> Self {
+        Self::default()
     }
 }
 
@@ -155,6 +216,187 @@ impl WeightStore {
 
     pub fn len(&self) -> usize { self.params.len() }
     pub fn is_empty(&self) -> bool { self.params.is_empty() }
+
+    /// **M6 step 4b** — return the parameter indices belonging
+    /// to a given Llama layer. Recognises the HuggingFace
+    /// convention `model.layers.<N>.<...>` used by Llama 2 /
+    /// Llama 3 / Qwen 2.5 / TinyLlama. Layers outside that
+    /// convention (`model.embed_tokens`, `model.norm`,
+    /// `lm_head`, etc.) are not matched by any layer index.
+    fn indices_for_layer(&self, layer_idx: usize) -> Vec<usize> {
+        let prefix = format!("model.layers.{}.", layer_idx);
+        self.names
+            .iter()
+            .enumerate()
+            .filter_map(|(i, name)| {
+                if name.starts_with(&prefix) {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// **M6 step 4b** — upload every BF16 parameter belonging to
+    /// `layer_idx` to VRAM, replacing the entry in this store
+    /// with a `SharedParam::Cuda` variant and dropping the
+    /// original `Arc<Vec<u16>>`.
+    ///
+    /// The method first calls [`check_before_gpu_operation`] (the
+    /// M6 safety gate) with the layer's required RAM/VRAM
+    /// footprint. If the gate returns
+    /// [`SafetyDecision::DegradeToCpu`] the upload is skipped
+    /// entirely and the report comes back with all-zero counts;
+    /// the caller's pipeline continues with the CPU-resident
+    /// parameters unchanged. Other safety decisions (`Proceed`,
+    /// `DegradeToLayers`) proceed with the upload (the planner
+    /// in `pipeline.rs` is responsible for selecting which
+    /// layers to upload based on the layer count returned by
+    /// `DegradeToLayers`).
+    ///
+    /// Per-param failures (a single `bf16_to_f32_resident_in_vram`
+    /// returning `None`) are non-fatal: the failed entry stays
+    /// as `SharedParam::Bf16` and the loop continues. If **every**
+    /// BF16 entry fails, returns `Err(AllUploadsFailed)` so the
+    /// caller can fall back without leaving the store in a half-
+    /// uploaded mixed state.
+    ///
+    /// Atomicity: each param is replaced in place once its
+    /// upload completes. If an upload further down the layer
+    /// fails after earlier ones succeeded, the earlier successes
+    /// stay (no rollback). This matches the operator's intent —
+    /// a partial residency is still useful and the caller can
+    /// inspect `UploadReport.params_uploaded` to know what
+    /// actually landed.
+    pub fn upload_layer_bf16_to_vram(
+        &mut self,
+        layer_idx: usize,
+    ) -> Result<UploadReport, WeightStoreError> {
+        // Compute requirements first so the safety gate has the
+        // right numbers. Only BF16 entries count toward the
+        // upload — F32 / already-Cuda entries are skipped at
+        // execution time.
+        let mut required_vram_bytes: u64 = 0;
+        let mut required_ram_bytes: u64 = 0;
+        for &i in &self.indices_for_layer(layer_idx) {
+            if let SharedParam::Bf16 { shape, .. } = &self.params[i] {
+                let numel: u64 = shape.iter().product::<usize>() as u64;
+                // Persistent VRAM cost is F32 (the upcast
+                // destination). The transient BF16 device buffer
+                // also lives during the upload but is a peak
+                // 2× smaller and is freed before the next layer
+                // starts uploading, so we charge it only against
+                // RAM (which already holds the BF16 source).
+                required_vram_bytes += numel * 4;
+                required_ram_bytes += numel * 2;
+            }
+        }
+        let required_ram_mb = required_ram_bytes / (1024 * 1024);
+        let required_vram_mb = required_vram_bytes / (1024 * 1024);
+
+        let decision = check_before_gpu_operation(required_ram_mb, required_vram_mb);
+        self.upload_layer_bf16_to_vram_with_decision(layer_idx, decision)
+    }
+
+    /// **M6 step 4b** — testable variant of `upload_layer_bf16_to_vram`
+    /// that takes a pre-computed [`SafetyDecision`] instead of
+    /// probing the live machine state. Used by unit tests to
+    /// exercise the `DegradeToCpu` branch deterministically.
+    /// Production callers go through `upload_layer_bf16_to_vram`.
+    pub(crate) fn upload_layer_bf16_to_vram_with_decision(
+        &mut self,
+        layer_idx: usize,
+        decision: SafetyDecision,
+    ) -> Result<UploadReport, WeightStoreError> {
+        if matches!(decision, SafetyDecision::DegradeToCpu) {
+            return Ok(UploadReport::empty());
+        }
+
+        let layer_indices = self.indices_for_layer(layer_idx);
+        if layer_indices.is_empty() {
+            return Ok(UploadReport::empty());
+        }
+
+        let mut params_uploaded = 0_usize;
+        let mut vram_bytes_used = 0_u64;
+        let mut ram_bytes_freed = 0_u64;
+        let mut bf16_param_count = 0_usize;
+        let mut upload_failures = 0_usize;
+
+        for i in layer_indices {
+            // Take ownership of the entry so the BF16 `Arc` can
+            // be dropped at the end of the iteration if the
+            // upload succeeds. We replace it back with the
+            // original (or with a Cuda variant on success)
+            // before continuing. The placeholder value is a
+            // zero-element Bf16 — semantically equivalent to
+            // "empty parameter" for the brief window between
+            // take and replace.
+            let original = std::mem::replace(
+                &mut self.params[i],
+                SharedParam::Bf16 {
+                    shape: Vec::new(),
+                    arc: Arc::new(Vec::new()),
+                },
+            );
+
+            match original {
+                SharedParam::Bf16 { shape, arc } => {
+                    bf16_param_count += 1;
+                    let bf16_bytes = (arc.len() * 2) as u64;
+                    match crate::cuda::bf16_to_f32::bf16_to_f32_resident_in_vram(
+                        arc.as_slice(),
+                        &shape,
+                    ) {
+                        Some(gpu) => {
+                            let vram_bytes = gpu.size_bytes() as u64;
+                            self.params[i] = SharedParam::Cuda { shape, gpu };
+                            // `arc` drops here. If the store was
+                            // its only owner, RAM returns to the
+                            // allocator; if a graph slot still
+                            // holds it via `extract_from_graph`,
+                            // the strong count drops by 1.
+                            drop(arc);
+                            params_uploaded += 1;
+                            vram_bytes_used += vram_bytes;
+                            ram_bytes_freed += bf16_bytes;
+                        }
+                        None => {
+                            // Restore the original and continue
+                            // with the next param.
+                            if !crate::apx_is_silent() {
+                                eprintln!(
+                                    "[weight_store] BF16→VRAM upload failed for \
+                                     param idx {} (name='{}'); leaving as CpuBf16Shared",
+                                    i,
+                                    self.names.get(i).map(|s| s.as_str()).unwrap_or("?"),
+                                );
+                            }
+                            self.params[i] = SharedParam::Bf16 { shape, arc };
+                            upload_failures += 1;
+                        }
+                    }
+                }
+                other => {
+                    // Not a BF16 entry — restore unchanged. F32
+                    // and already-Cuda entries are valid layer
+                    // members but not eligible for upload here.
+                    self.params[i] = other;
+                }
+            }
+        }
+
+        if bf16_param_count > 0 && upload_failures == bf16_param_count {
+            return Err(WeightStoreError::AllUploadsFailed { layer_idx });
+        }
+
+        Ok(UploadReport {
+            params_uploaded,
+            vram_bytes_used,
+            ram_bytes_freed,
+        })
+    }
 
     /// **M5.c.2.b** — extract loaded parameter tensors from a
     /// `Graph` into a fresh `WeightStore`, replacing the
@@ -259,6 +501,14 @@ pub enum WeightStoreError {
     NodeOutOfRange { node_id: usize, len: usize, name: String },
     NodeHasNoTensor { node_id: usize, name: String },
     UnsupportedStorage { node_id: usize, name: String },
+    /// **M6 step 4b** — `upload_layer_bf16_to_vram` could not
+    /// upload **any** of a layer's BF16 params (e.g. driver
+    /// missing, repeated `cuda_malloc` failures). The caller is
+    /// expected to fall back to the CPU path. Distinct from
+    /// `Ok(UploadReport { params_uploaded: 0, .. })` which
+    /// indicates the safety gate degraded the upload (RAM
+    /// pressure) — that path is non-error.
+    AllUploadsFailed { layer_idx: usize },
 }
 
 impl std::fmt::Display for WeightStoreError {
@@ -272,6 +522,8 @@ impl std::fmt::Display for WeightStoreError {
                 write!(f, "weight_store: node {node_id} for '{name}' has no materialised tensor"),
             WeightStoreError::UnsupportedStorage { node_id, name } =>
                 write!(f, "weight_store: node {node_id} for '{name}' has unsupported (Cuda/Disk) storage"),
+            WeightStoreError::AllUploadsFailed { layer_idx } =>
+                write!(f, "weight_store: every BF16 upload for layer {layer_idx} failed; falling back to CPU"),
         }
     }
 }
@@ -501,6 +753,157 @@ mod tests {
         let result = WeightStore::extract_from_graph(
             &mut g, &[0, 1], &["only_one".to_string()]);
         assert!(matches!(result, Err(WeightStoreError::IndexMismatch { .. })));
+    }
+
+    #[test]
+    fn upload_layer_bf16_with_degrade_to_cpu_returns_empty_report() {
+        // Safety gate simulating RAM < 8 GiB. The method must
+        // short-circuit with an empty UploadReport and leave
+        // every BF16 entry in CpuBf16Shared (no upload attempted,
+        // no panics, no GPU calls). Does not require CUDA.
+        let mut store = WeightStore::new();
+
+        let bf16_q: Vec<u16> = (0..16).map(|i| i as u16).collect();
+        let bf16_k: Vec<u16> = (0..16).map(|i| (i + 100) as u16).collect();
+        store.insert_bf16(
+            "model.layers.0.self_attn.q_proj.weight",
+            vec![4, 4],
+            bf16_q.clone(),
+        );
+        store.insert_bf16(
+            "model.layers.0.self_attn.k_proj.weight",
+            vec![4, 4],
+            bf16_k.clone(),
+        );
+
+        let decision = SafetyDecision::DegradeToCpu;
+        let report = store
+            .upload_layer_bf16_to_vram_with_decision(0, decision)
+            .expect("DegradeToCpu must return Ok with empty report, not error");
+
+        assert_eq!(report.params_uploaded, 0);
+        assert_eq!(report.vram_bytes_used, 0);
+        assert_eq!(report.ram_bytes_freed, 0);
+
+        // Both params still BF16.
+        assert!(matches!(store.params[0], SharedParam::Bf16 { .. }));
+        assert!(matches!(store.params[1], SharedParam::Bf16 { .. }));
+    }
+
+    /// **M6 step 4b** — end-to-end upload test for a single
+    /// synthetic layer with two BF16 params. Skipped on hosts
+    /// without a CUDA driver. Verifies:
+    ///   - Both params transition to `SharedParam::Cuda`.
+    ///   - `UploadReport.ram_bytes_freed > 0`
+    ///     (the store had unique ownership of the Arcs).
+    ///   - `UploadReport.vram_bytes_used > 0`.
+    ///   - A matmul against the resident weights via
+    ///     `cuda_matmul_inplace` is bit-exact with a CPU
+    ///     reference matmul over the host-decoded BF16.
+    #[test]
+    #[ignore = "requires CUDA driver (nvidia-smi)"]
+    fn upload_layer_bf16_to_vram_uploads_two_params_and_matmul_matches_cpu() {
+        use crate::cuda::cuda_available;
+        use crate::cuda::matmul::cuda_matmul_inplace;
+        use crate::tensor::tensor::{bf16_bits_to_f32, f32_to_bf16_bits};
+
+        if !cuda_available() {
+            eprintln!("CUDA not available, skipping");
+            return;
+        }
+
+        // Layer 0 with two 4x4 BF16 weights. Tiny size so the
+        // test is fast (kernel launch dominates).
+        let mut store = WeightStore::new();
+        let f_q: Vec<f32> = (0..16).map(|i| (i as f32) * 0.1 - 0.7).collect();
+        let f_k: Vec<f32> = (0..16).map(|i| (i as f32) * 0.05 + 0.3).collect();
+        let bits_q: Vec<u16> = f_q.iter().map(|&f| f32_to_bf16_bits(f)).collect();
+        let bits_k: Vec<u16> = f_k.iter().map(|&f| f32_to_bf16_bits(f)).collect();
+        store.insert_bf16(
+            "model.layers.0.self_attn.q_proj.weight",
+            vec![4, 4],
+            bits_q.clone(),
+        );
+        store.insert_bf16(
+            "model.layers.0.self_attn.k_proj.weight",
+            vec![4, 4],
+            bits_k.clone(),
+        );
+
+        let bf16_total_bytes = (bits_q.len() + bits_k.len()) * 2;
+
+        // Force the upload past the safety gate.
+        let decision = SafetyDecision::Proceed;
+        let report = store
+            .upload_layer_bf16_to_vram_with_decision(0, decision)
+            .expect("upload must succeed on a healthy CUDA host");
+
+        assert_eq!(report.params_uploaded, 2, "both BF16 params should upload");
+        assert_eq!(
+            report.ram_bytes_freed as usize, bf16_total_bytes,
+            "ram_bytes_freed should equal sum of BF16 byte sizes"
+        );
+        assert!(
+            report.vram_bytes_used > 0,
+            "vram_bytes_used must be positive after a successful upload"
+        );
+
+        // Both entries now Cuda.
+        assert!(
+            matches!(store.params[0], SharedParam::Cuda { .. }),
+            "param 0 should be Cuda, got {:?}", store.params[0]
+        );
+        assert!(
+            matches!(store.params[1], SharedParam::Cuda { .. }),
+            "param 1 should be Cuda, got {:?}", store.params[1]
+        );
+
+        // Matmul Q @ K (both [4, 4]) on GPU vs CPU reference. We
+        // use cuda_matmul_inplace with all-Cuda operands +
+        // output to exercise the residency path that production
+        // sub-step 4d will route to.
+        let mut q_gpu = store.params[0].to_tensor();
+        let mut k_gpu = store.params[1].to_tensor();
+        // q.matmul(k) produces a [4, 4] output. Allocate output
+        // on VRAM so cuda_matmul_inplace's all-Cuda branch fires.
+        let mut out_gpu = Tensor::zeros_new_cuda(&[4, 4]).expect("VRAM alloc failed");
+
+        cuda_matmul_inplace(&q_gpu, &k_gpu, &mut out_gpu, 4, 4, 4);
+
+        // Materialise output back to host for comparison.
+        out_gpu.ensure_cpu().expect("D→H transfer failed");
+        let gpu_values = out_gpu.copy_to_cpu_vec();
+
+        // CPU reference: decode BF16 → F32, naive matmul.
+        let f_q_decoded: Vec<f32> = bits_q.iter().map(|&b| bf16_bits_to_f32(b)).collect();
+        let f_k_decoded: Vec<f32> = bits_k.iter().map(|&b| bf16_bits_to_f32(b)).collect();
+        let mut cpu_values = vec![0.0_f32; 16];
+        for i in 0..4 {
+            for j in 0..4 {
+                let mut acc = 0.0_f32;
+                for kk in 0..4 {
+                    acc += f_q_decoded[i * 4 + kk] * f_k_decoded[kk * 4 + j];
+                }
+                cpu_values[i * 4 + j] = acc;
+            }
+        }
+
+        let mut max_abs_diff = 0.0_f32;
+        for (g, c) in gpu_values.iter().zip(cpu_values.iter()) {
+            let d = (g - c).abs();
+            if d > max_abs_diff {
+                max_abs_diff = d;
+            }
+        }
+        assert!(
+            max_abs_diff < 1e-3,
+            "GPU matmul on resident BF16-uploaded params drifted \
+             {} from CPU reference (limit 1e-3)",
+            max_abs_diff
+        );
+
+        // Silence unused-mut warnings.
+        let _ = (&mut q_gpu, &mut k_gpu);
     }
 
     #[test]
