@@ -20,6 +20,7 @@
 //! non-CUDA hosts via `cuda_available()`.
 
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::amg::weight_store::SharedParam;
@@ -37,6 +38,15 @@ use safetensors::Dtype as StDtype;
 // ---------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------
+
+/// Serialises tests that snapshot global atomic counters
+/// (`vram_fast_path_count`, `vram_slow_path_count`,
+/// `gpu_matmul_resident_count`, etc). Without this lock, the
+/// default cargo test runner interleaves tests and each one's
+/// "after" snapshot observes the others' increments, producing
+/// flaky counter assertions. Same pattern used in
+/// `src/gpu/dispatch/hooks.rs::m6_step_2b_routing_tests`.
+static COUNTER_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 /// Build an in-memory safetensors buffer with multiple BF16
 /// tensors. Each `(name, shape, f32_values)` tuple becomes one
@@ -190,6 +200,9 @@ fn all_ram_plan_matches_load_into_bit_exact() {
 #[test]
 #[ignore = "requires CUDA driver (nvidia-smi)"]
 fn mixed_plan_produces_cuda_entries_for_vram_tier() {
+    let _guard = COUNTER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if !cuda_available() {
         eprintln!("CUDA not available, skipping");
         return;
@@ -286,6 +299,9 @@ fn mixed_plan_produces_cuda_entries_for_vram_tier() {
 #[test]
 #[ignore = "requires CUDA driver (nvidia-smi)"]
 fn vram_bf16_no_transforms_uses_fast_path_only() {
+    let _guard = COUNTER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if !cuda_available() {
         eprintln!("CUDA not available, skipping");
         return;

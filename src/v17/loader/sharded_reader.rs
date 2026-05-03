@@ -82,6 +82,103 @@ impl ShardedSafetensorsReader {
         self.index.shard_path(shard_filename)
     }
 
+    /// **M6 replan sub-fase 3** — walk every shard, decode the
+    /// safetensors header, and aggregate per-tensor metadata
+    /// (name, shape, dtype) into a flat `Vec<TensorMeta>` ready
+    /// to feed [`crate::gpu::tier_plan::plan`].
+    ///
+    /// Each shard is opened in turn, its tensor entries are
+    /// inspected (no body decode beyond the header), and the
+    /// reader is dropped before the next shard opens — peak RAM
+    /// is one shard's bytes at a time. The metadata `Vec` itself
+    /// is small (one entry per tensor; ~360 entries × ~64 bytes
+    /// for Llama 2 13B ≈ 23 KiB).
+    ///
+    /// The metadata pass costs one extra read of every shard
+    /// file. On NVMe with warm OS file cache, this is a few
+    /// hundred ms for 13B; the second pass during the actual
+    /// load reuses the cached pages and pays no extra IO.
+    pub fn collect_tensor_metas(
+        &self,
+    ) -> Result<Vec<crate::gpu::tier_plan::TensorMeta>, LoaderError> {
+        let mut metas = Vec::new();
+        for shard_filename in self.index.shard_filenames() {
+            let path = self.index.shard_path(&shard_filename);
+            let reader = SafetensorsReader::open(&path)?;
+            for entry in reader.iter() {
+                metas.push(crate::gpu::tier_plan::TensorMeta {
+                    name: entry.name.to_string(),
+                    shape: entry.shape.to_vec(),
+                    dtype: entry.dtype,
+                });
+            }
+            // Drop the shard's owned bytes before the next file is
+            // read — peak RAM stays bounded to a single shard.
+            drop(reader);
+        }
+        Ok(metas)
+    }
+
+    /// **M6 replan sub-fase 3** — tier-aware multi-shard load.
+    /// Mirrors [`Self::load_into`] but routes each tensor's bytes
+    /// to its planner-assigned tier (Vram / Ram / Disk) rather
+    /// than always RAM.
+    ///
+    /// Walks every shard, calling
+    /// [`crate::v17::loader::weight_mapper::WeightMapper::load_one_shard_into_with_residency_plan`]
+    /// per shard with shared accumulators (`store`,
+    /// `already_inserted`, `satisfied`). After every shard has
+    /// been processed, calls
+    /// [`crate::v17::loader::weight_mapper::finalize_ram_extract`]
+    /// to hoist Ram-tier graph slots into the store, completing
+    /// the load.
+    ///
+    /// Returns the populated [`WeightStore`] and an aggregated
+    /// [`LoadReport`].
+    pub fn load_into_with_residency_plan(
+        &self,
+        graph: &mut Graph,
+        mapper: &super::weight_mapper::WeightMapper,
+        plan: &crate::gpu::tier_plan::TierPlan,
+        param_ids: &[usize],
+        param_names: &[String],
+    ) -> Result<(crate::amg::weight_store::WeightStore, LoadReport), LoaderError> {
+        use std::collections::HashSet;
+
+        let mut store = crate::amg::weight_store::WeightStore::new();
+        let mut already_inserted: HashSet<String> = HashSet::new();
+        let mut satisfied: HashSet<String> = HashSet::new();
+        let mut report = LoadReport::default();
+
+        for shard_filename in self.index.shard_filenames() {
+            let path = self.index.shard_path(&shard_filename);
+            let reader = SafetensorsReader::open(&path)?;
+            let outcome = mapper.load_one_shard_into_with_residency_plan(
+                graph,
+                &reader,
+                plan,
+                &mut store,
+                &mut already_inserted,
+                &mut satisfied,
+            )?;
+            report.loaded += outcome.loaded;
+            report.skipped.extend(outcome.skipped);
+            drop(reader);
+        }
+
+        report.missing = mapper.collect_missing(&satisfied);
+
+        super::weight_mapper::finalize_ram_extract(
+            graph,
+            &mut store,
+            &already_inserted,
+            param_ids,
+            param_names,
+        )?;
+
+        Ok((store, report))
+    }
+
     /// Load every tensor referenced by the index into the graph
     /// using `mapper`. Shards are processed one at a time; each
     /// shard's `Vec<u8>` raw buffer is freed before the next

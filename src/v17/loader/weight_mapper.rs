@@ -398,6 +398,41 @@ impl WeightMapper {
         let mut satisfied: HashSet<String> = HashSet::new();
         let mut store = WeightStore::new();
         let mut already_inserted: HashSet<String> = HashSet::new();
+
+        let outcome = self.load_one_shard_into_with_residency_plan(
+            graph,
+            reader,
+            plan,
+            &mut store,
+            &mut already_inserted,
+            &mut satisfied,
+        )?;
+
+        report.loaded = outcome.loaded;
+        report.skipped = outcome.skipped;
+        report.missing = self.collect_missing(&satisfied);
+
+        finalize_ram_extract(graph, &mut store, &already_inserted, param_ids, param_names)?;
+
+        Ok((store, report))
+    }
+
+    /// **M6 replan sub-fase 3** — per-shard primitive used by both
+    /// the single-shard `load_into_with_residency_plan` and the
+    /// multi-shard `ShardedSafetensorsReader::load_into_with_residency_plan`.
+    /// Mutates the caller-owned `store`, `already_inserted`, and
+    /// `satisfied` accumulators in place; does **not** perform the
+    /// final Ram-tier extract — the caller is responsible for that
+    /// step (typically once after every shard has been processed).
+    pub fn load_one_shard_into_with_residency_plan(
+        &self,
+        graph: &mut Graph,
+        reader: &SafetensorsReader,
+        plan: &TierPlan,
+        store: &mut WeightStore,
+        already_inserted: &mut HashSet<String>,
+        satisfied: &mut HashSet<String>,
+    ) -> Result<ShardLoadOutcome, LoaderError> {
         let mut outcome = ShardLoadOutcome::default();
 
         for entry in reader.iter() {
@@ -666,48 +701,7 @@ impl WeightMapper {
             satisfied.insert(entry.name.to_string());
         }
 
-        report.loaded = outcome.loaded;
-        report.skipped = outcome.skipped;
-        report.missing = self.collect_missing(&satisfied);
-
-        // ----- Pass 2: hoist Ram-tier graph slots into the
-        // store. Filter `param_ids` / `param_names` to entries
-        // not already inserted as Vram or Disk. The filtered
-        // list goes through `extract_from_graph` to share
-        // ownership with the graph (the same Arc-sharing pattern
-        // the original M5.c.2.b path establishes).
-        let ram_indices: Vec<usize> = param_ids
-            .iter()
-            .zip(param_names.iter())
-            .filter(|(_, name)| !already_inserted.contains(*name))
-            .map(|(id, _)| *id)
-            .collect();
-        let ram_names: Vec<String> = param_ids
-            .iter()
-            .zip(param_names.iter())
-            .filter(|(_, name)| !already_inserted.contains(*name))
-            .map(|(_, name)| name.clone())
-            .collect();
-
-        let ram_store =
-            WeightStore::extract_from_graph(graph, &ram_indices, &ram_names).map_err(|e| {
-                LoaderError::InvalidFormat(format!(
-                    "Ram-tier extract_from_graph failed: {}",
-                    e
-                ))
-            })?;
-
-        for (i, p) in ram_store.params.into_iter().enumerate() {
-            store.params.push(p);
-            store.names.push(ram_store.names[i].clone());
-        }
-
-        // Suppress the `WeightStoreError` import warning when the
-        // file is built without the test cfg. Used as a type only
-        // through the `map_err` closure above.
-        let _ = std::marker::PhantomData::<WeightStoreError>;
-
-        Ok((store, report))
+        Ok(outcome)
     }
 
     /// Per-shard load primitive. Iterates `reader`, decodes each
@@ -927,6 +921,63 @@ impl WeightMapper {
 pub struct ShardLoadOutcome {
     pub loaded: usize,
     pub skipped: Vec<String>,
+}
+
+/// **M6 replan sub-fase 3** — pass-2 helper for the tier-aware
+/// loaders. Given a partially-populated `store` (already holding
+/// the Vram and Disk entries inserted by the per-shard primitive)
+/// and the set of names already inserted, this function:
+///
+/// 1. Computes the complement of `param_ids` / `param_names` —
+///    the entries that should land on Ram.
+/// 2. Calls [`WeightStore::extract_from_graph`] on that filtered
+///    list. Each Ram-tier graph slot is hoisted to a `CpuShared`
+///    or `CpuBf16Shared` view, and the matching `SharedParam::F32`
+///    or `SharedParam::Bf16` is appended to a fresh helper store.
+/// 3. Merges the fresh helper store into `store`, preserving the
+///    Vram/Disk entries that are already there.
+///
+/// Used by both
+/// [`WeightMapper::load_into_with_residency_plan`] (single-shard)
+/// and
+/// [`crate::v17::loader::sharded_reader::ShardedSafetensorsReader::load_into_with_residency_plan`]
+/// (multi-shard) — those callers diverge on the per-shard loop
+/// but share this final extraction step.
+pub fn finalize_ram_extract(
+    graph: &mut Graph,
+    store: &mut WeightStore,
+    already_inserted: &HashSet<String>,
+    param_ids: &[usize],
+    param_names: &[String],
+) -> Result<(), LoaderError> {
+    let ram_indices: Vec<usize> = param_ids
+        .iter()
+        .zip(param_names.iter())
+        .filter(|(_, name)| !already_inserted.contains(*name))
+        .map(|(id, _)| *id)
+        .collect();
+    let ram_names: Vec<String> = param_ids
+        .iter()
+        .zip(param_names.iter())
+        .filter(|(_, name)| !already_inserted.contains(*name))
+        .map(|(_, name)| name.clone())
+        .collect();
+
+    let ram_store =
+        WeightStore::extract_from_graph(graph, &ram_indices, &ram_names).map_err(|e| {
+            LoaderError::InvalidFormat(format!(
+                "Ram-tier extract_from_graph failed: {}",
+                e
+            ))
+        })?;
+
+    for (i, p) in ram_store.params.into_iter().enumerate() {
+        store.params.push(p);
+        store.names.push(ram_store.names[i].clone());
+    }
+
+    let _ = std::marker::PhantomData::<WeightStoreError>;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------

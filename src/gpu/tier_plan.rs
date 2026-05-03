@@ -159,6 +159,17 @@ impl TierPlan {
     pub fn count(&self, tier: Tier) -> usize {
         self.assignments.iter().filter(|(_, t)| *t == tier).count()
     }
+
+    /// Convenience aliases for the per-tier counts. O(n).
+    pub fn vram_count(&self) -> usize {
+        self.count(Tier::Vram)
+    }
+    pub fn ram_count(&self) -> usize {
+        self.count(Tier::Ram)
+    }
+    pub fn disk_count(&self) -> usize {
+        self.count(Tier::Disk)
+    }
 }
 
 const VRAM_HEADROOM_BYTES: u64 = 1024 * 1024 * 1024;

@@ -189,28 +189,117 @@ impl GenerationPipeline {
         let index_path = model_dir.join("model.safetensors.index.json");
         let single_path = model_dir.join("model.safetensors");
 
-        if index_path.exists() {
-            let sharded = ShardedSafetensorsReader::open(&index_path)?;
-            let _report = sharded.load_into(&mut scratch_graph, &mapper)?;
-        } else if single_path.exists() {
-            let reader = SafetensorsReader::open(&single_path)?;
-            let _report = mapper.load_into(&mut scratch_graph, &reader)?;
-        } else {
-            return Err(PipelineError::MissingFile(format!(
-                "{} or {}",
-                single_path.display(), index_path.display()
-            )));
+        // **M6 replan sub-fase 3** — opt-in tier-aware loader.
+        //
+        // Default off → the legacy `WeightMapper::load_into` +
+        // `WeightStore::extract_from_graph` path runs unchanged,
+        // bit-exact with M5.f.a. With `ATENIA_TIER_AWARE_LOADER=1`
+        // the loader probes free RAM/VRAM, builds a `TierPlan`
+        // from the safetensors header metadata, and calls
+        // `load_into_with_residency_plan` so each tensor lands
+        // directly in its assigned tier (Vram / Ram / Disk).
+        // No post-load upload pass is needed; the legacy 4c
+        // block is skipped when this flag is on.
+        let tier_aware =
+            std::env::var("ATENIA_TIER_AWARE_LOADER").as_deref() == Ok("1");
+        let gpu_residency =
+            std::env::var("ATENIA_GPU_RESIDENCY").as_deref() == Ok("1");
+
+        if tier_aware && gpu_residency {
+            eprintln!(
+                "[ATENIA] WARNING: ATENIA_TIER_AWARE_LOADER and \
+                 ATENIA_GPU_RESIDENCY are both set. The tier-aware \
+                 loader supersedes the post-load upload — the legacy \
+                 ATENIA_GPU_RESIDENCY block will be skipped."
+            );
         }
 
-        // 5. Hoist into Arc-shared store. After this call the
-        //    scratch graph's parameter slots are `Shared`
-        //    views, so dropping the graph is safe — the
-        //    parameter Arcs survive in the store.
-        let mut store = WeightStore::extract_from_graph(
-            &mut scratch_graph,
-            &handles.param_ids,
-            &handles.param_names,
-        )?;
+        let mut store: WeightStore;
+        if tier_aware {
+            // Probe live machine state once, build a single plan,
+            // then dispatch to the multi-shard or single-shard
+            // tier-aware loader.
+            let free_ram_bytes =
+                crate::gpu::safety::resource_check::probe_free_ram_bytes();
+            let free_vram_bytes =
+                crate::gpu::safety::resource_check::probe_free_vram_bytes();
+
+            if index_path.exists() {
+                let sharded = ShardedSafetensorsReader::open(&index_path)?;
+                let metas = sharded.collect_tensor_metas()?;
+                let plan_input = crate::gpu::tier_plan::TierPlanInput {
+                    tensors: metas,
+                    free_vram_bytes,
+                    free_ram_bytes,
+                };
+                let plan = crate::gpu::tier_plan::plan(&plan_input);
+                log_tier_plan(&plan);
+                let (s, _report) = sharded.load_into_with_residency_plan(
+                    &mut scratch_graph,
+                    &mapper,
+                    &plan,
+                    &handles.param_ids,
+                    &handles.param_names,
+                )?;
+                store = s;
+            } else if single_path.exists() {
+                let reader = SafetensorsReader::open(&single_path)?;
+                let metas: Vec<crate::gpu::tier_plan::TensorMeta> = reader
+                    .iter()
+                    .map(|e| crate::gpu::tier_plan::TensorMeta {
+                        name: e.name.to_string(),
+                        shape: e.shape.to_vec(),
+                        dtype: e.dtype,
+                    })
+                    .collect();
+                let plan_input = crate::gpu::tier_plan::TierPlanInput {
+                    tensors: metas,
+                    free_vram_bytes,
+                    free_ram_bytes,
+                };
+                let plan = crate::gpu::tier_plan::plan(&plan_input);
+                log_tier_plan(&plan);
+                let (s, _report) = mapper.load_into_with_residency_plan(
+                    &mut scratch_graph,
+                    &reader,
+                    &plan,
+                    &handles.param_ids,
+                    &handles.param_names,
+                )?;
+                store = s;
+            } else {
+                return Err(PipelineError::MissingFile(format!(
+                    "{} or {}",
+                    single_path.display(),
+                    index_path.display()
+                )));
+            }
+        } else {
+            // Legacy load path — unchanged from M5.f.a.
+            if index_path.exists() {
+                let sharded = ShardedSafetensorsReader::open(&index_path)?;
+                let _report = sharded.load_into(&mut scratch_graph, &mapper)?;
+            } else if single_path.exists() {
+                let reader = SafetensorsReader::open(&single_path)?;
+                let _report = mapper.load_into(&mut scratch_graph, &reader)?;
+            } else {
+                return Err(PipelineError::MissingFile(format!(
+                    "{} or {}",
+                    single_path.display(),
+                    index_path.display()
+                )));
+            }
+
+            // 5. Hoist into Arc-shared store. After this call the
+            //    scratch graph's parameter slots are `Shared`
+            //    views, so dropping the graph is safe — the
+            //    parameter Arcs survive in the store.
+            store = WeightStore::extract_from_graph(
+                &mut scratch_graph,
+                &handles.param_ids,
+                &handles.param_names,
+            )?;
+        }
 
         // 6. Drop scratch graph. The Llama graph also holds
         //    the causal-mask Parameter (zero-shape-on-build)
@@ -243,7 +332,7 @@ impl GenerationPipeline {
         // dedicated. A future sub-step can wire this to the
         // safety gate's `DegradeToLayers` decision and to a
         // user-facing env (e.g. `ATENIA_GPU_LAYERS=N`).
-        if std::env::var("ATENIA_GPU_RESIDENCY").as_deref() == Ok("1") {
+        if !tier_aware && std::env::var("ATENIA_GPU_RESIDENCY").as_deref() == Ok("1") {
             let n_layers: usize = 5;
             let mut total_report = UploadReport::default();
             for layer_idx in 0..n_layers {
@@ -379,6 +468,32 @@ impl GenerationPipeline {
 
         Ok(joined)
     }
+}
+
+/// **M6 replan sub-fase 3** — operator-facing log of the
+/// tier-aware load decision. Suppressed in `--silent` builds via
+/// `crate::apx_is_silent`.
+fn log_tier_plan(plan: &crate::gpu::tier_plan::TierPlan) {
+    if crate::apx_is_silent() {
+        return;
+    }
+    let gib = |b: u64| (b as f64) / (1024.0_f64.powi(3));
+    eprintln!("[ATENIA] Tier-aware loader plan:");
+    eprintln!(
+        "  VRAM: {} tensors ({:.2} GiB)",
+        plan.vram_count(),
+        gib(plan.vram_bytes_assigned)
+    );
+    eprintln!(
+        "  RAM:  {} tensors ({:.2} GiB)",
+        plan.ram_count(),
+        gib(plan.ram_bytes_assigned)
+    );
+    eprintln!(
+        "  Disk: {} tensors ({:.2} GiB)",
+        plan.disk_count(),
+        gib(plan.disk_bytes_assigned)
+    );
 }
 
 /// Internal sink wrapper that mirrors events to the user's
