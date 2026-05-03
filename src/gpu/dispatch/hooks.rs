@@ -21,6 +21,7 @@ use crate::cuda::{
 };
 use crate::amg::graph::Graph;
 use crate::apx4_12::pool_dispatcher::try_gpu_with_pool;
+use crate::gpu::tensor::TensorGPU;
 
 fn apx_trace_enabled() -> bool {
     matches!(std::env::var("APX_TRACE").as_deref(), Ok("1")) && !crate::apx_is_silent()
@@ -269,6 +270,88 @@ pub fn try_gpu_matmul(a: &Tensor, b: &Tensor, out: &mut Tensor) -> bool {
         return true;
     }
 
+    // ---- M6 step 4d — mixed-residency path: weight resident on
+    // VRAM, activation on host. Triggered after a successful
+    // `WeightStore::upload_layer_bf16_to_vram` (M6 step 4b) made
+    // `b` a `TensorStorage::Cuda` while `a` (the activation) and
+    // `out` came from the executor as `TensorStorage::Cpu`. The
+    // 270 MB weight upload that the all-Cpu path would pay for
+    // every matmul is amortised to once-per-session because the
+    // weight already lives on the device; we only need to upload
+    // the small activation (~20 KB for `[1, 13824]` FFN-down
+    // input), run the kernel, and download the small output
+    // (~20 KB for `[1, 5120]`).
+    //
+    // This is the throughput unlock the M6 wire-up is built for.
+    let mixed_resident_b = matches!(
+        (&a.storage, &b.storage, &out.storage),
+        (
+            TensorStorage::Cpu(_),
+            TensorStorage::Cuda(_),
+            TensorStorage::Cpu(_),
+        )
+    );
+    if mixed_resident_b {
+        #[cfg(feature = "gpu-trace")]
+        eprintln!(
+            "[GPU-TRACE] try_gpu_matmul: BRANCH=mixed_resident (a=Cpu, b=Cuda, out=Cpu)"
+        );
+
+        // Upload activation `a` to VRAM. Cheap (KB-scale on Llama
+        // decode hot path) — unlike the 270 MB weight, this is
+        // genuinely a per-matmul cost.
+        let a_gpu_inner = match TensorGPU::new_from_cpu(a.as_cpu_slice(), m, k) {
+            Ok(g) => g,
+            Err(_) => {
+                #[cfg(feature = "gpu-trace")]
+                eprintln!("[GPU-TRACE] try_gpu_matmul: EXIT=false (mixed: activation upload failed)");
+                return false;
+            }
+        };
+        let a_gpu = Tensor::from_cuda_gpu(vec![m, k], a_gpu_inner);
+
+        // Allocate the output buffer on VRAM so cuda_matmul_inplace
+        // takes its all-Cuda fast path and writes directly into
+        // device memory. We will pull it back to host memory below.
+        let mut out_gpu = match Tensor::zeros_new_cuda(&[m, n]) {
+            Ok(t) => t,
+            Err(_) => {
+                #[cfg(feature = "gpu-trace")]
+                eprintln!("[GPU-TRACE] try_gpu_matmul: EXIT=false (mixed: out VRAM alloc failed)");
+                return false;
+            }
+        };
+
+        cuda_matmul_inplace(&a_gpu, b, &mut out_gpu, m, k, n);
+
+        // Download the result into the caller-provided host buffer.
+        // `ensure_cpu` transitions `out_gpu`'s storage to a fresh
+        // owned `Cpu(Vec<f32>)`; we then copy that into `out`'s
+        // existing slot which the executor allocated up-front.
+        if out_gpu.ensure_cpu().is_err() {
+            #[cfg(feature = "gpu-trace")]
+            eprintln!("[GPU-TRACE] try_gpu_matmul: EXIT=false (mixed: D→H download failed)");
+            return false;
+        }
+        out.as_cpu_slice_mut()
+            .clone_from_slice(out_gpu.as_cpu_slice());
+
+        // Counter convention: this is the residency-aware path
+        // (the weight stayed on VRAM across calls), so we
+        // increment `GPU_MATMUL_RESIDENT_COUNT`. Distinguishing
+        // pure-residency from mixed-residency would require a
+        // new counter; until that's needed, a single resident
+        // counter answers "did the M6 wire-up amortise the
+        // weight upload" without naming the sub-variant.
+        GPU_MATMUL_RESIDENT_COUNT.fetch_add(1, Ordering::Relaxed);
+        if apx_trace_enabled() {
+            println!("[APX M6.4d] GPU MatMul executed (mixed residency: weight on VRAM)");
+        }
+        #[cfg(feature = "gpu-trace")]
+        eprintln!("[GPU-TRACE] try_gpu_matmul: EXIT=true (mixed_resident)");
+        return true;
+    }
+
     // ---- CPU-roundtrip path: shape gate + pool budget ----
     let all_cpu = matches!(
         (&a.storage, &b.storage, &out.storage),
@@ -279,10 +362,13 @@ pub fn try_gpu_matmul(a: &Tensor, b: &Tensor, out: &mut Tensor) -> bool {
         )
     );
     if !all_cpu {
-        // Mixed storage. The executor arm normalises before reaching
-        // this hook (see `Tensor::ensure_decoded`); a mixed call
-        // signals a routing mistake. Bail out silently and let the
-        // caller's CPU path handle the operation.
+        // Mixed storage that didn't match the M6 step 4d
+        // mixed-residency pattern (e.g. `a=Cuda, b=Cpu`, or
+        // `out=Cuda` without all-Cuda). The executor arm
+        // normalises before reaching this hook; reaching it with
+        // an unrecognised mixed combination signals a routing
+        // mistake. Bail out silently and let the caller's CPU
+        // path handle the operation.
         #[cfg(feature = "gpu-trace")]
         eprintln!(
             "[GPU-TRACE] try_gpu_matmul: REJECT (mixed storage: a={} b={} out={})",
@@ -492,9 +578,11 @@ mod m6_step_2b_routing_tests {
     use std::sync::Mutex;
 
     use super::{
-        gpu_matmul_non_pooled_count, gpu_matmul_roundtrip_count, try_gpu_matmul,
+        gpu_matmul_non_pooled_count, gpu_matmul_resident_count,
+        gpu_matmul_roundtrip_count, try_gpu_matmul,
     };
     use crate::cuda::cuda_available;
+    use crate::gpu::tensor::TensorGPU;
     use crate::tensor::tensor::Tensor;
 
     static COUNTER_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -541,6 +629,88 @@ mod m6_step_2b_routing_tests {
             rt_after - rt_before,
             0,
             "oversize shape must NOT touch the pool roundtrip counter"
+        );
+    }
+
+    /// **M6 step 4d** — mixed-residency dispatch: when the weight
+    /// `b` is `TensorStorage::Cuda` and the activation `a` is
+    /// `TensorStorage::Cpu`, the new branch in `try_gpu_matmul`
+    /// must:
+    ///   1. Upload `a` to VRAM.
+    ///   2. Run the kernel against the resident weight.
+    ///   3. Download the output to host memory.
+    ///   4. Increment `GPU_MATMUL_RESIDENT_COUNT`.
+    ///   5. Produce a result numerically equivalent to a plain
+    ///      CPU matmul (within 1e-3 absolute on small shapes).
+    #[test]
+    fn mixed_residency_path_with_cuda_weight_runs_and_matches_cpu() {
+        let _guard = COUNTER_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !cuda_available() {
+            eprintln!("CUDA not available, skipping");
+            return;
+        }
+
+        let m = 4_usize;
+        let k = 8_usize;
+        let n = 6_usize;
+
+        // Activation `a`: small Cpu tensor.
+        let a_data: Vec<f32> = (0..m * k).map(|i| (i as f32) * 0.1 - 0.5).collect();
+        let a = Tensor::new_cpu(vec![m, k], a_data.clone());
+
+        // Weight `b`: build a Cuda Tensor by uploading host data
+        // through `TensorGPU::new_from_cpu` and wrapping with
+        // `Tensor::from_cuda_gpu`. This mirrors what
+        // `WeightStore::upload_layer_bf16_to_vram` produces in
+        // production: the weight is already device-resident at
+        // matmul time.
+        let b_data: Vec<f32> = (0..k * n).map(|i| (i as f32) * 0.05 + 0.3).collect();
+        let b_gpu_inner = TensorGPU::new_from_cpu(&b_data, k, n)
+            .expect("VRAM upload for weight failed");
+        let b = Tensor::from_cuda_gpu(vec![k, n], b_gpu_inner);
+
+        // Output `out`: pre-allocated Cpu buffer, mirroring the
+        // executor's `Tensor::with_layout` allocation when both
+        // operands aren't both Cuda.
+        let mut out = Tensor::new_cpu(vec![m, n], vec![0.0_f32; m * n]);
+
+        let res_before = gpu_matmul_resident_count();
+        let ran = try_gpu_matmul(&a, &b, &mut out);
+        let res_after = gpu_matmul_resident_count();
+
+        assert!(ran, "try_gpu_matmul must succeed on mixed-residency path");
+        assert_eq!(
+            res_after - res_before,
+            1,
+            "mixed-residency path must increment resident counter by exactly 1"
+        );
+
+        // Compare against CPU reference matmul.
+        let mut cpu_out = vec![0.0_f32; m * n];
+        for i in 0..m {
+            for j in 0..n {
+                let mut acc = 0.0_f32;
+                for kk in 0..k {
+                    acc += a_data[i * k + kk] * b_data[kk * n + j];
+                }
+                cpu_out[i * n + j] = acc;
+            }
+        }
+
+        let gpu_values = out.as_cpu_slice();
+        let mut max_abs_diff = 0.0_f32;
+        for (g, c) in gpu_values.iter().zip(cpu_out.iter()) {
+            let d = (g - c).abs();
+            if d > max_abs_diff {
+                max_abs_diff = d;
+            }
+        }
+        assert!(
+            max_abs_diff < 1e-3,
+            "mixed-residency matmul drifted {} from CPU reference (limit 1e-3)",
+            max_abs_diff
         );
     }
 
