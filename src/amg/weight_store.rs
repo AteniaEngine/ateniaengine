@@ -48,6 +48,7 @@ use crate::gpu::safety::resource_check::{
     check_before_gpu_operation, SafetyDecision,
 };
 use crate::gpu::tensor::TensorGPU;
+use crate::tensor::disk_tier::DiskTensorHandle;
 
 /// One stored parameter — a pre-shaped buffer wrapped in an
 /// `Arc` so multiple `Tensor` wrappers can reference it
@@ -70,6 +71,19 @@ pub enum SharedParam {
     /// mechanism that lets the M6 wire-up free RAM after a
     /// successful upload.
     Cuda { shape: Vec<usize>, gpu: TensorGPU },
+    /// **M6 replan sub-fase 0** — disk-resident parameter. Bytes
+    /// live on NVMe (or wherever `disk_tier::default_cache_dir`
+    /// resolves); the [`DiskTensorHandle`] is an Arc-backed handle
+    /// whose `Drop` removes the file when the last clone is gone.
+    /// Logical dtype is encoded in `handle.dtype()` (F32 or BF16)
+    /// — the variant doesn't carry it separately to keep the
+    /// invariant single-sourced.
+    ///
+    /// At this commit (sub-fase 0) the variant has **no
+    /// production constructor** beyond the test-facing
+    /// [`WeightStore::insert_disk`]. Sub-fase 2 will wire it to
+    /// the loader's tier-aware path.
+    Disk { shape: Vec<usize>, handle: DiskTensorHandle },
 }
 
 impl SharedParam {
@@ -83,6 +97,8 @@ impl SharedParam {
                 Tensor::cpu_bf16_shared(shape.clone(), Arc::clone(arc)),
             SharedParam::Cuda { shape, gpu } =>
                 Tensor::from_cuda_gpu(shape.clone(), gpu.clone()),
+            SharedParam::Disk { shape, handle } =>
+                Tensor::from_disk(shape.clone(), handle.clone()),
         }
     }
 
@@ -90,22 +106,32 @@ impl SharedParam {
         match self {
             SharedParam::F32 { shape, .. }
             | SharedParam::Bf16 { shape, .. }
-            | SharedParam::Cuda { shape, .. } => shape,
+            | SharedParam::Cuda { shape, .. }
+            | SharedParam::Disk { shape, .. } => shape,
         }
     }
 
     /// Bytes resident in the underlying buffer (F32 = 4 ×
-    /// numel; BF16 = 2 × numel; Cuda = device buffer size).
+    /// numel; BF16 = 2 × numel; Cuda = device buffer size; Disk
+    /// = `numel × bytes_per_element` of the on-disk dtype).
+    ///
     /// **Note**: for the `Cuda` variant the bytes live in VRAM,
-    /// not host RAM. The aggregate `WeightStore::resident_bytes`
-    /// sum is therefore not a pure-RAM measurement after any
-    /// upload has happened. See [`UploadReport`] for per-upload
-    /// RAM/VRAM accounting.
+    /// not host RAM. For the `Disk` variant the bytes live on
+    /// NVMe — they consume **zero RAM** until a consumer calls
+    /// `ensure_cpu` to materialise. The aggregate
+    /// `WeightStore::resident_bytes` sum is therefore not a
+    /// pure-RAM measurement once any tensor lives on a non-RAM
+    /// tier. The M6 replan introduces a `tier_breakdown()`
+    /// helper later that accounts per-tier; for now,
+    /// `resident_bytes` reports the storage byte count
+    /// regardless of which tier hosts it.
     pub fn resident_bytes(&self) -> usize {
         match self {
             SharedParam::F32 { arc, .. } => arc.len() * 4,
             SharedParam::Bf16 { arc, .. } => arc.len() * 2,
             SharedParam::Cuda { gpu, .. } => gpu.size_bytes(),
+            SharedParam::Disk { handle, .. } =>
+                handle.numel() * handle.dtype().bytes_per_element(),
         }
     }
 
@@ -115,9 +141,10 @@ impl SharedParam {
     /// Useful for tests that verify sharing actually
     /// happened.
     ///
-    /// For the `Cuda` variant returns 1 unconditionally — the
-    /// `TensorGPU`'s internal `Arc<InnerGpuPtr>` is private and
-    /// is not exposed for external strong-count queries. Tests
+    /// For `Cuda` and `Disk` variants returns 1 unconditionally
+    /// — both wrap inner `Arc`s (`Arc<InnerGpuPtr>` and
+    /// `Arc<InnerDiskFile>` respectively) that are private and
+    /// not exposed for external strong-count queries. Tests
     /// that verify Arc-sharing semantics use the `F32` / `Bf16`
     /// variants.
     pub fn strong_count(&self) -> usize {
@@ -125,6 +152,7 @@ impl SharedParam {
             SharedParam::F32 { arc, .. } => Arc::strong_count(arc),
             SharedParam::Bf16 { arc, .. } => Arc::strong_count(arc),
             SharedParam::Cuda { .. } => 1,
+            SharedParam::Disk { .. } => 1,
         }
     }
 }
@@ -190,6 +218,30 @@ impl WeightStore {
     pub fn insert_bf16(&mut self, name: impl Into<String>, shape: Vec<usize>, bits: Vec<u16>) -> usize {
         let idx = self.params.len();
         self.params.push(SharedParam::Bf16 { shape, arc: Arc::new(bits) });
+        self.names.push(name.into());
+        idx
+    }
+
+    /// **M6 replan sub-fase 0** — insert a disk-resident
+    /// parameter. The caller has already produced a
+    /// [`DiskTensorHandle`] via
+    /// `disk_tier::write_f32_tensor` /
+    /// `disk_tier::write_bf16_tensor`; this method only
+    /// records the handle alongside the parameter's logical
+    /// shape and HuggingFace-convention name.
+    ///
+    /// At this commit there is no production caller; the
+    /// method is exercised by the round-trip unit tests and
+    /// will be wired to the loader's tier-aware path in
+    /// sub-fase 2.
+    pub fn insert_disk(
+        &mut self,
+        name: impl Into<String>,
+        shape: Vec<usize>,
+        handle: DiskTensorHandle,
+    ) -> usize {
+        let idx = self.params.len();
+        self.params.push(SharedParam::Disk { shape, handle });
         self.names.push(name.into());
         idx
     }
@@ -904,6 +956,84 @@ mod tests {
 
         // Silence unused-mut warnings.
         let _ = (&mut q_gpu, &mut k_gpu);
+    }
+
+    /// **M6 replan sub-fase 0** — round-trip an F32 disk-tier
+    /// parameter through `WeightStore`. Writes a known buffer
+    /// to disk via `disk_tier::write_f32_tensor`, inserts the
+    /// resulting handle as a `SharedParam::Disk`, materialises a
+    /// `Tensor` via `to_tensor`, reads it back via
+    /// `copy_to_cpu_vec`, and verifies bit-exact equality.
+    #[test]
+    fn shared_param_disk_f32_round_trip_bit_exact() {
+        use crate::tensor::disk_tier;
+
+        let mut store = WeightStore::new();
+        let cache_dir = disk_tier::default_cache_dir();
+        let data: Vec<f32> = (0..32).map(|i| (i as f32) * 0.25 - 4.0).collect();
+        let handle = disk_tier::write_f32_tensor(&cache_dir, &data)
+            .expect("write_f32_tensor failed");
+        let _idx = store.insert_disk("w.disk_f32", vec![4, 8], handle);
+
+        let p = store.get_by_name("w.disk_f32").unwrap();
+        assert_eq!(p.shape(), &[4, 8]);
+
+        let t = p.to_tensor();
+        assert_eq!(t.shape, vec![4, 8]);
+        assert!(matches!(t.storage(), TensorStorage::Disk(_)));
+
+        // copy_to_cpu_vec reads the bytes back without mutating
+        // the storage. Bit-exact equality with the source.
+        let read_back = t.copy_to_cpu_vec();
+        assert_eq!(read_back, data,
+            "F32 disk round-trip is not bit-exact");
+
+        // Resident-byte accounting.
+        assert_eq!(p.resident_bytes(), data.len() * 4);
+    }
+
+    /// **M6 replan sub-fase 0** — same round-trip but for the
+    /// BF16 on-disk dtype. The round-trip surface upcasts BF16
+    /// → F32 (lossless) on read, so we verify against the
+    /// host-decoded reference.
+    #[test]
+    fn shared_param_disk_bf16_round_trip_bit_exact() {
+        use crate::tensor::disk_tier;
+        use crate::tensor::tensor::{bf16_bits_to_f32, f32_to_bf16_bits};
+
+        let mut store = WeightStore::new();
+        let cache_dir = disk_tier::default_cache_dir();
+
+        // Source: a known F32 pattern, converted to BF16 bits.
+        let f32_src: Vec<f32> = (0..16)
+            .map(|i| ((i as f32) * 0.5 - 3.5).sin())
+            .collect();
+        let bf16_bits: Vec<u16> = f32_src
+            .iter()
+            .map(|&f| f32_to_bf16_bits(f))
+            .collect();
+
+        let handle = disk_tier::write_bf16_tensor(&cache_dir, &bf16_bits)
+            .expect("write_bf16_tensor failed");
+        store.insert_disk("w.disk_bf16", vec![2, 8], handle);
+
+        let p = store.get_by_name("w.disk_bf16").unwrap();
+        let t = p.to_tensor();
+        assert!(matches!(t.storage(), TensorStorage::Disk(_)));
+
+        // copy_to_cpu_vec on a BF16-tier Disk tensor returns the
+        // upcast Vec<f32>. Compare against the host-decode
+        // reference (lossless inverse of the BF16 encoding).
+        let decoded = t.copy_to_cpu_vec();
+        let expected: Vec<f32> = bf16_bits
+            .iter()
+            .map(|&b| bf16_bits_to_f32(b))
+            .collect();
+        assert_eq!(decoded, expected,
+            "BF16 disk round-trip is not bit-exact with host decode");
+
+        // Resident-byte accounting (BF16 = 2 bytes/elem).
+        assert_eq!(p.resident_bytes(), bf16_bits.len() * 2);
     }
 
     #[test]

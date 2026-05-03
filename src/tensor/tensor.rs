@@ -405,6 +405,36 @@ impl Tensor {
     /// is taken from the caller (the `TensorGPU` itself only
     /// records `rows × cols × 4`; logical shape is preserved at
     /// the `SharedParam` layer).
+    /// **M6 replan sub-fase 0** — build a Tensor wrapping an
+    /// existing on-disk handle. Used by
+    /// [`crate::amg::weight_store::SharedParam::Disk`]'s
+    /// `to_tensor` to materialise a graph-side parameter slot
+    /// whose bytes live on NVMe. Cheap: `DiskTensorHandle` is
+    /// `Arc`-based, so this is one Arc clone per call.
+    ///
+    /// `dtype` is derived from `handle.dtype()` so the Tensor's
+    /// logical dtype matches the on-disk encoding (F32 or BF16).
+    /// Device is CPU (the disk tier sits below RAM in the
+    /// hierarchy; restoring goes through `ensure_cpu`'s `Disk`
+    /// arm in `tensor.rs`). Layout is Contiguous.
+    pub fn from_disk(shape: Vec<usize>, handle: disk_tier::DiskTensorHandle) -> Self {
+        let dtype = match handle.dtype() {
+            disk_tier::DiskDtype::F32 => DType::F32,
+            disk_tier::DiskDtype::BF16 => DType::BF16,
+        };
+        let strides = Self::compute_strides(&shape, &Layout::Contiguous);
+        Self {
+            shape,
+            storage: TensorStorage::Disk(handle),
+            device: Device::CPU,
+            dtype,
+            layout: Layout::Contiguous,
+            strides,
+            grad: None,
+            op: None,
+        }
+    }
+
     pub fn from_cuda_gpu(shape: Vec<usize>, gpu: TensorGPU) -> Self {
         let strides = Self::compute_strides(&shape, &Layout::Contiguous);
         Self {
