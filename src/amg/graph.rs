@@ -3152,6 +3152,69 @@ impl Graph {
 
                 let apx_mode = crate::apx_mode();
 
+                // M6 ATO ordering fix — GPU dispatch attempted FIRST.
+                //
+                // Pre-fix the order was: ATO (line 3155) → GPU
+                // (line 3282) → legacy CPU. Under any APX mode
+                // ≥ 6.6 with all-Cpu F32 operands the ATO block
+                // returned before `try_gpu_matmul` could fire,
+                // making the GPU surface unreachable. The May 2026
+                // smoke run with `ATENIA_APX_MODE=4.19` was the
+                // only way to bypass the ATO and let GPU dispatch
+                // attempt — and it BSOD'd because RAM was at 99%.
+                //
+                // Post-fix the order is: GPU → ATO → legacy CPU.
+                // GPU has priority when it can serve the shape
+                // (`gpu_can_run_matmul` + `try_gpu_matmul`); ATO
+                // remains the preferred CPU path for default APX
+                // ≥ 6.6 modes when GPU declines or is unavailable.
+                #[cfg(feature = "gpu-trace")]
+                eprintln!(
+                    "[GPU-TRACE] graph.MatMul ENTRY: shape m={}, k={}, n={}",
+                    m, k, n
+                );
+                let gate_pass = gpu_hooks::gpu_can_run_matmul(m, k, n);
+                let gpu_ran = gate_pass && gpu_hooks::try_gpu_matmul(&a, &b, &mut out);
+                #[cfg(feature = "gpu-trace")]
+                eprintln!(
+                    "[GPU-TRACE] graph.MatMul DECISION: gpu_can_run={} try_gpu_matmul={}",
+                    gate_pass, gpu_ran
+                );
+                if gpu_ran {
+                    device_chosen = DeviceTarget::GPU;
+
+                    // Register a sample only in 5.4 mode, without changing
+                    // semantics nor execution path.
+                    if is_54 {
+                        let duration_us = start_time.elapsed().as_micros() as u64;
+                        if let Some(ref info) = node_exec_info_5x {
+                            let sample = Sample {
+                                op_name: info.op_name.clone(),
+                                shape: info.shape.clone(),
+                                dtype: match info.dtype.as_str() {
+                                    "F16" => crate::tensor::DType::F16,
+                                    "BF16" => crate::tensor::DType::BF16,
+                                    "FP8" => crate::tensor::DType::FP8,
+                                    _ => crate::tensor::DType::F32,
+                                },
+                                device_chosen: device_chosen.clone(),
+                                duration_us,
+                                vram_before: 0,
+                                vram_after: 0,
+                                fallback: false,
+                            };
+
+                            let sel_mutex = crate::global_adaptive_selector();
+                            if let Ok(mut sel) = sel_mutex.lock() {
+                                sel.register_sample(sample);
+                            }
+                        }
+                    }
+
+                    self.nodes[node_id].set_output(out);
+                    return;
+                }
+
                 // APX 6.6: Auto-Tiling Optimizer (ATO) only for CPU forward
                 // with contiguous FP32 tensors. Does not modify backward nor
                 // fusions; it only decides which existing kernel to use.
@@ -3281,54 +3344,7 @@ impl Graph {
                 // asserts both `>0` after the forward.
                 #[cfg(feature = "gpu-trace")]
                 eprintln!(
-                    "[GPU-TRACE] graph.MatMul ENTRY: shape m={}, k={}, n={}",
-                    m, k, n
-                );
-                let gate_pass = gpu_hooks::gpu_can_run_matmul(m, k, n);
-                let gpu_ran = gate_pass && gpu_hooks::try_gpu_matmul(&a, &b, &mut out);
-                #[cfg(feature = "gpu-trace")]
-                eprintln!(
-                    "[GPU-TRACE] graph.MatMul DECISION: gpu_can_run={} try_gpu_matmul={}",
-                    gate_pass, gpu_ran
-                );
-                if gpu_ran {
-                    device_chosen = DeviceTarget::GPU;
-
-                    // Register a sample only in 5.4 mode, without changing
-                    // semantics nor execution path.
-                    if is_54 {
-                        let duration_us = start_time.elapsed().as_micros() as u64;
-                        if let Some(ref info) = node_exec_info_5x {
-                            let sample = Sample {
-                                op_name: info.op_name.clone(),
-                                shape: info.shape.clone(),
-                                dtype: match info.dtype.as_str() {
-                                    "F16" => crate::tensor::DType::F16,
-                                    "BF16" => crate::tensor::DType::BF16,
-                                    "FP8" => crate::tensor::DType::FP8,
-                                    _ => crate::tensor::DType::F32,
-                                },
-                                device_chosen: device_chosen.clone(),
-                                duration_us,
-                                vram_before: 0,
-                                vram_after: 0,
-                                fallback: false,
-                            };
-
-                            let sel_mutex = crate::global_adaptive_selector();
-                            if let Ok(mut sel) = sel_mutex.lock() {
-                                sel.register_sample(sample);
-                            }
-                        }
-                    }
-
-                    self.nodes[node_id].set_output(out);
-                    return;
-                }
-
-                #[cfg(feature = "gpu-trace")]
-                eprintln!(
-                    "[GPU-TRACE] graph.MatMul FALLTHROUGH: try_gpu_matmul returned false, going to legacy CPU/dispatch_matmul_gpu path"
+                    "[GPU-TRACE] graph.MatMul FALLTHROUGH: GPU declined and ATO did not apply — using legacy CPU/dispatch_matmul_gpu path"
                 );
 
                 // M4.7.3.c: defensive Cuda → Cpu materialisation before
