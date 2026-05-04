@@ -181,6 +181,51 @@ impl GpuMemoryEngine {
             Ok(())
         }
     }
+
+    /// **M8.1** — dtype-agnostic H→D copy that takes raw bytes.
+    /// The existing [`copy_htod`] is hardcoded to `&[f32]` and
+    /// computes `bytes = src.len() * 4` internally; that contract
+    /// breaks for BF16 / F16 / Int8 buffers where the per-element
+    /// stride is 2 / 2 / 1 bytes respectively. This variant copies
+    /// `src.len()` bytes verbatim and is the foundation for
+    /// `TensorGPU::new_bf16` and any future non-F32 storage path.
+    pub fn copy_htod_bytes(&self, dst: &GpuPtr, src: &[u8]) -> Result<(), GpuMemoryError> {
+        unsafe {
+            self.set_current_on_this_thread()?;
+
+            let cu_copy: Symbol<
+                unsafe extern "C" fn(CUdeviceptr, *const std::os::raw::c_void, usize) -> i32,
+            > = self.load(b"cuMemcpyHtoD_v2\0")?;
+
+            let res = cu_copy(dst.ptr, src.as_ptr() as *const _, src.len());
+
+            if res != 0 {
+                return Err(GpuMemoryError::CopyFailed);
+            }
+
+            Ok(())
+        }
+    }
+
+    /// **M8.1** — dtype-agnostic D→H copy that takes raw bytes.
+    /// Mirror of [`copy_htod_bytes`].
+    pub fn copy_dtoh_bytes(&self, src: &GpuPtr, dst: &mut [u8]) -> Result<(), GpuMemoryError> {
+        unsafe {
+            self.set_current_on_this_thread()?;
+
+            let cu_copy: Symbol<
+                unsafe extern "C" fn(*mut std::os::raw::c_void, CUdeviceptr, usize) -> i32,
+            > = self.load(b"cuMemcpyDtoH_v2\0")?;
+
+            let res = cu_copy(dst.as_mut_ptr() as *mut _, src.ptr, dst.len());
+
+            if res != 0 {
+                return Err(GpuMemoryError::CopyFailed);
+            }
+
+            Ok(())
+        }
+    }
 }
 
 /// Convenience alias for the future: a logical GPU memory handle.

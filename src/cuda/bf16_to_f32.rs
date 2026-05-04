@@ -25,8 +25,30 @@
 
 use std::ffi::c_void;
 use std::os::raw::c_int;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::gpu::tensor::TensorGPU;
+
+// ===========================================================================
+// M8.1 — BF16-resident upload counter (no upcast path)
+// ===========================================================================
+
+/// **M8.1** — increments every time
+/// [`bf16_to_vram_no_upcast`] successfully uploads a BF16 buffer
+/// to VRAM without the F32 upcast pass. Mirrors the existing
+/// `vram_fast_path_count` / `disk_fast_path_count` counters in
+/// `v17::loader::weight_mapper`. Public reader is
+/// [`cuda_bf16_resident_count`].
+///
+/// The counter is process-wide and never reset; tests that depend
+/// on a delta should snapshot before/after with their own
+/// `Mutex` (mirroring the M6 / M7 test pattern).
+static BF16_RESIDENT_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Read-only accessor for [`BF16_RESIDENT_COUNT`]. See module docs.
+pub fn cuda_bf16_resident_count() -> usize {
+    BF16_RESIDENT_COUNT.load(Ordering::Relaxed)
+}
 
 // FFI symbols needed by this module. `bf16_to_f32_launch_device`
 // lives in the `bf16_to_f32` static library produced by
@@ -355,10 +377,130 @@ pub fn bf16_to_f32_resident_in_vram_from_raw_bytes(
     Some(gpu_f32)
 }
 
+// ===========================================================================
+// M8.1 — `bf16_to_vram_no_upcast`
+// ===========================================================================
+
+/// **M8.1** — upload a BF16 buffer to VRAM and **keep it as BF16**.
+///
+/// Unlike [`bf16_to_f32_resident_in_vram`] (M6 path) which
+/// upcasts to F32 on the device via the
+/// `bf16_to_f32_launch_device` kernel, this function performs a
+/// single H→D byte copy and stops. The returned [`TensorGPU`]
+/// carries `dtype = DType::BF16` and a device buffer of exactly
+/// `numel * 2` bytes — half the F32 footprint, ready for direct
+/// consumption by `cublasGemmEx(CUDA_R_16BF, CUDA_R_16BF, ...)`
+/// in the M8.2 BF16 matmul kernel.
+///
+/// # When to use this vs the M6 upcast path
+///
+/// - **M6 (upcast)**: when downstream consumers are the legacy
+///   F32 matmul kernels (`matmul_f32_launch_device`, `cublasGemmEx`
+///   with `CUDA_R_32F` inputs) — they need F32 in VRAM.
+/// - **M8.1 (no upcast)**: when downstream is the M8 BF16
+///   matmul kernel (`cublasGemmEx` with `CUDA_R_16BF` inputs).
+///   Saves 50 % VRAM per weight and skips an entire kernel pass
+///   over the data at load time.
+///
+/// # Bit-exactness contract
+///
+/// The device buffer holds an exact copy of the host `src` slice
+/// — every `u16` bit pattern survives the round-trip via
+/// `cudaMemcpy(H→D)` followed by `cudaMemcpy(D→H)`. Validated by
+/// the `bf16_to_vram_no_upcast_round_trip_bit_exact` unit test.
+///
+/// # Returns
+///
+/// `Some(TensorGPU)` with `dtype = BF16`, `(rows = numel, cols = 1)`,
+/// and a device allocation of `numel * 2` bytes on success. Side
+/// effect: [`BF16_RESIDENT_COUNT`] increments by 1.
+///
+/// `None` if the GPU engine is unavailable, the shape disagrees
+/// with the buffer length, or the engine alloc / copy fails. The
+/// counter is **not** incremented on failure — same convention
+/// as the M6 / M7 fast-path counters.
+pub fn bf16_to_vram_no_upcast(
+    src: &[u16],
+    shape: &[usize],
+) -> Option<TensorGPU> {
+    if !super::cuda_available() {
+        return None;
+    }
+    let numel: usize = shape.iter().product();
+    if src.len() != numel {
+        return None;
+    }
+
+    // `TensorGPU::new_bf16_from_cpu` does the alloc + H→D byte
+    // copy in one shot; on any failure the partially-constructed
+    // device buffer is freed by `InnerGpuPtr::Drop` before the
+    // `Err(())` surfaces, so this function does not leak VRAM
+    // even if the engine call returns mid-upload.
+    let gpu = TensorGPU::new_bf16_from_cpu(src).ok()?;
+
+    BF16_RESIDENT_COUNT.fetch_add(1, Ordering::Relaxed);
+    Some(gpu)
+}
+
+/// **M8.1** — zero-host-copy variant of [`bf16_to_vram_no_upcast`]
+/// that takes raw bytes (typically a slice into the safetensors
+/// reader's owned byte buffer) and a logical element count.
+///
+/// Same H→D byte copy as the safe variant; the source is the
+/// already-on-disk BF16 byte layout, so no reinterpret-cast or
+/// secondary `Vec<u16>` is needed. The peak host RAM cost is the
+/// safetensors mmap residency only — which the caller already
+/// pays for. This is the load-time entry point that M8.4 will
+/// wire into `WeightMapper::load_into_with_residency_plan` for
+/// `Tier::Vram + dtype=BF16 + no transforms` tensors when the
+/// `ATENIA_M8_BF16_KERNEL=1` flag is on.
+///
+/// Returns `None` and increments **no** counter on length
+/// mismatch (`raw_bytes.len() != numel * 2`), shape mismatch
+/// (`shape.iter().product() != numel`), or engine failure.
+pub fn bf16_to_vram_no_upcast_from_raw_bytes(
+    raw_bytes: &[u8],
+    numel: usize,
+    shape: &[usize],
+) -> Option<TensorGPU> {
+    if !super::cuda_available() {
+        return None;
+    }
+    let bytes_bf16 = numel * std::mem::size_of::<u16>();
+    if raw_bytes.len() != bytes_bf16 {
+        return None;
+    }
+    let shape_numel: usize = shape.iter().product();
+    if shape_numel != numel {
+        return None;
+    }
+
+    // Reinterpret the raw bytes as `&[u16]` and route through
+    // the same alloc + H→D copy as the safe variant. This is
+    // sound because:
+    //   - `raw_bytes.len() == numel * 2` was verified above, so
+    //     the slice has exactly `numel` u16 elements;
+    //   - the source is treated as opaque bytes by `cudaMemcpy`,
+    //     so endianness / alignment of the host `u16` view is
+    //     irrelevant on the device side — what survives is the
+    //     byte sequence;
+    //   - host alignment of `raw_bytes` only needs to be `2` for
+    //     the `&[u16]` slice to be well-defined; safetensors
+    //     buffers are page-aligned so this trivially holds.
+    let bits: &[u16] = unsafe {
+        std::slice::from_raw_parts(raw_bytes.as_ptr() as *const u16, numel)
+    };
+    let gpu = TensorGPU::new_bf16_from_cpu(bits).ok()?;
+    BF16_RESIDENT_COUNT.fetch_add(1, Ordering::Relaxed);
+    Some(gpu)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::bf16_to_f32_on_device;
+    use super::{bf16_to_f32_on_device, bf16_to_vram_no_upcast, cuda_bf16_resident_count};
     use crate::cuda::cuda_available;
+    use crate::gpu::tensor::TensorGPU;
+    use crate::tensor::DType;
 
     /// Bit-exactness against the host AVX2 decode formula
     /// `f32::from_bits((bits as u32) << 16)`. Skips on hosts
@@ -410,5 +552,122 @@ mod tests {
             bitwise_mismatches,
             host_bf16.len()
         );
+    }
+
+    /// **M8.1 round-trip bit-exact** — upload a synthetic BF16
+    /// buffer to VRAM via `bf16_to_vram_no_upcast`, download it
+    /// via `TensorGPU::to_cpu_bf16_bits`, and assert that every
+    /// `u16` bit pattern survived the round-trip unchanged.
+    /// Also verifies that:
+    ///
+    /// - the returned `TensorGPU` has `dtype = BF16`,
+    /// - the `cuda_bf16_resident_count` counter advances by
+    ///   exactly 1 per successful call,
+    /// - calling `to_cpu` (F32-only) on a BF16 tensor panics
+    ///   with the documented diagnostic — caught via
+    ///   `catch_unwind` so the test stays self-contained.
+    ///
+    /// Skips on hosts without a CUDA driver.
+    #[test]
+    fn bf16_to_vram_no_upcast_round_trip_bit_exact() {
+        if !cuda_available() {
+            eprintln!("CUDA not available, skipping");
+            return;
+        }
+
+        // 1024 elements: one CUDA block worth + then some, plus
+        // small enough to exercise the full code path quickly.
+        // Same value-distribution recipe as the existing M6 test.
+        let host_bits: Vec<u16> = (0..1024)
+            .map(|i| {
+                let f = ((i as f32) * 0.137 - 7.5).sin() * 0.7
+                    + ((i as f32) * 0.029 + 0.42).cos() * 0.3;
+                (f.to_bits() >> 16) as u16
+            })
+            .collect();
+        let shape = vec![1024_usize];
+
+        let before = cuda_bf16_resident_count();
+        let gpu = bf16_to_vram_no_upcast(&host_bits, &shape)
+            .expect("bf16_to_vram_no_upcast returned None on a known-good buffer");
+        let after = cuda_bf16_resident_count();
+
+        // Counter advanced by exactly one.
+        assert_eq!(
+            after - before,
+            1,
+            "BF16_RESIDENT_COUNT did not advance by exactly 1 \
+             (before={}, after={})",
+            before,
+            after
+        );
+
+        // Returned tensor is BF16-typed and shaped (numel, 1).
+        assert_eq!(gpu.dtype(), DType::BF16, "expected BF16 dtype");
+        assert_eq!(gpu.rows, 1024);
+        assert_eq!(gpu.cols, 1);
+        assert_eq!(
+            gpu.size_bytes(),
+            1024 * 2,
+            "BF16 buffer must be numel * 2 bytes; got {}",
+            gpu.size_bytes()
+        );
+
+        // Round-trip via the new `to_cpu_bf16_bits` accessor.
+        let downloaded = gpu
+            .to_cpu_bf16_bits()
+            .expect("to_cpu_bf16_bits failed on a BF16-resident tensor");
+
+        assert_eq!(downloaded.len(), host_bits.len());
+        let mut mismatches = 0_usize;
+        for (h, d) in host_bits.iter().zip(downloaded.iter()) {
+            if h != d {
+                mismatches += 1;
+            }
+        }
+        assert_eq!(
+            mismatches, 0,
+            "BF16 round-trip produced {} bit mismatches over {} elements; \
+             the H→D + D→H byte path corrupted the buffer",
+            mismatches,
+            host_bits.len()
+        );
+
+        // `to_cpu` (F32-only) must refuse a BF16 tensor with a
+        // diagnostic panic. Caught via `catch_unwind` so the test
+        // does not abort the whole suite on a successful catch.
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = gpu.to_cpu();
+        }))
+        .is_err();
+        assert!(
+            panicked,
+            "TensorGPU::to_cpu must panic when called on a BF16-resident tensor"
+        );
+    }
+
+    /// **M8.1 backward-compat** — confirm that the F32 path
+    /// (`TensorGPU::empty` + `new_from_cpu` + `to_cpu`) is
+    /// untouched. Counter must NOT advance for F32-resident
+    /// uploads. This is the regression-zero gate that tells us
+    /// no M3-M7 caller can have been silently re-routed.
+    #[test]
+    fn f32_resident_path_does_not_increment_bf16_counter() {
+        if !cuda_available() {
+            eprintln!("CUDA not available, skipping");
+            return;
+        }
+        let data = vec![1.0_f32, 2.0, 3.0, 4.0];
+        let before = cuda_bf16_resident_count();
+        let gpu = TensorGPU::new_from_cpu(&data, 4, 1)
+            .expect("F32 upload failed on a CUDA-available host");
+        let after = cuda_bf16_resident_count();
+        assert_eq!(
+            after, before,
+            "F32 path must not increment the BF16 resident counter"
+        );
+        assert_eq!(gpu.dtype(), DType::F32);
+        let back = gpu.to_cpu().expect("F32 to_cpu");
+        assert_eq!(back, data);
     }
 }
