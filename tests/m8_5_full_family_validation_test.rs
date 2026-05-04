@@ -38,17 +38,26 @@
 //!
 //! # Setup
 //!
-//! Same env-var setup as the M4.7.2.e tests, plus a working
-//! CUDA driver:
+//! Canonical paths to the four checkpoints — see
+//! [`docs/MODELS_LAYOUT.md`](../docs/MODELS_LAYOUT.md) for the
+//! full layout and provenance notes. Every test that needs the
+//! production checkpoints reads the same env vars, so this set
+//! works for `bf16_storage_full_family_validation_test`,
+//! `m4_7_3_full_family_validation_test`, and the M8.5 tests below:
 //!
 //! ```powershell
-//! $env:TINYLLAMA_SAFETENSORS_PATH = "...\\model.safetensors"
-//! $env:SMOLLM2_SAFETENSORS_PATH   = "...\\model.safetensors"
-//! $env:QWEN25_SAFETENSORS_PATH    = "...\\model.safetensors"
-//! $env:LLAMA32_SAFETENSORS_PATH   = "...\\model.safetensors"
-//! cargo test --test m8_5_full_family_validation_test --release \
+//! $models = "F:\Proyectos\artenia_engine\atenia-engine\models"
+//! $env:TINYLLAMA_SAFETENSORS_PATH = "$models\tinyllama-1.1b\model.safetensors"
+//! $env:SMOLLM2_SAFETENSORS_PATH   = "$models\smollm2-1.7b-instruct\model.safetensors"
+//! $env:QWEN25_SAFETENSORS_PATH    = "$models\qwen2.5-1.5b-instruct\model.safetensors"
+//! $env:LLAMA32_SAFETENSORS_PATH   = "$models\llama-3.2-1b-instruct\model.safetensors"
+//! cargo test --test m8_5_full_family_validation_test --release `
 //!     -- --ignored --nocapture
 //! ```
+//!
+//! Operators may keep the model checkpoints on a different volume;
+//! the only contract is that the path under `models/` matches the
+//! layout in `docs/MODELS_LAYOUT.md`.
 //!
 //! `ATENIA_M8_BF16_KERNEL` is set/unset by the test itself via a
 //! RAII guard — operators do not need to manage the flag.
@@ -185,8 +194,28 @@ fn run_one_model_m8(
 ) -> (f64, [bool; 4], usize, usize) {
     println!("\n=== {} F64 validation under M8 BF16 kernel ===", label);
 
-    let path = env::var(safetensors_env_var)
-        .unwrap_or_else(|_| panic!("Set {}", safetensors_env_var));
+    // Resolve the safetensors path with diagnostics that point
+    // back to `docs/MODELS_LAYOUT.md`. Two failure modes:
+    //   1. Env var unset      → panic listing the env var name.
+    //   2. Env var set but the file does not exist on disk
+    //      → panic listing the resolved path so the operator
+    //      can compare against the canonical layout.
+    let path = env::var(safetensors_env_var).unwrap_or_else(|_| {
+        panic!(
+            "Set {} to the model.safetensors path. \
+             See docs/MODELS_LAYOUT.md for the canonical layout.",
+            safetensors_env_var
+        )
+    });
+    if !Path::new(&path).is_file() {
+        panic!(
+            "{} resolves to '{}' but no file exists there. \
+             Verify the model is at the expected path \
+             (see docs/MODELS_LAYOUT.md) — typical layout is \
+             `<repo>/models/<model-dir>/model.safetensors`.",
+            safetensors_env_var, path
+        );
+    }
 
     let config = LlamaConfig::from_json_str(config_json).expect("parse config");
     let runtime = LlamaRuntime { batch: 1, seq: 4 };
