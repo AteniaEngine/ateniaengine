@@ -6,7 +6,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::amg::nodes::NodeType;
 use crate::cuda::pool_helpers::with_pooled_device_buffers;
 use crate::cuda::{cuda_device_ptr, cuda_device_ptr_mut};
-use crate::tensor::tensor::f32_to_bf16_bits;
 use crate::tensor::{DType, Device, Tensor, TensorStorage};
 
 #[link(name = "matmul_kernel")]
@@ -467,6 +466,12 @@ type cublasHandle_t = *mut c_void;
 
 const CUBLAS_OP_N: c_int = 0;
 const CUDA_R_32F: c_int = 0;
+// M8.4c — `CUDA_R_16BF` is no longer used in `cuda_matmul_bf16_inplace`
+// (the M8.4-original BF16 input path was replaced by a BF16 → F32
+// upcast + F32 GEMM). Kept here as a documentation anchor for the
+// historical M8.4 path; remove if no future M8 sub-phase references
+// the constant.
+#[allow(dead_code)]
 const CUDA_R_16BF: c_int = 14;
 const CUBLAS_COMPUTE_32F: c_int = 68;
 const CUBLAS_GEMM_DEFAULT: c_int = -1;
@@ -579,15 +584,46 @@ pub fn vram_bf16_matmul_count() -> usize {
 /// via the [`NonPooledAllocs`] guard (BF16 activation transient + F32
 /// output transient). The caller falls back to the F32 dispatcher.
 ///
-/// # Numerical behaviour
+/// # Numerical behaviour (M8.4c — Path B)
 ///
-/// Inputs are cast F32→BF16 on host (loses ~7 mantissa bits per element)
-/// and the matmul accumulates in F32. Single-op drift envelope vs the
-/// pure F32 reference scales as `eps_BF16 · sqrt(K) · max_magnitude`:
-/// for K = 13824 with magnitude-1 data, ~0.5; for the M8.0 bench's
-/// magnitude-0.5 synthetic data, ~0.12 (measured). End-to-end ADR-004
-/// validation is the gate for production wire-up; this single-op test
-/// uses 0.5 as a conservative bound.
+/// **The activation is NOT cast to BF16.** M8.4c discarded the
+/// M8.4-original "BF16 activation × BF16 weight" path because the
+/// cascaded BF16 truncation of activations through 16-28
+/// transformer layers drove the M8.5 4-model F64 validation drift
+/// to 0.18-2.33 (failing ADR-004 by 2-5× in 3/4 models — the
+/// activation truncation by itself is responsible, see the M8.5b
+/// post-mortem in commit history).
+///
+/// The current implementation:
+///
+///   1. Keeps the **weight as BF16 in VRAM** (preserves M8.3's
+///      capacity-doubling planner contract — same plan, same
+///      number of VRAM-resident tensors).
+///   2. Upcasts the BF16 weight to a **fresh F32 transient** on
+///      the device via [`bf16_to_f32_transient_in_vram`]
+///      (existing M6 kernel, bandwidth-bound).
+///   3. Uploads the **F32 activation** unchanged (no truncation).
+///   4. Runs `cublasGemmEx(F32, F32, F32)` with `COMPUTE_32F` —
+///      F32 inputs, F32 output, F32 accumulate. cuBLAS picks the
+///      best F32 algorithm for sm_89 (CUDA cores, no Tensor
+///      Cores since the inputs are F32 and cuBLAS does not
+///      auto-truncate to TF32 under `COMPUTE_32F`).
+///
+/// Result: numerics identical to the M4.7.2.e CPU path
+/// (BF16 storage + F32 matmul), drift ~1.4e-4 on TinyLlama
+/// vs 0.9 with the original BF16-activation path.
+///
+/// The transient F32 buffer is freed at function exit via
+/// `TensorGPU`'s `Drop`.
+///
+/// # Performance trade-off
+///
+/// Per-matmul cost is ~3× the M8.4-original path (the upcast
+/// kernel + F32 cuBLAS without TC vs. raw BF16 TC matmul). For
+/// decode-step matmuls (M = 1, bandwidth-bound) the absolute
+/// time is still sub-millisecond on Ada. For 13B end-to-end this
+/// is invisible because the bottleneck is the 29 Disk-tier CPU
+/// matmuls (~30 s/token), not the 11 VRAM matmuls (~30 ms total).
 pub fn cuda_matmul_bf16_inplace(
     a: &Tensor,
     b: &Tensor,
@@ -612,24 +648,31 @@ pub fn cuda_matmul_bf16_inplace(
         None => return false,
     };
 
-    // 3. Cast activation F32 → BF16 on host. Keep the cast bounded:
-    //    `as_cpu_slice` panics on `CpuBf16` storage, so callers that
-    //    feed a BF16 activation will hit a panic in the slice access
-    //    rather than silently corrupting numerics; for M8.4 wire-up
-    //    we'll add a `CpuBf16` arm that skips the cast.
+    // 3. Validate F32 activation. M8.4c keeps the activation as
+    //    F32 throughout — no host-side cast, no precision loss.
     let a_slice = a.as_cpu_slice();
     if a_slice.len() != m * k {
         return false;
     }
-    let a_bf16: Vec<u16> = a_slice.iter().map(|&f| f32_to_bf16_bits(f)).collect();
-    let bytes_a_bf16 = m * k * 2;
+    let bytes_a_f32 = m * k * 4;
     let bytes_out_f32 = m * n * 4;
 
-    // 4. Allocate temporaries: BF16 activation upload + F32 output.
-    //    `b_gpu` is *not* allocated here — it lives in the caller's
-    //    `TensorStorage::Cuda` and must outlive this call.
+    // 4. **M8.4c step 1** — upcast the BF16 weight to a fresh F32
+    //    transient on-device. Wrapped in `TensorGPU` so its `Drop`
+    //    frees the buffer when this function returns; no manual
+    //    free required.
+    let b_f32_transient =
+        match crate::cuda::bf16_to_f32::bf16_to_f32_transient_in_vram(b_gpu) {
+            Some(g) => g,
+            None => return false,
+        };
+
+    // 5. Allocate the per-call F32 activation upload buffer and the
+    //    F32 output buffer via `NonPooledAllocs`. The F32 weight
+    //    transient is owned by `b_f32_transient` (separate
+    //    lifecycle, freed by the engine on Drop).
     let mut allocs = NonPooledAllocs::new();
-    let d_a_bf16 = match allocs.alloc(bytes_a_bf16) {
+    let d_a_f32 = match allocs.alloc(bytes_a_f32) {
         Some(p) => p,
         None => return false,
     };
@@ -638,12 +681,12 @@ pub fn cuda_matmul_bf16_inplace(
         None => return false,
     };
 
-    // 5. H→D upload of BF16 activation.
+    // 6. H→D upload of the F32 activation (no truncation).
     unsafe {
         let rc = cudaMemcpy(
-            d_a_bf16,
-            a_bf16.as_ptr() as *const c_void,
-            bytes_a_bf16,
+            d_a_f32,
+            a_slice.as_ptr() as *const c_void,
+            bytes_a_f32,
             CUDA_MEMCPY_HOST_TO_DEVICE,
         );
         if rc != 0 {
@@ -651,7 +694,9 @@ pub fn cuda_matmul_bf16_inplace(
         }
     }
 
-    // 6. cublasGemmEx — row-major-via-transpose trick (see fn doc).
+    // 7. cublasGemmEx — same row-major-via-transpose trick, but
+    //    now ALL operands are F32 (`CUDA_R_32F`). The `B` pointer
+    //    is the F32 transient produced by step 4.
     let alpha: f32 = 1.0;
     let beta: f32 = 0.0;
     unsafe {
@@ -667,11 +712,11 @@ pub fn cuda_matmul_bf16_inplace(
             n as c_int, m as c_int, k as c_int,
             &alpha as *const f32 as *const c_void,
             // First operand in column-major view = B^T (the row-major
-            // weight `b`). Leading dim n.
-            b_gpu.device_ptr() as *const c_void, CUDA_R_16BF, n as c_int,
-            // Second operand = A^T (the row-major activation, BF16-cast).
+            // weight `b`, now upcasted to F32). Leading dim n.
+            b_f32_transient.device_ptr() as *const c_void, CUDA_R_32F, n as c_int,
+            // Second operand = A^T (the row-major activation, F32).
             // Leading dim k.
-            d_a_bf16, CUDA_R_16BF, k as c_int,
+            d_a_f32, CUDA_R_32F, k as c_int,
             &beta as *const f32 as *const c_void,
             d_out_f32, CUDA_R_32F, n as c_int,
             CUBLAS_COMPUTE_32F,
@@ -975,6 +1020,168 @@ mod cuda_matmul_bf16_tests {
         assert_eq!(
             after, before,
             "F32 matmul path must not advance the BF16 counter"
+        );
+    }
+
+    /// **M8.4c — strict drift check for the Path B implementation.**
+    ///
+    /// Replaces the M8.4-original BF16 input path with the M8.4c
+    /// "BF16 weight upcasted to F32 transient + F32 gemm". Drift
+    /// should be drastically lower because the activation is no
+    /// longer truncated. Single-op envelope vs CPU F32 reference
+    /// should be in the range 1e-3 to 5e-3 (only weight BF16
+    /// truncation contributes); the gate here is `< 1e-2` —
+    /// strict enough to catch any regression that re-introduces
+    /// activation truncation, loose enough to absorb the
+    /// expected `eps_BF16 × sqrt(K) × max_magnitude` envelope.
+    ///
+    /// Mid-size shape `[m=1, k=128, n=64]` matches the M8.4
+    /// dispatcher integration test exactly so the comparison
+    /// "M8.4 vs M8.4c on the same shape" is direct.
+    #[test]
+    fn m8_4c_dispatcher_bf16_resident_via_f32_upcast_strict_drift() {
+        let _guard = BF16_COUNTER_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if !cuda_available() {
+            eprintln!("CUDA not available, skipping");
+            return;
+        }
+
+        let m = 1_usize;
+        let k = 128_usize;
+        let n = 64_usize;
+
+        // Same data recipe as the M8.4 dispatcher test, magnitude 0.3.
+        let a_host: Vec<f32> = (0..(m * k))
+            .map(|i| ((i as f32) * 0.013 + 0.7).sin() * 0.3)
+            .collect();
+        let b_host_f32: Vec<f32> = (0..(k * n))
+            .map(|i| ((i as f32) * 0.007 + 0.4).cos() * 0.3)
+            .collect();
+        let b_bf16: Vec<u16> =
+            b_host_f32.iter().map(|&v| f32_to_bf16_bits(v)).collect();
+
+        let gpu = crate::cuda::bf16_to_f32::bf16_to_vram_no_upcast(&b_bf16, &[k, n])
+            .expect("bf16_to_vram_no_upcast on a CUDA host");
+        let b_tensor = Tensor::from_cuda_gpu(vec![k, n], gpu);
+        let a_tensor = Tensor::new_cpu(vec![m, k], a_host.clone());
+        let mut out_tensor = Tensor::new_cpu(vec![m, n], vec![0.0_f32; m * n]);
+
+        let ok =
+            super::cuda_matmul_bf16_inplace(&a_tensor, &b_tensor, &mut out_tensor, m, k, n);
+        assert!(ok, "M8.4c dispatcher must accept BF16-resident triple");
+
+        // F32 reference vs the BF16-decoded weight.
+        let b_ref_f32: Vec<f32> = b_bf16
+            .iter()
+            .map(|&b| f32::from_bits((b as u32) << 16))
+            .collect();
+        let mut out_ref = vec![0.0_f32; m * n];
+        for i in 0..m {
+            for j in 0..n {
+                let mut s = 0.0_f32;
+                for p in 0..k {
+                    s += a_host[i * k + p] * b_ref_f32[p * n + j];
+                }
+                out_ref[i * n + j] = s;
+            }
+        }
+        let out = out_tensor.as_cpu_slice();
+        let mut max_abs_diff = 0.0_f32;
+        for (g, r) in out.iter().zip(out_ref.iter()) {
+            let d = (g - r).abs();
+            if d > max_abs_diff {
+                max_abs_diff = d;
+            }
+        }
+        eprintln!(
+            "[M8.4c] dispatcher Path-B drift on [m=1, k=128, n=64]: {:.4e} \
+             (gate < 1e-2)",
+            max_abs_diff
+        );
+        assert!(
+            max_abs_diff < 1e-2,
+            "M8.4c Path-B drift {:.4e} exceeded the 1e-2 strict gate. \
+             Expected <5e-3 from weight-only BF16 truncation; if this \
+             breached, the matmul re-introduced activation truncation \
+             and the M8.5 4-model F64 validation will fail again.",
+            max_abs_diff
+        );
+    }
+
+    /// **M8.4c — bit-exact upcast equivalence.** The new
+    /// `bf16_to_f32_transient_in_vram` primitive must produce the
+    /// same F32 output as the existing `bf16_to_f32_on_device`
+    /// helper (both wrap the M6 upcast kernel; the difference is
+    /// the input is a `TensorGPU` instead of a host slice).
+    /// Bit-exactness is the structural guarantee that no extra
+    /// rounding sneaks into the upcast path between M6 and M8.4c.
+    #[test]
+    fn m8_4c_bf16_to_f32_transient_in_vram_matches_on_device() {
+        let _guard = BF16_COUNTER_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if !cuda_available() {
+            eprintln!("CUDA not available, skipping");
+            return;
+        }
+
+        // Same 64-element BF16 buffer as the M6 on-device test
+        // (`bf16_to_f32_on_device_matches_host_decode`) so the
+        // numerical envelope is comparable.
+        let host_bf16: Vec<u16> = (0..64)
+            .map(|i| {
+                let f = ((i as f32) * 0.3 - 4.0).sin();
+                (f.to_bits() >> 16) as u16
+            })
+            .collect();
+
+        // Path A — `bf16_to_f32_on_device` (host slice → upload + kernel + download).
+        let from_on_device =
+            crate::cuda::bf16_to_f32::bf16_to_f32_on_device(&host_bf16, host_bf16.len())
+                .expect("bf16_to_f32_on_device returned None");
+
+        // Path B — upload as BF16 TensorGPU (M8.1) + transient F32 upcast (M8.4c).
+        let bf16_gpu =
+            crate::cuda::bf16_to_f32::bf16_to_vram_no_upcast(&host_bf16, &[64])
+                .expect("bf16_to_vram_no_upcast returned None");
+        let f32_transient =
+            crate::cuda::bf16_to_f32::bf16_to_f32_transient_in_vram(&bf16_gpu)
+                .expect("bf16_to_f32_transient_in_vram returned None");
+        // Sanity: transient is F32-typed and matches the BF16 size × 2.
+        assert_eq!(
+            f32_transient.dtype(),
+            crate::tensor::DType::F32,
+            "transient buffer must be F32-typed"
+        );
+        assert_eq!(
+            f32_transient.size_bytes(),
+            64 * 4,
+            "transient F32 buffer must be numel × 4 bytes"
+        );
+        let from_transient = f32_transient
+            .to_cpu()
+            .expect("D→H download of F32 transient");
+
+        // Bit-exact comparison.
+        assert_eq!(
+            from_on_device.len(),
+            from_transient.len()
+        );
+        let mut bitwise_mismatches = 0_usize;
+        for (a, b) in from_on_device.iter().zip(from_transient.iter()) {
+            if a.to_bits() != b.to_bits() {
+                bitwise_mismatches += 1;
+            }
+        }
+        assert_eq!(
+            bitwise_mismatches, 0,
+            "bf16_to_f32_transient_in_vram must produce bit-exact output \
+             vs bf16_to_f32_on_device (both wrap the same M6 kernel); \
+             {} elements diverged out of {}",
+            bitwise_mismatches,
+            from_on_device.len()
         );
     }
 }

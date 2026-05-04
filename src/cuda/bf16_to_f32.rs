@@ -514,6 +514,107 @@ pub fn bf16_to_vram_no_upcast_from_raw_bytes(
     Some(gpu)
 }
 
+// ===========================================================================
+// M8.4c — bf16_to_f32_transient_in_vram
+// ===========================================================================
+
+/// **M8.4c** — upcast a BF16-resident `TensorGPU` to a fresh F32-
+/// resident `TensorGPU` on-device, without touching host memory.
+///
+/// This is the cornerstone primitive of the M8.4c "Path B"
+/// numerical-correctness fix. The M8.4 BF16 matmul path
+/// (`cuda_matmul_bf16_inplace` original) cast the F32 activation
+/// to BF16 once per matmul on the host before upload, then ran
+/// `cublasGemmEx(BF16, BF16, F32)`. Cascaded over 16-28 layers
+/// in real Llama checkpoints the activation truncation drifted
+/// the logits by 0.18-2.33 — failing ADR-004 (threshold 0.5)
+/// in 3/4 production models in the M8.5 4-model F64 validation.
+///
+/// The fix: keep the **weight** as BF16 in VRAM (preserves
+/// M8.3's capacity-doubling planner contract) but **upcast it
+/// to F32 on the device** for every matmul, then run the matmul
+/// with both operands as F32. Numerically identical to the
+/// M4.7.2.e CPU path (BF16 storage + F32 matmul) which has
+/// drift 1.4e-4 on TinyLlama vs 0.9 on the original M8.4 path.
+///
+/// # Implementation
+///
+/// 1. Validate `bf16_gpu.dtype() == DType::BF16` — calling this
+///    on an F32 buffer is a programmer error and returns `None`.
+/// 2. Allocate a fresh F32 device buffer via the engine
+///    (`TensorGPU::empty(numel, 1)` — same convention as the M6
+///    upcast path at `bf16_to_f32_resident_in_vram`).
+/// 3. Launch the existing `bf16_to_f32_launch_device` kernel
+///    on `(bf16_gpu.device_ptr() → f32_gpu.device_ptr(), numel)`.
+/// 4. Return the F32 buffer wrapped in `TensorGPU` with
+///    `dtype = DType::F32`. The caller's `Drop` releases it
+///    automatically; this is the "transient" lifecycle implied
+///    by the function name — the F32 buffer is intended to be
+///    consumed by exactly one matmul and released at the end of
+///    the call.
+///
+/// # Returns
+///
+/// `Some(TensorGPU)` with `dtype = F32`, `numel * 4` bytes, on
+/// success. `None` on:
+///   - `bf16_gpu.dtype() != BF16` (caller bug)
+///   - `cuda_available()` returns false
+///   - F32 allocation fails (driver OOM)
+///   - kernel launch returns non-zero
+///
+/// On any error the F32 buffer (if it was allocated) is freed
+/// by `TensorGPU`'s `Drop` before the `None` propagates — no
+/// VRAM leak.
+///
+/// # Numerics
+///
+/// `bf16_to_f32_launch_device` is bit-exact to the host
+/// `f32::from_bits((bits as u32) << 16)` formula (validated by
+/// `bf16_to_f32_on_device_matches_host_decode` over 70.7M
+/// elements at M6 commit `66910d5`). The transient F32 buffer
+/// holds the **lossless** F32 representation of the BF16
+/// pattern — no further rounding occurs in this primitive.
+pub fn bf16_to_f32_transient_in_vram(
+    bf16_gpu: &TensorGPU,
+) -> Option<TensorGPU> {
+    if !super::cuda_available() {
+        return None;
+    }
+    if bf16_gpu.dtype() != crate::tensor::DType::BF16 {
+        return None;
+    }
+
+    // `TensorGPU::new_bf16` and friends use `(rows = numel,
+    // cols = 1)` as the engine convention. The output F32
+    // buffer follows the same convention so the matmul caller
+    // can wrap it via `Tensor::from_cuda_gpu(shape, ...)` with
+    // an externally-known logical shape.
+    let numel = bf16_gpu.rows * bf16_gpu.cols;
+
+    // Sanity: the device buffer must hold exactly `numel * 2`
+    // bytes (BF16). If it doesn't, the caller violated the
+    // contract somewhere upstream — refuse to read past the
+    // allocation.
+    if bf16_gpu.size_bytes() != numel * 2 {
+        return None;
+    }
+
+    let f32_gpu = TensorGPU::empty(numel, 1).ok()?;
+
+    unsafe {
+        let rc = bf16_to_f32_launch_device(
+            bf16_gpu.device_ptr() as *const c_void,
+            f32_gpu.device_ptr() as *mut f32,
+            numel as c_int,
+        );
+        if rc != 0 {
+            return None;
+        }
+    }
+
+    Some(f32_gpu)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

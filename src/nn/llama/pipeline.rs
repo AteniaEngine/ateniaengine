@@ -226,29 +226,69 @@ impl GenerationPipeline {
             let total_ram_bytes =
                 crate::gpu::safety::resource_check::probe_total_ram_bytes();
 
-            // **M8.3** — kernel dtype for the VRAM-resident matmul
-            // path. Default `F32` keeps the M6 / M7 contract; flip
-            // to `BF16` via `ATENIA_M8_BF16_KERNEL=1` to halve the
-            // per-weight VRAM cost (numel × 2 vs numel × 4) and
-            // double the planner's effective VRAM capacity. The
-            // BF16 dispatch wire-up lands in M8.4; until then this
-            // flag changes the *plan* (more tensors land on Vram)
-            // but the loader still uses the F32 path, so end-to-end
-            // behaviour is unchanged. Inspecting the logged plan
-            // is the M8.3 acceptance signal.
-            let kernel_dtype = if std::env::var("ATENIA_M8_BF16_KERNEL")
-                .as_deref() == Ok("1")
-            {
-                crate::tensor::DType::BF16
-            } else {
-                crate::tensor::DType::F32
+            // **M8.3 / M8.4c** — kernel dtype for the VRAM-resident
+            // matmul path. The env var `ATENIA_M8_BF16_KERNEL=1` is
+            // the operator's *request*; whether the request takes
+            // effect depends on the **adaptive heuristic** computed
+            // below from `model_total_bytes` and `free_ram_bytes`.
+            //
+            // Rationale: the M8.4c "Path B" matmul (BF16 weight in
+            // VRAM, upcast to F32 transient per-matmul, F32 GEMM)
+            // is ~3× slower per matmul than the M6 path. For models
+            // that fit comfortably in RAM (e.g. Llama 2 7B Chat in
+            // 32 GiB), this slowdown is a pure regression. M8 only
+            // pays off when the doubled VRAM capacity translates to
+            // moving weights off the Disk tier (e.g. Llama 2 13B
+            // on 32 GiB).
+            //
+            // Threshold: `model_total > 0.7 × free_ram` — the same
+            // threshold the M7.2 adaptive headroom already uses to
+            // decide whether to inflate the RAM headroom. Below
+            // it, the model dominates RAM and overflowing to Disk
+            // is structural; above it (model fits in RAM with
+            // headroom), the M8 BF16 path is gratuitous.
+            let env_requested = std::env::var("ATENIA_M8_BF16_KERNEL")
+                .as_deref()
+                == Ok("1");
+            // `model_total_bytes` is computed inside each load
+            // branch; we wire the conditional inline there so both
+            // branches share the same logic.
+            let m8_bf16_resolver = |model_total_bytes: u64| -> bool {
+                if !env_requested {
+                    return false;
+                }
+                let threshold = (free_ram_bytes / 10).saturating_mul(7);
+                let model_dominates = model_total_bytes > threshold;
+                if !model_dominates {
+                    eprintln!(
+                        "[ATENIA] M8 BF16 kernel requested but model fits \
+                         comfortably in RAM (model {:.2} GiB ≤ 0.7 × free RAM \
+                         {:.2} GiB); falling back to F32 path for stability \
+                         (M8 BF16 adds per-matmul upcast overhead that's only \
+                         worth paying when capacity-constrained).",
+                        (model_total_bytes as f64) / 1024.0_f64.powi(3),
+                        (free_ram_bytes as f64) / 1024.0_f64.powi(3),
+                    );
+                }
+                model_dominates
             };
-            log_m8_kernel_dtype(kernel_dtype);
 
             if index_path.exists() {
                 let sharded = ShardedSafetensorsReader::open(&index_path)?;
                 let metas = sharded.collect_tensor_metas()?;
                 let model_total_bytes = sum_model_bytes(&metas);
+                // **M8.4c** — resolve the effective M8 BF16 kernel flag
+                // for THIS load. Pipeline owns the conditional;
+                // the loader stays a pure consumer of the resolved
+                // flag via `mapper.set_bf16_kernel_active`.
+                let m8_bf16_effective = m8_bf16_resolver(model_total_bytes);
+                let kernel_dtype = if m8_bf16_effective {
+                    crate::tensor::DType::BF16
+                } else {
+                    crate::tensor::DType::F32
+                };
+                log_m8_kernel_dtype(kernel_dtype);
+                mapper.set_bf16_kernel_active(Some(m8_bf16_effective));
                 let plan_input = crate::gpu::tier_plan::TierPlanInput {
                     tensors: metas,
                     free_vram_bytes,
@@ -284,6 +324,18 @@ impl GenerationPipeline {
                     })
                     .collect();
                 let model_total_bytes = sum_model_bytes(&metas);
+                // **M8.4c** — same conditional as the sharded
+                // branch above. Kept inline (not factored into a
+                // helper closure) so the data dependency on
+                // `model_total_bytes` is locally visible.
+                let m8_bf16_effective = m8_bf16_resolver(model_total_bytes);
+                let kernel_dtype = if m8_bf16_effective {
+                    crate::tensor::DType::BF16
+                } else {
+                    crate::tensor::DType::F32
+                };
+                log_m8_kernel_dtype(kernel_dtype);
+                mapper.set_bf16_kernel_active(Some(m8_bf16_effective));
                 let plan_input = crate::gpu::tier_plan::TierPlanInput {
                     tensors: metas,
                     free_vram_bytes,

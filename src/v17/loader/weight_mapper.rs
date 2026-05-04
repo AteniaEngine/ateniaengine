@@ -237,6 +237,20 @@ pub struct WeightMapper {
     /// `false` for full backward compatibility with the M4.6
     /// numerical-validation fixtures and every existing test.
     store_params_as_bf16: bool,
+    /// **M8.4c** — explicit override for the M8 BF16-resident
+    /// VRAM path. When `Some(true)` / `Some(false)`, the slow
+    /// and fast path arms of `load_one_shard_into_with_residency_plan`
+    /// route to the BF16-resident upload (M8.1 primitive) /
+    /// the M6 F32-resident upload (M6 primitive) regardless of
+    /// the `ATENIA_M8_BF16_KERNEL` env var.
+    ///
+    /// `None` (default) preserves M8.4-original behaviour: the
+    /// loader reads the env var directly. This keeps tests that
+    /// set the env var via an `M8FlagGuard` working unchanged,
+    /// while letting `pipeline.rs` compute a conditional
+    /// (env_requested AND model_dominates_ram) and pass the
+    /// result explicitly via [`Self::set_bf16_kernel_active`].
+    bf16_kernel_active: Option<bool>,
 }
 
 /// Summary returned by [`WeightMapper::load_into`] after a
@@ -294,6 +308,7 @@ impl WeightMapper {
         Ok(Self {
             mapping,
             store_params_as_bf16: false,
+            bf16_kernel_active: None,
         })
     }
 
@@ -316,6 +331,35 @@ impl WeightMapper {
     /// tests and diagnostic logging.
     pub fn store_params_as_bf16(&self) -> bool {
         self.store_params_as_bf16
+    }
+
+    /// **M8.4c** — explicit override for the M8 BF16-resident
+    /// VRAM path. `Some(true)` forces the BF16 upload regardless
+    /// of `ATENIA_M8_BF16_KERNEL`; `Some(false)` forces the F32
+    /// (M6) upload regardless. `None` reverts to the default
+    /// behaviour of reading the env var.
+    ///
+    /// The pipeline (`src/nn/llama/pipeline.rs`) uses this setter
+    /// to gate M8 activation by the adaptive heuristic
+    /// `model_total_bytes > 0.7 × free_ram_bytes`: 7B models that
+    /// fit comfortably in RAM keep the M6 F32 path even if the
+    /// operator set the env var, avoiding the per-matmul upcast
+    /// overhead the M8 path costs in the BF16-resident world.
+    pub fn set_bf16_kernel_active(&mut self, enabled: Option<bool>) -> &mut Self {
+        self.bf16_kernel_active = enabled;
+        self
+    }
+
+    /// Internal helper: resolves the active M8 BF16 kernel flag
+    /// for one load. Explicit override (`Self::set_bf16_kernel_active`)
+    /// wins; otherwise falls back to the `ATENIA_M8_BF16_KERNEL`
+    /// env var. Centralised here so the fast-path and slow-path
+    /// arms agree on the same source of truth without two
+    /// independent reads of process-global state.
+    fn m8_bf16_kernel_active(&self) -> bool {
+        self.bf16_kernel_active.unwrap_or_else(|| {
+            std::env::var("ATENIA_M8_BF16_KERNEL").as_deref() == Ok("1")
+        })
     }
 
     /// Attach a transform pipeline to a parameter name. The transforms
@@ -562,8 +606,7 @@ impl WeightMapper {
                 // directly. The two paths increment **disjoint**
                 // counters so the operator can audit which path
                 // ran from the smoke log.
-                let m8_bf16_kernel =
-                    std::env::var("ATENIA_M8_BF16_KERNEL").as_deref() == Ok("1");
+                let m8_bf16_kernel = self.m8_bf16_kernel_active();
 
                 let gpu = if m8_bf16_kernel {
                     crate::cuda::bf16_to_f32::bf16_to_vram_no_upcast_from_raw_bytes(
@@ -819,9 +862,7 @@ impl WeightMapper {
                         .collect();
                     drop(values);
 
-                    let m8_bf16_kernel = std::env::var("ATENIA_M8_BF16_KERNEL")
-                        .as_deref()
-                        == Ok("1");
+                    let m8_bf16_kernel = self.m8_bf16_kernel_active();
 
                     let gpu = if m8_bf16_kernel {
                         crate::cuda::bf16_to_f32::bf16_to_vram_no_upcast(
