@@ -233,10 +233,21 @@ fn tinyllama_pipeline_load_completes_with_full_param_set() {
 
     // Every parameter must be on F32 (default) or BF16 path
     // — no Cuda / Disk leaked through extract_from_graph.
+    // Cuda / Disk variants were added in M6 (tier-planner residency)
+    // and are valid in *some* pipelines, but this M5 smoke goes
+    // through the legacy CPU loader path — neither tier should
+    // appear here. Explicit arms (rather than a wildcard) preserve
+    // the original assertion: regress if either tier leaks in.
     use atenia_engine::amg::weight_store::SharedParam;
     for p in &pipe.store.params {
         match p {
             SharedParam::F32 { .. } | SharedParam::Bf16 { .. } => {}
+            SharedParam::Cuda { .. } => {
+                panic!("M5 pipeline must not expose Cuda-resident params");
+            }
+            SharedParam::Disk { .. } => {
+                panic!("M5 pipeline must not expose Disk-resident params");
+            }
         }
     }
 }

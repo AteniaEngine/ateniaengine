@@ -164,6 +164,21 @@ fn llama2_13b_arc_sharing_keeps_resident_under_30_gib() {
         let count = match p {
             SharedParam::F32 { arc, .. } => std::sync::Arc::strong_count(arc),
             SharedParam::Bf16 { arc, .. } => std::sync::Arc::strong_count(arc),
+            // Cuda / Disk variants were added in M6 (tier-planner
+            // residency). This M5 coherence smoke uses the legacy
+            // CPU loader path — neither tier should appear here.
+            // Explicit panics preserve the M5 invariant: any leak
+            // of a non-CPU variant is a regression.
+            SharedParam::Cuda { .. } => {
+                panic!(
+                    "M5 coherence smoke must not expose Cuda-resident params (got '{name}')"
+                );
+            }
+            SharedParam::Disk { .. } => {
+                panic!(
+                    "M5 coherence smoke must not expose Disk-resident params (got '{name}')"
+                );
+            }
         };
         assert!(count >= 2,
             "param '{name}' strong_count = {count}, expected >= 2 (store + at least one graph)");
