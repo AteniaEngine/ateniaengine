@@ -155,6 +155,7 @@ fn all_ram_plan_matches_load_into_bit_exact() {
         // policy must keep the headroom at the 8 GiB base.
         model_total_bytes: 0,
         total_ram_bytes: 128 * 1024 * 1024 * 1024,
+        kernel_dtype: DType::F32,
     };
     let p = plan(&plan_input);
     assert_eq!(p.count(Tier::Vram), 0, "plan must be all-Ram for this test");
@@ -247,6 +248,7 @@ fn mixed_plan_produces_cuda_entries_for_vram_tier() {
         free_ram_bytes: 32 * 1024 * 1024 * 1024,
         model_total_bytes: 0,
         total_ram_bytes: 32 * 1024 * 1024 * 1024,
+        kernel_dtype: DType::F32,
     };
     let p = plan(&plan_input);
     assert_eq!(p.get("w_proj.weight"), Some(Tier::Vram));
@@ -352,6 +354,7 @@ fn vram_bf16_no_transforms_uses_fast_path_only() {
         free_ram_bytes: 32 * 1024 * 1024 * 1024,
         model_total_bytes: 0,
         total_ram_bytes: 32 * 1024 * 1024 * 1024,
+        kernel_dtype: DType::F32,
     });
     assert_eq!(p.count(Tier::Vram), 2);
 

@@ -133,6 +133,7 @@ fn handcrafted_plan(disk_name: &str, ram_name: &str) -> TierPlan {
         free_ram_bytes: 8 * 1024 * 1024 * 1024 + 32,
         model_total_bytes: model_total,
         total_ram_bytes: 16 * 1024 * 1024 * 1024,
+        kernel_dtype: DType::F32,
     });
     assert_eq!(p.get(ram_name), Some(Tier::Ram));
     assert_eq!(p.get(disk_name), Some(Tier::Disk));

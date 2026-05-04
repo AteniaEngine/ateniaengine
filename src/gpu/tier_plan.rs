@@ -99,12 +99,31 @@ impl TensorMeta {
         self.shape.iter().product::<usize>() as u64
     }
 
-    /// VRAM cost if this tensor is uploaded to the F32 device
-    /// buffer. The size of the device-side allocation that the
-    /// `bf16_to_f32_resident_in_vram` / direct-upload path
-    /// materialises. Always F32.
-    fn vram_cost_bytes(&self) -> u64 {
-        self.numel() * 4
+    /// VRAM cost if this tensor is uploaded to the device
+    /// buffer of the requested `kernel_dtype`.
+    ///
+    /// **M6 / M7 path** (`kernel_dtype = F32`): `numel × 4`.
+    /// The device buffer holds F32 because the M6 upload kernel
+    /// (`bf16_to_f32_resident_in_vram`) upcasts BF16 sources at
+    /// load time and the matmul kernel
+    /// (`matmul_f32_launch_device`) accepts F32 only.
+    ///
+    /// **M8 path** (`kernel_dtype = BF16`): `numel × 2`.
+    /// The device buffer keeps BF16 (allocated via M8.1's
+    /// `bf16_to_vram_no_upcast`) and the matmul kernel
+    /// (`cuda_matmul_bf16_inplace`, M8.2) consumes BF16 directly.
+    /// Halves the VRAM footprint per weight, doubling the
+    /// effective capacity of the hardware.
+    ///
+    /// F16 / Int8 paths would slot in the same way; for now
+    /// `BF16` is the only non-F32 supported value (`F16` and
+    /// the int dtypes still map to `numel × 4` because no
+    /// resident matmul exists for them in M8).
+    fn vram_cost_bytes(&self, kernel_dtype: DType) -> u64 {
+        match kernel_dtype {
+            DType::BF16 => self.numel() * 2,
+            _ => self.numel() * 4,
+        }
     }
 
     /// Host RAM cost in the source dtype. Used both for the
@@ -142,6 +161,18 @@ pub struct TierPlanInput {
     /// `gpu::safety::resource_check::probe_total_ram_bytes`.
     /// Logged for telemetry; the policy itself uses `free_ram_bytes`.
     pub total_ram_bytes: u64,
+    /// **M8.3** — kernel dtype of the VRAM-resident matmul path.
+    ///
+    /// `F32` (default — backward-compatible with M6 / M7) costs
+    /// `numel × 4` per VRAM-eligible weight. `BF16` (M8 path,
+    /// gated by `ATENIA_M8_BF16_KERNEL=1` in `pipeline.rs`)
+    /// costs `numel × 2`, doubling effective VRAM capacity.
+    ///
+    /// The planner does not validate that the `BF16` path is
+    /// actually wired in the dispatcher — that contract is held
+    /// by the caller (M8.4 wires it; before then the flag is a
+    /// dry-run for plan inspection).
+    pub kernel_dtype: DType,
 }
 
 /// Output of [`plan`]. Insertion order preserved for caller
@@ -261,7 +292,7 @@ pub fn plan(input: &TierPlanInput) -> TierPlan {
     out.ram_headroom_overflow_bytes = overflow;
 
     for meta in &input.tensors {
-        let vram_cost = meta.vram_cost_bytes();
+        let vram_cost = meta.vram_cost_bytes(input.kernel_dtype);
         let ram_cost = meta.ram_cost_bytes();
 
         let tier = if is_gpu_eligible(meta) && vram_remaining >= vram_cost {
@@ -333,6 +364,7 @@ mod tests {
             free_ram_bytes: 32 * 1024 * 1024 * 1024,
             model_total_bytes: model_total,
             total_ram_bytes: 32 * 1024 * 1024 * 1024,
+            kernel_dtype: DType::F32,
         };
         let p = plan(&input);
 
@@ -380,6 +412,7 @@ mod tests {
             free_ram_bytes: 32 * 1024 * 1024 * 1024,
             model_total_bytes: model_total,
             total_ram_bytes: 32 * 1024 * 1024 * 1024,
+            kernel_dtype: DType::F32,
         };
         let p = plan(&input);
 
@@ -421,6 +454,7 @@ mod tests {
             free_ram_bytes: (85 * 1024 * 1024 * 1024) / 10, // 8.5 GiB
             model_total_bytes: model_total,
             total_ram_bytes: 16 * 1024 * 1024 * 1024,
+            kernel_dtype: DType::F32,
         };
         let p = plan(&input);
 
@@ -459,6 +493,7 @@ mod tests {
             free_ram_bytes: 100 * 1024 * 1024 * 1024,
             model_total_bytes: model_total,
             total_ram_bytes: 128 * 1024 * 1024 * 1024,
+            kernel_dtype: DType::F32,
         };
         let p = plan(&input);
 
@@ -509,6 +544,7 @@ mod tests {
             free_ram_bytes: 32 * 1024 * 1024 * 1024,
             model_total_bytes: model_total,
             total_ram_bytes: 32 * 1024 * 1024 * 1024,
+            kernel_dtype: DType::F32,
         };
         let p = plan(&input);
 
@@ -627,6 +663,7 @@ mod tests {
             free_ram_bytes: free_ram,
             model_total_bytes: model_total,
             total_ram_bytes: 32 * 1024 * 1024 * 1024,
+            kernel_dtype: DType::F32,
         };
         let p = plan(&input);
 
@@ -670,6 +707,7 @@ mod tests {
             free_ram_bytes: 26 * 1024 * 1024 * 1024,
             model_total_bytes: model_total,
             total_ram_bytes: 32 * 1024 * 1024 * 1024,
+            kernel_dtype: DType::F32,
         };
         let p = plan(&input);
 
@@ -704,6 +742,7 @@ mod tests {
             free_ram_bytes: 12 * 1024 * 1024 * 1024,
             model_total_bytes: model_total,
             total_ram_bytes: 16 * 1024 * 1024 * 1024,
+            kernel_dtype: DType::F32,
         };
         let p = plan(&input);
 
@@ -754,6 +793,7 @@ mod tests {
             free_ram_bytes: 6 * 1024 * 1024 * 1024,
             model_total_bytes: model_total,
             total_ram_bytes: 8 * 1024 * 1024 * 1024,
+            kernel_dtype: DType::F32,
         };
         let p = plan(&input);
 
@@ -794,5 +834,270 @@ mod tests {
         let (h, o) = adaptive_ram_headroom(3 * gib, 0);
         assert_eq!(o, 3 * gib);
         assert_eq!(h, RAM_HEADROOM_BASE_BYTES + 3 * gib);
+    }
+
+    // ----------------------------------------------------------------
+    // M8.3 — kernel_dtype-aware VRAM cost.
+    //
+    // The M6 / M7 planner hardcoded `vram_cost_bytes = numel × 4`
+    // because the only matmul kernel for VRAM-resident weights was
+    // F32 (`matmul_f32_launch_device`). M8.2 introduced a BF16
+    // matmul (`cuda_matmul_bf16_inplace` via `cublasGemmEx`) that
+    // consumes BF16 directly. With `kernel_dtype = BF16`, the
+    // planner counts each VRAM-eligible weight at `numel × 2`,
+    // doubling effective VRAM capacity. These tests confirm the
+    // policy without exercising the dispatcher (M8.4 wires that).
+    // ----------------------------------------------------------------
+
+    /// 11. **13B with BF16 kernel** — VRAM tensor count roughly
+    /// doubles vs F32. With 8 GiB free VRAM (7 GiB usable), F32
+    /// fits ~5.78 layers (~40 _proj.weight tensors); BF16 fits
+    /// ~11.56 layers (~80 _proj.weight tensors). Same input,
+    /// only `kernel_dtype` differs.
+    #[test]
+    fn m8_3_bf16_kernel_doubles_vram_tensor_count_on_13b() {
+        let mut tensors = Vec::new();
+        tensors.push(make_meta(
+            "model.embed_tokens.weight",
+            vec![32000, 5120],
+            DType::BF16,
+        ));
+        for i in 0..40 {
+            tensors.extend(llama_layer(i, 5120, 13824, DType::BF16));
+        }
+        tensors.push(make_meta("model.norm.weight", vec![5120], DType::BF16));
+        tensors.push(make_meta("lm_head.weight", vec![32000, 5120], DType::BF16));
+
+        let model_total = sum_model_bytes(&tensors);
+
+        // F32 baseline (same input as M7.2 test 5).
+        let input_f32 = TierPlanInput {
+            tensors: tensors.clone(),
+            free_vram_bytes: 8 * 1024 * 1024 * 1024,
+            free_ram_bytes: 32 * 1024 * 1024 * 1024,
+            model_total_bytes: model_total,
+            total_ram_bytes: 32 * 1024 * 1024 * 1024,
+            kernel_dtype: DType::F32,
+        };
+        let p_f32 = plan(&input_f32);
+
+        let input_bf16 = TierPlanInput {
+            tensors: tensors.clone(),
+            free_vram_bytes: 8 * 1024 * 1024 * 1024,
+            free_ram_bytes: 32 * 1024 * 1024 * 1024,
+            model_total_bytes: model_total,
+            total_ram_bytes: 32 * 1024 * 1024 * 1024,
+            kernel_dtype: DType::BF16,
+        };
+        let p_bf16 = plan(&input_bf16);
+
+        let vram_f32 = p_f32.vram_count();
+        let vram_bf16 = p_bf16.vram_count();
+
+        // F32 fits ~5.78 layers worth = roughly 35..=42 _proj
+        // tensors. The M7.2 test already locks this range; we
+        // re-confirm here as a baseline anchor.
+        assert!(
+            (35..=42).contains(&vram_f32),
+            "F32 baseline expected 35..=42 VRAM tensors, got {}",
+            vram_f32
+        );
+        // BF16 should fit ~11.56 layers = 78..=84 _proj tensors.
+        // The exact count depends on greedy bin-packing residual
+        // (last layer's down_proj may or may not fit).
+        assert!(
+            (78..=84).contains(&vram_bf16),
+            "BF16 path expected 78..=84 VRAM tensors, got {}",
+            vram_bf16
+        );
+
+        // Strong invariant: BF16 must fit at least 1.9× more
+        // VRAM tensors than F32 (allowing some slack for the
+        // last-layer residuals).
+        let ratio = (vram_bf16 as f64) / (vram_f32 as f64);
+        assert!(
+            ratio >= 1.9,
+            "BF16/F32 VRAM tensor ratio expected ≥ 1.9, got {:.2} \
+             (F32={}, BF16={})",
+            ratio,
+            vram_f32,
+            vram_bf16
+        );
+
+        // Aggregate byte accounting: BF16 vram_bytes_assigned
+        // is per-tensor `numel × 2`. F32 was `numel × 4`.
+        // Both should respect the 7 GiB usable budget.
+        let usable_vram = (8 - 1) * 1024 * 1024 * 1024_u64;
+        assert!(p_f32.vram_bytes_assigned <= usable_vram);
+        assert!(p_bf16.vram_bytes_assigned <= usable_vram);
+    }
+
+    /// 12. **13B with F32 kernel default** — regression-zero
+    /// gate. With `kernel_dtype = F32` the M7.2 baseline (test 5)
+    /// must reproduce: ~35..=42 VRAM tensors.
+    #[test]
+    fn m8_3_f32_kernel_default_matches_m7_2_baseline() {
+        let mut tensors = Vec::new();
+        tensors.push(make_meta(
+            "model.embed_tokens.weight",
+            vec![32000, 5120],
+            DType::BF16,
+        ));
+        for i in 0..40 {
+            tensors.extend(llama_layer(i, 5120, 13824, DType::BF16));
+        }
+        tensors.push(make_meta("model.norm.weight", vec![5120], DType::BF16));
+        tensors.push(make_meta("lm_head.weight", vec![32000, 5120], DType::BF16));
+
+        let model_total = sum_model_bytes(&tensors);
+        let input = TierPlanInput {
+            tensors,
+            free_vram_bytes: 8 * 1024 * 1024 * 1024,
+            free_ram_bytes: 32 * 1024 * 1024 * 1024,
+            model_total_bytes: model_total,
+            total_ram_bytes: 32 * 1024 * 1024 * 1024,
+            kernel_dtype: DType::F32,
+        };
+        let p = plan(&input);
+
+        // Same range as M7.2 test 5.
+        let vram_count = p.vram_count();
+        assert!(
+            (35..=42).contains(&vram_count),
+            "F32 default expected 35..=42 VRAM tensors (M7.2 baseline), got {}",
+            vram_count
+        );
+        // The bytes should be in the F32 ballpark (vram_count × ~150 MiB).
+        // Sanity: F32 VRAM bytes per layer = 1.21 GiB; 5 layers = 6.05 GiB.
+        let vram_gib = p.vram_bytes_assigned as f64 / (1024.0_f64.powi(3));
+        assert!(
+            vram_gib >= 5.0 && vram_gib <= 7.0,
+            "F32 VRAM bytes expected 5..=7 GiB, got {:.2}",
+            vram_gib
+        );
+    }
+
+    /// 13. **7B with BF16 kernel** — even on a model that fully
+    /// fits at F32, BF16 fits more `_proj.weight` tensors.
+    /// 7B has 32 layers × 7 _proj = 224 GPU-eligible tensors.
+    /// At 8 GiB VRAM with F32, ~all of them fit (7B is small).
+    /// With BF16, even more fit (still all in this case) plus
+    /// the per-tensor cost halves the budget consumption — the
+    /// test asserts both: vram_bytes_assigned halves with BF16.
+    #[test]
+    fn m8_3_bf16_kernel_halves_vram_bytes_on_7b() {
+        let mut tensors = Vec::new();
+        tensors.push(make_meta(
+            "model.embed_tokens.weight",
+            vec![32000, 4096],
+            DType::BF16,
+        ));
+        for i in 0..32 {
+            tensors.extend(llama_layer(i, 4096, 11008, DType::BF16));
+        }
+        tensors.push(make_meta("model.norm.weight", vec![4096], DType::BF16));
+        tensors.push(make_meta("lm_head.weight", vec![32000, 4096], DType::BF16));
+
+        let model_total = sum_model_bytes(&tensors);
+
+        let mk_input = |kd| TierPlanInput {
+            tensors: tensors.clone(),
+            free_vram_bytes: 8 * 1024 * 1024 * 1024,
+            free_ram_bytes: 32 * 1024 * 1024 * 1024,
+            model_total_bytes: model_total,
+            total_ram_bytes: 32 * 1024 * 1024 * 1024,
+            kernel_dtype: kd,
+        };
+
+        let p_f32 = plan(&mk_input(DType::F32));
+        let p_bf16 = plan(&mk_input(DType::BF16));
+
+        // BF16 must place ≥ as many VRAM tensors as F32.
+        assert!(
+            p_bf16.vram_count() >= p_f32.vram_count(),
+            "BF16 VRAM count ({}) must be ≥ F32 VRAM count ({})",
+            p_bf16.vram_count(),
+            p_f32.vram_count()
+        );
+
+        // For the tensors that BOTH plans placed on VRAM, the
+        // BF16 byte cost should be roughly half. Use the
+        // overlapping subset by walking the BF16 plan; any
+        // tensor on Vram in BF16 plan that is also on Vram in
+        // F32 plan contributes to the sum.
+        let mut overlap_bytes_bf16 = 0_u64;
+        let mut overlap_bytes_f32 = 0_u64;
+        for meta in &tensors {
+            if !is_gpu_eligible(meta) {
+                continue;
+            }
+            let on_bf16 = p_bf16.get(&meta.name) == Some(Tier::Vram);
+            let on_f32 = p_f32.get(&meta.name) == Some(Tier::Vram);
+            if on_bf16 && on_f32 {
+                overlap_bytes_bf16 += meta.vram_cost_bytes(DType::BF16);
+                overlap_bytes_f32 += meta.vram_cost_bytes(DType::F32);
+            }
+        }
+        assert!(overlap_bytes_f32 > 0, "expected non-empty overlap");
+        let ratio = (overlap_bytes_bf16 as f64) / (overlap_bytes_f32 as f64);
+        assert!(
+            (ratio - 0.5).abs() < 0.001,
+            "expected BF16/F32 overlap byte ratio = 0.5, got {:.4}",
+            ratio
+        );
+    }
+
+    /// 14. **`vram_cost_bytes` direct dtype check** — the helper
+    /// produces the right per-element multiplier for both
+    /// supported dtypes, and falls back to F32 for unsupported
+    /// (defensive: if a future dtype is added without an
+    /// explicit M8 entry, the planner won't silently route it
+    /// to BF16 cost).
+    #[test]
+    fn m8_3_vram_cost_bytes_helper_matches_dtype() {
+        let m = make_meta(
+            "model.layers.0.self_attn.q_proj.weight",
+            vec![5120, 5120],
+            DType::BF16,
+        );
+        let numel = 5120 * 5120;
+        assert_eq!(m.vram_cost_bytes(DType::F32), (numel * 4) as u64);
+        assert_eq!(m.vram_cost_bytes(DType::BF16), (numel * 2) as u64);
+        // F16 (and any future non-BF16/F32) defaults to F32 cost.
+        assert_eq!(m.vram_cost_bytes(DType::F16), (numel * 4) as u64);
+    }
+
+    /// 15. **Headroom + adaptive interaction** — switching to
+    /// BF16 must not change RAM headroom logic. The adaptive
+    /// rule uses `model_total_bytes` and `free_ram_bytes`;
+    /// neither depends on `kernel_dtype`. Verify the same
+    /// `(model_total, free_ram)` pair produces the same
+    /// `ram_headroom_bytes` regardless of `kernel_dtype`.
+    #[test]
+    fn m8_3_kernel_dtype_does_not_affect_ram_headroom() {
+        let tensors = synth_13b_model();
+        let model_total = sum_model_bytes(&tensors);
+
+        let mk_input = |kd| TierPlanInput {
+            tensors: tensors.clone(),
+            free_vram_bytes: 0,
+            free_ram_bytes: 26 * 1024 * 1024 * 1024,
+            model_total_bytes: model_total,
+            total_ram_bytes: 32 * 1024 * 1024 * 1024,
+            kernel_dtype: kd,
+        };
+
+        let p_f32 = plan(&mk_input(DType::F32));
+        let p_bf16 = plan(&mk_input(DType::BF16));
+
+        assert_eq!(
+            p_f32.ram_headroom_bytes, p_bf16.ram_headroom_bytes,
+            "ram_headroom_bytes must be invariant under kernel_dtype \
+             (F32: {}, BF16: {})",
+            p_f32.ram_headroom_bytes, p_bf16.ram_headroom_bytes
+        );
+        assert_eq!(
+            p_f32.ram_headroom_overflow_bytes, p_bf16.ram_headroom_overflow_bytes
+        );
     }
 }

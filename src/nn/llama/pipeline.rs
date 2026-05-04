@@ -226,6 +226,25 @@ impl GenerationPipeline {
             let total_ram_bytes =
                 crate::gpu::safety::resource_check::probe_total_ram_bytes();
 
+            // **M8.3** — kernel dtype for the VRAM-resident matmul
+            // path. Default `F32` keeps the M6 / M7 contract; flip
+            // to `BF16` via `ATENIA_M8_BF16_KERNEL=1` to halve the
+            // per-weight VRAM cost (numel × 2 vs numel × 4) and
+            // double the planner's effective VRAM capacity. The
+            // BF16 dispatch wire-up lands in M8.4; until then this
+            // flag changes the *plan* (more tensors land on Vram)
+            // but the loader still uses the F32 path, so end-to-end
+            // behaviour is unchanged. Inspecting the logged plan
+            // is the M8.3 acceptance signal.
+            let kernel_dtype = if std::env::var("ATENIA_M8_BF16_KERNEL")
+                .as_deref() == Ok("1")
+            {
+                crate::tensor::DType::BF16
+            } else {
+                crate::tensor::DType::F32
+            };
+            log_m8_kernel_dtype(kernel_dtype);
+
             if index_path.exists() {
                 let sharded = ShardedSafetensorsReader::open(&index_path)?;
                 let metas = sharded.collect_tensor_metas()?;
@@ -236,6 +255,7 @@ impl GenerationPipeline {
                     free_ram_bytes,
                     model_total_bytes,
                     total_ram_bytes,
+                    kernel_dtype,
                 };
                 let plan = crate::gpu::tier_plan::plan(&plan_input);
                 log_adaptive_headroom(
@@ -270,6 +290,7 @@ impl GenerationPipeline {
                     free_ram_bytes,
                     model_total_bytes,
                     total_ram_bytes,
+                    kernel_dtype,
                 };
                 let plan = crate::gpu::tier_plan::plan(&plan_input);
                 log_adaptive_headroom(
@@ -503,6 +524,26 @@ fn sum_model_bytes(metas: &[crate::gpu::tier_plan::TensorMeta]) -> u64 {
             numel * (m.dtype.size_in_bytes() as u64)
         })
         .sum()
+}
+
+/// **M8.3** — operator-facing log of the kernel dtype that the
+/// tier-aware planner is using for VRAM cost computation. Emits
+/// nothing on the F32 default (avoids cluttering the legacy
+/// stderr); emits a one-liner banner when the M8 BF16 path is
+/// enabled, so the operator can confirm the flag was picked up.
+fn log_m8_kernel_dtype(dtype: crate::tensor::DType) {
+    if crate::apx_is_silent() {
+        return;
+    }
+    if dtype == crate::tensor::DType::BF16 {
+        eprintln!(
+            "[ATENIA] M8 BF16 kernel active: VRAM budget doubles \
+             (numel×2 vs numel×4). cublasGemmEx with CUDA_R_16BF \
+             inputs + F32 accumulate. Wire-up to dispatcher lands \
+             in M8.4; until then the plan changes but production \
+             dispatch stays on the F32 path."
+        );
+    }
 }
 
 /// **M7.2** — operator-facing log of the adaptive RAM headroom
