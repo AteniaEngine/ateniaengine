@@ -424,6 +424,10 @@ fn main() {
     let cuda_lib_dir = format!(r"{}\lib\x64", cuda_path);
     println!("cargo:rustc-link-search=native={}", cuda_lib_dir);
     println!("cargo:rustc-link-lib=dylib=cudart");
+    // M8.0 — link cuBLAS for the BF16 TC bench (`examples/bench_cublas_bf16.rs`)
+    // and any future production path that needs cublasGemmEx. Same toolkit as
+    // cudart so the versions stay coherent.
+    println!("cargo:rustc-link-lib=dylib=cublas");
 
     // Nuestra lib está en el cwd
     println!("cargo:rustc-link-search=.");
