@@ -42,7 +42,8 @@ use atenia_engine::tensor::tensor::{f32_to_bf16_bits, Tensor};
 use atenia_engine::tensor::{DType, TensorStorage};
 use atenia_engine::v17::loader::safetensors_reader::SafetensorsReader;
 use atenia_engine::v17::loader::weight_mapper::{
-    vram_bf16_fast_path_count, vram_fast_path_count, vram_slow_path_count, WeightMapper,
+    vram_bf16_fast_path_count, vram_bf16_slow_path_count, vram_fast_path_count,
+    vram_slow_path_count, LoadTransform, WeightMapper,
 };
 use safetensors::tensor::TensorView;
 use safetensors::Dtype as StDtype;
@@ -415,5 +416,155 @@ fn m8_4_dispatcher_routes_bf16_resident_to_cuda_matmul_bf16() {
         max_abs_diff < 0.5,
         "BF16 dispatcher drift {:.4e} exceeded 0.5 envelope",
         max_abs_diff
+    );
+}
+
+// ---------------------------------------------------------------------
+// Test 4 — loader slow path under flag (LoadTransform::Transpose2D).
+//
+// **M8.4b** — exercises the gap M8.5 surfaced: every Llama-family
+// `_proj.weight` has at least `LoadTransform::Transpose2D` registered,
+// so the M8.4-original fast-path arm (`mapping.transforms.is_empty()`)
+// never fired in production. The slow path now has a parallel M8
+// branch: F32 transforms run, then the result re-encodes to BF16 and
+// uploads via `bf16_to_vram_no_upcast`. This test verifies that wire-up
+// end-to-end on a synthetic mapper that registers Transpose2D — same
+// transform shape every Llama proj weight uses.
+// ---------------------------------------------------------------------
+
+#[test]
+#[ignore = "requires CUDA driver (nvidia-smi)"]
+fn m8_4b_loader_routes_proj_weight_with_transforms_to_bf16_vram_under_flag() {
+    let _guard = ENV_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !cuda_available() {
+        eprintln!("CUDA not available, skipping");
+        return;
+    }
+    let _flag = M8FlagGuard::set();
+
+    // [4, 4] BF16 proj weight; Transpose2D after load gives [4, 4]
+    // (same shape, but the transform fires the slow path). The
+    // builder's parameter slot is shape-allocated for the **post-
+    // transform** shape, so we use [4, 4] uniformly here.
+    let entries = vec![(
+        "w_proj.weight",
+        vec![4, 4],
+        (0..16).map(|i| (i as f32) * 0.05 - 0.4).collect::<Vec<_>>(),
+    )];
+    let buf = build_multi_bf16_safetensors(&entries);
+    let reader = SafetensorsReader::from_bytes(buf).expect("reader");
+    let (mut graph, param_ids, param_names) = build_graph_for_entries(&entries);
+
+    // Build the mapper and register a Transpose2D transform on
+    // the proj weight — this is the canonical Llama _proj.weight
+    // recipe per `compute_transforms_for_name`.
+    let mut mapper =
+        WeightMapper::from_param_names_and_ids(&param_names, &param_ids).unwrap();
+    mapper
+        .set_transforms("w_proj.weight", vec![LoadTransform::Transpose2D])
+        .expect("set Transpose2D transform");
+
+    // Plan with abundant VRAM so the proj weight lands on Vram
+    // and `kernel_dtype: BF16` so M8.3 counts at numel × 2.
+    let plan_input = TierPlanInput {
+        tensors: make_metas(&entries),
+        free_vram_bytes: 16 * 1024 * 1024 * 1024,
+        free_ram_bytes: 32 * 1024 * 1024 * 1024,
+        model_total_bytes: 0,
+        total_ram_bytes: 32 * 1024 * 1024 * 1024,
+        kernel_dtype: DType::BF16,
+    };
+    let p = plan(&plan_input);
+    assert_eq!(p.get("w_proj.weight"), Some(Tier::Vram));
+
+    // Snapshot all four counters — the transforms-aware test must
+    // increment exactly the BF16 SLOW counter and leave the other
+    // three flat.
+    let m8_fast_before = vram_bf16_fast_path_count();
+    let m8_slow_before = vram_bf16_slow_path_count();
+    let m6_fast_before = vram_fast_path_count();
+    let m6_slow_before = vram_slow_path_count();
+
+    let (store, _) = mapper
+        .load_into_with_residency_plan(&mut graph, &reader, &p, &param_ids, &param_names)
+        .expect("load_into_with_residency_plan with transforms");
+
+    let m8_fast_after = vram_bf16_fast_path_count();
+    let m8_slow_after = vram_bf16_slow_path_count();
+    let m6_fast_after = vram_fast_path_count();
+    let m6_slow_after = vram_slow_path_count();
+
+    // Counter contract: only `vram_bf16_slow_path_count` advanced.
+    assert_eq!(
+        m8_slow_after - m8_slow_before,
+        1,
+        "expected vram_bf16_slow_path_count += 1 under flag with transforms, \
+         got delta {}",
+        m8_slow_after - m8_slow_before
+    );
+    assert_eq!(
+        m8_fast_after, m8_fast_before,
+        "vram_bf16_fast_path_count must NOT advance with transforms registered \
+         (got delta {})",
+        m8_fast_after - m8_fast_before
+    );
+    assert_eq!(
+        m6_fast_after, m6_fast_before,
+        "vram_fast_path_count (M6 F32 fast) must NOT advance under M8 flag"
+    );
+    assert_eq!(
+        m6_slow_after, m6_slow_before,
+        "vram_slow_path_count (M6 F32 slow) must NOT advance under M8 flag"
+    );
+
+    // The store entry is `SharedParam::Cuda` with a BF16-typed
+    // TensorGPU — same contract as the fast-path test, even
+    // though the loader took a different code path.
+    let proj = store.get_by_name("w_proj.weight").unwrap();
+    let gpu = match proj {
+        SharedParam::Cuda { gpu, .. } => gpu,
+        other => panic!("expected SharedParam::Cuda, got {:?}", other),
+    };
+    assert_eq!(
+        gpu.dtype(),
+        DType::BF16,
+        "M8.4b slow path must produce BF16-resident TensorGPU"
+    );
+    assert_eq!(
+        gpu.size_bytes(),
+        16 * 2,
+        "BF16 buffer must be numel × 2 = 32 bytes; got {}",
+        gpu.size_bytes()
+    );
+
+    // The downloaded bytes should be the BF16-encoded
+    // **transposed** F32 — i.e. transposing the raw source values
+    // to F32, then BF16-rounding. We verify by comparing element-
+    // wise against the manually transposed reference.
+    let downloaded = gpu
+        .to_cpu_bf16_bits()
+        .expect("to_cpu_bf16_bits on BF16-resident gpu");
+
+    // Reference: take the BF16-rounded source values (what's
+    // actually serialised on disk by `build_multi_bf16_safetensors`),
+    // transpose, and compare bit-for-bit. The loader pipeline is:
+    //   disk BF16 → F32 decode (bit-exact) → Transpose2D → BF16
+    //   re-encode (bit-exact for BF16-aligned F32) → upload.
+    // So the expected output bits equal the disk bits permuted by
+    // transpose, with no rounding losses introduced by the slow
+    // path itself.
+    let src = &entries[0].2;
+    let bf16_on_disk: Vec<u16> = src.iter().map(|&v| f32_to_bf16_bits(v)).collect();
+    let mut expected_bits = vec![0_u16; 16];
+    for i in 0..4 {
+        for j in 0..4 {
+            expected_bits[j * 4 + i] = bf16_on_disk[i * 4 + j];
+        }
+    }
+    assert_eq!(
+        downloaded, expected_bits,
+        "BF16 slow-path output mismatch — transforms or re-encode regressed"
     );
 }

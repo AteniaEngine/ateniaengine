@@ -114,6 +114,30 @@ pub fn vram_bf16_fast_path_count() -> usize {
     VRAM_BF16_FAST_PATH_COUNT.load(Ordering::Relaxed)
 }
 
+/// **M8.4b** — counts `Tier::Vram + ATENIA_M8_BF16_KERNEL=1` loads
+/// that ran through the **slow path** (i.e. the parameter has
+/// `LoadTransform`s registered, so the raw-bytes fast path can't
+/// handle it). The slow path materialises an F32 working buffer,
+/// applies the transforms (Transpose2D / TileGroupedDim / Scale /
+/// Reshape), then under M8 re-encodes the transformed F32 to
+/// BF16 and uploads via [`bf16_to_vram_no_upcast`] — the M8.4b
+/// fix that closed the gap discovered by the M8.5 4-model
+/// validation (every Llama-family `_proj.weight` has at least
+/// `LoadTransform::Transpose2D`, so the M8.4-original fast-path
+/// arm never fired in production).
+///
+/// Strictly disjoint from `VRAM_FAST_PATH_COUNT`,
+/// `VRAM_SLOW_PATH_COUNT`, and `VRAM_BF16_FAST_PATH_COUNT`. A
+/// single load increments exactly one of those four.
+static VRAM_BF16_SLOW_PATH_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// **M8.4b** — Returns the number of `Tier::Vram` slow-path loads
+/// that produced a BF16-resident TensorGPU. See
+/// [`VRAM_BF16_SLOW_PATH_COUNT`].
+pub fn vram_bf16_slow_path_count() -> usize {
+    VRAM_BF16_SLOW_PATH_COUNT.load(Ordering::Relaxed)
+}
+
 /// **M7.0** — counters that record which Disk-tier write
 /// sub-path each parameter took during
 /// `load_one_shard_into_with_residency_plan`. The Disk arm
@@ -771,31 +795,71 @@ impl WeightMapper {
 
             match tier {
                 Tier::Vram => {
-                    // Slow path: produce BF16 bits, upload via
-                    // the standard wrapper, drop F32 transient
-                    // before returning to the loop.
+                    // Slow path: F32 transforms have already been
+                    // applied to `values: Vec<f32>` — the BF16
+                    // re-encode + upload happens here.
+                    //
+                    // **M8.4b** — gate between the M6 F32-resident
+                    // path and the M8 BF16-resident path,
+                    // analogous to the fast-path arm above. Every
+                    // Llama-family `_proj.weight` has at least
+                    // `LoadTransform::Transpose2D` registered, so
+                    // until this fix the slow path always took
+                    // the M6 F32 upload regardless of the M8
+                    // flag — that's the gap M8.5 surfaced. With
+                    // this branch, transforms run in F32
+                    // (preserving precision during cascaded ops),
+                    // the result re-encodes to BF16, and the
+                    // BF16 buffer goes to VRAM via
+                    // `bf16_to_vram_no_upcast` for direct
+                    // consumption by `cuda_matmul_bf16_inplace`.
                     let bits: Vec<u16> = values
                         .iter()
                         .map(|&v| (v.to_bits() >> 16) as u16)
                         .collect();
                     drop(values);
-                    let gpu = crate::cuda::bf16_to_f32::bf16_to_f32_resident_in_vram(
-                        &bits,
-                        &current_shape,
-                    )
-                    .ok_or_else(|| {
-                        LoaderError::InvalidFormat(format!(
-                            "BF16→VRAM slow-path upload failed for '{}'",
-                            entry.name
-                        ))
-                    })?;
+
+                    let m8_bf16_kernel = std::env::var("ATENIA_M8_BF16_KERNEL")
+                        .as_deref()
+                        == Ok("1");
+
+                    let gpu = if m8_bf16_kernel {
+                        crate::cuda::bf16_to_f32::bf16_to_vram_no_upcast(
+                            &bits,
+                            &current_shape,
+                        )
+                        .ok_or_else(|| {
+                            LoaderError::InvalidFormat(format!(
+                                "BF16-resident VRAM slow-path upload failed for '{}' \
+                                 (M8.4b path)",
+                                entry.name
+                            ))
+                        })?
+                    } else {
+                        crate::cuda::bf16_to_f32::bf16_to_f32_resident_in_vram(
+                            &bits,
+                            &current_shape,
+                        )
+                        .ok_or_else(|| {
+                            LoaderError::InvalidFormat(format!(
+                                "BF16→VRAM slow-path upload failed for '{}'",
+                                entry.name
+                            ))
+                        })?
+                    };
+
                     store.params.push(SharedParam::Cuda {
                         shape: current_shape.clone(),
                         gpu,
                     });
                     store.names.push(entry.name.to_string());
                     already_inserted.insert(entry.name.to_string());
-                    VRAM_SLOW_PATH_COUNT.fetch_add(1, Ordering::Relaxed);
+
+                    if m8_bf16_kernel {
+                        VRAM_BF16_SLOW_PATH_COUNT.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        VRAM_SLOW_PATH_COUNT.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
                 Tier::Disk => {
                     let cache_dir = crate::tensor::disk_tier::default_cache_dir();
