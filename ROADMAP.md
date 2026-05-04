@@ -8,9 +8,11 @@ This roadmap communicates scope and priority, not calendar commitments. Versions
 
 ## Status overview
 
-Atenia Engine is currently working through APX v20 (Real Model Runtime Integration). Earlier versions (v12 through v19) are complete. The most recently closed sub-milestone is **M7: 13B-friendly tiers (automatic VRAM + RAM + NVMe placement)**. The full M4.7 → M4.8 → M4.9 → M5 → M6 → M7 trajectory is closed: Llama 2 13B Chat runs end-to-end on dev-class commodity hardware (RTX 4070 Laptop, 8 GB VRAM, 32 GB RAM, NVMe spill cache); the matmul dispatcher is 49.5× faster on the production shape; the killer-demo reproduction fits in one CLI command (`atenia run --mode c`) that completes in 6.9 minutes; **`atenia generate` produces a recognisably conversational answer with weights resident at 24.24 GiB** (Arc-shared across prefill and decode graphs); as of M6, the tier-aware loader runs Llama 2 7B Chat 1.46× faster than the CPU baseline with bit-identical output; and as of M7, **`ATENIA_TIER_AWARE_LOADER=1 atenia generate --model models/llama-2-13b-chat` places 38 tensors in VRAM, 126 in RAM and 239 directly on NVMe via the Disk fast-path, with adaptive RAM headroom protecting against the May 2 BSOD scenario** — the 13B smoke ran for 6:22 wall-clock with peak free RAM ≥ 7.36 GiB, no BSOD, no thrashing, and a coherent 5-token reply.
+Atenia Engine is currently working through APX v20 (Real Model Runtime Integration). Earlier versions (v12 through v19) are complete. The most recently closed sub-milestone is **M8: BF16-resident VRAM kernels (1.31× on Llama 2 7B, 1.36× on Llama 2 13B, ADR-004 numerics preserved)**. The full M4.7 → M4.8 → M4.9 → M5 → M6 → M7 → M8 trajectory is closed: Llama 2 13B Chat runs end-to-end on dev-class commodity hardware (RTX 4070 Laptop, 8 GB VRAM, 32 GB RAM, NVMe spill cache); as of M6 the tier-aware loader doubled the speed of the 7B Chat over the CPU baseline; as of M7 the 13B Chat ran the first time on the box without BSOD via automatic Disk overflow; and as of M8 **`ATENIA_M8_BF16_KERNEL=1 ATENIA_TIER_AWARE_LOADER=1 atenia generate --model models/llama-2-13b-chat` places 82 weights as BF16 in VRAM (vs 38 as F32 in M7.3), keeps 197 weights on NVMe (vs 239), and runs the 5-token forward in 27.0 s/tok — 1.36× faster than the M7.3 baseline, with the four production checkpoints (TinyLlama 1.1B, SmolLM2 1.7B, Qwen 2.5 1.5B, Llama 3.2 1B) all passing ADR-004 with margin 21–12,500×**.
 
-**Next active milestone: M8** (performance optimisation of the 13B Disk-tier path: BF16-resident VRAM kernels, decode-on-read amortisation, eventually multi-GPU). M7 closes the tier-aware loader's hardware-adaptive placement; M8 attacks the per-token cost on the Disk-tier path that the M7.3 smoke surfaced (36.6 s/tok dominated by `bf16_to_f32` decode-on-read, not by NVMe I/O). **Optional predecessor: M7.4** (Disk LRU cache + prefetch) is reserved for activation if production deployments need < 10 s/tok on 13B before M8 lands. See [docs/HANDOFF_APX_V20_M7.md](./docs/HANDOFF_APX_V20_M7.md) for the closing notes.
+**Next active milestone: M8.7** (Disk → GPU JIT pipeline). M8.0b's pipeline async bench measured 32.7 ms / 135 MiB for the FFN-down shape, projecting the full Llama 2 13B per-token cost to **~5–7 s/tok** under a two-buffer NVMe-read + PCIe-upload + GPU-compute pipeline. M8.4c keeps the BF16 weight resident in VRAM for layers that fit; M8.7 closes the loop by streaming the rest through an async pipeline rather than the current CPU path. **Optional predecessor: M8.6** (BF16 KV cache, D62) is reserved as a 1-day side path that saves 1.6 GiB of RAM in seq_len 2048 on 13B without affecting the M8.7 design.
+
+See [docs/HANDOFF_APX_V20_M8.md](./docs/HANDOFF_APX_V20_M8.md) for the closing notes.
 
 Detailed closing notes per milestone live in the `docs/` directory:
 
@@ -24,6 +26,7 @@ Detailed closing notes per milestone live in the `docs/` directory:
 - [docs/HANDOFF_APX_V20_M5.md](./docs/HANDOFF_APX_V20_M5.md) — tokenizer + KV cache + token-by-token generation (`atenia generate` ships; Llama 2 13B Chat answers conversationally; Arc-shared weights at 24.24 GiB)
 - [docs/HANDOFF_APX_V20_M6.md](./docs/HANDOFF_APX_V20_M6.md) — tier-aware GPU loader (VRAM → RAM → NVMe planner; 1.46× speedup on Llama 2 7B Chat; bit-identical output)
 - [docs/HANDOFF_APX_V20_M7.md](./docs/HANDOFF_APX_V20_M7.md) — 13B-friendly tiers (Disk fast-path + adaptive RAM headroom; Llama 2 13B Chat end-to-end with 239 tensors on NVMe, 7.36 GiB RAM headroom, no BSOD)
+- [docs/HANDOFF_APX_V20_M8.md](./docs/HANDOFF_APX_V20_M8.md) — BF16-resident VRAM kernels (Path B: BF16 storage + F32 upcast per-matmul; 1.31× on Llama 2 7B, 1.36× on Llama 2 13B; ADR-004 4-model F64 validation passes with margin 21–12,500×)
 
 ---
 
@@ -247,21 +250,53 @@ R3 (May 2 BSOD on 13B + GPU residency) and R5 (fixed headroom misroutes 13B) are
 
 ---
 
-## Next active milestone — M8: Performance of the 13B Disk-tier path
+## M8 — BF16-resident VRAM kernels ✅
 
-M7 made 13B execution structurally safe and automatic; M8's goal is to bring its **per-token cost** down. The M7.3 smoke pinned the bottleneck: `disk_busy_pct` was idle most of the time, so the 36.6 s/tok cost is decode-bound (`bf16_to_f32` per layer per step), not I/O-bound.
+Closed at commit `6d343c3` (M8.4c — Path B). Eight sub-phases shipped, gated behind two mandatory benches (M8.0 + M8.0b) and a 4-model F64 numerical contract test (M8.5):
 
-**M8 scope, in priority order:**
+- **M8.0** (`b955669`) — cuBLAS BF16 TC bench. Measured 2.2× speedup over the naive F32 kernel on the 4 Llama 13B decode-step shapes, but only at peak — decode (M=1) is bandwidth-bound, so the headline 5× target was unreachable from the matmul side alone. **PLAN A confirmed conditionally**.
+- **M8.0b** (`f71caf0`) — NVMe → PCIe → GPU async pipeline bench. Measured Config 2 (two-buffer pipeline) at **32.7 ms / 135 MiB** on the FFN-down shape (vs the 200 ms threshold). PLAN A confirmed strongly: the 13B per-token cost is bound by NVMe at ~4.3 GB/s pipelined.
+- **M8.1** (`74f7631`) — `TensorGPU::dtype` field + `bf16_to_vram_no_upcast` primitive. BF16 weight resident in VRAM without F32 conversion at load time.
+- **M8.2** (`956fefc`) — `cuda_matmul_bf16_inplace` (initial wire-up via cublasGemmEx). Single-op drift envelope characterised on the four 13B shapes.
+- **M8.3** (`2e3a920`) — `TierPlan::vram_cost_bytes` parametrised by dtype + `ATENIA_M8_BF16_KERNEL` flag. BF16 weight costs `numel × 2`, F32 weight `numel × 4`.
+- **M8.4** (`e25cd7e`) — End-to-end wire-up (loader gate + dispatcher arm) + shared `BF16_COUNTER_TEST_LOCK` for cross-module test serialisation.
+- **M8.4b** (`a956044`) — Slow-path BF16 fix for weights with `LoadTransform`s. Every Llama-family `_proj.weight` carries at least `Transpose2D`, so the M8.4-original fast-path arm covered nothing in production.
+- **M8.4c** (`6d343c3`) — **Path B**: BF16 weight in VRAM + F32 upcast per-matmul + `cublasGemmEx(F32, F32, F32)`. Closes the M8.5 numerical contract failure (drift 0.18–2.33 in 3/4 models under the M8.4-original BF16 input path) by eliminating the per-matmul activation truncation that was cascading through 16-28 layers. Numerics now match M4.7.2.e (drift ≤ 2.4e-2 across the 4 models, all under ADR-004 threshold 0.5).
 
-- **BF16-resident VRAM kernels**. Today the GPU upload path materialises F32 in VRAM because that is the only kernel ABI. A `__bfloat162float`-inside-the-kernel matmul would halve VRAM cost per weight (`numel × 2` instead of `numel × 4` in `vram_cost_bytes`) and let the planner place ~76 tensors on VRAM in the same 7 GiB usable budget instead of 38.
-- **Decode-on-read amortisation**. The Disk-tier read path today calls `disk_tier::read_bf16_tensor` → `Vec<u16>` → `bf16_to_f32_vec` per layer per step. Folding the upcast into the read (or into the consumer kernel) cuts at least one full-tensor traversal per matmul.
-- **Tier-2 KV cache**. The KV cache today lives in F32 in RAM. A BF16 cache halves RAM cost at decode and frees budget that the planner can give back to weights or activations.
-- **`ensure_cpu` activation-arm coverage** under continuous spill pressure (M4.7.6.e carryover that survived M5–M7). Pair with the BF16-resident work.
-- **Perplexity validation** (D63, deferred from M5.f.b through M7). Useful once the M8 numerics path changes; catches a class of regressions that does not apply at M7 close because the F32 path is unchanged.
+Smokes:
 
-### Optional predecessor — M7.4 (Disk LRU cache + prefetch)
+- **F64 4-model** (M8.5 + M8.5b counter fix): TinyLlama 8.8e-5, SmolLM2 7.31e-4, Qwen 2.5 2.40e-2, Llama 3.2 4.0e-5. All argmax 4/4. Drift 21-12,500× under threshold.
+- **Llama 2 7B Chat**: 6.26 s/tok with M8 active (vs 8.22 s/tok M6 baseline = **1.31×**). 128 weights as BF16 in VRAM (vs 60 as F32 in M6), 0 Disk.
+- **Llama 2 13B Chat**: 27.0 s/tok with M8 active (vs 36.6 s/tok M7.3 baseline = **1.36×**). 82 BF16 VRAM, 124 RAM, 197 Disk (vs M7.3's 38 / 126 / 239). No BSOD, RAM headroom 18.75 GiB respected.
 
-Reserved for activation if production deployments need < 10 s/tok on 13B before M8 lands. Adds an explicit LRU cache layer over `disk_tier::read_bf16_tensor` so the OS page cache budget can be freed for activations. The M7.0 bench (3.6 GB/s NVMe) and the M7.3 smoke (idle disk most of the time) both indicate that the win comes from caching at the loader level, not from I/O optimisation. Close criterion: 13B sustained tok/s ≥ 5× the M7.3 baseline.
+The M8 BF16 path is gated by an adaptive heuristic in `pipeline.rs` (`model_total > 0.7 × free_ram`) so 7B-class models that fit in RAM with headroom keep the M6 F32 path automatically — Path B's per-matmul upcast cost is only worth paying when the doubled VRAM capacity translates to fewer Disk-tier reads.
+
+See [HANDOFF M8](./docs/HANDOFF_APX_V20_M8.md) for the full closing notes.
+
+---
+
+## Next active milestone — M8.7: Disk → GPU JIT pipeline
+
+M8.4c closes the per-matmul numerical contract; M8.7 closes the per-token cost. The 13B's 27.0 s/tok in M8 is dominated by 197 weights still being decoded on the **CPU** when reached — the GPU sits idle through most of those layer steps. M8.0b's pipeline bench showed that an async two-buffer NVMe → PCIe → GPU pipeline can sustain 4.3 GB/s through the same shape. Projection: 197 weights × 605 MiB / 4.3 GB/s = **~28 s of NVMe reads**, but pipelined with GPU compute and PCIe upload, the wallclock collapses to **~5–7 s/tok**.
+
+**M8.7 scope:**
+
+- Producer thread reads safetensors-mmap'd slice for layer N+1.
+- Pinned-host staging + `cudaMemcpyAsync` on a copy stream uploads BF16 weight to a VRAM staging slot (the M8.4c contract preserved — weight stays BF16 in VRAM, upcasted only at matmul time).
+- `cudaEvent` synchronises the upload completion with the compute stream.
+- `cuda_matmul_bf16_inplace` (M8.4c Path B) consumes the staged weight on the compute stream.
+- Two staging slots rotated (slot N computing, slot N+1 streaming, slot N+2 reading from NVMe in the producer thread).
+- Loader-side orchestrator decides per-tensor whether to stream Disk-tier weights through the pipeline vs fall back to the existing CPU `ensure_cpu` path (small tensors keep the CPU path).
+
+Close criterion: **Llama 2 13B Chat ≤ 8 s/tok** (stretch: 5 s/tok). The bench-to-production overhead budget is the gap from the M8.0b 32.7 ms/iter to the actual per-layer cost; if it grows beyond ~3× that, Config 3 (triple buffer) is the M8.7b follow-up.
+
+### Optional predecessor — M8.6 (BF16 KV cache, D62)
+
+Cheap and independent. Migrate `KvCache` from F32 to BF16. Saves 1.6 GiB of RAM in seq_len 2048 on 13B. ADR-004 envelope same as M4.7.2.e BF16 storage. ~1 day of work; can be applied before, alongside, or after M8.7.
+
+### Future option — M9 (INT8 quantisation)
+
+Different attack vector — instead of doubling VRAM capacity by halving per-weight bytes from 4 to 2, halve again to 1. Same plan structure (TierPlan with `kernel_dtype = Int8`, `vram_cost_bytes = numel × 1`). Requires per-tensor calibration (scale / zero-point), which is substantial new infrastructure. Reserved as the milestone after M8.7 unless M8.7's measured performance is unsatisfactory.
 
 ---
 

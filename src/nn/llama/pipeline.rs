@@ -590,10 +590,13 @@ fn log_m8_kernel_dtype(dtype: crate::tensor::DType) {
     if dtype == crate::tensor::DType::BF16 {
         eprintln!(
             "[ATENIA] M8 BF16 kernel active: VRAM budget doubles \
-             (numel×2 vs numel×4). cublasGemmEx with CUDA_R_16BF \
-             inputs + F32 accumulate. Wire-up to dispatcher lands \
-             in M8.4; until then the plan changes but production \
-             dispatch stays on the F32 path."
+             (numel×2 vs numel×4). Loader uploads BF16 weights \
+             via bf16_to_vram_no_upcast (M8.1); dispatcher routes \
+             through cuda_matmul_bf16_inplace which upcasts the \
+             BF16 weight to an F32 transient on-device per-matmul \
+             and runs cublasGemmEx(F32, F32, F32) — Path B (M8.4c) \
+             preserves M4.7.2.e numerics (drift ≤ 2.4e-2 vs F64 \
+             4-model fixture, ADR-004 ≤ 0.5)."
         );
     }
 }

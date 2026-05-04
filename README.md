@@ -165,6 +165,45 @@ Generated: 5 tokens in 183.0s (0.03 tok/s) [max-tokens reached]
 
 Llama 2 13B Chat — 24.24 GiB of BF16 weights — runs end-to-end on a 32 GiB Windows box with a single 8 GiB GPU. The planner placed 239 tensors directly on NVMe; peak free RAM stayed at **7.36 GiB throughout** the 6-minute run (rollback floor was 2 GiB); `disk_busy_pct` hit 100 % only for ~1 s total (rollback threshold > 30 s sustained); no BSOD; the reply is coherent. The May 2 BSOD scenario that forced the M6 replan is now closed by construction. See [HANDOFF M7](./docs/HANDOFF_APX_V20_M7.md) for the full sub-phase ledger (M7.0 NVMe bench → M7.1 Disk fast-path → M7.2 adaptive headroom → M7.3 13B smoke).
 
+### Or: Atenia keeps weights as BF16 in VRAM (M8 ✅)
+
+`ATENIA_M8_BF16_KERNEL=1` flips on the M8 path. Weights live as BF16 in VRAM at half the F32 byte cost (`numel × 2`), doubling the planner's effective capacity. The dispatcher upcasts each weight to a fresh F32 transient on-device per-matmul (Path B) and runs `cublasGemmEx(F32, F32, F32)` — F32 numerics preserved end-to-end, drift matches the M4.7.2.e CPU path. The flag is gated by an adaptive heuristic: it only activates if `model_total > 0.7 × free_ram`, so 7B models that fit in RAM with headroom keep the M6 path automatically.
+
+```powershell
+$env:ATENIA_M8_BF16_KERNEL    = "1"
+$env:ATENIA_TIER_AWARE_LOADER = "1"
+$env:ATENIA_DISK_TIER_DIR     = "D:\atenia-m8-cache"
+
+cargo run --release --bin atenia -- generate `
+    --prompt "Hello, how are you?" `
+    --model F:/Proyectos/artenia_engine/atenia-engine/models/llama-2-13b-chat `
+    --max-tokens 5
+```
+
+```text
+[ATENIA] M8 BF16 kernel active: VRAM budget doubles ...
+[ATENIA] Adaptive headroom: model 24.24 GiB, free RAM 19.28 GiB
+         → RAM headroom 18.75 GiB (8.00 base + 10.75 overflow)
+[ATENIA] Tier-aware loader plan:
+  VRAM: 82 tensors (6.74 GiB)
+  RAM:  124 tensors (0.49 GiB)
+  Disk: 197 tensors (17.01 GiB)
+
+> Hello, how are you?
+
+ Hello! I'
+
+---
+Generated: 5 tokens in 135.0s (0.04 tok/s)
+```
+
+| Path | Llama 2 7B Chat | Llama 2 13B Chat |
+|---|---|---|
+| M6 / M7.3 baseline | 8.22 s/tok | 36.6 s/tok |
+| **M8 (BF16 in VRAM)** | **6.26 s/tok (1.31×)** | **27.0 s/tok (1.36×)** |
+
+The 4-model F64 validation under M8 (TinyLlama 1.1B, SmolLM2 1.7B, Qwen 2.5 1.5B, Llama 3.2 1B) passes ADR-004 with **drift 21–12,500× under threshold** — same numerical envelope as the M4.7.2.e CPU BF16 storage path. Path B was the architectural correction after the M8.4-original "BF16 input × BF16 weight × F32 accumulate" path cascaded BF16 activation truncation through 16-28 layers and broke ADR-004 by 2-5×; Path B keeps the activation as F32 throughout, upcasts the BF16 weight at matmul time, and runs an F32 GEMM that matches M4.7.2.e bit-for-bit modulo cuBLAS internal rounding (1.64e-7 single-op drift). See [HANDOFF M8](./docs/HANDOFF_APX_V20_M8.md) for the full sub-phase ledger and the M8.5 4-model F64 numbers.
+
 ---
 
 ## 🎯 Vision
@@ -218,7 +257,9 @@ Atenia Engine is implemented in Rust. The project follows an APX (Adaptive Execu
 
 Real, executable, deterministic:
 
-**Real LLM inference (APX v20 M4.5–M7)**
+**Real LLM inference (APX v20 M4.5–M8)**
+
+- **🧮 Atenia keeps weights as BF16 in VRAM. (M8 ✅)** `ATENIA_M8_BF16_KERNEL=1` doubles the planner's effective VRAM capacity by storing weights at `numel × 2` bytes instead of `numel × 4`, and upcasts each weight to a fresh F32 transient on-device per-matmul (Path B) before running `cublasGemmEx(F32, F32, F32)`. Llama 2 7B Chat: **6.26 s/tok (1.31× over M6 baseline)** with 128 weights as BF16 in VRAM (vs 60 as F32 in M6), 0 Disk. Llama 2 13B Chat: **27.0 s/tok (1.36× over M7.3 baseline)** with 82 BF16 VRAM, 124 RAM, 197 Disk (vs M7.3's 38 / 126 / 239). The 4-model F64 validation passes ADR-004 with **margin 21–12,500×**: TinyLlama 8.8e-5, SmolLM2 7.31e-4, Qwen 2.5 2.40e-2, Llama 3.2 4.0e-5 — drift envelope identical to the M4.7.2.e CPU BF16 storage path. The M8 flag is gated by an adaptive heuristic (`model_total > 0.7 × free_ram`), so 7B-class models that fit in RAM with headroom keep the M6 path automatically. Eight sub-phases shipped (M8.0 cuBLAS BF16 TC bench → M8.0b NVMe pipeline bench → M8.1 BF16 VRAM primitive → M8.2 cublasGemmEx wire-up → M8.3 dtype-aware planner → M8.4 end-to-end → M8.4b transforms-arm fix → M8.4c Path B numerical correction). See [HANDOFF M8](./docs/HANDOFF_APX_V20_M8.md).
 
 - **🧱 Atenia runs Llama 2 13B Chat on a 32 GiB box. (M7 ✅)** `ATENIA_TIER_AWARE_LOADER=1` plus `ATENIA_DISK_TIER_DIR=D:\atenia-m7-cache` lets the planner overflow ~20 GiB of BF16 weights directly to NVMe via the M7.1 fast-path (raw bytes, no F32 transient), keep 6.7 GiB on VRAM and 0.75 GiB on RAM, and produce a coherent 5-token reply in 6:22 wall-clock. Peak free RAM stayed at **7.36 GiB throughout** the run; `disk_busy_pct` only saturated for 1 s total; no BSOD. The May 2 BSOD scenario that forced the M6 architectural replan is now closed by construction: M7.2's adaptive RAM headroom inflates from the M6 base of 8 GiB up to whatever the model demands (`headroom = 8 GiB + max(0, model_total − 0.7 × free_ram)`), so 13B-class models on 32 GiB boxes route the right number of tensors to NVMe instead of saturating RAM. Four sub-phases shipped each as one commit gated behind 43-test regression: M7.0 (NVMe bench, 3.6 GB/s sustained), M7.1 (Disk fast-path with `disk_fast_path_count` counters), M7.2 (adaptive headroom + 5 unit tests), M7.3 (the integration smoke). See [HANDOFF M7](./docs/HANDOFF_APX_V20_M7.md).
 
