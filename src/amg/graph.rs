@@ -3097,6 +3097,64 @@ impl Graph {
                     .expect("MatMul missing input B")
                     .clone();
 
+                // M8.7.0 — Disk → GPU JIT pipeline (single-tensor MVP).
+                //
+                // When `ATENIA_M8_7_ENABLED=1` and operand B lives on
+                // Disk as BF16, stream the weight directly into a
+                // VRAM staging slot and dispatch through the M8.4c
+                // BF16 path instead of materialising it to host F32
+                // via `ensure_decoded`. The staging budget is
+                // reserved by `tier_plan::DISK_PIPELINE_STAGING_BYTES`
+                // (M8.7 prereq).
+                //
+                // Inference-only (`record_tape == false`) — backward
+                // requires the host F32 weight on the tape and is
+                // out of scope for the M8.7.0 MVP.
+                //
+                // On any precondition miss or dispatch failure we
+                // fall through to the legacy `ensure_decoded` + AVX2
+                // path with no observable side effect.
+                if !record_tape
+                    && std::env::var("ATENIA_M8_7_ENABLED")
+                        .map(|v| v == "1")
+                        .unwrap_or(false)
+                {
+                    let b_is_disk_bf16 = matches!(
+                        &b.storage,
+                        TensorStorage::Disk(h)
+                            if h.dtype() == crate::tensor::disk_tier::DiskDtype::BF16
+                    );
+                    if b_is_disk_bf16 && a.shape.len() == 2 && b.shape.len() == 2 {
+                        let m_jit = a.shape[0];
+                        let k_jit = a.shape[1];
+                        if b.shape[0] == k_jit {
+                            let n_jit = b.shape[1];
+                            // Decode A only (Disk B stays untouched
+                            // so the streaming path can read it).
+                            let mut a_decoded = a.clone();
+                            if a_decoded.ensure_decoded().is_ok()
+                                && a_decoded.dtype == crate::tensor::DType::F32
+                                && a_decoded.device == crate::tensor::Device::CPU
+                            {
+                                let mut staged_out = Tensor::with_layout(
+                                    vec![m_jit, n_jit],
+                                    0.0,
+                                    crate::tensor::Device::CPU,
+                                    Layout::Contiguous,
+                                    crate::tensor::DType::F32,
+                                );
+                                if crate::cuda::matmul::cuda_matmul_disk_streamed_bf16(
+                                    &a_decoded, &b, &mut staged_out, m_jit, k_jit, n_jit,
+                                ) {
+                                    self.nodes[node_id].set_output(staged_out);
+                                    return;
+                                }
+                                // Fall through on dispatch failure.
+                            }
+                        }
+                    }
+                }
+
                 // M4.7.2.c + M4.7.3.a: decode-on-access that preserves
                 // GPU residency. `ensure_decoded` materialises BF16 →
                 // F32 and Disk → F32 on the clone, but leaves Cuda

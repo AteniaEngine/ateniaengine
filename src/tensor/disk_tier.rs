@@ -537,6 +537,51 @@ pub fn read_bf16_tensor(handle: &DiskTensorHandle) -> io::Result<Vec<u16>> {
     Ok(out)
 }
 
+/// **M8.7.0** — zero-host-allocation streaming reader of a BF16
+/// disk tensor into a caller-supplied byte buffer.
+///
+/// Mirrors [`read_bf16_tensor`] but skips the owned `Vec<u16>`
+/// allocation. Used by the Disk → GPU JIT pipeline
+/// (`cuda_matmul_disk_streamed_bf16`) where the destination is a
+/// VRAM staging slot and the host buffer is a per-call transient
+/// recycled across matmuls; allocating a fresh `Vec<u16>` for
+/// every matmul (one per Disk-tier weight on the 13B forward —
+/// 197 calls per token) would defeat the M4.7.4.b bounded-peak
+/// streaming property the rest of `disk_tier` is built around.
+///
+/// # Contract
+///
+/// - `handle.dtype() == DiskDtype::BF16` (otherwise `InvalidData`).
+/// - `out_bytes.len() == handle.numel() * 2`.
+/// - On success the entire buffer is filled in 4 MiB chunks via
+///   the same [`stream_read_exact_into_bytes`] path used by
+///   [`read_bf16_tensor`] / [`read_f32_tensor`].
+///
+/// On any I/O / size error the buffer contents are unspecified
+/// (the caller should treat the dispatch as failed and fall back).
+pub fn read_bf16_raw_bytes(
+    handle: &DiskTensorHandle,
+    out_bytes: &mut [u8],
+) -> io::Result<()> {
+    if handle.dtype() != DiskDtype::BF16 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "read_bf16_raw_bytes called on {:?} handle; \
+                 only BF16 disk tensors are supported on this path",
+                handle.dtype()
+            ),
+        ));
+    }
+    let expected_bytes = handle.numel().checked_mul(2).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "disk tensor numel * 2 overflows usize",
+        )
+    })?;
+    stream_read_exact_into_bytes(handle.path(), expected_bytes, out_bytes)
+}
+
 /// Remove orphan `tensor_*.bin` files from `cache_dir` that are
 /// older than `max_age_minutes`. Returns the count removed.
 ///

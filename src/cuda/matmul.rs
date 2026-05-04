@@ -757,6 +757,122 @@ pub fn cuda_matmul_bf16_inplace(
     true
 }
 
+// ===========================================================================
+// M8.7.0 — Disk → GPU JIT pipeline (single-tensor MVP)
+// ===========================================================================
+
+/// **M8.7.0** — counter for successful Disk → GPU BF16 matmul calls.
+/// Disjoint from [`VRAM_BF16_MATMUL_COUNT`] (M8.2 — for weights that
+/// are already resident in VRAM): every call to
+/// [`cuda_matmul_disk_streamed_bf16`] increments this counter on
+/// success and never advances `VRAM_BF16_MATMUL_COUNT`. The two
+/// counters together let the M8.7 smoke prove the Disk-streamed
+/// path actually fired without re-counting M8 resident matmuls.
+static DISK_STREAMED_MATMUL_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+pub fn disk_streamed_matmul_count() -> usize {
+    DISK_STREAMED_MATMUL_COUNT.load(Ordering::Relaxed)
+}
+
+/// **M8.7.0 MVP** — stream a BF16 weight from NVMe into a transient
+/// VRAM staging slot, run the M8.4c Path B matmul, free the slot.
+///
+/// Single-thread, single-staging-slot, no async pipeline. Reuses
+/// the M8.4c BF16-resident kernel ([`cuda_matmul_bf16_inplace`]) by
+/// presenting the staged Disk weight as a fresh `Tensor::from_cuda_gpu`.
+/// The transient `TensorGPU`'s `Drop` releases VRAM at scope end so
+/// no manual free is required and the staging budget reserved by
+/// the M8.7 prereq planner change is honoured.
+///
+/// Shape contract — row-major: `out[m, n] = a[m, k] · b[k, n]`.
+///
+/// # Operand storage
+///
+/// - `a`: F32 host (`TensorStorage::Cpu` / `CpuShared`). Same as
+///   [`cuda_matmul_bf16_inplace`].
+/// - `b`: BF16 on disk (`TensorStorage::Disk` with
+///   `handle.dtype() == DiskDtype::BF16`). Shape must match
+///   `[k, n]`.
+/// - `out`: F32 host. Same as [`cuda_matmul_bf16_inplace`].
+///
+/// # Failure modes
+///
+/// Returns `false` (and increments **no** counter) on any of:
+///
+/// - `b.storage` is not `Disk(handle)` or the handle dtype is not
+///   BF16.
+/// - `handle.numel() != k * n` (shape mismatch).
+/// - NVMe read fails ([`crate::tensor::disk_tier::read_bf16_raw_bytes`]
+///   surfaces the I/O error).
+/// - VRAM staging upload fails
+///   ([`crate::cuda::bf16_to_f32::bf16_to_vram_no_upcast_from_raw_bytes`]
+///   returns `None`).
+/// - The downstream [`cuda_matmul_bf16_inplace`] dispatch fails.
+///
+/// On any failure the caller MUST fall back to the legacy
+/// `ensure_decoded` + AVX2 path. The transient host bytes and
+/// staging VRAM buffer are freed by `Vec::Drop` and `TensorGPU::Drop`
+/// respectively; nothing leaks.
+pub fn cuda_matmul_disk_streamed_bf16(
+    a: &Tensor,
+    b: &Tensor,
+    out: &mut Tensor,
+    m: usize,
+    k: usize,
+    n: usize,
+) -> bool {
+    use crate::tensor::disk_tier;
+
+    // 1. Validate b is a BF16 disk handle and shape matches.
+    let handle = match &b.storage {
+        TensorStorage::Disk(h) if h.dtype() == disk_tier::DiskDtype::BF16 => h,
+        _ => return false,
+    };
+    if handle.numel() != k.saturating_mul(n) {
+        return false;
+    }
+
+    // 2. Stream BF16 raw bytes from NVMe into a per-call host buffer.
+    //    Bounded peak: one tensor's worth at a time
+    //    (handle.numel() * 2 bytes — capped by the largest weight in
+    //    the model, e.g. 13B FFN-down ≈ 135 MiB).
+    let mut raw_bytes = vec![0u8; handle.numel() * 2];
+    if disk_tier::read_bf16_raw_bytes(handle, &mut raw_bytes).is_err() {
+        return false;
+    }
+
+    // 3. Upload to a transient BF16 staging slot in VRAM. The M8.7
+    //    prereq planner change (`DISK_PIPELINE_STAGING_BYTES`) has
+    //    already reserved 270 MiB of VRAM headroom for exactly this
+    //    allocation, so it should not race the resident plan.
+    let staging_gpu =
+        match crate::cuda::bf16_to_f32::bf16_to_vram_no_upcast_from_raw_bytes(
+            &raw_bytes,
+            handle.numel(),
+            &[k, n],
+        ) {
+            Some(g) => g,
+            None => return false,
+        };
+
+    // 4. Wrap as a transient `Tensor` and dispatch through M8.4c
+    //    Path B (BF16 weight in VRAM + F32 transient upcast +
+    //    cublasGemmEx F32). The `Tensor::from_cuda_gpu` outer dtype
+    //    is F32 by construction but the dispatch peeks at
+    //    `gpu.dtype() == BF16` (matmul.rs:638) so it routes
+    //    correctly.
+    let b_staged = Tensor::from_cuda_gpu(vec![k, n], staging_gpu);
+    if !cuda_matmul_bf16_inplace(a, &b_staged, out, m, k, n) {
+        return false;
+    }
+
+    // 5. Counter increment on successful dispatch only. The
+    //    `b_staged` Tensor (and its inner `TensorGPU`) drops here
+    //    automatically, freeing the staging slot.
+    DISK_STREAMED_MATMUL_COUNT.fetch_add(1, Ordering::Relaxed);
+    true
+}
+
 #[cfg(test)]
 mod cuda_matmul_non_pooled_tests {
     use super::cuda_matmul_non_pooled;
@@ -1182,6 +1298,210 @@ mod cuda_matmul_bf16_tests {
              {} elements diverged out of {}",
             bitwise_mismatches,
             from_on_device.len()
+        );
+    }
+}
+
+// ===========================================================================
+// M8.7.0 — Disk → GPU JIT pipeline tests
+// ===========================================================================
+
+#[cfg(test)]
+mod cuda_matmul_disk_streamed_tests {
+    use super::*;
+    use crate::cuda::bf16_to_f32::BF16_COUNTER_TEST_LOCK;
+    use crate::cuda::cuda_available;
+    use crate::tensor::{disk_tier, Tensor};
+
+    /// Bit pattern of `f32_to_bf16` truncation — round-toward-zero,
+    /// no rounding. Same helper the existing M8.2 tests use.
+    fn f32_to_bf16_bits(f: f32) -> u16 {
+        (f.to_bits() >> 16) as u16
+    }
+
+    /// Deterministic synthetic activation. Magnitude ~0.3 keeps the
+    /// BF16-truncation envelope bounded (matches M8.2 SHAPES suite
+    /// at `cuda_matmul_bf16_tests` above).
+    fn synth_f32(n: usize, seed: u32) -> Vec<f32> {
+        let mut out = Vec::with_capacity(n);
+        let mut s = seed.wrapping_mul(2_654_435_761);
+        for _ in 0..n {
+            s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            // Map u32 → [-0.3, 0.3] uniformly.
+            let f = ((s >> 8) as f32 / (1u32 << 24) as f32) * 0.6 - 0.3;
+            out.push(f);
+        }
+        out
+    }
+
+    fn cpu_matmul_f32(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
+        let mut out = vec![0.0_f32; m * n];
+        for i in 0..m {
+            for j in 0..n {
+                let mut acc = 0.0_f32;
+                for kk in 0..k {
+                    acc += a[i * k + kk] * b[kk * n + j];
+                }
+                out[i * n + j] = acc;
+            }
+        }
+        out
+    }
+
+    /// Cache dir for synthetic disk-tier files. Uses
+    /// `target/m8_7_0_test_cache_<pid>` so parallel cargo runs do
+    /// not collide. `InnerDiskFile::Drop` removes each file when
+    /// the handle is dropped; we additionally `remove_dir_all` at
+    /// the end of the test.
+    fn cache_dir() -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "atenia_m8_7_0_disk_test_{}",
+            std::process::id()
+        ));
+        p
+    }
+
+    /// **M8.7.0** — End-to-end Disk → GPU BF16 matmul test.
+    ///
+    /// Builds a synthetic BF16 weight, writes it to NVMe via
+    /// `disk_tier::write_bf16_tensor`, wraps as `Tensor::from_disk`,
+    /// dispatches `cuda_matmul_disk_streamed_bf16`, and asserts:
+    /// 1. Counter increments by exactly 1.
+    /// 2. Drift vs CPU F32 reference < ADR-004 single-op gate (0.5).
+    /// 3. The dispatch returned `true`.
+    ///
+    /// Mid-size shape `[m=1, k=128, n=64]` matches the M8.4c
+    /// dispatcher integration test so the comparison "M8.4c
+    /// resident vs M8.7.0 streamed" is direct.
+    #[test]
+    #[ignore = "requires CUDA driver; run with `cargo test --lib m8_7_0 -- --ignored`"]
+    fn m8_7_0_disk_streamed_bf16_matches_cpu_within_adr_004_gate() {
+        if !cuda_available() {
+            eprintln!("CUDA not available, skipping");
+            return;
+        }
+        let _guard = BF16_COUNTER_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+
+        let (m, k, n) = (1_usize, 128_usize, 64_usize);
+        let a_host = synth_f32(m * k, 7);
+        let b_host = synth_f32(k * n, 13);
+        let b_bf16: Vec<u16> = b_host.iter().map(|&f| f32_to_bf16_bits(f)).collect();
+
+        // Reference (F32 ground truth — the drift includes weight
+        // BF16 truncation but not activation truncation, matching
+        // M8.4c Path B numerics).
+        let out_ref = cpu_matmul_f32(&a_host, &b_host, m, k, n);
+
+        // Write the BF16 weight to NVMe.
+        let dir = cache_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        let handle = disk_tier::write_bf16_tensor(&dir, &b_bf16)
+            .expect("write_bf16_tensor: synthetic disk write");
+
+        // Wrap the handle as a Tensor (Disk-tier).
+        let a_tensor = Tensor::new_cpu(vec![m, k], a_host.clone());
+        let b_tensor = Tensor::from_disk(vec![k, n], handle.clone());
+        let mut out_tensor = Tensor::new_cpu(vec![m, n], vec![0.0_f32; m * n]);
+
+        let before = disk_streamed_matmul_count();
+
+        // Dispatch under test.
+        let ok = cuda_matmul_disk_streamed_bf16(
+            &a_tensor, &b_tensor, &mut out_tensor, m, k, n,
+        );
+        assert!(
+            ok,
+            "cuda_matmul_disk_streamed_bf16 returned false on a known-good triple"
+        );
+
+        let after = disk_streamed_matmul_count();
+        assert_eq!(
+            after - before, 1,
+            "DISK_STREAMED_MATMUL_COUNT must advance by exactly 1 per dispatch"
+        );
+
+        // Drift vs F32 reference. M8.4c single-op envelope on this
+        // shape is well below the ADR-004 0.5 gate (the M8.4c test
+        // uses 1e-2 for the same shape and passes with ~3e-3).
+        let out_slice = out_tensor.as_cpu_slice();
+        let mut max_abs = 0.0_f32;
+        for (g, r) in out_slice.iter().zip(out_ref.iter()) {
+            let d = (g - r).abs();
+            if d > max_abs {
+                max_abs = d;
+            }
+        }
+        eprintln!(
+            "[M8.7.0] m={} k={} n={}  max|Δ|={:.4e}  gate=0.5 (ADR-004)",
+            m, k, n, max_abs
+        );
+        assert!(
+            max_abs < 0.5,
+            "M8.7.0 disk-streamed matmul drift {:.4e} exceeds ADR-004 gate 0.5",
+            max_abs
+        );
+
+        // Best-effort cleanup. The DiskTensorHandle drop already
+        // removes the file; we drop the cache dir if empty.
+        drop(b_tensor);
+        drop(handle);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    /// **M8.7.0 regression-zero** — F32 matmul path must not
+    /// advance the disk-streamed counter. Ensures the counter is
+    /// only touched by [`cuda_matmul_disk_streamed_bf16`].
+    #[test]
+    fn m8_7_0_f32_path_does_not_advance_disk_streamed_counter() {
+        if !cuda_available() {
+            eprintln!("CUDA not available, skipping");
+            return;
+        }
+        let _guard = BF16_COUNTER_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+
+        let before = disk_streamed_matmul_count();
+        let a = vec![1.0_f32; 4 * 8];
+        let b = vec![1.0_f32; 8 * 4];
+        let _ = super::cuda_matmul_non_pooled(&a, &b, 4, 8, 4)
+            .expect("F32 reference matmul on a CUDA host");
+        let after = disk_streamed_matmul_count();
+        assert_eq!(
+            after, before,
+            "F32 matmul path must not advance the disk-streamed counter"
+        );
+    }
+
+    /// **M8.7.0** — non-Disk operand precondition. Calling the
+    /// dispatch with a CPU tensor for `b` must return `false` and
+    /// not increment the counter.
+    #[test]
+    fn m8_7_0_non_disk_operand_returns_false() {
+        if !cuda_available() {
+            eprintln!("CUDA not available, skipping");
+            return;
+        }
+        let _guard = BF16_COUNTER_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+
+        let (m, k, n) = (1_usize, 8_usize, 4_usize);
+        let a = Tensor::new_cpu(vec![m, k], vec![1.0_f32; m * k]);
+        let b = Tensor::new_cpu(vec![k, n], vec![1.0_f32; k * n]);
+        let mut out = Tensor::new_cpu(vec![m, n], vec![0.0_f32; m * n]);
+
+        let before = disk_streamed_matmul_count();
+        let ok = cuda_matmul_disk_streamed_bf16(&a, &b, &mut out, m, k, n);
+        let after = disk_streamed_matmul_count();
+
+        assert!(!ok, "dispatch must reject non-Disk operand");
+        assert_eq!(
+            after, before,
+            "counter must not advance on precondition failure"
         );
     }
 }
