@@ -233,6 +233,24 @@ impl TierPlan {
 }
 
 const VRAM_HEADROOM_BYTES: u64 = 1024 * 1024 * 1024;
+/// **M8.7 prerequisite** — staging buffers reserved at the top of the
+/// VRAM budget when the plan would otherwise put any tensor on Disk.
+///
+/// The Disk → GPU JIT pipeline (M8.7) streams BF16 weights from NVMe
+/// through two pinned-host slots into VRAM staging buffers, then
+/// dispatches `cuda_matmul_bf16_inplace` against each slot. The
+/// upper-bound payload is the 13B `mlp.down_proj.weight`
+/// (`numel = 5120 × 13824 = 70 778 880`, BF16 = 141 557 760 bytes).
+/// Two slots × ~135 MiB ≈ 283 MiB. We allocate 2 × 135 MiB
+/// (`135 × 2²⁰`) exactly so the constant matches the documented
+/// staging budget and lines up with the M8.0b two-buffer bench
+/// (`examples/bench_disk_gpu_pipeline.rs`).
+///
+/// Reserved only when `disk_bytes_assigned > 0` in the dry-run pass —
+/// 7B-class models that fit entirely in VRAM/RAM keep the M8 budget
+/// unchanged, so this constant never penalises the fast-path
+/// configuration.
+pub const DISK_PIPELINE_STAGING_BYTES: u64 = 2 * 135 * 1024 * 1024;
 /// **M7.2** — base RAM headroom. Always reserved regardless of
 /// model size (matches the M6 fixed value). The adaptive rule
 /// below can only *increase* the headroom, never reduce it.
@@ -278,11 +296,42 @@ fn is_gpu_eligible(meta: &TensorMeta) -> bool {
 
 /// Pure function — no I/O, no logging, no allocation beyond the
 /// output `TierPlan`. Suitable for direct unit testing.
+///
+/// **M8.7 prerequisite — two-pass staging reservation**.
+/// The Disk → GPU JIT pipeline (M8.7) needs ~283 MiB of VRAM for two
+/// streaming staging buffers when at least one tensor lands on Disk.
+/// Allocating those buffers without telling the planner would OOM the
+/// device (the M8 baseline already fills VRAM up to a 1 GiB headroom).
+///
+/// Policy:
+/// 1. Dry-run with the M8 budget (`free_vram - VRAM_HEADROOM_BYTES`).
+/// 2. If `disk_bytes_assigned == 0` → return the dry-run plan
+///    unchanged. 7B-class fully-resident configurations are never
+///    penalised.
+/// 3. Otherwise re-plan with `vram_budget -= DISK_PIPELINE_STAGING_BYTES`
+///    so M8.7's staging slots have guaranteed VRAM at load time.
+///
+/// The two-pass cost is a single extra walk of `input.tensors`; the
+/// planner stays a pure function (no I/O, no allocations beyond the
+/// returned `TierPlan`).
 pub fn plan(input: &TierPlanInput) -> TierPlan {
+    let m8_budget = input.free_vram_bytes.saturating_sub(VRAM_HEADROOM_BYTES);
+    let dry_run = plan_inner(input, m8_budget);
+    if dry_run.disk_bytes_assigned == 0 {
+        return dry_run;
+    }
+    let m8_7_budget = m8_budget.saturating_sub(DISK_PIPELINE_STAGING_BYTES);
+    plan_inner(input, m8_7_budget)
+}
+
+/// Internal bin-packer. `vram_budget_bytes` is the post-headroom (and
+/// post-staging-reservation, when applicable) VRAM budget — the
+/// planner will not subtract `VRAM_HEADROOM_BYTES` again.
+fn plan_inner(input: &TierPlanInput, vram_budget_bytes: u64) -> TierPlan {
     let (ram_headroom, overflow) =
         adaptive_ram_headroom(input.model_total_bytes, input.free_ram_bytes);
 
-    let mut vram_remaining = input.free_vram_bytes.saturating_sub(VRAM_HEADROOM_BYTES);
+    let mut vram_remaining = vram_budget_bytes;
     let mut ram_remaining = input.free_ram_bytes.saturating_sub(ram_headroom);
 
     let mut out = TierPlan::default();
@@ -1099,5 +1148,164 @@ mod tests {
         assert_eq!(
             p_f32.ram_headroom_overflow_bytes, p_bf16.ram_headroom_overflow_bytes
         );
+    }
+
+    // ----------------------------------------------------------------
+    // M8.7 prerequisite — Disk pipeline staging reservation.
+    //
+    // When the plan would otherwise put any tensor on Disk, the
+    // planner must reserve `DISK_PIPELINE_STAGING_BYTES` (≈283 MiB)
+    // at the top of the VRAM budget so the M8.7 streaming staging
+    // slots have guaranteed VRAM at load time. Plans that do not
+    // touch Disk (7B-class fully-resident configs) must remain
+    // bit-identical to the M8 baseline — the staging cost is paid
+    // only by configurations that actually need it.
+    // ----------------------------------------------------------------
+
+    /// 16. **Disk plan triggers staging reservation** — 13B on a
+    /// 32 GiB box with adaptive overflow drops 2 _proj weights from
+    /// VRAM (≈270 MiB BF16 freed for two streaming slots) compared
+    /// to the same input run through `plan_inner` without the
+    /// staging reservation.
+    #[test]
+    fn m8_7_prereq_disk_plan_reserves_staging_vram() {
+        let tensors = synth_13b_model();
+        let model_total = sum_model_bytes(&tensors);
+
+        let input = TierPlanInput {
+            tensors,
+            // 8 GiB free VRAM → 7 GiB usable after the M8 headroom,
+            // matching the production 13B-on-this-box configuration.
+            free_vram_bytes: 8 * 1024 * 1024 * 1024,
+            free_ram_bytes: 26 * 1024 * 1024 * 1024,
+            model_total_bytes: model_total,
+            total_ram_bytes: 32 * 1024 * 1024 * 1024,
+            kernel_dtype: DType::BF16,
+        };
+
+        // Reference: M8 baseline budget (no staging reservation).
+        let baseline_budget = input
+            .free_vram_bytes
+            .saturating_sub(VRAM_HEADROOM_BYTES);
+        let p_baseline = plan_inner(&input, baseline_budget);
+
+        // Sanity: the dry-run scenario actually overflows to Disk —
+        // otherwise the staging reservation wouldn't apply.
+        assert!(
+            p_baseline.disk_bytes_assigned > 0,
+            "test precondition: 13B/32GiB must overflow to Disk in baseline"
+        );
+
+        // The public planner should detect Disk overflow and re-plan
+        // with the staging reservation.
+        let p = plan(&input);
+
+        // Disk overflow remains.
+        assert!(p.disk_bytes_assigned > 0);
+
+        // Strong invariant: VRAM count must drop by at least one
+        // tensor relative to the no-staging baseline (the BF16 13B
+        // FFN-down weight is ~135 MiB, so ~283 MiB of reservation
+        // displaces ≥ 1 weight; usually ≥ 2 ≈ 2 × 50 MiB Q/K/V
+        // weights or ≥ 1 FFN weight).
+        assert!(
+            p.vram_count() < p_baseline.vram_count(),
+            "expected staging reservation to displace ≥1 VRAM tensor; \
+             baseline={} vram, with-staging={} vram",
+            p_baseline.vram_count(),
+            p.vram_count()
+        );
+
+        // Strong invariant: the freed VRAM bytes must be ≥
+        // DISK_PIPELINE_STAGING_BYTES − one-tensor-slack. We check
+        // the simpler form: bytes_assigned drops by ≥ 0.5 ×
+        // staging budget (the displaced tensors won't sum exactly
+        // to 283 MiB; greedy bin packing leaves residuals).
+        let half_staging = DISK_PIPELINE_STAGING_BYTES / 2;
+        assert!(
+            p_baseline
+                .vram_bytes_assigned
+                .saturating_sub(p.vram_bytes_assigned)
+                >= half_staging,
+            "expected ≥ {} bytes freed by staging reservation; \
+             baseline={} vram bytes, with-staging={} vram bytes",
+            half_staging,
+            p_baseline.vram_bytes_assigned,
+            p.vram_bytes_assigned
+        );
+
+        // RAM headroom invariant: must be untouched (staging only
+        // touches the VRAM budget, not the RAM headroom rule).
+        assert_eq!(p.ram_headroom_bytes, p_baseline.ram_headroom_bytes);
+        assert_eq!(
+            p.ram_headroom_overflow_bytes,
+            p_baseline.ram_headroom_overflow_bytes
+        );
+
+        // Observability — `cargo test -- --nocapture` prints the
+        // actual placement counts so the M8.7 follow-up can confirm
+        // the staging reservation displaces the expected number of
+        // tensors on the production 13B configuration.
+        let baseline_vram_gib =
+            p_baseline.vram_bytes_assigned as f64 / (1024.0_f64.powi(3));
+        let staged_vram_gib =
+            p.vram_bytes_assigned as f64 / (1024.0_f64.powi(3));
+        eprintln!(
+            "[M8.7-prereq 13B/26GiB-RAM/8GiB-VRAM] \
+             baseline: vram={} ({:.2} GiB)  ram={}  disk={}",
+            p_baseline.vram_count(),
+            baseline_vram_gib,
+            p_baseline.ram_count(),
+            p_baseline.disk_count()
+        );
+        eprintln!(
+            "[M8.7-prereq 13B/26GiB-RAM/8GiB-VRAM] \
+             with-staging: vram={} ({:.2} GiB)  ram={}  disk={}  \
+             staging-reserved={} MiB",
+            p.vram_count(),
+            staged_vram_gib,
+            p.ram_count(),
+            p.disk_count(),
+            DISK_PIPELINE_STAGING_BYTES / (1024 * 1024)
+        );
+    }
+
+    /// 17. **No-Disk plan keeps full VRAM budget** — 7B on a 32 GiB
+    /// box fits entirely in VRAM/RAM with the BF16 kernel; the
+    /// staging reservation must NOT activate. The output of
+    /// `plan(input)` must equal the no-staging dry-run byte for byte.
+    #[test]
+    fn m8_7_prereq_no_disk_plan_keeps_m8_budget() {
+        let tensors = synth_7b_model();
+        let model_total = sum_model_bytes(&tensors);
+
+        let input = TierPlanInput {
+            tensors,
+            free_vram_bytes: 8 * 1024 * 1024 * 1024,
+            free_ram_bytes: 26 * 1024 * 1024 * 1024,
+            model_total_bytes: model_total,
+            total_ram_bytes: 32 * 1024 * 1024 * 1024,
+            kernel_dtype: DType::BF16,
+        };
+
+        let baseline_budget = input
+            .free_vram_bytes
+            .saturating_sub(VRAM_HEADROOM_BYTES);
+        let p_baseline = plan_inner(&input, baseline_budget);
+
+        // Sanity: no Disk overflow on this configuration.
+        assert_eq!(
+            p_baseline.disk_bytes_assigned, 0,
+            "test precondition: 7B/32GiB BF16 must fit fully in VRAM/RAM"
+        );
+
+        // Public planner result must match the no-staging dry run.
+        let p = plan(&input);
+        assert_eq!(p.vram_count(), p_baseline.vram_count());
+        assert_eq!(p.ram_count(), p_baseline.ram_count());
+        assert_eq!(p.disk_count(), 0);
+        assert_eq!(p.vram_bytes_assigned, p_baseline.vram_bytes_assigned);
+        assert_eq!(p.ram_bytes_assigned, p_baseline.ram_bytes_assigned);
+        assert_eq!(p.disk_bytes_assigned, 0);
     }
 }
