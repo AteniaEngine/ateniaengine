@@ -69,7 +69,7 @@ Three modes are available; full CLI reference in [docs/CLI.md](./docs/CLI.md):
 - **CPU**: x86-64 with AVX2 + FMA (Intel since Haswell 2013, AMD since Excavator 2015). ARM/Apple Silicon support is on the v24 roadmap.
 - **RAM**: 32 GB recommended, 28 GB minimum. The CLI warns below 28 GB but does not abort.
 - **Disk for spill cache** (`--cache-dir`): NVMe at ≥ 200 MB/s sustained write. The CLI runs a 100 MB benchmark at startup and warns if the chosen path is below the floor.
-- **GPU**: not required. The 13 B forward currently runs on CPU per the M4.7.6.d / M5+ pool-block ceiling.
+- **GPU**: optional for the killer demo (`atenia run --mode c` runs end-to-end on CPU with the same transparency contract). **Recommended for the M6 / M7 / M8 generation paths** which use NVIDIA CUDA: M6 routes attention/FFN projections to VRAM (1.46× speedup on Llama 2 7B Chat), M7 spills overflow to NVMe, M8 keeps weights as BF16 in VRAM (1.31× on 7B, 1.36× on 13B over their respective baselines). Tested on RTX 4070 Laptop (8 GB VRAM, sm_89) with CUDA 11.8+. AMD ROCm and Apple Metal are on the v23/v24 roadmap.
 - **Disk space**: ~30 GB for the model checkpoint, ~14 GB for the spill cache.
 
 The full empirical baseline lives in [HANDOFF M4.7](./docs/HANDOFF_APX_V20_M4.7.md) (the original beyond-VRAM execution work) and [HANDOFF M4.8](./docs/HANDOFF_APX_V20_M4.8.md) (the 3.5× performance pass that brought the wall-clock from 18.75 min to demoable). The CLI surface is documented in [HANDOFF M4.9](./docs/HANDOFF_APX_V20_M4.9.md).
@@ -138,9 +138,9 @@ The same `ATENIA_TIER_AWARE_LOADER=1` flag, on a 13B-class model, now spills aut
 $env:ATENIA_TIER_AWARE_LOADER = "1"
 $env:ATENIA_DISK_TIER_DIR    = "D:\atenia-m7-cache"
 
-cargo run --release --bin atenia -- generate `
+atenia generate `
     --prompt "Hello, how are you?" `
-    --model D:/Atenia/models/llama-2-13b-chat `
+    --model ./models/llama-2-13b-chat `
     --max-tokens 5
 ```
 
@@ -174,9 +174,9 @@ $env:ATENIA_M8_BF16_KERNEL    = "1"
 $env:ATENIA_TIER_AWARE_LOADER = "1"
 $env:ATENIA_DISK_TIER_DIR     = "D:\atenia-m8-cache"
 
-cargo run --release --bin atenia -- generate `
+atenia generate `
     --prompt "Hello, how are you?" `
-    --model F:/Proyectos/artenia_engine/atenia-engine/models/llama-2-13b-chat `
+    --model ./models/llama-2-13b-chat `
     --max-tokens 5
 ```
 
@@ -311,7 +311,7 @@ Architecture in place, full end-to-end wiring in progress:
 - **Fusion Selector (v6.10/6.11)** — `fused_qkv_us = 0` is a placeholder awaiting paired measurement.
 - **`FragmentationWarning`** — Intentionally not emitted (external proxies would be misleading). Deferred until Atenia exposes its own GPU allocator.
 - **MNIST pipeline** — Conv2D / MaxPool / Dense run end-to-end on synthetic data; real MNIST dataset + trained weights pending.
-- **GPU residency-aware MatMul / BatchMatMul** — shipped as **M4.7.3 ✅**. `cuda_matmul_inplace` / `cuda_batch_matmul` consume `(Cuda, Cuda, Cuda)` triples directly via device pointers; the MatMul and BatchMatMul executor arms allocate VRAM-resident outputs through `Tensor::zeros_new_cuda` when both operands live on VRAM and short-circuit ahead of the kernel-planner target switch. Linear residency stays gated behind the `try_gpu_linear` MiniFlux constraint and is a separate milestone.
+- **GPU residency-aware MatMul / BatchMatMul** — shipped as **M4.7.3 ✅** (residency triples) → **M6 ✅** (mixed-residency dispatch + load-time tier planner) → **M8 ✅** (BF16-resident kernel via Path B: BF16 weight in VRAM + F32 transient upcast + cublasGemmEx F32 GEMM). End-to-end at production: `try_gpu_matmul` recognises `(Cpu, Cuda(BF16), Cpu)` triples under `ATENIA_M8_BF16_KERNEL=1` and routes to `cuda_matmul_bf16_inplace`. Linear residency stays gated behind the `try_gpu_linear` MiniFlux constraint and is a separate milestone.
 
 ### Roadmap (APX v18 → v25)
 
@@ -349,9 +349,11 @@ Architecture in place, full end-to-end wiring in progress:
   - **M4.7.6 ✅** — Llama 2 13B Chat killer demo, five sub-steps. Configuration + builder (.a), F16 decode validation closing Risk #3 (.b), GPU MatMul wired to the Llama hot path with the 64 MiB pool capacity check (.c), first end-to-end forward in Mode A — clean RAM, no spill (.d), and Modes B + C (autonomous LRU spill trigger + forced 50 % LRU spill, transparency contract closed at `argmax = 1, logit = 4.7747` bit-exactly pre/post spill on the same input) (.e).
 - **M4.8 ✅** — Performance optimisation. Six sub-steps: bench harness (.a), default-mode + cfg fixes (.b), SIMD BF16 decode (.c), parallel BatchMatMul + parallel MatMul over rows (.d), `matrixmultiply::sgemm` integration for cache-blocked panels (.e), 13B Mode A re-validation (.f). Cumulative on the production matmul shape `4×5120×13824`: **49.5×** speedup (1954 → 39 ms, 0.34 → 14.35 GFLOPS); on the 13B Mode A forward as a whole: **3.5×** (18.75 min → 5.38 min). F64 4-model drift improved on every M4.6 family model. Vendor-agnostic by design (Intel + AMD AVX2/FMA, NEON for v24, no MKL). See [HANDOFF M4.8](./docs/HANDOFF_APX_V20_M4.8.md).
 - **M4.9 ✅** — Public CLI demo. Single `atenia` binary with `probe`, `run`, and `explain` subcommands. `atenia run --mode c --model <path> --cache-dir <path>` reproduces the killer demo in 6.9 min on the dev box: warmup forward 200 s, 866-tensor LRU spill 19 s, post-spill forward 23 s, transparency contract `[PASS] ✓`. Mode A baseline (no spill) at 5.4 min; Mode B validates the autonomous trigger plumbing in 8 min. Stable JSON schema for scripted reproduction. See [HANDOFF M4.9](./docs/HANDOFF_APX_V20_M4.9.md) and [docs/CLI.md](./docs/CLI.md).
-- **M5+** *(next active milestone)* — Inference UX: tokenizer, KV cache, token-by-token generation. Becomes meaningfully easier post-M4.9 because every model in scope is now numerically validated, the storage / spill / restore / parallel matmul primitives are in place, and the public reproduction surface is locked. The M5+ "13 B GPU acceleration" sub-milestone (non-pooled `cuda_matmul` for tensors > 64 MB + `apx4::gpu_context::gpu_available()` reactivation + `ensure_cpu` activation-arm coverage under continuous pressure) lands inside M5.
-
-> **Forward performance is deferred until after M4.7.** Current release-mode forward times sit between 21 s (Qwen 2.5) and 50 s (SmolLM2) at seq=4 on a 24-thread AVX2 CPU — slower than expected for the GFLOP count, suggesting the matmul dispatcher misses the AVX2 microkernel on some shapes. Optimising before the beyond-VRAM workload runs risks chasing the wrong bottleneck. The principle "make it work, make it right, make it fast" applies in order: M4.5 closed *work*, M4.6 closed *right*, *fast* follows M4.7.
+- **M5 ✅** — Inference UX: tokenizer, KV cache, token-by-token greedy generation. `atenia generate` ships; Llama 2 13B Chat answers conversationally with **24.24 GiB resident** (Arc-shared weights across prefill + decode graphs, vs ~52 GiB naïve). Twelve architectural decisions (D58–D69), R2 graph-level falsifier 3/3, R6 generation contract 4/4, D67 determinism fixture locked. See [HANDOFF M5](./docs/HANDOFF_APX_V20_M5.md).
+- **M6 ✅** — Tier-aware GPU loader. `ATENIA_TIER_AWARE_LOADER=1` routes 60 attention/FFN projection weights of Llama 2 7B Chat directly to the RTX 4070's VRAM at load time; the rest stays in RAM; bit-identical output to the CPU baseline; **1.46× faster** end-to-end (8.22 s/tok vs 12.02 s/tok). Per-tensor placement decided at load time by a pure planner consuming `(metadata, free_ram, free_vram)`. See [HANDOFF M6](./docs/HANDOFF_APX_V20_M6.md).
+- **M7 ✅** — 13B-friendly tiers. Disk fast-path (raw BF16 bytes mmap → NVMe with no F32 transient) + adaptive RAM headroom that inflates when the model dominates RAM. Llama 2 13B Chat ran end-to-end with 38 tensors on VRAM, 126 on RAM, **239 directly on NVMe** for 6:22 wall-clock with peak free RAM ≥ 7.36 GiB and no BSOD. See [HANDOFF M7](./docs/HANDOFF_APX_V20_M7.md).
+- **M8 ✅** — BF16-resident VRAM kernels (Path B). `ATENIA_M8_BF16_KERNEL=1` doubles the planner's VRAM capacity (`numel × 2` vs `numel × 4`) and runs `cublasGemmEx` after upcasting the BF16 weight to a fresh F32 transient on-device per matmul. **1.31× on Llama 2 7B Chat (6.26 s/tok)**, **1.36× on Llama 2 13B Chat (27.0 s/tok)**, F64 4-model validation passes ADR-004 with margin **21–12,500×**. See [HANDOFF M8](./docs/HANDOFF_APX_V20_M8.md).
+- **M8.7** *(next active milestone)* — Disk → GPU JIT pipeline. M8.0b's pipeline async bench measured 32.7 ms / 135 MiB for the FFN-down shape, projecting **~5–7 s/tok for the 13B** under a two-buffer NVMe-read + PCIe-upload + GPU-compute pipeline. Closes the loop on the 197 weights still hitting CPU per-token in M8.
 
 **Later:**
 
@@ -443,6 +445,13 @@ Atenia is designed to sit **below** ML frameworks and **above** raw hardware exe
 - [HANDOFF M4.8](./docs/HANDOFF_APX_V20_M4.8.md) — Performance optimisation (3.5× on 13B Mode A; 49.5× on the production matmul shape; vendor-agnostic AVX2/FMA + matrixmultiply)
 - [HANDOFF M4.9](./docs/HANDOFF_APX_V20_M4.9.md) — Public CLI demo (`atenia run --mode c` reproduces the killer demo in 6.9 min via one command)
 - [HANDOFF M5](./docs/HANDOFF_APX_V20_M5.md) — Tokenizer + KV cache + token-by-token generation (`atenia generate` ships; Llama 2 13B Chat answers conversationally; Arc-shared weights at 24.24 GiB)
+- [HANDOFF M6](./docs/HANDOFF_APX_V20_M6.md) — Tier-aware GPU loader (VRAM → RAM → NVMe planner; 1.46× speedup on Llama 2 7B Chat; bit-identical output)
+- [HANDOFF M7](./docs/HANDOFF_APX_V20_M7.md) — 13B-friendly tiers (Disk fast-path + adaptive RAM headroom; Llama 2 13B Chat end-to-end with 239 tensors on NVMe, 7.36 GiB RAM headroom, no BSOD)
+- [HANDOFF M8](./docs/HANDOFF_APX_V20_M8.md) — BF16-resident VRAM kernels (Path B: BF16 storage + F32 upcast per-matmul; 1.31× on 7B, 1.36× on 13B; ADR-004 4-model F64 validation passes with margin 21–12,500×)
+
+**Models layout**
+
+- [docs/MODELS_LAYOUT.md](./docs/MODELS_LAYOUT.md) — canonical model checkpoint paths (operator-local, git-ignored) + env-var → path mapping for the F64 4-model validation tests
 
 **Architectural Decision Records (ADRs)**
 
