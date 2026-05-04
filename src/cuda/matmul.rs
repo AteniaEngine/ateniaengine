@@ -784,11 +784,12 @@ mod cuda_matmul_non_pooled_tests {
 #[cfg(test)]
 mod cuda_matmul_bf16_tests {
     use super::{cuda_matmul_bf16_inplace, vram_bf16_matmul_count};
-    use crate::cuda::bf16_to_f32::bf16_to_vram_no_upcast;
+    use crate::cuda::bf16_to_f32::{
+        bf16_to_vram_no_upcast, BF16_COUNTER_TEST_LOCK,
+    };
     use crate::cuda::cuda_available;
     use crate::tensor::tensor::f32_to_bf16_bits;
     use crate::tensor::Tensor;
-    use std::sync::Mutex;
 
     /// Hand-rolled F32 reference matmul. Same formula as the M6
     /// non-pooled test; included here so this test module has no
@@ -821,10 +822,15 @@ mod cuda_matmul_bf16_tests {
             .collect()
     }
 
-    /// Serialise the BF16 matmul tests so the global counter
-    /// snapshots are deterministic — same pattern as the M6 /
-    /// M7 counter-aware tests.
-    static M8_2_TEST_LOCK: Mutex<()> = Mutex::new(());
+    // **M8.4 fix** — replaced module-local `M8_2_TEST_LOCK` with
+    // the shared `BF16_COUNTER_TEST_LOCK` from `cuda::bf16_to_f32`.
+    // Both M8.1 (counter-snapshot tests inside that module) and
+    // M8.2 (these matmul tests) increment / observe
+    // `BF16_RESIDENT_COUNT`; before the fix each module had its
+    // own lock, allowing parallel execution to race the global
+    // counter and break "before/after" deltas. Sharing the same
+    // lock across modules eliminates the race by serialising every
+    // BF16-counter-touching test through a single `Mutex<()>`.
 
     /// **M8.2 drift gate** — for K up to 13824 with magnitude-0.3
     /// data, the BF16 truncation envelope on a single matmul is
@@ -916,7 +922,9 @@ mod cuda_matmul_bf16_tests {
             eprintln!("CUDA not available, skipping");
             return;
         }
-        let _guard = M8_2_TEST_LOCK.lock().unwrap();
+        let _guard = BF16_COUNTER_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
 
         let before = vram_bf16_matmul_count();
         for (label, m, k, n) in SHAPES {
@@ -954,7 +962,9 @@ mod cuda_matmul_bf16_tests {
             eprintln!("CUDA not available, skipping");
             return;
         }
-        let _guard = M8_2_TEST_LOCK.lock().unwrap();
+        let _guard = BF16_COUNTER_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
 
         let before = vram_bf16_matmul_count();
         let a = vec![1.0_f32; 4 * 8];

@@ -81,6 +81,19 @@ use super::safetensors_reader::SafetensorsReader;
 /// was allocated for any Vram-tier upload.
 static VRAM_FAST_PATH_COUNT: AtomicUsize = AtomicUsize::new(0);
 static VRAM_SLOW_PATH_COUNT: AtomicUsize = AtomicUsize::new(0);
+/// **M8.4** — counts `Tier::Vram + dtype = BF16 + no-transforms`
+/// loads that took the **BF16-resident** path (no upcast to F32
+/// at load time, the BF16 buffer stays as BF16 in VRAM and is
+/// consumed directly by `cuda_matmul_bf16_inplace` at dispatch
+/// time).
+///
+/// Strictly disjoint from `VRAM_FAST_PATH_COUNT`: a single load
+/// of a BF16 + no-transforms tensor under `Tier::Vram` will
+/// increment exactly one of the two counters, depending on the
+/// `ATENIA_M8_BF16_KERNEL` flag. This makes the M8.4 wire-up
+/// auditable from a smoke log without instrumenting the
+/// dispatcher.
+static VRAM_BF16_FAST_PATH_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 /// Returns the number of `Tier::Vram` uploads that took the
 /// raw-bytes fast path since process start.
@@ -92,6 +105,13 @@ pub fn vram_fast_path_count() -> usize {
 /// transforms / F32-source slow path since process start.
 pub fn vram_slow_path_count() -> usize {
     VRAM_SLOW_PATH_COUNT.load(Ordering::Relaxed)
+}
+
+/// **M8.4** — Returns the number of `Tier::Vram` uploads that
+/// took the BF16-resident path (M8 kernel enabled) since process
+/// start. See [`VRAM_BF16_FAST_PATH_COUNT`].
+pub fn vram_bf16_fast_path_count() -> usize {
+    VRAM_BF16_FAST_PATH_COUNT.load(Ordering::Relaxed)
 }
 
 /// **M7.0** — counters that record which Disk-tier write
@@ -507,17 +527,46 @@ impl WeightMapper {
                     });
                 }
 
-                let gpu = crate::cuda::bf16_to_f32::bf16_to_f32_resident_in_vram_from_raw_bytes(
-                    entry.raw_bytes,
-                    numel,
-                    entry.shape,
-                )
-                .ok_or_else(|| {
-                    LoaderError::InvalidFormat(format!(
-                        "BF16→VRAM fast-path upload failed for '{}'",
-                        entry.name
-                    ))
-                })?;
+                // **M8.4** — gate between the M6 F32-resident path
+                // and the new M8 BF16-resident path. Default
+                // (env unset or != "1") keeps the M6 contract
+                // bit-identical: BF16 source → F32 in VRAM via
+                // the upcast kernel. Flag on routes through the
+                // M8.1 primitive that keeps BF16 in VRAM and
+                // halves the per-weight footprint, ready for
+                // `cuda_matmul_bf16_inplace` (M8.2) to consume
+                // directly. The two paths increment **disjoint**
+                // counters so the operator can audit which path
+                // ran from the smoke log.
+                let m8_bf16_kernel =
+                    std::env::var("ATENIA_M8_BF16_KERNEL").as_deref() == Ok("1");
+
+                let gpu = if m8_bf16_kernel {
+                    crate::cuda::bf16_to_f32::bf16_to_vram_no_upcast_from_raw_bytes(
+                        entry.raw_bytes,
+                        numel,
+                        entry.shape,
+                    )
+                    .ok_or_else(|| {
+                        LoaderError::InvalidFormat(format!(
+                            "BF16-resident VRAM upload failed for '{}' \
+                             (M8.4 path)",
+                            entry.name
+                        ))
+                    })?
+                } else {
+                    crate::cuda::bf16_to_f32::bf16_to_f32_resident_in_vram_from_raw_bytes(
+                        entry.raw_bytes,
+                        numel,
+                        entry.shape,
+                    )
+                    .ok_or_else(|| {
+                        LoaderError::InvalidFormat(format!(
+                            "BF16→VRAM fast-path upload failed for '{}'",
+                            entry.name
+                        ))
+                    })?
+                };
 
                 store.params.push(SharedParam::Cuda {
                     shape: entry.shape.to_vec(),
@@ -526,7 +575,11 @@ impl WeightMapper {
                 store.names.push(entry.name.to_string());
                 already_inserted.insert(entry.name.to_string());
 
-                VRAM_FAST_PATH_COUNT.fetch_add(1, Ordering::Relaxed);
+                if m8_bf16_kernel {
+                    VRAM_BF16_FAST_PATH_COUNT.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    VRAM_FAST_PATH_COUNT.fetch_add(1, Ordering::Relaxed);
+                }
                 outcome.loaded += 1;
                 satisfied.insert(entry.name.to_string());
                 continue;

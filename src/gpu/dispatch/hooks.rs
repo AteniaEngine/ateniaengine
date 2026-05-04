@@ -13,9 +13,12 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::tensor::{Tensor, TensorStorage};
+use crate::tensor::{DType, Tensor, TensorStorage};
 use crate::cuda::{
-    self, matmul::cuda_matmul, matmul::cuda_matmul_inplace,
+    self,
+    matmul::cuda_matmul,
+    matmul::cuda_matmul_bf16_inplace,
+    matmul::cuda_matmul_inplace,
     matmul::cuda_matmul_non_pooled,
     fused_linear_silu::cuda_fused_linear_silu,
 };
@@ -270,6 +273,64 @@ pub fn try_gpu_matmul(a: &Tensor, b: &Tensor, out: &mut Tensor) -> bool {
         return true;
     }
 
+    // ---- **M8.4** — BF16-resident mixed path: weight on VRAM as
+    // BF16 (uploaded by the M8.1 loader path under
+    // `ATENIA_M8_BF16_KERNEL=1`), activation and output on host
+    // as F32. Routed to `cuda_matmul_bf16_inplace` (M8.2) which
+    // casts the activation to BF16 on host, runs `cublasGemmEx`
+    // with both inputs BF16 and accumulator F32 on Tensor Cores,
+    // then downloads an F32 output.
+    //
+    // This arm intercepts BF16-resident triples **before** the
+    // M6 F32 mixed-residency arm so a BF16 device buffer cannot
+    // be silently passed to the F32 `matmul_f32_launch_device`
+    // kernel (which would read garbage). The arm is conditional
+    // on `gpu.dtype() == BF16` — F32-resident triples fall
+    // through to the M6 path unchanged.
+    let bf16_mixed_resident = matches!(
+        (&a.storage, &b.storage, &out.storage),
+        (
+            TensorStorage::Cpu(_),
+            TensorStorage::Cuda(_),
+            TensorStorage::Cpu(_),
+        )
+    ) && {
+        if let TensorStorage::Cuda(gpu_b) = &b.storage {
+            gpu_b.dtype() == DType::BF16
+        } else {
+            false
+        }
+    };
+    if bf16_mixed_resident {
+        #[cfg(feature = "gpu-trace")]
+        eprintln!(
+            "[GPU-TRACE] try_gpu_matmul: BRANCH=bf16_mixed_resident \
+             (a=Cpu, b=Cuda(BF16), out=Cpu)"
+        );
+        let ok = cuda_matmul_bf16_inplace(a, b, out, m, k, n);
+        if ok {
+            // The BF16 path increments its own counter
+            // (`vram_bf16_matmul_count`) inside
+            // `cuda_matmul_bf16_inplace`. We still bump
+            // `GPU_MATMUL_RESIDENT_COUNT` so existing
+            // dashboards / tests that aggregate the residency
+            // counter see the BF16 calls too.
+            GPU_MATMUL_RESIDENT_COUNT.fetch_add(1, Ordering::Relaxed);
+            #[cfg(feature = "gpu-trace")]
+            eprintln!("[GPU-TRACE] try_gpu_matmul: EXIT=true (bf16_mixed_resident)");
+            return true;
+        }
+        // Fall-through path: if `cuda_matmul_bf16_inplace`
+        // returned false (precondition or cuBLAS failure), do
+        // **not** fall back to the F32 arms — they would
+        // misinterpret the BF16 device buffer. Surface the
+        // failure as a dispatch miss; the caller's CPU path
+        // takes over via the normal `false`-return contract.
+        #[cfg(feature = "gpu-trace")]
+        eprintln!("[GPU-TRACE] try_gpu_matmul: EXIT=false (bf16_mixed_resident inner failure)");
+        return false;
+    }
+
     // ---- M6 step 4d — mixed-residency path: weight resident on
     // VRAM, activation on host. Triggered after a successful
     // `WeightStore::upload_layer_bf16_to_vram` (M6 step 4b) made
@@ -283,6 +344,16 @@ pub fn try_gpu_matmul(a: &Tensor, b: &Tensor, out: &mut Tensor) -> bool {
     // (~20 KB for `[1, 5120]`).
     //
     // This is the throughput unlock the M6 wire-up is built for.
+    //
+    // **M8.4 defensive guard**: this arm only fires when
+    // `b.storage = Cuda(F32)` — the BF16 case was already
+    // handled above. Without this guard, a future BF16-leaking
+    // upload path would silently route to `cuda_matmul_inplace`
+    // (M6's F32 kernel) which reads the device buffer as F32,
+    // garbling outputs. The check is `gpu.dtype() == F32`; the
+    // M6 production path always satisfies this because
+    // `bf16_to_f32_resident_in_vram_from_raw_bytes` produces
+    // F32-resident TensorGPUs.
     let mixed_resident_b = matches!(
         (&a.storage, &b.storage, &out.storage),
         (
@@ -290,7 +361,13 @@ pub fn try_gpu_matmul(a: &Tensor, b: &Tensor, out: &mut Tensor) -> bool {
             TensorStorage::Cuda(_),
             TensorStorage::Cpu(_),
         )
-    );
+    ) && {
+        if let TensorStorage::Cuda(gpu_b) = &b.storage {
+            gpu_b.dtype() == DType::F32
+        } else {
+            false
+        }
+    };
     if mixed_resident_b {
         #[cfg(feature = "gpu-trace")]
         eprintln!(

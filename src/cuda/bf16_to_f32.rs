@@ -50,6 +50,25 @@ pub fn cuda_bf16_resident_count() -> usize {
     BF16_RESIDENT_COUNT.load(Ordering::Relaxed)
 }
 
+/// **M8.4 — shared test lock** for any test that snapshots
+/// [`BF16_RESIDENT_COUNT`] (or counters mutated alongside it,
+/// like `vram_bf16_matmul_count`) to assert a delta.
+///
+/// Without this lock, the cargo default thread pool runs lib
+/// tests in parallel; tests in different modules
+/// (`cuda::bf16_to_f32::tests`, `cuda::matmul::cuda_matmul_bf16_tests`)
+/// race on the same global counter and "before/after" snapshots
+/// observe each other's increments → flaky asserts.
+///
+/// Convention: every test that calls `cuda_bf16_resident_count`
+/// or any function that increments `BF16_RESIDENT_COUNT`
+/// (`bf16_to_vram_no_upcast`, `bf16_to_vram_no_upcast_from_raw_bytes`)
+/// AND asserts on the delta MUST acquire this lock first.
+/// `pub(crate)` so the matmul module's BF16 tests can share it.
+#[cfg(test)]
+pub(crate) static BF16_COUNTER_TEST_LOCK: std::sync::Mutex<()> =
+    std::sync::Mutex::new(());
+
 // FFI symbols needed by this module. `bf16_to_f32_launch_device`
 // lives in the `bf16_to_f32` static library produced by
 // `build.rs`. `cudaMemcpy` lives in `cudart`. `cuda_malloc` /
@@ -497,7 +516,10 @@ pub fn bf16_to_vram_no_upcast_from_raw_bytes(
 
 #[cfg(test)]
 mod tests {
-    use super::{bf16_to_f32_on_device, bf16_to_vram_no_upcast, cuda_bf16_resident_count};
+    use super::{
+        bf16_to_f32_on_device, bf16_to_vram_no_upcast, cuda_bf16_resident_count,
+        BF16_COUNTER_TEST_LOCK,
+    };
     use crate::cuda::cuda_available;
     use crate::gpu::tensor::TensorGPU;
     use crate::tensor::DType;
@@ -570,6 +592,9 @@ mod tests {
     /// Skips on hosts without a CUDA driver.
     #[test]
     fn bf16_to_vram_no_upcast_round_trip_bit_exact() {
+        let _guard = BF16_COUNTER_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         if !cuda_available() {
             eprintln!("CUDA not available, skipping");
             return;
@@ -653,6 +678,9 @@ mod tests {
     /// no M3-M7 caller can have been silently re-routed.
     #[test]
     fn f32_resident_path_does_not_increment_bf16_counter() {
+        let _guard = BF16_COUNTER_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         if !cuda_available() {
             eprintln!("CUDA not available, skipping");
             return;
