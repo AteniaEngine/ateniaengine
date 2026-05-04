@@ -78,7 +78,9 @@ use atenia_engine::nn::llama::{
 };
 use atenia_engine::tensor::{DType, Tensor};
 use atenia_engine::v17::loader::safetensors_reader::SafetensorsReader;
-use atenia_engine::v17::loader::weight_mapper::vram_bf16_fast_path_count;
+use atenia_engine::v17::loader::weight_mapper::{
+    vram_bf16_fast_path_count, vram_bf16_slow_path_count,
+};
 
 const TOKENS: [f32; 4] = [1.0, 100.0, 200.0, 300.0];
 const ADR_004_THRESHOLD: f64 = 0.5;
@@ -152,8 +154,13 @@ fn sum_model_bytes(metas: &[TensorMeta]) -> u64 {
 
 /// Count the planner's `_proj.weight + rank ≥ 2` tensors — these
 /// are the GPU-eligible weights that the M8 path should upload as
-/// BF16-resident. Used as the lower bound for the
-/// `vram_bf16_fast_path_count` delta after a load.
+/// BF16-resident. Used as the lower bound for the **combined**
+/// `vram_bf16_fast_path_count + vram_bf16_slow_path_count` delta
+/// after a load. Llama-family proj weights register transforms
+/// (Transpose2D, TileGroupedDim, Scale) so they take the slow
+/// path; a synthetic transforms-free benchmark would take the
+/// fast path. Either is correct end-to-end — the contract is the
+/// **sum** of both BF16 counters covering every proj weight.
 fn count_proj_weights(metas: &[TensorMeta]) -> usize {
     metas
         .iter()
@@ -266,8 +273,17 @@ fn run_one_model_m8(
         proj_weight_count
     );
 
-    // Snapshot the BF16 counters for the post-load delta check.
-    let bf16_load_before = vram_bf16_fast_path_count();
+    // Snapshot **both** BF16 loader counters for the post-load
+    // delta check. M8.4-original only had the fast-path counter,
+    // but M8.4b added the slow-path counter for tensors with
+    // transforms — every Llama-family `_proj.weight` has at
+    // least `LoadTransform::Transpose2D`, so production loads
+    // exclusively bump the slow counter. The contract is the
+    // **sum** ≥ proj_weight_count; a synthetic transforms-free
+    // run would bump only fast, a real Llama run only slow,
+    // and both are correct.
+    let bf16_fast_before = vram_bf16_fast_path_count();
+    let bf16_slow_before = vram_bf16_slow_path_count();
 
     let (store, report) = mapper
         .load_into_with_residency_plan(
@@ -287,12 +303,13 @@ fn run_one_model_m8(
     assert_eq!(report.loaded, expected_param_count);
     assert!(report.missing.is_empty());
 
-    let bf16_load_after = vram_bf16_fast_path_count();
-    let bf16_load_delta = bf16_load_after - bf16_load_before;
+    let bf16_fast_delta = vram_bf16_fast_path_count() - bf16_fast_before;
+    let bf16_slow_delta = vram_bf16_slow_path_count() - bf16_slow_before;
+    let bf16_total_delta = bf16_fast_delta + bf16_slow_delta;
     let bf16_resident_count = count_bf16_resident_in_store(&store);
     println!(
-        "BF16 resident: {} in store / {} loader fast-path delta (expected ≥ {})",
-        bf16_resident_count, bf16_load_delta, proj_weight_count
+        "BF16 resident: {} in store / fast={} + slow={} loader deltas (expected ≥ {})",
+        bf16_resident_count, bf16_fast_delta, bf16_slow_delta, proj_weight_count
     );
     assert!(
         bf16_resident_count >= proj_weight_count,
@@ -302,10 +319,12 @@ fn run_one_model_m8(
         proj_weight_count
     );
     assert!(
-        bf16_load_delta >= proj_weight_count,
-        "{}: vram_bf16_fast_path_count delta {} < {} _proj.weight tensors",
+        bf16_total_delta >= proj_weight_count,
+        "{}: BF16 loader total delta (fast {} + slow {}) = {} < {} _proj.weight tensors",
         label,
-        bf16_load_delta,
+        bf16_fast_delta,
+        bf16_slow_delta,
+        bf16_total_delta,
         proj_weight_count
     );
 
