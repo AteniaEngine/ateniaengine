@@ -887,20 +887,23 @@ impl WeightMapper {
 
                     if m9_int8 {
                         // M9.4 — per-group (Q8_0-style) quantisation.
-                        // Group size 32 along the K axis (matching
-                        // llama.cpp's Q8_0 production default). The
-                        // initial M9.4 g=128 attempt produced drifts
-                        // 0.516, 1.44, 2.34, 11.25 across the 4
-                        // production models — better than per-channel
-                        // (1.10, 2.98, 4.27, 8.88) but still over the
-                        // ADR-004 0.5 gate. g=32 reduces the per-block
-                        // outlier influence ~4× further, recovering
-                        // the additional margin Llama-family weights
-                        // need to clear the gate. The CUDA dispatch
-                        // path uses the matching
-                        // `int8_to_bf16_per_group` kernel which is
-                        // independent of `group_size`.
-                        const M9_4_GROUP_SIZE: usize = 32;
+                        // Group size 128 along the K axis. The full
+                        // experiment matrix (per-channel, g=128, g=32)
+                        // is documented in `docs/HANDOFF_APX_V20_M9.md`;
+                        // headline finding: g=128 produced the best
+                        // overall drift envelope (Llama 3.2 0.516,
+                        // TinyLlama 1.44) and aligns with the typical
+                        // Llama-family `head_dim ∈ {64, 128}`. g=32
+                        // produced WORSE drift on 2/4 models (Llama 3.2
+                        // 0.97, TinyLlama 1.81) by cutting across head
+                        // boundaries. Neither satisfies ADR-004 (< 0.5)
+                        // universally — the path is shipped as opt-in
+                        // for operators who accept the
+                        // capacity-vs-drift trade-off. ADR-004-strict
+                        // INT8 requires either FFN-only mixed precision
+                        // (M9.5) or outlier decomposition (LLM.int8 /
+                        // GPTQ / AWQ); both are M10+ territory.
+                        const M9_4_GROUP_SIZE: usize = 128;
                         let (q, scales) =
                             crate::tensor::quantizer::absmax_per_group_symmetric(
                                 &values,
