@@ -79,7 +79,7 @@ use atenia_engine::nn::llama::{
 use atenia_engine::tensor::{DType, Tensor};
 use atenia_engine::v17::loader::safetensors_reader::SafetensorsReader;
 use atenia_engine::v17::loader::weight_mapper::{
-    vram_bf16_fast_path_count, vram_bf16_slow_path_count,
+    vram_bf16_fast_path_count, vram_bf16_slow_path_count, vram_int8_path_count,
 };
 
 const TOKENS: [f32; 4] = [1.0, 100.0, 200.0, 300.0];
@@ -284,6 +284,11 @@ fn run_one_model_m8(
     // and both are correct.
     let bf16_fast_before = vram_bf16_fast_path_count();
     let bf16_slow_before = vram_bf16_slow_path_count();
+    // M9.4 — also snapshot the INT8 routing counter so the same
+    // test can validate either path. Under `ATENIA_M9_INT8=1` the
+    // proj weights flow through `int8_to_bf16_in_vram` and bump
+    // this counter; the BF16 fast/slow counters stay at 0.
+    let int8_before = vram_int8_path_count();
 
     let (store, report) = mapper
         .load_into_with_residency_plan(
@@ -306,11 +311,35 @@ fn run_one_model_m8(
     let bf16_fast_delta = vram_bf16_fast_path_count() - bf16_fast_before;
     let bf16_slow_delta = vram_bf16_slow_path_count() - bf16_slow_before;
     let bf16_total_delta = bf16_fast_delta + bf16_slow_delta;
+    let int8_delta = vram_int8_path_count() - int8_before;
     let bf16_resident_count = count_bf16_resident_in_store(&store);
-    println!(
-        "BF16 resident: {} in store / fast={} + slow={} loader deltas (expected ≥ {})",
-        bf16_resident_count, bf16_fast_delta, bf16_slow_delta, proj_weight_count
+    let int8_active = std::env::var("ATENIA_M9_INT8").as_deref() == Ok("1");
+
+    // Always emit the routing-counter triple so a future failure
+    // surfaces whether INT8 fired vs the BF16 fallback. Particularly
+    // load-bearing under M9.4 — if the operator sets ATENIA_M9_INT8=1
+    // and INT8 path count stays at 0, that's the bug to chase first.
+    eprintln!(
+        "[M9.4 routing] int8_active={} | int8_delta={} | bf16_fast_delta={} | \
+         bf16_slow_delta={} | bf16_resident_in_store={} (expected ≥ {} _proj.weight)",
+        int8_active,
+        int8_delta,
+        bf16_fast_delta,
+        bf16_slow_delta,
+        bf16_resident_count,
+        proj_weight_count,
     );
+    println!(
+        "BF16 resident: {} in store / fast={} + slow={} loader deltas / \
+         int8_path={} (expected ≥ {})",
+        bf16_resident_count, bf16_fast_delta, bf16_slow_delta, int8_delta, proj_weight_count,
+    );
+
+    // M9.4 — under INT8 the proj weights are uploaded as
+    // BF16-in-VRAM by `int8_to_bf16_in_vram` (the dequant kernel
+    // materialises BF16 in the device buffer), so the
+    // `bf16_resident_in_store` count still rises by ≥ proj_count
+    // — the difference is which loader counter advanced.
     assert!(
         bf16_resident_count >= proj_weight_count,
         "{}: store has only {} BF16-resident params (expected ≥ {})",
@@ -318,14 +347,28 @@ fn run_one_model_m8(
         bf16_resident_count,
         proj_weight_count
     );
+
+    // M9.4 — accept either routing path. INT8 takes priority when
+    // the flag is on (the loader's slow-path branches on it before
+    // falling through to BF16). Without the flag, the M8.4b BF16
+    // contract is unchanged.
+    let routing_delta = if int8_active {
+        int8_delta
+    } else {
+        bf16_total_delta
+    };
+    let routing_label = if int8_active { "INT8" } else { "BF16" };
     assert!(
-        bf16_total_delta >= proj_weight_count,
-        "{}: BF16 loader total delta (fast {} + slow {}) = {} < {} _proj.weight tensors",
+        routing_delta >= proj_weight_count,
+        "{}: {} routing delta = {} < {} _proj.weight tensors \
+         (int8_delta={}, bf16_fast={}, bf16_slow={})",
         label,
+        routing_label,
+        routing_delta,
+        proj_weight_count,
+        int8_delta,
         bf16_fast_delta,
         bf16_slow_delta,
-        bf16_total_delta,
-        proj_weight_count
     );
 
     // ---- Drop the scratch graph; build a NEW graph wired to the store.
