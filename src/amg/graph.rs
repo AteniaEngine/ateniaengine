@@ -1460,6 +1460,41 @@ impl Graph {
         }
     }
 
+    /// Inference variant of [`Graph::execute`] — runs the forward
+    /// pass with `record_tape = false` so the autograd tape is NOT
+    /// populated.
+    ///
+    /// Required by dispatch gates that only fire on the inference
+    /// path because their implementation cannot preserve the host
+    /// F32 weight the backward pass would need. The M8.7.0 disk-
+    /// streamed matmul hook (`MatMul` arm in `execute_single_inner`)
+    /// is the canonical example: when `ATENIA_M8_7_ENABLED=1` and
+    /// operand B lives on Disk as BF16 it streams the weight
+    /// straight into a VRAM staging slot, but on the streaming path
+    /// the host F32 transient is dropped at scope end — so the
+    /// backward gradient computation has no operand to read. Gating
+    /// on `!record_tape` keeps backward correct under
+    /// [`Graph::execute`] while letting inference-only callers (the
+    /// killer demo, `LlamaPipeline::generate_greedy`, smoke tests)
+    /// take the fast path via this entry point.
+    ///
+    /// The APX 7.5+ parallel-execution paths default to
+    /// `record_tape = true` internally and are bypassed here;
+    /// inference dispatch always goes through the legacy
+    /// `run_plan(false)` route. Outputs are collected via
+    /// [`Graph::collect_outputs`] exactly like [`Graph::execute`].
+    pub fn execute_inference(&mut self, inputs: Vec<Tensor>) -> Vec<Tensor> {
+        self.last_abort = None;
+        self.tape.clear();
+        self.set_input_outputs(inputs);
+        self.run_plan(false).expect(
+            "Graph::execute_inference: guard triggered inside run_plan. \
+             Callers that set reactive_context should reach for a \
+             checked variant when one is added.",
+        );
+        self.collect_outputs()
+    }
+
     /// Checked execution: consults the reactive context (if set)
     /// before each node and returns `Err(ExecutionAbortReason)` when
     /// a guard triggers or a guard evaluation fails. When no
@@ -2161,6 +2196,42 @@ impl Graph {
         self.nodes[id].output = Some(out);
     }
 
+    /// **M8.7 guard helper** — returns `true` when any operand of any
+    /// node in `seg` lives on a storage variant the legacy
+    /// `exec_gpu_segment` cannot consume: a BF16-resident GPU buffer
+    /// (M8.4c `SharedParam::Cuda { gpu: BF16 }`) or a Disk-tier
+    /// handle (M7 / M8.7.0 `SharedParam::Disk`).
+    ///
+    /// The check is conservative — only reads `node.output.storage`
+    /// for already-materialised inputs; un-materialised dependencies
+    /// (their `output` is still `None`) report as "no BF16/Disk" so
+    /// the legacy path runs for shapes whose dependencies have not
+    /// yet been resolved. That matches the M4.7.6.c assumption that
+    /// `exec_gpu_segment` only fires when the segment is start-of-
+    /// stream and its parameter operands are already loaded.
+    fn segment_has_bf16_or_disk_operands(
+        &self,
+        seg: &crate::apx4_3::GpuSegment,
+    ) -> bool {
+        for id in seg.start..=seg.end {
+            let node = &self.nodes[id];
+            for &input_id in &node.inputs {
+                if let Some(t) = self.nodes[input_id].output.as_ref() {
+                    match &t.storage {
+                        TensorStorage::Cuda(g)
+                            if g.dtype() != crate::tensor::DType::F32 =>
+                        {
+                            return true;
+                        }
+                        TensorStorage::Disk(_) => return true,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Executes a single node without consulting guards.
     ///
     /// Guard evaluation is performed by the scheduler (see
@@ -2648,12 +2719,30 @@ impl Graph {
         // match below, which computes forward on CPU and registers the
         // appropriate tape entry. When record_tape is false (inference or
         // forward-only execution), the segment runs for the GPU speedup.
+        //
+        // **M8.7 guard** — `exec_gpu_segment` is APX 4.x legacy that
+        // assumes F32 GPU tensors and calls the F32 kernel
+        // `cuda_matmul_inplace`. With M8 BF16-resident weights
+        // (`SharedParam::Cuda { gpu: BF16 }`) or M8.7.0 Disk-tier
+        // tensors (`SharedParam::Disk`), the path asserts inside
+        // `TensorGPU::to_cpu` (`tensor_gpu.rs:179`) when the F32
+        // kernel tries to download a BF16 device buffer. Skip the
+        // legacy path for those operand kinds and fall through to
+        // the modern dispatch (`try_gpu_matmul` in
+        // `gpu/dispatch/hooks.rs`), which handles both via the
+        // M8.4c `cuda_matmul_bf16_inplace` and M8.7.0
+        // `cuda_matmul_disk_streamed_bf16` helpers. See
+        // `docs/TECH_DEBT.md` for the deprecation plan.
         if !record_tape {
             if let Some(plan) = &self.gpu_plan {
                 if let Some(seg) = plan.segments.iter().find(|s| s.start == node_id).cloned() {
-                    self.exec_gpu_segment(&seg);
-                    // Timing handled by `NodeTimingRecorder` at function exit (M3-e.10).
-                    return;
+                    if !self.segment_has_bf16_or_disk_operands(&seg) {
+                        self.exec_gpu_segment(&seg);
+                        // Timing handled by `NodeTimingRecorder` at function exit (M3-e.10).
+                        return;
+                    }
+                    // else: BF16/Disk operand present — fall through
+                    // to the modern dispatch below. No early return.
                 }
             }
         }

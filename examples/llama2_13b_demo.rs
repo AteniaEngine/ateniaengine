@@ -238,7 +238,7 @@ fn main() {
     );
     let tokens = Tensor::new_cpu(vec![1, runtime.seq], token_pattern);
     let fwd_start = Instant::now();
-    let outputs = graph.execute(vec![tokens]);
+    let outputs = graph.execute_inference(vec![tokens]);
     let fwd_secs = fwd_start.elapsed().as_secs_f32();
 
     let resident_after = gpu_matmul_resident_count();

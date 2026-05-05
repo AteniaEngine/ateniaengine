@@ -2,9 +2,56 @@
 
 Last reviewed: tier-aware loader default flip (commit `afaa975`).
 
-## M8.7.0 disk-streamed matmul not firing through the killer demo
+## `exec_gpu_segment` (APX 4.3 legacy) deprecation
 
-**Symptom (post commit `4e126f0`)**: with `ATENIA_M8_7_ENABLED=1`
+**Status (commit after the M8.7 / `execute_inference` fix)**: a
+runtime guard now skips `exec_gpu_segment` whenever any operand
+in the planned segment is `Cuda(BF16)` or `Disk(_)`. The legacy
+path is APX 4.x and assumes F32 GPU tensors — calling
+`cuda_matmul_inplace` (the F32 kernel) on a BF16 device buffer
+asserts inside `TensorGPU::to_cpu` (`tensor_gpu.rs:179`).
+
+The guard lives in `src/amg/graph.rs::execute_single_inner` plus
+the helper `Graph::segment_has_bf16_or_disk_operands`. With the
+guard, the modern dispatch (`gpu/dispatch/hooks.rs::try_gpu_matmul`
++ M8.4c `cuda_matmul_bf16_inplace` + M8.7.0
+`cuda_matmul_disk_streamed_bf16`) handles every M8 / M8.7
+operand correctly and the killer demo's 13B forward stays at
+~13.5 s for seq=4.
+
+**Removal plan**: `exec_gpu_segment` is invoked from a single
+call site (`src/amg/graph.rs::execute_single_inner`) and reads
+`self.gpu_plan` populated by `apx4_3::GpuPlan`. Auditing the APX
+4.x test surface (`tests/apx_4_*`) before removing the path
+needs a dedicated cycle — for now the guard is sufficient and
+the path is documented as **superseded** by the M6 / M8 / M8.7
+modern dispatch chain. Open as deprecation candidate alongside
+`ATENIA_TIER_AWARE_LOADER` in M9 / M10.
+
+## M8.7.0 disk-streamed matmul not firing through the killer demo *(RESOLVED)*
+
+**Resolution**: H3 confirmed via `[M8.7.0 DEBUG]` instrumentation —
+`record_tape == true` was reaching the MatMul arm because
+`graph.execute(...)` defaulted to `record_tape=true`. Fixed by
+introducing `Graph::execute_inference` (`record_tape=false`)
+and migrating the killer demo to it. The fix surfaced a
+secondary panic in `exec_gpu_segment` (legacy F32 GPU path)
+because `record_tape=false` re-enables that path against M8 BF16
+operands; addressed by the new `segment_has_bf16_or_disk_operands`
+guard documented under the *`exec_gpu_segment` deprecation*
+section above.
+
+Post-fix smoke (`ATENIA_M8_BF16_KERNEL=1 ATENIA_M8_7_ENABLED=1`,
+13B Llama 2 Chat, seq=4):
+
+    Tier plan: vram=78 tensors (6.46 GiB), ram=0, disk=325
+    Forward: 13.50s
+    BF16-resident matmuls (M8.4c): 281
+    Disk-streamed matmuls (M8.7.0): 203
+    Per-position argmax matches the M8 baseline.
+
+**Original symptom (post commit `4e126f0`)**: with
+`ATENIA_M8_7_ENABLED=1`
 and 159 Disk-tier weights in the 13B tier plan,
 `disk_streamed_matmul_count` stays at 0 across the full 4-token
 forward of `examples/llama2_13b_demo.rs`. Other counters confirm
