@@ -139,18 +139,18 @@ fn bf16_kv_cache_argmax_parity_vs_f32_baseline() {
     let (g_seed, ids, names) = build_reference(&cfg, prompt.len());
     let store = store_from_graph(&g_seed, &ids, &names);
 
-    // Baseline (flag off).
-    unsafe { std::env::remove_var("ATENIA_BF16_KV_CACHE"); }
+    // M8.6.1: BF16 ledger is the default. Force the legacy
+    // F32 path first to capture the baseline, then unset to
+    // exercise the new default (BF16 ledger).
+    unsafe { std::env::set_var("ATENIA_LEGACY_F32_KV_CACHE", "1"); }
     let baseline = run_greedy(&store, &cfg, &prompt, n_new);
 
-    // BF16 KV ledger (flag on).
-    unsafe { std::env::set_var("ATENIA_BF16_KV_CACHE", "1"); }
+    unsafe { std::env::remove_var("ATENIA_LEGACY_F32_KV_CACHE"); }
     let with_bf16 = run_greedy(&store, &cfg, &prompt, n_new);
-    unsafe { std::env::remove_var("ATENIA_BF16_KV_CACHE"); }
 
     assert_eq!(
         baseline, with_bf16,
-        "BF16 KV cache must produce the same argmax sequence as F32 baseline"
+        "BF16 KV cache (default) must produce the same argmax sequence as legacy F32 path"
     );
 }
 
@@ -270,12 +270,11 @@ fn bf16_kv_logits_drift_under_adr_004_threshold() {
     // synthetic mini-Llama is ~10⁻⁴ in single-op M4.7.2 land;
     // M8.6 adds a single BF16 truncation per cache write so
     // 0.5 holds with several orders of magnitude of margin.
-    unsafe { std::env::remove_var("ATENIA_BF16_KV_CACHE"); }
+    unsafe { std::env::set_var("ATENIA_LEGACY_F32_KV_CACHE", "1"); }
     let baseline = run_greedy(&store, &cfg, &prompt, n_new);
 
-    unsafe { std::env::set_var("ATENIA_BF16_KV_CACHE", "1"); }
+    unsafe { std::env::remove_var("ATENIA_LEGACY_F32_KV_CACHE"); }
     let with_bf16 = run_greedy(&store, &cfg, &prompt, n_new);
-    unsafe { std::env::remove_var("ATENIA_BF16_KV_CACHE"); }
 
     for (k, (&a, &b)) in baseline.iter().zip(with_bf16.iter()).enumerate() {
         assert_eq!(

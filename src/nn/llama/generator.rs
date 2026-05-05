@@ -196,19 +196,32 @@ where
     let prompt_len = prompt_ids.len();
     let vocab = cfg.vocab_size;
 
-    // M8.6 — BF16 KV cache opt-in. Read once at the entry
-    // point so a long generation cannot toggle mid-flight.
-    // When `ATENIA_BF16_KV_CACHE=1`, harvested K/V tensors
-    // are truncated to BF16 in the runtime ledger between
-    // decode steps, halving the resident byte cost (1.6 GiB
-    // savings at seq=2048 on Llama 2 13B). The graph itself
-    // stays F32: each step decodes BF16 → F32 right before
+    // M8.6.1 — BF16 KV cache is now the **default**. Read
+    // once at the entry point so a long generation cannot
+    // toggle mid-flight. Harvested K/V tensors are truncated
+    // to BF16 in the runtime ledger between decode steps,
+    // halving the resident byte cost (1.6 GiB savings at
+    // seq=2048 on Llama 2 13B). The graph itself stays F32:
+    // each step decodes BF16 → F32 right before
     // `overwrite_parameter` so the compute path is bit-exact
     // with the F32-cache path modulo a single BF16 round-trip
     // (drift envelope ~3e-3, well under ADR-004's 0.5).
-    let bf16_kv = std::env::var("ATENIA_BF16_KV_CACHE")
-        .map(|v| v == "1")
-        .unwrap_or(false);
+    //
+    // Operators who need the legacy F32 path can opt out via
+    // `ATENIA_LEGACY_F32_KV_CACHE=1`. The deprecated M8.6.0
+    // opt-in flag `ATENIA_BF16_KV_CACHE=1` remains a no-op
+    // (BF16 is now the default; setting it has no effect).
+    // Validation: 4-token determinism fixture on TinyLlama
+    // 1.1B-Chat (M5.d.b) is bit-exact identical with BF16 KV
+    // cache — same token IDs, same decoded text.
+    let bf16_kv = std::env::var("ATENIA_LEGACY_F32_KV_CACHE")
+        .as_deref() != Ok("1");
+    if std::env::var("ATENIA_BF16_KV_CACHE").as_deref() == Ok("1") {
+        // No-op compatibility: M8.6.0 operators can keep the
+        // flag set with no behavioural change. We do not warn
+        // because the flag's intent (BF16 ledger) is exactly
+        // what the new default delivers.
+    }
 
     // ---- Prefill ----
     let prefill_tokens: Vec<f32> = prompt_ids.iter().map(|&t| t as f32).collect();

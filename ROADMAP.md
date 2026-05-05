@@ -8,11 +8,11 @@ This roadmap communicates scope and priority, not calendar commitments. Versions
 
 ## Status overview
 
-Atenia Engine is currently working through APX v20 (Real Model Runtime Integration). Earlier versions (v12 through v19) are complete. The most recently closed sub-milestone is **M8.7: Disk → GPU JIT pipeline (1.30× over the M8 baseline on Llama 2 13B; 20.7 s/tok with `ATENIA_M8_7_ENABLED=1`; ADR-004 numerics preserved)**. The full M4.7 → M4.8 → M4.9 → M5 → M6 → M7 → M8 → M8.7 trajectory is closed: Llama 2 13B Chat runs end-to-end on dev-class commodity hardware (RTX 4070 Laptop, 8 GB VRAM, 32 GB RAM, NVMe spill cache); as of M6 the tier-aware loader doubled the speed of the 7B Chat over the CPU baseline; as of M7 the 13B Chat ran the first time on the box without BSOD via automatic Disk overflow; as of M8 the BF16-resident VRAM kernels gave 1.36× over M7.3; and as of M8.7 **`ATENIA_M8_BF16_KERNEL=1 ATENIA_M8_7_ENABLED=1 atenia generate --model models/llama-2-13b-chat` streams 154 disk-tier weights per forward through the BF16 GPU dispatch with a 98.7 % CPU prefetch hit rate, dropping the 13B per-token cost from 27.0 s/tok (M8) to 20.7 s/tok — 1.30× faster than the M8 baseline, argmax bit-exact with M8**.
+Atenia Engine is currently working through APX v20 (Real Model Runtime Integration). Earlier versions (v12 through v19) are complete. The most recently closed sub-milestone is **M8.6: BF16 KV cache (D62 resolved; default flipped on after the TinyLlama 1.1B-Chat 8-token determinism fixture came back bit-identical; 1.6 GiB RAM savings at seq=2048 on Llama 2 13B; legacy F32 path preserved behind `ATENIA_LEGACY_F32_KV_CACHE=1`)**. The previous closure was **M8.7: Disk → GPU JIT pipeline (1.30× over the M8 baseline on Llama 2 13B; 20.7 s/tok with `ATENIA_M8_7_ENABLED=1`; ADR-004 numerics preserved)**. The full M4.7 → M4.8 → M4.9 → M5 → M6 → M7 → M8 → M8.7 → M8.6 trajectory is closed: Llama 2 13B Chat runs end-to-end on dev-class commodity hardware (RTX 4070 Laptop, 8 GB VRAM, 32 GB RAM, NVMe spill cache); as of M6 the tier-aware loader doubled the speed of the 7B Chat over the CPU baseline; as of M7 the 13B Chat ran the first time on the box without BSOD via automatic Disk overflow; as of M8 the BF16-resident VRAM kernels gave 1.36× over M7.3; and as of M8.7 **`ATENIA_M8_BF16_KERNEL=1 ATENIA_M8_7_ENABLED=1 atenia generate --model models/llama-2-13b-chat` streams 154 disk-tier weights per forward through the BF16 GPU dispatch with a 98.7 % CPU prefetch hit rate, dropping the 13B per-token cost from 27.0 s/tok (M8) to 20.7 s/tok — 1.30× faster than the M8 baseline, argmax bit-exact with M8**.
 
-**Next active milestone: M9 (INT8 quantisation)**. M8.7.1.b/c (async H→D + dedicated copy/compute streams) was deferred at the close of M8.7 because the dev-box VRAM working-set budget (~540 MiB free after residents + headroom) cannot accommodate the two-buffer pipeline's peak ~670 MiB. M9 attacks the same throughput frontier from the other side: halve again from 2 to 1 byte per weight, dropping the Llama 2 13B from BF16 26 GiB to INT8 13 GiB and eliminating the M8.7 disk-overflow problem space rather than optimising within it. **Optional predecessor: M8.6** (BF16 KV cache, D62) is reserved as a 1-day side path that saves 1.6 GiB of RAM in seq_len 2048 on 13B and is independent of M9.
+**Next active milestone: M9 (INT8 quantisation)**. M8.7.1.b/c (async H→D + dedicated copy/compute streams) was deferred at the close of M8.7 because the dev-box VRAM working-set budget (~540 MiB free after residents + headroom) cannot accommodate the two-buffer pipeline's peak ~670 MiB. M9 attacks the same throughput frontier from the other side: halve again from 2 to 1 byte per weight, dropping the Llama 2 13B from BF16 26 GiB to INT8 13 GiB and eliminating the M8.7 disk-overflow problem space rather than optimising within it. The 1.6 GiB freed by M8.6 in long contexts directly feeds M9's tier planner working-set budget.
 
-See [docs/HANDOFF_APX_V20_M8.7.md](./docs/HANDOFF_APX_V20_M8.7.md) for the closing notes.
+See [docs/HANDOFF_APX_V20_M8.6.md](./docs/HANDOFF_APX_V20_M8.6.md) for the most recent closing notes; [docs/HANDOFF_APX_V20_M8.7.md](./docs/HANDOFF_APX_V20_M8.7.md) for the prior milestone.
 
 Detailed closing notes per milestone live in the `docs/` directory:
 
@@ -28,6 +28,7 @@ Detailed closing notes per milestone live in the `docs/` directory:
 - [docs/HANDOFF_APX_V20_M7.md](./docs/HANDOFF_APX_V20_M7.md) — 13B-friendly tiers (Disk fast-path + adaptive RAM headroom; Llama 2 13B Chat end-to-end with 239 tensors on NVMe, 7.36 GiB RAM headroom, no BSOD)
 - [docs/HANDOFF_APX_V20_M8.md](./docs/HANDOFF_APX_V20_M8.md) — BF16-resident VRAM kernels (Path B: BF16 storage + F32 upcast per-matmul; 1.31× on Llama 2 7B, 1.36× on Llama 2 13B; ADR-004 4-model F64 validation passes with margin 21–12,500×)
 - [docs/HANDOFF_APX_V20_M8.7.md](./docs/HANDOFF_APX_V20_M8.7.md) — Disk → GPU JIT pipeline (M8.7.0 single-tensor staging + M8.7.1.a CPU prefetch + M8.7.1.r Path B stream-aware refactor; 13B 20.7 s/tok with 154 disk-streamed matmuls per forward and 98.7 % prefetch hit rate; M8.7.1.b/c deferred for VRAM-budget reasons, documented for future revival)
+- [docs/HANDOFF_APX_V20_M8.6.md](./docs/HANDOFF_APX_V20_M8.6.md) — BF16 KV cache (D62 resolved; runtime ledger F32→BF16 cast in harvest, BF16→F32 in reinject; graph stays F32; TinyLlama 1.1B determinism fixture bit-identical under BF16 default; 1.6 GiB savings at seq=2048 on 13B; `ATENIA_LEGACY_F32_KV_CACHE=1` opt-out)
 
 ---
 
@@ -304,9 +305,23 @@ See [HANDOFF M8.7](./docs/HANDOFF_APX_V20_M8.7.md) for the full closing notes.
 
 Different attack vector to the same throughput frontier — instead of doubling VRAM capacity by halving per-weight bytes from 4 to 2 (M8) or pipelining the Disk-tier reads (M8.7), halve again from 2 to 1. Same plan structure (TierPlan with `kernel_dtype = Int8`, `vram_cost_bytes = numel × 1`). Requires per-tensor calibration (scale / zero-point), which is substantial new infrastructure. Under INT8, the Llama 2 13B's BF16 26 GiB drops to ~13 GiB, fitting entirely in the 8 GiB VRAM + 32 GiB RAM box without any Disk overflow at all — eliminating the M8.7 problem space rather than optimising within it. The M8.7.1.b/c follow-up, deferred above for VRAM-budget reasons, becomes a non-issue once INT8 lands because the residency footprint shrinks below the working-set budget by construction.
 
-### Optional predecessor — M8.6 (BF16 KV cache, D62)
+### M8.6 — BF16 KV cache ✅
 
-Cheap and independent. Migrate `KvCache` from F32 to BF16. Saves 1.6 GiB of RAM in seq_len 2048 on 13B. ADR-004 envelope same as M4.7.2.e BF16 storage. ~1 day of work; can be applied before, alongside, or after M9.
+Closed in two sub-phases on top of the M5.b runtime cache infrastructure:
+
+- **M8.6.0** (`b796eaa`) — Opt-in via `ATENIA_BF16_KV_CACHE=1`. New `KvCellDtype { F32, BF16 }`. New `cell_dtype` field on `KvCacheConfig`. New dtype-aware `bytes_per_token()` / `resident_bytes()` accessors. New cast helpers `cast_kv_cell_f32_to_bf16` / `cast_kv_cell_bf16_to_f32` in `src/amg/kv_cache.rs`. Generator harvest path truncates F32 → BF16 between decode steps; reinject path decodes BF16 → F32 right before `overwrite_parameter`. Graph itself stays F32. 5 new unit tests (`tests/m8_6_kv_cache_bf16_test.rs`).
+
+- **M8.6.1** (this) — Default flipped on after the TinyLlama 1.1B-Chat 8-token determinism fixture (`tests/fixtures/generation_determinism/expected_tokens_tinyllama.json`) came back **bit-identical** under the BF16 ledger: same token IDs `[29907, 13946, 368, 29991, 2266, 526, 777, 6455]`, same decoded text `"Certainly! Here are some examples"`. Operators who need the legacy F32 path can opt out via `ATENIA_LEGACY_F32_KV_CACHE=1`; the deprecated `ATENIA_BF16_KV_CACHE=1` flag remains a silent no-op for backwards compatibility.
+
+Headlines:
+
+- Llama 2 13B Chat KV cache @ seq=2048: **3.2 GiB → 1.6 GiB** (–1.6 GiB)
+- Per-token K+V cost: 1.5625 MiB F32 → **0.78 MiB BF16** (exactly half)
+- Drift envelope: bounded by single BF16 round-trip per cell write (~3e-3 relative); ADR-004 (threshold 0.5) preserved with >100× margin
+- Determinism: 0 token drift on TinyLlama 1.1B-Chat 8-token gen
+- 189/189 lib tests + 5/5 M8.6 + 3/3 M5 R2 + 4/4 M5.d.a verde
+
+See [HANDOFF M8.6](./docs/HANDOFF_APX_V20_M8.6.md) for the full closing notes.
 
 ---
 

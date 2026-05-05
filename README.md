@@ -185,6 +185,14 @@ Generated: 5 tokens in 103.5s (0.05 tok/s)
 
 On the dev box (RTX 4070 Laptop, 8 GB VRAM, 32 GB RAM): **20.7 s/tok with M8.7 active vs 27.0 s/tok M8 baseline = 1.30× faster.** The killer demo at seq=4 reports **10.22 s forward (vs 13.50 s M8 close = 1.32×)**. See [HANDOFF M8.7](./docs/HANDOFF_APX_V20_M8.7.md) for the sub-phase ledger and the M8.7.1.b/c VRAM-budget analysis that deferred the async-pipeline follow-up to a future operator with more VRAM headroom.
 
+### Or: Atenia halves the KV cache with no token drift (M8.6 ✅)
+
+The KV cache between decode steps now lives at BF16 by default. The graph stays F32; the cast is applied only in the runtime ledger between `harvest_cache_*` and `overwrite_parameter`. Bytes per token in the Llama 2 13B Chat KV cache **drop from 1.5625 MiB to 0.78 MiB** — at seq=2048, that's **3.2 GiB → 1.6 GiB** of RAM freed, which directly extends the working-set budget M9's tier planner can use.
+
+The decision is gated by the TinyLlama 1.1B-Chat 8-token determinism fixture: under the BF16 default it returned **bit-identical** token IDs (`[29907, 13946, 368, 29991, 2266, 526, 777, 6455]`) and the same decoded text (`"Certainly! Here are some examples"`) as the F32 baseline. No fixture regen, no token drift.
+
+Operators who need the legacy F32 path back can opt out with `$env:ATENIA_LEGACY_F32_KV_CACHE = "1"`. See [HANDOFF M8.6](./docs/HANDOFF_APX_V20_M8.6.md).
+
 ---
 
 ## 🎯 Vision
@@ -251,6 +259,7 @@ Headline progression on the dev box (RTX 4070 Laptop, 32 GB RAM, NVMe):
 | **M7** (Disk overflow) | — | **36.6 s/tok**, 239 tensors on NVMe, no BSOD | bit-identical |
 | **M8** (BF16 in VRAM) | **6.26 s/tok (1.31×)** | **27.0 s/tok (1.36×)** | ADR-004 4-model passes with margin 21–12,500× |
 | **M8.7** (Disk → GPU JIT) | — | **20.7 s/tok (1.30× over M8)** | argmax bit-exact with M8, prefetch hit rate 98.7 % |
+| **M8.6** (BF16 KV cache) | — | KV cache **3.2 GiB → 1.6 GiB** at seq=2048 | TinyLlama determinism fixture bit-identical |
 
 Each milestone's deep dive lives in its HANDOFF; the bullets below summarise the architecture each one shipped.
 
