@@ -405,7 +405,7 @@ fn run_mode_a(args: RunArgs) -> i32 {
     } else {
         None
     };
-    let (mut graph, metrics) = build_and_load_llama(
+    let (mut graph, _store, metrics) = build_and_load_llama(
         &args.model,
         runtime,
         /*verbose=*/ false,
@@ -621,7 +621,7 @@ fn run_mode_b(args: RunArgs) -> i32 {
     } else {
         None
     };
-    let (mut graph, metrics) = build_and_load_llama(
+    let (mut graph, _store, metrics) = build_and_load_llama(
         &args.model,
         runtime,
         /*verbose=*/ false,
@@ -901,7 +901,7 @@ fn run_mode_c(args: RunArgs) -> i32 {
     } else {
         None
     };
-    let (mut graph, metrics) = build_and_load_llama(
+    let (mut graph, _store, metrics) = build_and_load_llama(
         &args.model,
         runtime,
         /*verbose=*/ false,

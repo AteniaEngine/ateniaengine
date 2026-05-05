@@ -52,8 +52,10 @@ use crate::amg::reactive::ReactiveExecutionContext;
 use crate::amm::ram_probe::{RamProbeApi, RamProbeError, RamSnapshot};
 use crate::amm::signal_bus::SignalBus;
 use crate::amm::vram_probe::{VramProbeApi, VramProbeError, VramSnapshot};
+use crate::amg::weight_store::WeightStore;
 use crate::nn::llama::{
-    build_llama, llama_weight_mapper, LlamaConfig, LlamaRuntime,
+    build_llama, build_llama_with_store, llama_weight_mapper, LlamaConfig,
+    LlamaRuntime,
 };
 use crate::v15::policy::types::DecisionBias;
 use crate::v16::contract::constraints::{Constraints, RuntimeState};
@@ -313,7 +315,7 @@ pub fn build_and_load_llama(
     model_dir: &Path,
     runtime: LlamaRuntime,
     verbose: bool,
-) -> (Graph, LlamaLoadMetrics) {
+) -> (Graph, WeightStore, LlamaLoadMetrics) {
     if verbose {
         println!("Reading config.json ...");
     }
@@ -326,12 +328,26 @@ pub fn build_and_load_llama(
             runtime.seq, cfg.num_hidden_layers, cfg.hidden_size, cfg.vocab_size,
         );
     }
+    // ---- Build scratch graph ----
+    //
+    // The tier-aware loader needs a `Graph` with the full
+    // parameter schema to validate shapes / dtypes against
+    // the safetensors header. After the load it returns a
+    // populated `WeightStore` and the scratch graph is
+    // discarded — for VRAM/Disk-tier weights, the loader
+    // never writes the parameter slots in the graph it
+    // received (only Ram-tier weights are extracted via
+    // `finalize_ram_extract`). The forward graph is rebuilt
+    // below with `build_llama_with_store` so every parameter
+    // node is connected to the store via
+    // `register_param_from_store`. Same canonical pattern
+    // as `LlamaPipeline::load` / `generate_greedy`.
     let build_start = Instant::now();
     let mut gb = GraphBuilder::new();
     let token_input_id = gb.input();
     let handles = build_llama(&mut gb, &cfg, &runtime, token_input_id);
     let _ = gb.output(handles.logits_id);
-    let mut graph = gb.build();
+    let mut scratch_graph = gb.build();
     let build_secs = build_start.elapsed().as_secs_f32();
     if verbose {
         println!(
@@ -359,15 +375,11 @@ pub fn build_and_load_llama(
     mapper.set_store_params_as_bf16(true);
 
     // Tier-aware load (M6 + M7 + M8 + M8.7) — same path
-    // `LlamaPipeline::load` takes when `ATENIA_TIER_AWARE_LOADER=1`.
-    // Probes free RAM/VRAM, builds a `TierPlan` from the
-    // safetensors header metadata, and routes each parameter to
-    // its assigned tier (`Vram` / `Ram` / `Disk`) via
-    // `load_into_with_residency_plan`. The legacy `load_into` path
-    // produced `SharedParam::F32` / `Bf16` only — no GPU dispatch
-    // ever fired through the demo path because the M6 / M8
-    // dispatch hooks expect `SharedParam::Cuda` for the residency
-    // path.
+    // `LlamaPipeline::load` takes by default. Probes free
+    // RAM/VRAM, builds a `TierPlan` from the safetensors
+    // header metadata, and routes each parameter to its
+    // assigned tier (`Vram` / `Ram` / `Disk`) via
+    // `load_into_with_residency_plan`.
     let metas: Vec<crate::gpu::tier_plan::TensorMeta> = sharded
         .collect_tensor_metas()
         .expect("collect_tensor_metas");
@@ -398,15 +410,16 @@ pub fn build_and_load_llama(
         kernel_dtype,
     };
     let plan = crate::gpu::tier_plan::plan(&plan_input);
-    let (_store, report) = sharded
+    let (store, report) = sharded
         .load_into_with_residency_plan(
-            &mut graph,
+            &mut scratch_graph,
             &mapper,
             &plan,
             &handles.param_ids,
             &handles.param_names,
         )
         .expect("load_into_with_residency_plan");
+    drop(scratch_graph);
     let load_secs = load_start.elapsed().as_secs_f32();
     if verbose {
         println!(
@@ -414,6 +427,33 @@ pub fn build_and_load_llama(
             report.loaded, load_secs,
         );
     }
+
+    // ---- Rebuild graph wired to the store ----
+    //
+    // Every parameter node in the rebuilt graph is attached
+    // to its `SharedParam::{Cuda, Disk, Bf16, F32}` via
+    // `register_param_from_store`. The dispatch hooks
+    // (`gpu/dispatch/hooks.rs::try_gpu_matmul`,
+    // `cuda::matmul::cuda_matmul_disk_streamed_bf16`) read
+    // the `SharedParam` variant directly off the parameter's
+    // storage at execute time. The `WeightStore` itself is
+    // returned alongside the graph so the caller keeps it
+    // alive for the lifetime of the graph (the parameter
+    // tensors hold `Arc` clones of the store's contents,
+    // but VRAM / disk handles are owned by the store).
+    let mut gb2 = GraphBuilder::new();
+    let token_input_id_2 = gb2.input();
+    let handles2 = build_llama_with_store(
+        &mut gb2,
+        &cfg,
+        &runtime,
+        token_input_id_2,
+        &store,
+        None,
+    )
+    .expect("build_llama_with_store");
+    let _ = gb2.output(handles2.logits_id);
+    let graph = gb2.build();
 
     let metrics = LlamaLoadMetrics {
         build_secs,
@@ -424,7 +464,7 @@ pub fn build_and_load_llama(
         config: cfg,
     };
 
-    (graph, metrics)
+    (graph, store, metrics)
 }
 
 // ============================================================

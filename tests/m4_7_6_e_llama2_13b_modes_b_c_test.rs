@@ -120,8 +120,9 @@ fn build_and_load_13b(
     model_dir: &std::path::Path,
 ) -> (atenia_engine::amg::graph::Graph, atenia_engine::nn::llama::LlamaConfig) {
     let runtime = LlamaRuntime { batch: 1, seq: 1 };
-    let (graph, metrics): (
+    let (graph, _store, metrics): (
         atenia_engine::amg::graph::Graph,
+        atenia_engine::amg::weight_store::WeightStore,
         LlamaLoadMetrics,
     ) = build_and_load_llama(model_dir, runtime, /*verbose=*/ true);
     assert_eq!(
