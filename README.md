@@ -193,13 +193,21 @@ The decision is gated by the TinyLlama 1.1B-Chat 8-token determinism fixture: un
 
 Operators who need the legacy F32 path back can opt out with `$env:ATENIA_LEGACY_F32_KV_CACHE = "1"`. See [HANDOFF M8.6](./docs/HANDOFF_APX_V20_M8.6.md).
 
-### Or: Atenia doubles the VRAM capacity at INT8 (M9 ⚠️ opt-in / experimental)
+### Or: Atenia speeds up Llama 2 13B at INT8 (M9 ⚠️ opt-in / experimental)
 
-`ATENIA_M9_INT8=1` activates the INT8 W8A16 weight-quantisation path. The full INT8 infrastructure shipped (per-group quantizer, CUDA dequant kernel, `TensorStorage::CpuInt8`, loader integration, tier-planner cost model). The M9.0 microbench measured **~2× speedup** over the M8.4c BF16 dispatch on the four dominant Llama 13B shapes; under the flag the planner places **167 VRAM tensors / 0 Disk** on Llama 2 13B (vs ~80 / 0 in the M8 baseline) — capacity essentially doubles.
+`ATENIA_M9_INT8=1` activates the INT8 W8A16 weight-quantisation path. The full INT8 infrastructure shipped (per-group quantizer, CUDA dequant kernel, `TensorStorage::CpuInt8`, loader integration, tier-planner cost model). The M9.0 microbench measured **~2× speedup** over the M8.4c BF16 dispatch on the four dominant Llama 13B shapes. End-to-end on the dev box (RTX 4070 Laptop, 8 GB VRAM, 32 GB RAM):
+
+| Configuration | s/tok | Δ vs M8.7 |
+|---|---:|---|
+| M8.7 baseline (no M9) | 20.7 | — |
+| **M9 default** (`ATENIA_M9_INT8=1`) | **18.8** | **−9%** |
+| **M9 + `ATENIA_RAM_HEADROOM_OVERRIDE_GIB=8`** | **17.7** | **−14%** |
+
+The default mode is structurally correct out of the box (post-close fixes `997fd8c` cost-honest + `0d0b4a5` two-pass headroom). The override flag pushes ~50 disk-streamed tensors back to RAM-resident at the cost of a thinner safety margin against OS pagefile thrash — operator opt-in.
 
 **Honest disclaimer**: simple absmax INT8 (per-channel and per-group {32, 128}) does **not** satisfy ADR-004 strict (`max_abs_diff < 0.5` vs F64) on the four-model fixture. Best drift result was Llama 3.2 1B at 0.516 under group size 128 — only 3.2% over the gate; worst was SmolLM2 1.7B at 11.25. Argmax preservation is good (typically 3/4 to 4/4 positions match the F64 reference); absolute-magnitude drift cascades over 16-32 layers in a way absmax alone cannot fully control.
 
-**Use M9 INT8 if** you need the VRAM capacity headroom on smaller GPUs and accept the trade-off — generated text is typically coherent, just numerically not bit-equivalent to BF16 / F64. **Do not use M9 INT8 if** you need ADR-004 numerics; stay on the M8.6 default. ADR-004-strict INT8 requires either FFN-only mixed precision (M9.5) or LLM.int8 / GPTQ outlier decomposition (M10+).
+**Use M9 INT8 if** you accept the drift trade-off in exchange for ~9–14% faster generation — text remains coherent. **Do not use M9 INT8 if** you need ADR-004 numerics; stay on the M8.6 default. ADR-004-strict INT8 requires either FFN-only mixed precision (M9.5) or LLM.int8 / GPTQ outlier decomposition (M10+).
 
 ```powershell
 $env:ATENIA_M8_BF16_KERNEL = "1"
@@ -207,7 +215,7 @@ $env:ATENIA_M9_INT8 = "1"          # opt-in, NOT ADR-004 strict
 cargo run --release --example llama2_13b_demo
 ```
 
-See [HANDOFF M9](./docs/HANDOFF_APX_V20_M9.md) for the full 12-run experiment matrix and the four follow-up tracks.
+See [HANDOFF M9](./docs/HANDOFF_APX_V20_M9.md) for the full 12-run drift matrix and the four follow-up tracks.
 
 ---
 
@@ -361,7 +369,7 @@ Architecture in place, full end-to-end wiring in progress:
 | **M8** | BF16-resident VRAM kernels (Path B). **1.31× on 7B / 1.36× on 13B**; F64 4-model passes ADR-004 with margin 21–12,500× | [M8](./docs/HANDOFF_APX_V20_M8.md) |
 | **M8.7** | Disk → GPU JIT pipeline. **20.7 s/tok on 13B (1.30× over M8 baseline)**, 154 disk-streamed matmuls per forward, 98.7 % CPU-prefetch hit rate, argmax bit-exact with M8 | [M8.7](./docs/HANDOFF_APX_V20_M8.7.md) |
 | **M8.6** | BF16 KV cache (D62 resolved). Default flipped on after TinyLlama 1.1B determinism fixture came back bit-identical; **3.2 GiB → 1.6 GiB at seq=2048** on Llama 2 13B; `ATENIA_LEGACY_F32_KV_CACHE=1` opt-out | [M8.6](./docs/HANDOFF_APX_V20_M8.6.md) |
-| **M9** ⚠️ *opt-in / experimental* | INT8 W8A16 weight quantisation. Microbench **~2× over M8.4c**, **167 VRAM tensors / 0 Disk** on 13B under `ATENIA_M9_INT8=1`. **ADR-004 not satisfied** with absmax (best 0.516, worst 11.25); ships as opt-in for capacity headroom — see HANDOFF for the four follow-up tracks (FFN-only, LLM.int8, GPTQ, or pivot) | [M9](./docs/HANDOFF_APX_V20_M9.md) |
+| **M9** ⚠️ *opt-in / experimental* | INT8 W8A16 weight quantisation. Post-close fixes (cost honesty + RAM headroom against pressure) deliver a measurable end-to-end win: 13B / dev-box **18.8 s/tok default, 17.7 s/tok with `ATENIA_RAM_HEADROOM_OVERRIDE_GIB=8`** vs M8.7 baseline 20.7 s/tok (−9% / −14%). **ADR-004 not satisfied** with absmax across 12 fixture runs (best 0.516, worst 11.25); ships opt-in for the drift reason, not for the perf reason — see HANDOFF for the four follow-up tracks (FFN-only, LLM.int8, GPTQ, or pivot) | [M9](./docs/HANDOFF_APX_V20_M9.md) |
 | *next active* | **TBD** — α / β / γ / δ tracks documented in [HANDOFF M9 §10](./docs/HANDOFF_APX_V20_M9.md#10-open-issues--how-to-resume) | — |
 
 **Later:**

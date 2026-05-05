@@ -505,6 +505,16 @@ unsafe extern "C" {
 
 #[link(name = "cudart")]
 unsafe extern "C" {
+    /// Currently unused — the M8.7.1.r refactor switched the
+    /// `cuda_matmul_bf16_inplace` path from the device-wide
+    /// `cudaDeviceSynchronize` to per-stream `cudaStreamSynchronize`
+    /// after `cudaMemcpyAsync`. Kept here as a reachable FFI
+    /// declaration for the M8.7.1.b/c follow-up work (async H→D
+    /// pipeline + dedicated copy/compute streams), which may want
+    /// a coarse device barrier in some recovery paths. Marked
+    /// `#[allow(dead_code)]` so the compiler does not regress
+    /// the rest of the module's warning hygiene.
+    #[allow(dead_code)]
     fn cudaDeviceSynchronize() -> c_int;
     /// Async memcpy bound to a CUDA stream. With `stream = null`
     /// (the default stream) this is functionally equivalent to

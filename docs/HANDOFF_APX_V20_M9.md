@@ -17,6 +17,67 @@
 
 ---
 
+## 0. Post-close addendum — empirical wins after the smoke
+
+The first close of M9 (commit `74da82b`, tag
+`v0.9.0-m9-experimental`) was honest about the ADR-004 failure
+but optimistic about M9.0's microbench translating to a
+production speedup. The 13B smoke on the dev box surfaced two
+defects in the surrounding infrastructure that the milestone-
+local tests had not caught. Three commits after the initial
+close fixed them:
+
+- **`997fd8c` — honest INT8 VRAM cost model.** The pre-fix
+  cost model returned `numel × 1` under the M9 flag, but
+  `int8_to_bf16_in_vram` actually allocates `numel × 2` (BF16
+  in VRAM after dequant). The lying cost over-promised VRAM
+  capacity; the planner placed 152 tensors in VRAM where only
+  ~80 physically fit, and the secondary disk-overflow handler
+  stitched together a malformed plan that ran 25.6 s/tok.
+  Honest cost (`numel × 2`) brought it to 22.16 s/tok.
+- **`d6e084c` — `ATENIA_RAM_HEADROOM_OVERRIDE_GIB` opt-in
+  flag.** Confirmed empirically that the M7.2 adaptive RAM
+  headroom rule was over-conservative for tier-aware loaders.
+  With `=8` the smoke landed at 17.7 s/tok — proof that the
+  M7.2 rule's premise (model dominates RAM) was wrong once the
+  loader sends large fractions to VRAM.
+- **`0d0b4a5` — two-pass plan_inner with RAM-bound pressure.**
+  Replaced the override workaround with structurally correct
+  accounting: `ram_pressure = model_total - vram_assigned_in_source_dtype`,
+  headroom resolved against pressure not model_total. The 13B
+  smoke without any override now lands at **18.8 s/tok**.
+
+**The empirical headline at this addendum's writing**:
+
+| Configuration                                          | Plan (V/R/D)        | Time      | Δ vs M8.7 |
+| ------------------------------------------------------ | ------------------- | --------- | --------- |
+| M8.7 baseline (no M9)                                  | 78 / 0 / ~285       | 20.7 s/tok| —         |
+| M9 first close, lying cost                             | 152 / 165 /  86     | 25.6 s/tok| +24%      |
+| M9 honest cost (M7.2 rule still over-conservative)     |  75 / 191 / 137     | 22.16 s/tok| +7%      |
+| M9 + headroom override = 8 GiB                         |  75 / 328 /   0     | **17.7 s/tok** | **−14%** |
+| **M9 + two-pass headroom (default, no override)**      | **75 / ~280 / ~50** | **18.8 s/tok** | **−9%** |
+
+The headroom fix is what makes M9 a net production win on the
+dev box: ~9% faster than M8.7 without any operator-side flag
+beyond `ATENIA_M9_INT8=1`. The override remains as a tunable
+for operators with extra RAM tolerance who want to push past
+~17.7 s/tok.
+
+**Per-token gain breakdown (informal)**:
+- M9.0 microbench: ~2× per matmul on the ~75 VRAM-resident
+  proj weights → contributes ~2-3 s/tok savings end-to-end.
+- Headroom fix: shifts ~87 tensors from disk-streamed to
+  RAM-resident → contributes ~1.5-2 s/tok savings (M8.7's
+  disk-streaming was 98.7% prefetch-hit but still O(NVMe BW)).
+
+**Status update**: M9 stays opt-in for the **drift** reason
+(ADR-004 strict still fails on the 4-model fixture under all
+absmax variants), not for the **performance** reason (which
+this addendum closes). Operators who accept the drift profile
+now get a real ~9% speedup over M8.7 with the default flag.
+
+---
+
 ## 1. What M9 delivered (the wins)
 
 - **Complete INT8 infrastructure**:
@@ -94,7 +155,10 @@
 | M9.4 fix | M8.5 test accepts INT8 routing path (A+C fix)            | `06ee91a`  | ✅      |
 | M9.4-pg  | Per-group quantisation (Q8_0) replaces per-channel       | `6686008`  | ✅      |
 | M9.4-g32 | Tightened group size 32 → reverted to 128 after fixture  | `0e29a77`+ | ✅      |
-| M9 close | Honest closure as opt-in / experimental                  | (this)     | ✅      |
+| M9 close | Honest closure as opt-in / experimental                  | `74da82b`  | ✅      |
+| M9.5 cost-honest | `vram_cost_bytes` returns `numel × 2` (M9.2 reality)     | `997fd8c`  | ✅ post-close |
+| M9.6 override| `ATENIA_RAM_HEADROOM_OVERRIDE_GIB` opt-in flag           | `d6e084c`  | ✅ post-close |
+| M9.7 two-pass | `plan_inner` headroom against `ram_pressure` not `model_total` | `0d0b4a5` | ✅ post-close |
 
 ---
 
@@ -186,14 +250,30 @@ verified: BF16 deltas are unchanged with M9 dormant).
 ## 6. Operator quickstart (opt-in)
 
 ```powershell
-# Capacity-only mode: doubles the 13B VRAM working set without
-# satisfying ADR-004 strict. Generated text quality is degraded
-# vs the BF16 baseline; argmax may diverge on some positions
-# (3-of-4 typical, 2-of-4 worst case in the small-model fixture).
+# M9 default mode (post-close fixes 997fd8c + 0d0b4a5): doubles
+# the matmul speed on VRAM-resident proj weights and corrects
+# the M7.2 headroom rule. ~9% faster end-to-end on Llama 2 13B
+# than the M8.7 baseline. Drift (ADR-004) is NOT satisfied —
+# argmax may diverge on some positions; use only when you accept
+# the trade-off.
 $env:ATENIA_M8_BF16_KERNEL = "1"
 $env:ATENIA_M9_INT8 = "1"
 cargo run --release --example llama2_13b_demo
-# Plan should report ~167 VRAM tensors / 0 Disk on the 13B.
+# Predicted plan: ~75 VRAM / ~280 RAM / ~50 Disk on a 22 GiB-free
+# RAM box. ~18.8 s/tok end-to-end.
+```
+
+```powershell
+# Aggressive mode: bypass the M7.2 adaptive RAM headroom and
+# use a fixed floor. Push the disk-overflow tensors back to RAM
+# at the cost of a thinner safety margin against pagefile thrash.
+# Operator owns the BSOD risk if the model genuinely exceeds
+# (free_ram - override).
+$env:ATENIA_M8_BF16_KERNEL = "1"
+$env:ATENIA_M9_INT8 = "1"
+$env:ATENIA_RAM_HEADROOM_OVERRIDE_GIB = "8"
+cargo run --release --example llama2_13b_demo
+# Predicted plan: ~75 VRAM / ~328 RAM / 0 Disk. ~17.7 s/tok.
 ```
 
 ```powershell
@@ -202,6 +282,7 @@ $env:ATENIA_M8_BF16_KERNEL = "1"
 # (M9 flag unset)
 cargo run --release --example llama2_13b_demo
 # Plan reports ~80 VRAM tensors and uses the Disk-streaming path.
+# 20.7 s/tok end-to-end on the dev box.
 ```
 
 ---
@@ -268,7 +349,9 @@ pub fn vram_int8_path_count() -> usize;
 
 | Gate                                  | Command                                                                              | Result      |
 | ------------------------------------- | ------------------------------------------------------------------------------------ | ----------- |
-| Library tests (single-thread)         | `cargo test --lib -- --test-threads=1`                                               | 210/210 ✅   |
+| Library tests (single-thread)         | `cargo test --lib -- --test-threads=1`                                               | 214/214 ✅ (post-close: +M9.5/M9.6/M9.7)   |
+| 13B end-to-end smoke (no override)    | `ATENIA_M9_INT8=1 ATENIA_M8_BF16_KERNEL=1 atenia generate --model llama-2-13b-chat …`| **18.8 s/tok** vs M8.7 20.7 (−9%)        |
+| 13B end-to-end smoke (override = 8 GiB) | + `ATENIA_RAM_HEADROOM_OVERRIDE_GIB=8`                                              | **17.7 s/tok** vs M8.7 20.7 (−14%)       |
 | All-features build                    | `cargo check --lib --all-features`                                                   | clean ✅     |
 | M9 quantizer suite                    | `cargo test --lib quantizer`                                                         | 14/14 ✅    |
 | M9 INT8 GPU wrapper                   | `cargo test --lib int8_to_bf16`                                                      | 3/3 ✅ + 1 ignored |
