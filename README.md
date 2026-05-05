@@ -161,6 +161,30 @@ Generated: 5 tokens in 135.0s (0.04 tok/s)
 
 The 4-model F64 validation under M8 (TinyLlama 1.1B, SmolLM2 1.7B, Qwen 2.5 1.5B, Llama 3.2 1B) passes ADR-004 with **drift 21–12,500× under threshold** — same numerical envelope as the M4.7.2.e CPU BF16 storage path. Path B was the architectural correction after the M8.4-original "BF16 input × BF16 weight × F32 accumulate" path cascaded BF16 activation truncation through 16-28 layers and broke ADR-004 by 2-5×; Path B keeps the activation as F32 throughout, upcasts the BF16 weight at matmul time, and runs an F32 GEMM that matches M4.7.2.e bit-for-bit modulo cuBLAS internal rounding (1.64e-7 single-op drift). See [HANDOFF M8](./docs/HANDOFF_APX_V20_M8.md) for the full sub-phase ledger and the M8.5 4-model F64 numbers.
 
+### Or: Atenia streams Disk weights to GPU (M8.7 ✅)
+
+`ATENIA_M8_7_ENABLED=1` flips on the Disk → GPU JIT pipeline. For every Disk-tier weight that the M7 planner pushed to NVMe, the dispatch streams it through a host pinned buffer to a VRAM staging slot, runs the M8.4c BF16 kernel, and frees the slot. A single-slot CPU prefetch overlaps the next NVMe read with the current matmul's GPU compute. The Path B numerical contract is preserved end-to-end; argmax matches M8 bit-exact.
+
+```powershell
+$env:ATENIA_M8_BF16_KERNEL = "1"
+$env:ATENIA_M8_7_ENABLED   = "1"
+$env:ATENIA_DISK_TIER_DIR  = "D:\atenia-m8-cache"
+
+atenia generate `
+    --prompt "Hello, how are you?" `
+    --model ./models/llama-2-13b-chat `
+    --max-tokens 5
+```
+
+```text
+Disk-streamed matmuls (M8.7.0): 154
+Disk prefetch hits (M8.7.1.a):  152      (98.7 % hit rate)
+BF16-resident matmuls (M8.4c):  232
+Generated: 5 tokens in 103.5s (0.05 tok/s)
+```
+
+On the dev box (RTX 4070 Laptop, 8 GB VRAM, 32 GB RAM): **20.7 s/tok with M8.7 active vs 27.0 s/tok M8 baseline = 1.30× faster.** The killer demo at seq=4 reports **10.22 s forward (vs 13.50 s M8 close = 1.32×)**. See [HANDOFF M8.7](./docs/HANDOFF_APX_V20_M8.7.md) for the sub-phase ledger and the M8.7.1.b/c VRAM-budget analysis that deferred the async-pipeline follow-up to a future operator with more VRAM headroom.
+
 ---
 
 ## 🎯 Vision
@@ -226,8 +250,11 @@ Headline progression on the dev box (RTX 4070 Laptop, 32 GB RAM, NVMe):
 | **M6** (tier-aware loader) | **8.22 s/tok (1.46×)** | — | bit-identical to CPU baseline |
 | **M7** (Disk overflow) | — | **36.6 s/tok**, 239 tensors on NVMe, no BSOD | bit-identical |
 | **M8** (BF16 in VRAM) | **6.26 s/tok (1.31×)** | **27.0 s/tok (1.36×)** | ADR-004 4-model passes with margin 21–12,500× |
+| **M8.7** (Disk → GPU JIT) | — | **20.7 s/tok (1.30× over M8)** | argmax bit-exact with M8, prefetch hit rate 98.7 % |
 
 Each milestone's deep dive lives in its HANDOFF; the bullets below summarise the architecture each one shipped.
+
+- **🌊 Disk → GPU JIT pipeline (M8.7 ✅).** With `ATENIA_M8_7_ENABLED=1`, every Disk-tier weight in the 13B forward streams from NVMe through a host pinned-buffer cache into a transient VRAM staging slot, dispatches via the M8.4c BF16 kernel, and frees the slot — replacing the M8 baseline's CPU-AVX2 decode + matmul on disk-tier layers. A single-slot CPU prefetch overlaps the next NVMe read with the current matmul's GPU compute (98.7 % hit rate empirically). Path B is now stream-aware; future operators with more VRAM headroom can flip M8.7.1.b/c on for full async upload + dedicated copy/compute streams without re-touching the kernel. 154 disk-streamed matmuls per forward on the 13B; argmax bit-exact with M8. See [HANDOFF M8.7](./docs/HANDOFF_APX_V20_M8.7.md).
 
 - **🧮 BF16-resident VRAM kernels (M8 ✅).** Weights live as BF16 in VRAM at half the F32 byte cost; the dispatcher upcasts each weight to a fresh F32 transient on-device per-matmul (Path B) and runs `cublasGemmEx(F32, F32, F32)`. F64 4-model validation passes ADR-004 with margin 21–12,500×. The flag is gated by an adaptive heuristic (`model_total > 0.7 × free_ram`), so 7B-class models that fit in RAM keep the M6 path automatically. See [HANDOFF M8](./docs/HANDOFF_APX_V20_M8.md).
 
