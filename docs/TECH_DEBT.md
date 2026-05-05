@@ -1,6 +1,29 @@
 # TECH DEBT — known pre-existing failures
 
-Last reviewed: M8.7 prerequisite (commit after `e8b2ec3`).
+Last reviewed: tier-aware loader default flip (commit `afaa975`).
+
+## `ATENIA_TIER_AWARE_LOADER` deprecation
+
+The opt-in flag from D74 of `HANDOFF_APX_V20_M6.md` was inverted at
+commit `afaa975`: tier-aware is now the default and
+`ATENIA_LEGACY_LOADER=1` is the new opt-out. The deprecated flag
+`ATENIA_TIER_AWARE_LOADER` is still recognised — it becomes a no-op
+because the path is default — and the pipeline emits a one-line
+deprecation warning on stderr when it is set:
+
+    [ATENIA] ATENIA_TIER_AWARE_LOADER is now the default and will be
+    removed in a future version. Use ATENIA_LEGACY_LOADER=1 to opt
+    out instead.
+
+**Removal plan**: keep the warning-only stub through one more major
+milestone (M9 or M10, whichever lands first) so external scripts
+that still reference the flag have a chance to migrate. Then drop
+the read entirely and remove the dedicated `if` block in
+`src/nn/llama/pipeline.rs`. The opt-out variable
+`ATENIA_LEGACY_LOADER` stays indefinitely — it preserves the pre-M6
+CPU-resident path for hardware where the tier-aware loader cannot
+be exercised (no CUDA, RAM-only setups). Adding a new entry here
+when that grace period closes.
 
 ## `cargo test --tests` non-determinism
 

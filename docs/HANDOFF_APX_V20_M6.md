@@ -9,14 +9,16 @@ hardware ships in this milestone.
 After `cargo build --release --bin atenia`, running
 
 ```text
-$env:ATENIA_TIER_AWARE_LOADER = "1"
 atenia generate \
     --prompt "Hello, how are you?" \
     --model models/llama-2-7b-chat \
     --max-tokens 5
 ```
 
-loads Llama 2 7B Chat with the planner's decision logged to
+(*tier-aware is the default since commit `afaa975`; the
+historical `ATENIA_TIER_AWARE_LOADER=1` flag is recognised
+as a deprecated no-op*) loads Llama 2 7B Chat with the
+planner's decision logged to
 stderr, uploads ~6.7 GiB of attention/FFN projections directly
 to VRAM (no host-side F32 transient), keeps the rest in RAM,
 and runs greedy generation through the M6 step 4d mixed-residency
@@ -222,6 +224,7 @@ making the safety gate effectively a load-time invariant.
   by their own env vars.
 
 - **D74 — `ATENIA_TIER_AWARE_LOADER=1` opt-in, not default-on.**
+  *(Superseded at commit `afaa975`, M8.7 prereq close.)*
   The default smoke must remain bit-exact with M5.f.a. The
   tier-aware loader requires CUDA detection plus disk-cache
   setup plus load-time tier-plan logging — none of which
@@ -229,6 +232,16 @@ making the safety gate effectively a load-time invariant.
   flag flips during operator validation and stays in the
   smoke script for production runs once stability is
   re-validated per-environment.
+
+  **Update (commit `afaa975`)**: re-validation completed
+  across M6 (1.46× on 7B, bit-exact), M7 (13B without BSOD,
+  automatic tiers), and M8 (1.31× / 1.36× on 7B / 13B with
+  ADR-004 preserved), and the operator confirmed a 21.9
+  s/token 13B baseline through the tier-aware path. The
+  policy is now inverted: tier-aware is the default;
+  `ATENIA_LEGACY_LOADER=1` is the new opt-out.
+  `ATENIA_TIER_AWARE_LOADER` is still recognised as a
+  no-op with a deprecation warning during a grace period.
 
 - **D75 — Safety gate post-load is structurally correct.**
   Despite the user-facing observation that the safety gate
@@ -395,10 +408,10 @@ making the safety gate effectively a load-time invariant.
      — the per-shard loader primitive. New write paths
      attach to the `match tier` block.
 
-5. Smoke baseline reference for new sub-phases:
+5. Smoke baseline reference for new sub-phases (tier-aware is
+   default since `afaa975`; no flag required):
 
    ```
-   $env:ATENIA_TIER_AWARE_LOADER = "1"
    atenia generate --prompt "Hello, how are you?" \
        --model models/llama-2-7b-chat --max-tokens 5
    ```

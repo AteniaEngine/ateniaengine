@@ -15,9 +15,8 @@ ADR-004 with margin 21–12,500×.
 After `cargo build --release --bin atenia`, running
 
 ```powershell
-$env:ATENIA_M8_BF16_KERNEL    = "1"
-$env:ATENIA_TIER_AWARE_LOADER = "1"
-$env:ATENIA_DISK_TIER_DIR     = "D:\atenia-m8-cache"
+$env:ATENIA_M8_BF16_KERNEL = "1"
+$env:ATENIA_DISK_TIER_DIR  = "D:\atenia-m8-cache"
 
 cargo run --release --bin atenia -- generate `
     --prompt "Hello, how are you?" `
@@ -25,7 +24,10 @@ cargo run --release --bin atenia -- generate `
     --max-tokens 5
 ```
 
-loads Llama 2 13B Chat with the M8 plan, places **82 weights as
+(*tier-aware is the default since commit `afaa975`; the
+historical `ATENIA_TIER_AWARE_LOADER=1` flag is recognised
+as a deprecated no-op*) loads Llama 2 13B Chat with the M8
+plan, places **82 weights as
 BF16 in VRAM** (vs 38 as F32 in M7.3 — exactly the 2.16× capacity
 benefit M8.3 promised), keeps 197 weights on NVMe (vs 239 in M7.3
 — 17.6 % fewer Disk reads per token), runs each VRAM matmul as
@@ -335,10 +337,12 @@ each run, no flakiness post-`BF16_COUNTER_TEST_LOCK` fix.
 
 ```powershell
 # Hardware: 32 GiB Windows box, NVIDIA RTX 4070 Laptop (8 GiB), NVMe.
+# Tier-aware loader is the default since commit afaa975 — no flag
+# required. Set ATENIA_LEGACY_LOADER=1 only if you specifically need
+# the pre-M6 CPU-resident path.
 
 # Smoke 7B (M8 activates because 12.55 GiB > 0.7 × ~17 GiB free):
-$env:ATENIA_M8_BF16_KERNEL    = "1"
-$env:ATENIA_TIER_AWARE_LOADER = "1"
+$env:ATENIA_M8_BF16_KERNEL = "1"
 cargo run --release --bin atenia -- generate `
     --prompt "Hello, how are you?" `
     --model F:/Proyectos/artenia_engine/atenia-engine/models/llama-2-7b-chat `
@@ -352,7 +356,6 @@ cargo run --release --bin atenia -- generate `
     --max-tokens 5
 
 Remove-Item Env:ATENIA_M8_BF16_KERNEL
-Remove-Item Env:ATENIA_TIER_AWARE_LOADER
 Remove-Item Env:ATENIA_DISK_TIER_DIR
 ```
 

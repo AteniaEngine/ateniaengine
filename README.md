@@ -95,27 +95,25 @@ The architectural headline: **24.24 GiB resident** for the BF16 13B model with p
 
 ### Or: Atenia uses your GPU (M6 ✅)
 
-`ATENIA_TIER_AWARE_LOADER=1` flips on the tier-aware loader. Attention/FFN projections go to VRAM at load time; the rest stays in RAM. The M6 step 4d mixed-residency dispatch consumes the resident weight without re-uploading per call.
+The tier-aware loader is **the default** since commit `afaa975`. Attention/FFN projections go to VRAM at load time; the rest stays in RAM. The M6 step 4d mixed-residency dispatch consumes the resident weight without re-uploading per call. Set `ATENIA_LEGACY_LOADER=1` only if you specifically need the pre-M6 CPU-resident path.
 
 ```bash
-ATENIA_TIER_AWARE_LOADER=1 \
 atenia generate \
     --prompt "Hello, how are you?" \
     --model ./models/llama-2-7b-chat \
     --max-tokens 5
 ```
 
-On the dev box (RTX 4070 Laptop, 8 GB VRAM, 32 GB RAM): **8.22 s/tok vs 12.02 s/tok** on the default CPU path — **1.46× faster** with bit-identical output. Atenia's first measured GPU acceleration of an LLM forward.
+On the dev box (RTX 4070 Laptop, 8 GB VRAM, 32 GB RAM): **8.22 s/tok vs 12.02 s/tok** on the legacy CPU path — **1.46× faster** with bit-identical output. Atenia's first measured GPU acceleration of an LLM forward.
 
 The plan: 60 attention/FFN projection weights go to VRAM (6.7 GiB), the rest to RAM (9.2 GiB), zero Disk overflow. See [HANDOFF M6](./docs/HANDOFF_APX_V20_M6.md) for the architecture (load-time tier planner + direct-VRAM upload + mixed-residency dispatch) and [INVESTIGATION_M6_REPLAN.md](./INVESTIGATION_M6_REPLAN.md) for the design-iteration history (a May 2 BSOD on the original post-load approach forced a structural redesign).
 
 ### Or: Atenia runs Llama 2 13B Chat on a 32 GiB box (M7 ✅)
 
-Same flag, 13B model. M7 adds a Disk fast-path (raw BF16 bytes mmap → NVMe with no F32 transient) and an adaptive RAM headroom that inflates when the model dominates RAM. Set `ATENIA_DISK_TIER_DIR` to a fast SSD.
+Same default loader, 13B model. M7 adds a Disk fast-path (raw BF16 bytes mmap → NVMe with no F32 transient) and an adaptive RAM headroom that inflates when the model dominates RAM. Set `ATENIA_DISK_TIER_DIR` to a fast SSD.
 
 ```powershell
-$env:ATENIA_TIER_AWARE_LOADER = "1"
-$env:ATENIA_DISK_TIER_DIR    = "D:\atenia-m7-cache"
+$env:ATENIA_DISK_TIER_DIR = "D:\atenia-m7-cache"
 
 atenia generate `
     --prompt "Hello, how are you?" `
@@ -130,9 +128,8 @@ The planner places **239 tensors directly on NVMe** (20.14 GiB), 126 in RAM, 38 
 `ATENIA_M8_BF16_KERNEL=1` flips on the M8 path. Weights live as BF16 in VRAM at half the F32 byte cost (`numel × 2`), doubling the planner's effective capacity. The dispatcher upcasts each weight to a fresh F32 transient on-device per-matmul (Path B) and runs `cublasGemmEx(F32, F32, F32)` — F32 numerics preserved end-to-end, drift matches the M4.7.2.e CPU path. The flag is gated by an adaptive heuristic: it only activates if `model_total > 0.7 × free_ram`, so 7B models that fit in RAM with headroom keep the M6 path automatically.
 
 ```powershell
-$env:ATENIA_M8_BF16_KERNEL    = "1"
-$env:ATENIA_TIER_AWARE_LOADER = "1"
-$env:ATENIA_DISK_TIER_DIR     = "D:\atenia-m8-cache"
+$env:ATENIA_M8_BF16_KERNEL = "1"
+$env:ATENIA_DISK_TIER_DIR  = "D:\atenia-m8-cache"
 
 atenia generate `
     --prompt "Hello, how are you?" `

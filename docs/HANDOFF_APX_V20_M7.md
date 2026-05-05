@@ -14,8 +14,7 @@ disk subsystem was bursty, not saturated.
 After `cargo build --release --bin atenia`, running
 
 ```powershell
-$env:ATENIA_TIER_AWARE_LOADER = "1"
-$env:ATENIA_DISK_TIER_DIR    = "D:\atenia-m7-cache"
+$env:ATENIA_DISK_TIER_DIR = "D:\atenia-m7-cache"
 
 cargo run --release --bin atenia -- generate `
     --prompt "Hello, how are you?" `
@@ -23,7 +22,10 @@ cargo run --release --bin atenia -- generate `
     --max-tokens 5
 ```
 
-loads Llama 2 13B Chat with the adaptive headroom and the tier
+(*tier-aware is the default since commit `afaa975`; the
+historical `ATENIA_TIER_AWARE_LOADER=1` flag is recognised
+as a deprecated no-op*) loads Llama 2 13B Chat with the
+adaptive headroom and the tier
 plan logged to stderr, writes ~20 GiB of BF16 weights directly
 to NVMe via the M7.1 fast-path (no F32 transient), keeps the
 remaining ~7 GiB split between VRAM and RAM, and produces a
@@ -375,9 +377,9 @@ m7_disk_loader_test                  2 passed (slow path + fast path)
 # Hardware: 32 GiB Windows box, NVIDIA RTX 4070 Laptop (8 GiB), NVMe.
 # Cache must land on a fast SSD. Default of %LOCALAPPDATA% may be
 # on C: which on the dev box is slower than D:.
+# Tier-aware is the default since commit afaa975 — no flag required.
 
-$env:ATENIA_TIER_AWARE_LOADER = "1"
-$env:ATENIA_DISK_TIER_DIR    = "D:\atenia-m7-cache"
+$env:ATENIA_DISK_TIER_DIR = "D:\atenia-m7-cache"
 
 cargo run --release --bin atenia -- generate `
     --prompt "Hello, how are you?" `
