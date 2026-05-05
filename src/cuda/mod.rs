@@ -5,6 +5,7 @@ pub mod linear;
 pub mod batch_matmul;
 pub mod fused_linear_silu;
 pub mod bf16_to_f32;
+pub mod disk_prefetch;
 pub(crate) mod pool_helpers;
 
 #[link(name = "atenia_kernels", kind = "static")]

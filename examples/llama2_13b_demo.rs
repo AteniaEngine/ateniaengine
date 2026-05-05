@@ -32,6 +32,7 @@
 use std::time::Instant;
 
 use atenia_engine::amg::builder::GraphBuilder;
+use atenia_engine::cuda::disk_prefetch::disk_prefetch_hits;
 use atenia_engine::cuda::matmul::{
     disk_streamed_matmul_count, vram_bf16_matmul_count,
 };
@@ -230,6 +231,7 @@ fn main() {
     let legacy_before = gpu_matmul_legacy_count();
     let bf16_before = vram_bf16_matmul_count();
     let disk_streamed_before = disk_streamed_matmul_count();
+    let disk_prefetch_before = disk_prefetch_hits();
 
     // ---- Forward ----
     println!(
@@ -246,11 +248,13 @@ fn main() {
     let legacy_after = gpu_matmul_legacy_count();
     let bf16_after = vram_bf16_matmul_count();
     let disk_streamed_after = disk_streamed_matmul_count();
+    let disk_prefetch_after = disk_prefetch_hits();
     let resident_delta = resident_after - resident_before;
     let roundtrip_delta = roundtrip_after - roundtrip_before;
     let legacy_delta = legacy_after - legacy_before;
     let bf16_delta = bf16_after - bf16_before;
     let disk_streamed_delta = disk_streamed_after - disk_streamed_before;
+    let disk_prefetch_delta = disk_prefetch_after - disk_prefetch_before;
 
     let logits = &outputs[0];
     assert_eq!(logits.shape, vec![1, runtime.seq, cfg.vocab_size]);
@@ -276,6 +280,10 @@ fn main() {
     println!(
         "    Disk-streamed matmuls (M8.7.0): {}",
         disk_streamed_delta,
+    );
+    println!(
+        "    Disk prefetch hits (M8.7.1.a): {}",
+        disk_prefetch_delta,
     );
     println!(
         "    Logit stats: max |v|={:.4}  mean |v|={:.4}  finite={}/{}",

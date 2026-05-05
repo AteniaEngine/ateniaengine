@@ -820,6 +820,7 @@ pub fn cuda_matmul_disk_streamed_bf16(
     m: usize,
     k: usize,
     n: usize,
+    next_handle: Option<&crate::tensor::disk_tier::DiskTensorHandle>,
 ) -> bool {
     use crate::tensor::disk_tier;
 
@@ -832,13 +833,29 @@ pub fn cuda_matmul_disk_streamed_bf16(
         return false;
     }
 
-    // 2. Stream BF16 raw bytes from NVMe into a per-call host buffer.
-    //    Bounded peak: one tensor's worth at a time
-    //    (handle.numel() * 2 bytes — capped by the largest weight in
-    //    the model, e.g. 13B FFN-down ≈ 135 MiB).
-    let mut raw_bytes = vec![0u8; handle.numel() * 2];
-    if disk_tier::read_bf16_raw_bytes(handle, &mut raw_bytes).is_err() {
-        return false;
+    // 2. **M8.7.1.a** — try to consume a host-side prefetch for
+    //    THIS handle first (kicked off during the previous
+    //    Disk-streamed matmul's compute). On miss, fall back to
+    //    the synchronous M8.7.0 read path.
+    let raw_bytes = match crate::cuda::disk_prefetch::take(handle) {
+        Some(bytes) => bytes,
+        None => {
+            let mut buf = vec![0u8; handle.numel() * 2];
+            if disk_tier::read_bf16_raw_bytes(handle, &mut buf).is_err() {
+                return false;
+            }
+            buf
+        }
+    };
+
+    // 3. **M8.7.1.a** — kick off prefetch for the NEXT Disk-streamed
+    //    matmul before this one's GPU pipeline runs. The slot is
+    //    empty after the take above, so this kick_off installs a
+    //    fresh entry that will be consumed by the next call. The
+    //    background NVMe read overlaps with this matmul's upload +
+    //    GEMM (the GPU work that follows below).
+    if let Some(next) = next_handle {
+        crate::cuda::disk_prefetch::kick_off(next);
     }
 
     // 3. Upload to a transient BF16 staging slot in VRAM. The M8.7
@@ -1408,9 +1425,10 @@ mod cuda_matmul_disk_streamed_tests {
 
         let before = disk_streamed_matmul_count();
 
-        // Dispatch under test.
+        // Dispatch under test. `next_handle = None` covers the
+        // M8.7.1.a "no further Disk-streamed matmul ahead" branch.
         let ok = cuda_matmul_disk_streamed_bf16(
-            &a_tensor, &b_tensor, &mut out_tensor, m, k, n,
+            &a_tensor, &b_tensor, &mut out_tensor, m, k, n, None,
         );
         assert!(
             ok,
@@ -1495,7 +1513,7 @@ mod cuda_matmul_disk_streamed_tests {
         let mut out = Tensor::new_cpu(vec![m, n], vec![0.0_f32; m * n]);
 
         let before = disk_streamed_matmul_count();
-        let ok = cuda_matmul_disk_streamed_bf16(&a, &b, &mut out, m, k, n);
+        let ok = cuda_matmul_disk_streamed_bf16(&a, &b, &mut out, m, k, n, None);
         let after = disk_streamed_matmul_count();
 
         assert!(!ok, "dispatch must reject non-Disk operand");

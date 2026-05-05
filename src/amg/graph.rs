@@ -2232,6 +2232,61 @@ impl Graph {
         false
     }
 
+    /// **M8.7.1.a lookahead helper** — find the `DiskTensorHandle`
+    /// of the next MatMul-with-`Disk(BF16)`-B that the planned
+    /// execution will reach after `current_node_id`. Returns
+    /// `None` when there is none, when the next disk-streamed
+    /// matmul's weight exceeds the prefetch size cap
+    /// (`cuda::disk_prefetch::MAX_PREFETCH_BYTES = 135 MiB`), or
+    /// when the planned step containing `current_node_id` cannot
+    /// be located.
+    ///
+    /// The lookup is linear in the number of remaining steps, but
+    /// in practice short-circuits within a few steps (the next
+    /// MatMul is usually 1-3 steps ahead in Llama transformer
+    /// blocks). Called from the M8.7.0 dispatch hook in the
+    /// MatMul arm of `execute_single_inner` to drive the
+    /// single-slot prefetch in `cuda::disk_prefetch::kick_off`.
+    fn find_next_disk_bf16_handle_after(
+        &self,
+        current_node_id: usize,
+    ) -> Option<crate::tensor::disk_tier::DiskTensorHandle> {
+        let steps = &self.plan.steps;
+        let current_pos = steps.iter().position(|s| match s {
+            ExecStep::Single(id) => *id == current_node_id,
+            _ => false,
+        })?;
+
+        for step in &steps[current_pos + 1..] {
+            let node_id = match step {
+                ExecStep::Single(id) => *id,
+                _ => continue,
+            };
+            let node = &self.nodes[node_id];
+            if !matches!(node.node_type, NodeType::MatMul) {
+                continue;
+            }
+            if node.inputs.len() < 2 {
+                continue;
+            }
+            let b_id = node.inputs[1];
+            let b_tensor = match self.nodes[b_id].output.as_ref() {
+                Some(t) => t,
+                None => continue,
+            };
+            if let TensorStorage::Disk(handle) = &b_tensor.storage {
+                if handle.dtype()
+                    == crate::tensor::disk_tier::DiskDtype::BF16
+                    && handle.numel().saturating_mul(2)
+                        <= crate::cuda::disk_prefetch::MAX_PREFETCH_BYTES
+                {
+                    return Some(handle.clone());
+                }
+            }
+        }
+        None
+    }
+
     /// Executes a single node without consulting guards.
     ///
     /// Guard evaluation is performed by the scheduler (see
@@ -2736,13 +2791,46 @@ impl Graph {
         if !record_tape {
             if let Some(plan) = &self.gpu_plan {
                 if let Some(seg) = plan.segments.iter().find(|s| s.start == node_id).cloned() {
-                    if !self.segment_has_bf16_or_disk_operands(&seg) {
+                    // **M8.7.1.a guard extension** — under
+                    // `ATENIA_M8_7_ENABLED=1` we ALWAYS skip the
+                    // legacy `exec_gpu_segment` regardless of the
+                    // segment's operand storage. The original
+                    // `segment_has_bf16_or_disk_operands` guard
+                    // (commit `c7b2ea9`) handled the BF16-resident
+                    // and Disk-tier cases, but plans with mostly
+                    // F32 RAM weights leave many segments where
+                    // every operand is `CpuShared` and the guard
+                    // lets `exec_gpu_segment` through. The legacy
+                    // path then routes through the F32 GPU pool
+                    // (`with_pooled_device_buffers`) and fails
+                    // intermittently with `TransferFailed` under
+                    // the M8.7.0 + M8.7.1.a load (VRAM
+                    // fragmentation from 198 staging alloc/free
+                    // cycles per token plus saturated NVMe).
+                    //
+                    // `try_gpu_matmul` (modern dispatch) declines
+                    // `CpuShared` operands strictly (only matches
+                    // `Cpu(Vec<f32>)`) and returns `false`, so the
+                    // caller falls through to the CPU AVX2 path —
+                    // bit-exact, just slower than the legacy GPU
+                    // pool would have been. M8.7.0's whole point
+                    // is replacing those slow Disk-tier matmuls
+                    // with streamed BF16 GPU dispatches; F32 RAM
+                    // matmuls are now in the minority and can
+                    // safely take the AVX2 fallback.
+                    let m8_7_enabled = std::env::var("ATENIA_M8_7_ENABLED")
+                        .as_deref()
+                        == Ok("1");
+                    if !self.segment_has_bf16_or_disk_operands(&seg)
+                        && !m8_7_enabled
+                    {
                         self.exec_gpu_segment(&seg);
                         // Timing handled by `NodeTimingRecorder` at function exit (M3-e.10).
                         return;
                     }
-                    // else: BF16/Disk operand present — fall through
-                    // to the modern dispatch below. No early return.
+                    // else: BF16/Disk operand OR M8.7.0 active —
+                    // fall through to the modern dispatch below.
+                    // No early return.
                 }
             }
         }
@@ -3232,8 +3320,28 @@ impl Graph {
                                     Layout::Contiguous,
                                     crate::tensor::DType::F32,
                                 );
+                                // **M8.7.1.a** — host-side prefetch
+                                // lookahead. Find the next MatMul in
+                                // the planned execution order whose B
+                                // operand is Disk(BF16) and pass its
+                                // handle to the dispatch so it can
+                                // kick off a background NVMe read
+                                // before this matmul's GPU pipeline
+                                // runs. The single-slot prefetch
+                                // contract in `cuda::disk_prefetch`
+                                // ensures correctness even when the
+                                // caller threads multiple disk-
+                                // streamed matmuls back-to-back.
+                                let next_handle =
+                                    self.find_next_disk_bf16_handle_after(node_id);
                                 if crate::cuda::matmul::cuda_matmul_disk_streamed_bf16(
-                                    &a_decoded, &b, &mut staged_out, m_jit, k_jit, n_jit,
+                                    &a_decoded,
+                                    &b,
+                                    &mut staged_out,
+                                    m_jit,
+                                    k_jit,
+                                    n_jit,
+                                    next_handle.as_ref(),
                                 ) {
                                     self.nodes[node_id].set_output(staged_out);
                                     return;
