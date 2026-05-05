@@ -44,6 +44,13 @@ pub(crate) fn storage_kind(t: &Tensor) -> &'static str {
         TensorStorage::CpuBf16Shared(_) => "CpuBf16Shared",
         TensorStorage::Cuda(_) => "Cuda",
         TensorStorage::Disk(_) => "Disk",
+        // M9.1 — INT8 W8A16 weight storage. The dispatch path
+        // does not encounter this variant in M9.2 production
+        // (the loader materialises BF16 in VRAM via
+        // `int8_to_bf16_in_vram` before any matmul); this arm
+        // is here for trace completeness under
+        // `--features gpu-trace`.
+        TensorStorage::CpuInt8 { .. } => "CpuInt8",
     }
 }
 
