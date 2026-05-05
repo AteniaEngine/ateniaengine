@@ -14,6 +14,15 @@ pub enum DType {
     F16,
     BF16,
     FP8,
+    /// **M9.1** — 8-bit signed integer with an off-tensor F32 scale
+    /// vector (per-output-channel symmetric absmax). The on-disk /
+    /// in-memory weight is `i8`; the dequantised value is
+    /// `f32 = (i8 as f32) * scale[col]`. Storage variants that
+    /// carry INT8 also carry the scales (see
+    /// [`TensorStorage::CpuInt8`]). Used by the M9 W8A16 path:
+    /// activations stay BF16/F32, weights live as INT8 to halve
+    /// the per-tensor byte cost vs BF16.
+    Int8,
 }
 
 impl DType {
@@ -23,6 +32,7 @@ impl DType {
             DType::F16 => 2,
             DType::BF16 => 2,
             DType::FP8 => 1,
+            DType::Int8 => 1,
         }
     }
 }
@@ -166,6 +176,48 @@ pub enum TensorStorage {
     /// `Tensor` away from the shared view; siblings that still
     /// hold the `Arc` keep their BF16 view intact.
     CpuBf16Shared(std::sync::Arc<Vec<u16>>),
+    /// **M9.1 — host-resident INT8 W8A16 weight storage.**
+    ///
+    /// Quantised weight bytes plus the per-output-channel F32 scale
+    /// vector that dequantises them. The contract is "weight-only
+    /// quantisation":
+    ///
+    ///   - `q.len() == shape.iter().product()` (`[K, N]` row-major
+    ///     for the standard 2D matmul weight; higher-rank tensors
+    ///     are not produced by the M9 quantizer today).
+    ///   - `scales.len() == shape[shape.len() - 1]` — one F32 per
+    ///     output column. Symmetric absmax (no zero-point) so
+    ///     `dequant(k, n) = (q[k, n] as f32) * scales[n]`.
+    ///   - `shape` is carried *inside the variant* (unusual relative
+    ///     to other variants) so the dequant kernel and CUDA wrapper
+    ///     can recover `K` and `N` from the storage alone — without
+    ///     reaching back to the owning [`Tensor::shape`]. The owning
+    ///     `Tensor::shape` mirrors this field; both must stay in
+    ///     lockstep, which the [`Tensor::new_cpu_int8`] constructor
+    ///     enforces.
+    ///
+    /// **Decode-on-access semantics, like `CpuBf16`.**
+    /// `copy_to_cpu_vec()` materialises a fresh `Vec<f32>` by
+    /// dequantising every element (`q × scale[col]`).
+    /// `as_cpu_slice()` / `as_cpu_slice_mut()` panic — the dequant
+    /// path requires per-call materialisation, not a borrowed
+    /// `&[f32]` view. Backward, training, and disk-spill paths
+    /// also panic when they encounter this variant in M9.1; the
+    /// quantiser is a one-way (load-time) transform and the variant
+    /// flows from `WeightMapper` → `WeightStore` → graph parameter
+    /// slots, never through gradients or migrations.
+    ///
+    /// Produced by [`crate::tensor::quantizer::absmax_per_channel_symmetric`]
+    /// (M9.1) and consumed by:
+    ///   - host-side: `copy_to_cpu_vec()` for diagnostics / tests.
+    ///   - device-side: [`crate::cuda::int8_to_bf16::int8_to_bf16_in_vram`]
+    ///     to upload the INT8 buffer + scales to VRAM and dispatch
+    ///     the M9.0 dequant kernel.
+    CpuInt8 {
+        q: Vec<i8>,
+        scales: Vec<f32>,
+        shape: Vec<usize>,
+    },
 }
 
 /// Decode a `u16` BF16 bit pattern into the corresponding `f32`.
@@ -493,6 +545,12 @@ impl Tensor {
             TensorStorage::CpuShared(_) => Ok(self),
             TensorStorage::CpuBf16(_) | TensorStorage::Disk(_)
             | TensorStorage::CpuBf16Shared(_) => self.ensure_cpu(),
+            // M9.1 — CpuInt8 dequantises through `ensure_cpu` to
+            // `Cpu(Vec<f32>)`. M9.2 will add a direct `CpuInt8 → Cuda`
+            // path that uploads INT8 + scales to VRAM and dispatches
+            // the M9.0 dequant kernel; M9.1's `ensure_decoded` falls
+            // back through CPU.
+            TensorStorage::CpuInt8 { .. } => self.ensure_cpu(),
         }
     }
 
@@ -716,6 +774,57 @@ impl Tensor {
         }
     }
 
+    /// **M9.1** — construct an INT8 W8A16 weight tensor.
+    ///
+    /// Wraps an already-quantised `Vec<i8>` plus its per-output-channel
+    /// F32 scale vector into a [`TensorStorage::CpuInt8`]. The shape
+    /// is carried *both* on the outer `Tensor::shape` and inside the
+    /// variant; this constructor enforces:
+    ///
+    ///   - `q.len() == shape.iter().product()`
+    ///   - `scales.len() == shape[shape.len() - 1]` (one scale per
+    ///     output column)
+    ///
+    /// The dtype tag is set to [`DType::Int8`]; the device is
+    /// [`Device::CPU`]; layout is contiguous. Use
+    /// [`crate::tensor::quantizer::absmax_per_channel_symmetric`] to
+    /// produce the `(q, scales)` pair from an F32 source weight.
+    ///
+    /// # Panics
+    /// Panics on any of the length / shape mismatches above. Panicking
+    /// in the constructor is the right contract here: silent
+    /// dequantisation against a malformed scales vector would produce
+    /// numerically-plausible-but-wrong output and is hard to diagnose
+    /// downstream.
+    pub fn new_cpu_int8(shape: Vec<usize>, q: Vec<i8>, scales: Vec<f32>) -> Self {
+        assert!(!shape.is_empty(),
+            "Tensor::new_cpu_int8: shape must be non-empty");
+        let expected_q: usize = shape.iter().product();
+        assert_eq!(
+            q.len(), expected_q,
+            "Tensor::new_cpu_int8: q.len() = {} does not match product(shape) = {} (shape = {:?})",
+            q.len(), expected_q, shape,
+        );
+        let expected_scales = *shape.last().unwrap();
+        assert_eq!(
+            scales.len(), expected_scales,
+            "Tensor::new_cpu_int8: scales.len() = {} does not match shape's last dim = {} (shape = {:?})",
+            scales.len(), expected_scales, shape,
+        );
+        let strides = Self::compute_strides(&shape, &Layout::Contiguous);
+        let inner_shape = shape.clone();
+        Self {
+            shape,
+            storage: TensorStorage::CpuInt8 { q, scales, shape: inner_shape },
+            device: Device::CPU,
+            dtype: DType::Int8,
+            layout: Layout::Contiguous,
+            strides,
+            grad: None,
+            op: None,
+        }
+    }
+
     /// Replaces the current storage with raw BF16 `bits` (M4.7.2).
     ///
     /// Mirrors [`Self::set_cpu_data`] for the BF16 path. Used by the
@@ -797,6 +906,12 @@ impl Tensor {
                 "Tensor::as_cpu_slice called on a Disk-resident tensor. \
                  Call ensure_cpu() first to materialize data back in host memory."
             ),
+            TensorStorage::CpuInt8 { .. } => panic!(
+                "Tensor::as_cpu_slice called on a CpuInt8 tensor. \
+                 INT8 storage is decode-on-access (M9.1): route through \
+                 copy_to_cpu_vec() to materialise a fresh dequantised \
+                 Vec<f32>, or ensure_cpu() to transition the variant."
+            ),
         }
     }
 
@@ -837,6 +952,13 @@ impl Tensor {
             TensorStorage::Disk(_) => panic!(
                 "Tensor::as_cpu_slice_mut called on a Disk-resident tensor. \
                  Call ensure_cpu() first to materialize data back in host memory."
+            ),
+            TensorStorage::CpuInt8 { .. } => panic!(
+                "Tensor::as_cpu_slice_mut called on a CpuInt8 tensor. \
+                 INT8 weights are read-only after quantisation (M9.1): \
+                 mutating in place would invalidate the per-channel scales. \
+                 Use copy_to_cpu_vec() for read access, or transition via \
+                 ensure_cpu() (which dequantises and drops the scales)."
             ),
         }
     }
@@ -916,6 +1038,29 @@ impl Tensor {
                         out
                     }
                 }
+            }
+            // M9.1 — INT8 dequant on access. The shape carried in the
+            // variant is the canonical source of N (last axis); the
+            // scales vector is `len = N`. Per-element dequant is
+            // `(q[k, n] as f32) * scales[n]` for the standard
+            // [K, N] row-major weight layout. No SIMD bulk path yet
+            // (M9.4 may add one if profiling shows it matters); the
+            // hot-path consumer is the GPU dispatch via
+            // `int8_to_bf16_in_vram`, which doesn't go through this
+            // function.
+            TensorStorage::CpuInt8 { q, scales, shape: int8_shape } => {
+                let n = *int8_shape.last().expect("CpuInt8: shape must be non-empty");
+                let total = q.len();
+                debug_assert_eq!(total, int8_shape.iter().product::<usize>(),
+                    "CpuInt8: q.len() must equal product(shape)");
+                debug_assert_eq!(scales.len(), n,
+                    "CpuInt8: scales.len() must equal shape's last dim (N)");
+                let mut out = vec![0.0_f32; total];
+                for idx in 0..total {
+                    let col = idx % n;
+                    out[idx] = (q[idx] as f32) * scales[col];
+                }
+                out
             }
         }
     }
@@ -1053,6 +1198,25 @@ impl Tensor {
                 self.dtype = DType::F32;
                 Ok(self)
             }
+            // M9.1 — INT8 → F32 dequant on transition. Same
+            // arithmetic as the `copy_to_cpu_vec` arm but mutates
+            // self.storage so subsequent calls hit the Cpu
+            // fast-path. The scales vector is dropped on transition
+            // — the dequantised F32 values are now self-describing.
+            TensorStorage::CpuInt8 { q, scales, shape: int8_shape } => {
+                let n = *int8_shape.last().expect("CpuInt8: shape must be non-empty");
+                let total = q.len();
+                debug_assert_eq!(total, int8_shape.iter().product::<usize>());
+                debug_assert_eq!(scales.len(), n);
+                let mut cpu_vec = vec![0.0_f32; total];
+                for idx in 0..total {
+                    let col = idx % n;
+                    cpu_vec[idx] = (q[idx] as f32) * scales[col];
+                }
+                self.storage = TensorStorage::Cpu(cpu_vec);
+                self.dtype = DType::F32;
+                Ok(self)
+            }
         }
     }
 
@@ -1089,7 +1253,13 @@ impl Tensor {
             self.storage,
             TensorStorage::Disk(_) | TensorStorage::CpuBf16(_)
                 | TensorStorage::CpuBf16Shared(_)
+                | TensorStorage::CpuInt8 { .. }
         ) {
+            // M9.1 — INT8 → Cuda follows the same two-hop pattern as
+            // BF16: dequantise to Cpu(Vec<f32>) here, then reuse the
+            // F32 H→D path below. M9.2 will add a direct INT8 → VRAM
+            // upload that uses `int8_to_bf16_in_vram` to materialise
+            // a BF16 weight on-device without bouncing through F32.
             self.ensure_cpu()?;
             // Fall through to the Cpu branch below.
         }
@@ -1112,7 +1282,8 @@ impl Tensor {
             TensorStorage::CpuBf16(_)
             | TensorStorage::CpuBf16Shared(_)
             | TensorStorage::Cuda(_)
-            | TensorStorage::Disk(_) => unreachable!(
+            | TensorStorage::Disk(_)
+            | TensorStorage::CpuInt8 { .. } => unreachable!(
                 "ensure_gpu reached a non-Cpu variant after the normalization step; \
                  this is a bug"
             ),

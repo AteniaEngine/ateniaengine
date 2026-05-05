@@ -5,6 +5,7 @@ pub mod linear;
 pub mod batch_matmul;
 pub mod fused_linear_silu;
 pub mod bf16_to_f32;
+pub mod int8_to_bf16;
 pub mod disk_prefetch;
 pub(crate) mod pool_helpers;
 
@@ -154,6 +155,21 @@ pub(crate) fn cuda_device_ptr(
                  lands with M6 (cuda_matmul non-pooled + offload)."
             )
         }
+        crate::tensor::TensorStorage::CpuInt8 { .. } => {
+            // M9.1 — INT8 weights have no F32 device pointer.
+            // The dedicated GPU path is `int8_to_bf16_in_vram`
+            // which uploads INT8 + scales and dequantises to a
+            // BF16 VRAM buffer; that buffer is then consumed via
+            // the existing BF16 dispatch. M9.2 wires this into
+            // `try_gpu_matmul`; until then, callers that reach
+            // this function with CpuInt8 storage are bugs.
+            unreachable!(
+                "cuda_device_ptr called on CpuInt8 storage — INT8 \
+                 weights flow through the dedicated \
+                 `int8_to_bf16_in_vram` upload path (M9.1+), not via \
+                 this F32 device pointer accessor."
+            )
+        }
     }
 }
 
@@ -193,6 +209,16 @@ pub(crate) fn cuda_device_ptr_mut(
                  Shared parameters are read-only by construction \
                  (M5.c.2.a) — call ensure_owned() first if mutation \
                  is needed."
+            )
+        }
+        crate::tensor::TensorStorage::CpuInt8 { .. } => {
+            // M9.1 — INT8 weights are read-only after quantisation
+            // (mutating in place would invalidate the per-channel
+            // scales). Mutable GPU access on an INT8 tensor is a bug
+            // by construction.
+            unreachable!(
+                "cuda_device_ptr_mut called on CpuInt8 storage — INT8 \
+                 weights are read-only after quantisation (M9.1)."
             )
         }
     }

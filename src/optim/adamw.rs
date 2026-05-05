@@ -87,6 +87,13 @@ impl AdamW {
                      against BF16 params requires F32 accumulators and \
                      a write-back path, which is M5+ territory."
                 ),
+                crate::tensor::TensorStorage::CpuInt8 { .. } => panic!(
+                    "AdamW: parameter is CpuInt8-resident (M9.1). \
+                     INT8 weight quantisation is a one-way load-time \
+                     transform; gradient updates would invalidate the \
+                     per-channel scales. Training against INT8 params \
+                     is out of M9 scope."
+                ),
             };
             for i in 0..grad.len() {
                 let g = grad[i];

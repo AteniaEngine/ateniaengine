@@ -356,6 +356,13 @@ impl TensorEntry<'_> {
                 "tensor '{}': FP8 decode not planned for M4 scope",
                 self.name
             ))),
+            DType::Int8 => Err(LoaderError::UnsupportedDType(format!(
+                "tensor '{}': INT8 weights are produced by the M9.1 \
+                 quantizer (`tensor::quantizer::absmax_per_channel_symmetric`), \
+                 not loaded directly from safetensors. Read the source \
+                 BF16/F32 weight, then quantise.",
+                self.name
+            ))),
         }
     }
 }
