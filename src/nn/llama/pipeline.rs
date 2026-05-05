@@ -189,28 +189,52 @@ impl GenerationPipeline {
         let index_path = model_dir.join("model.safetensors.index.json");
         let single_path = model_dir.join("model.safetensors");
 
-        // **M6 replan sub-fase 3** — opt-in tier-aware loader.
+        // **M6 replan sub-fase 3** — tier-aware loader (now default).
         //
-        // Default off → the legacy `WeightMapper::load_into` +
-        // `WeightStore::extract_from_graph` path runs unchanged,
-        // bit-exact with M5.f.a. With `ATENIA_TIER_AWARE_LOADER=1`
-        // the loader probes free RAM/VRAM, builds a `TierPlan`
-        // from the safetensors header metadata, and calls
-        // `load_into_with_residency_plan` so each tensor lands
-        // directly in its assigned tier (Vram / Ram / Disk).
-        // No post-load upload pass is needed; the legacy 4c
-        // block is skipped when this flag is on.
+        // Originally introduced as opt-in via `ATENIA_TIER_AWARE_LOADER=1`
+        // (D74 of `HANDOFF_APX_V20_M6.md`) until the placement policy was
+        // re-validated per environment. That validation completed across
+        // M6 (1.46× on 7B, bit-exact), M7 (13B without BSOD, automatic
+        // tiers), and M8 (1.31× on 7B, 1.36× on 13B, ADR-004 preserved),
+        // and the operator confirmed a 21.9 s/token 13B baseline through
+        // the tier-aware path.
+        //
+        // Therefore the policy is now inverted: the tier-aware loader
+        // runs by default, and operators set `ATENIA_LEGACY_LOADER=1` to
+        // force the pre-M6 `WeightMapper::load_into` +
+        // `WeightStore::extract_from_graph` path. D74's "default off"
+        // requirement is **superseded** by this commit.
+        //
+        // The deprecated `ATENIA_TIER_AWARE_LOADER` is still recognised
+        // (it's a no-op now since the path is default) with a one-line
+        // deprecation warning so existing scripts keep working through
+        // a grace period.
+        if std::env::var("ATENIA_TIER_AWARE_LOADER").as_deref() == Ok("1") {
+            eprintln!(
+                "[ATENIA] ATENIA_TIER_AWARE_LOADER is now the default and \
+                 will be removed in a future version. Use \
+                 ATENIA_LEGACY_LOADER=1 to opt out instead."
+            );
+        }
         let tier_aware =
-            std::env::var("ATENIA_TIER_AWARE_LOADER").as_deref() == Ok("1");
+            std::env::var("ATENIA_LEGACY_LOADER").as_deref() != Ok("1");
+        if !tier_aware {
+            eprintln!(
+                "[ATENIA] Legacy loader active (ATENIA_LEGACY_LOADER=1): \
+                 tier-aware placement disabled."
+            );
+        }
         let gpu_residency =
             std::env::var("ATENIA_GPU_RESIDENCY").as_deref() == Ok("1");
 
         if tier_aware && gpu_residency {
             eprintln!(
-                "[ATENIA] WARNING: ATENIA_TIER_AWARE_LOADER and \
-                 ATENIA_GPU_RESIDENCY are both set. The tier-aware \
+                "[ATENIA] WARNING: ATENIA_GPU_RESIDENCY is set but the \
+                 tier-aware loader is now the default. The tier-aware \
                  loader supersedes the post-load upload — the legacy \
-                 ATENIA_GPU_RESIDENCY block will be skipped."
+                 ATENIA_GPU_RESIDENCY block will be skipped. Set \
+                 ATENIA_LEGACY_LOADER=1 if you specifically need the \
+                 legacy upload path."
             );
         }
 
