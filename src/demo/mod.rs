@@ -357,7 +357,56 @@ pub fn build_and_load_llama(
         llama_weight_mapper(&cfg, &handles.param_names, &handles.param_ids)
             .expect("llama weight mapper");
     mapper.set_store_params_as_bf16(true);
-    let report = sharded.load_into(&mut graph, &mapper).expect("load");
+
+    // Tier-aware load (M6 + M7 + M8 + M8.7) — same path
+    // `LlamaPipeline::load` takes when `ATENIA_TIER_AWARE_LOADER=1`.
+    // Probes free RAM/VRAM, builds a `TierPlan` from the
+    // safetensors header metadata, and routes each parameter to
+    // its assigned tier (`Vram` / `Ram` / `Disk`) via
+    // `load_into_with_residency_plan`. The legacy `load_into` path
+    // produced `SharedParam::F32` / `Bf16` only — no GPU dispatch
+    // ever fired through the demo path because the M6 / M8
+    // dispatch hooks expect `SharedParam::Cuda` for the residency
+    // path.
+    let metas: Vec<crate::gpu::tier_plan::TensorMeta> = sharded
+        .collect_tensor_metas()
+        .expect("collect_tensor_metas");
+    let model_total_bytes: u64 = metas
+        .iter()
+        .map(|m| {
+            let numel = m.shape.iter().product::<usize>() as u64;
+            numel * (m.dtype.size_in_bytes() as u64)
+        })
+        .sum();
+    let kernel_dtype = if std::env::var("ATENIA_M8_BF16_KERNEL")
+        .as_deref()
+        == Ok("1")
+    {
+        crate::tensor::DType::BF16
+    } else {
+        crate::tensor::DType::F32
+    };
+    mapper.set_bf16_kernel_active(Some(
+        kernel_dtype == crate::tensor::DType::BF16,
+    ));
+    let plan_input = crate::gpu::tier_plan::TierPlanInput {
+        tensors: metas,
+        free_vram_bytes: crate::gpu::safety::resource_check::probe_free_vram_bytes(),
+        free_ram_bytes: crate::gpu::safety::resource_check::probe_free_ram_bytes(),
+        model_total_bytes,
+        total_ram_bytes: crate::gpu::safety::resource_check::probe_total_ram_bytes(),
+        kernel_dtype,
+    };
+    let plan = crate::gpu::tier_plan::plan(&plan_input);
+    let (_store, report) = sharded
+        .load_into_with_residency_plan(
+            &mut graph,
+            &mapper,
+            &plan,
+            &handles.param_ids,
+            &handles.param_names,
+        )
+        .expect("load_into_with_residency_plan");
     let load_secs = load_start.elapsed().as_secs_f32();
     if verbose {
         println!(

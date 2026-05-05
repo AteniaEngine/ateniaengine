@@ -32,13 +32,21 @@
 use std::time::Instant;
 
 use atenia_engine::amg::builder::GraphBuilder;
+use atenia_engine::cuda::matmul::{
+    disk_streamed_matmul_count, vram_bf16_matmul_count,
+};
 use atenia_engine::gpu::dispatch::hooks::{
     gpu_matmul_legacy_count, gpu_matmul_resident_count, gpu_matmul_roundtrip_count,
 };
+use atenia_engine::gpu::safety::resource_check::{
+    probe_free_ram_bytes, probe_free_vram_bytes, probe_total_ram_bytes,
+};
+use atenia_engine::gpu::tier_plan::{plan as tier_plan_fn, TensorMeta, TierPlanInput};
 use atenia_engine::nn::llama::{
     build_llama, llama_weight_mapper, LlamaConfig, LlamaRuntime,
 };
 use atenia_engine::tensor::tensor::Tensor;
+use atenia_engine::tensor::DType;
 use atenia_engine::v17::loader::sharded_reader::ShardedSafetensorsReader;
 
 /// Llama 2 13B Chat lives on the **internal NVMe (D:)** for the
@@ -117,7 +125,60 @@ fn main() {
     let mut mapper = llama_weight_mapper(&cfg, &handles.param_names, &handles.param_ids)
         .expect("llama weight mapper");
     mapper.set_store_params_as_bf16(true);
-    let report = sharded.load_into(&mut graph, &mapper).expect("load");
+
+    // Tier-aware load (M6 + M7 + M8 + M8.7) — same path
+    // `LlamaPipeline::load` takes when `ATENIA_TIER_AWARE_LOADER=1`.
+    // Probes free RAM/VRAM, builds a `TierPlan` from the
+    // safetensors header metadata, and routes each parameter to
+    // its assigned tier (`Vram` / `Ram` / `Disk`) via
+    // `load_into_with_residency_plan`. The legacy `load_into` path
+    // produced `SharedParam::F32` / `Bf16` only — no GPU dispatch
+    // ever fired through the demo because the M6 / M8 dispatch
+    // hooks expect `SharedParam::Cuda` for the residency path.
+    let metas: Vec<TensorMeta> = sharded
+        .collect_tensor_metas()
+        .expect("collect_tensor_metas");
+    let model_total_bytes: u64 = metas
+        .iter()
+        .map(|m| {
+            let numel = m.shape.iter().product::<usize>() as u64;
+            numel * (m.dtype.size_in_bytes() as u64)
+        })
+        .sum();
+    let kernel_dtype = if std::env::var("ATENIA_M8_BF16_KERNEL")
+        .as_deref()
+        == Ok("1")
+    {
+        DType::BF16
+    } else {
+        DType::F32
+    };
+    mapper.set_bf16_kernel_active(Some(kernel_dtype == DType::BF16));
+    let plan_input = TierPlanInput {
+        tensors: metas,
+        free_vram_bytes: probe_free_vram_bytes(),
+        free_ram_bytes: probe_free_ram_bytes(),
+        model_total_bytes,
+        total_ram_bytes: probe_total_ram_bytes(),
+        kernel_dtype,
+    };
+    let plan = tier_plan_fn(&plan_input);
+    eprintln!(
+        "    Tier plan: vram={} tensors ({:.2} GiB), ram={} tensors, disk={} tensors",
+        plan.vram_count(),
+        plan.vram_bytes_assigned as f64 / 1024.0_f64.powi(3),
+        plan.ram_count(),
+        plan.disk_count(),
+    );
+    let (_store, report) = sharded
+        .load_into_with_residency_plan(
+            &mut graph,
+            &mapper,
+            &plan,
+            &handles.param_ids,
+            &handles.param_names,
+        )
+        .expect("load_into_with_residency_plan");
     let load_secs = load_start.elapsed().as_secs_f32();
     println!(
         "    Loaded {} tensors in {:.2}s (~{:.0} MB/s)",
@@ -130,6 +191,8 @@ fn main() {
     let resident_before = gpu_matmul_resident_count();
     let roundtrip_before = gpu_matmul_roundtrip_count();
     let legacy_before = gpu_matmul_legacy_count();
+    let bf16_before = vram_bf16_matmul_count();
+    let disk_streamed_before = disk_streamed_matmul_count();
 
     // ---- Forward ----
     println!(
@@ -144,9 +207,13 @@ fn main() {
     let resident_after = gpu_matmul_resident_count();
     let roundtrip_after = gpu_matmul_roundtrip_count();
     let legacy_after = gpu_matmul_legacy_count();
+    let bf16_after = vram_bf16_matmul_count();
+    let disk_streamed_after = disk_streamed_matmul_count();
     let resident_delta = resident_after - resident_before;
     let roundtrip_delta = roundtrip_after - roundtrip_before;
     let legacy_delta = legacy_after - legacy_before;
+    let bf16_delta = bf16_after - bf16_before;
+    let disk_streamed_delta = disk_streamed_after - disk_streamed_before;
 
     let logits = &outputs[0];
     assert_eq!(logits.shape, vec![1, runtime.seq, cfg.vocab_size]);
@@ -164,6 +231,14 @@ fn main() {
         roundtrip_delta,
         legacy_delta,
         resident_delta + roundtrip_delta + legacy_delta,
+    );
+    println!(
+        "    BF16-resident matmuls (M8.4c): {}",
+        bf16_delta,
+    );
+    println!(
+        "    Disk-streamed matmuls (M8.7.0): {}",
+        disk_streamed_delta,
     );
     println!(
         "    Logit stats: max |v|={:.4}  mean |v|={:.4}  finite={}/{}",
