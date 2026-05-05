@@ -307,7 +307,10 @@ pub fn try_gpu_matmul(a: &Tensor, b: &Tensor, out: &mut Tensor) -> bool {
             "[GPU-TRACE] try_gpu_matmul: BRANCH=bf16_mixed_resident \
              (a=Cpu, b=Cuda(BF16), out=Cpu)"
         );
-        let ok = cuda_matmul_bf16_inplace(a, b, out, m, k, n);
+        // M8.7.1.r — pass `null` stream = default stream = bit-exact
+        // with M8.4c pre-M8.7.1.r. Future M8.7.1.b/c will swap this
+        // for a dedicated compute stream.
+        let ok = cuda_matmul_bf16_inplace(a, b, out, m, k, n, std::ptr::null_mut());
         if ok {
             // The BF16 path increments its own counter
             // (`vram_bf16_matmul_count`) inside

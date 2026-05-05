@@ -506,6 +506,26 @@ unsafe extern "C" {
 #[link(name = "cudart")]
 unsafe extern "C" {
     fn cudaDeviceSynchronize() -> c_int;
+    /// Async memcpy bound to a CUDA stream. With `stream = null`
+    /// (the default stream) this is functionally equivalent to
+    /// `cudaMemcpy` for non-pinned host buffers — the driver
+    /// pins/unpins internally and serializes against device work.
+    /// On a pinned host buffer + non-default stream the call
+    /// returns immediately and the copy proceeds in parallel
+    /// with other stream work.
+    fn cudaMemcpyAsync(
+        dst: *mut c_void,
+        src: *const c_void,
+        count: usize,
+        kind: c_int,
+        stream: *mut c_void,
+    ) -> c_int;
+    /// Block the calling host thread until every operation
+    /// previously enqueued on `stream` has finished. With
+    /// `stream = null` this synchronises the **default stream**
+    /// only, which is sufficient for the M8.4c contract because
+    /// every op runs on the default stream by construction.
+    fn cudaStreamSynchronize(stream: *mut c_void) -> c_int;
 }
 
 /// Wrapper around `cublasHandle_t` so the singleton can be `Send + Sync`.
@@ -631,6 +651,7 @@ pub fn cuda_matmul_bf16_inplace(
     m: usize,
     k: usize,
     n: usize,
+    stream: *mut c_void,
 ) -> bool {
     // 1. Validate b is a BF16-resident TensorGPU. Anything else is a
     //    caller bug or a non-M8 path; refuse and let the caller fall back.
@@ -681,13 +702,21 @@ pub fn cuda_matmul_bf16_inplace(
         None => return false,
     };
 
-    // 6. H→D upload of the F32 activation (no truncation).
+    // 6. **M8.7.1.r** — H→D upload of the F32 activation on the
+    //    caller-supplied `stream`. With `stream = null` this is
+    //    bit-exact with the M8.4c default-stream sync behaviour
+    //    (`cudaMemcpyAsync` on the default stream + non-pinned host
+    //    buffer degenerates to a synchronous copy in the driver).
+    //    With a non-null stream + pinned host buffer (M8.7.1.b)
+    //    the copy returns immediately and proceeds in parallel
+    //    with other stream work.
     unsafe {
-        let rc = cudaMemcpy(
+        let rc = cudaMemcpyAsync(
             d_a_f32,
             a_slice.as_ptr() as *const c_void,
             bytes_a_f32,
             CUDA_MEMCPY_HOST_TO_DEVICE,
+            stream,
         );
         if rc != 0 {
             return false;
@@ -700,9 +729,12 @@ pub fn cuda_matmul_bf16_inplace(
     let alpha: f32 = 1.0;
     let beta: f32 = 0.0;
     unsafe {
-        // Bind the handle to the default (synchronous) stream. M8.7
-        // will revisit this with explicit copy/compute streams.
-        let rc = cublasSetStream_v2(handle, std::ptr::null_mut());
+        // **M8.7.1.r** — bind the cuBLAS handle to the caller-
+        // supplied stream so the GEMM enqueues on the same stream
+        // as the H→D upload above and the D→H download below.
+        // With `stream = null` this is identical to the previous
+        // default-stream behaviour.
+        let rc = cublasSetStream_v2(handle, stream);
         if rc != 0 {
             return false;
         }
@@ -727,27 +759,40 @@ pub fn cuda_matmul_bf16_inplace(
         }
     }
 
-    // 7. Sync + D→H download into `out`. Default stream is implicit-sync
-    //    on memcpy, but an explicit `cudaDeviceSynchronize` makes the
-    //    timing semantics deterministic for tests and for the M8.5 smoke.
+    // 8. **M8.7.1.r** — D→H download on the same stream, then a
+    //    single `cudaStreamSynchronize` after the download to
+    //    block the host thread until the bytes are visible. Pre-
+    //    M8.7.1.r the M8.4c body did `cudaDeviceSynchronize`
+    //    between the GEMM and the D→H `cudaMemcpy` to defend
+    //    against potential reordering — that sync was a
+    //    device-wide barrier that serialised every CUDA stream,
+    //    blocking any prefetch / staging work the executor had
+    //    enqueued on side streams. The new pattern (single
+    //    `cudaStreamSynchronize` AFTER the D→H async memcpy)
+    //    preserves the in-stream FIFO ordering (cuBLAS GEMM →
+    //    `cudaMemcpyAsync` D→H → sync) without touching other
+    //    streams; default-stream callers see identical
+    //    behaviour because both forms drain the default stream
+    //    before returning.
     if out.ensure_cpu().is_err() {
         return false;
     }
     unsafe {
-        let rc = cudaDeviceSynchronize();
-        if rc != 0 {
-            return false;
-        }
         let out_slice = out.as_cpu_slice_mut();
         if out_slice.len() != m * n {
             return false;
         }
-        let rc = cudaMemcpy(
+        let rc = cudaMemcpyAsync(
             out_slice.as_mut_ptr() as *mut c_void,
             d_out_f32,
             bytes_out_f32,
             CUDA_MEMCPY_DEVICE_TO_HOST,
+            stream,
         );
+        if rc != 0 {
+            return false;
+        }
+        let rc = cudaStreamSynchronize(stream);
         if rc != 0 {
             return false;
         }
@@ -879,7 +924,10 @@ pub fn cuda_matmul_disk_streamed_bf16(
     //    `gpu.dtype() == BF16` (matmul.rs:638) so it routes
     //    correctly.
     let b_staged = Tensor::from_cuda_gpu(vec![k, n], staging_gpu);
-    if !cuda_matmul_bf16_inplace(a, &b_staged, out, m, k, n) {
+    // M8.7.1.r — pass `null` stream = default stream = bit-exact
+    // with the M8.4c-original behaviour. M8.7.1.b/c will swap
+    // this for a dedicated compute stream.
+    if !cuda_matmul_bf16_inplace(a, &b_staged, out, m, k, n, std::ptr::null_mut()) {
         return false;
     }
 
@@ -1052,8 +1100,11 @@ mod cuda_matmul_bf16_tests {
             .unwrap_or_else(|| panic!("[{}] bf16_to_vram_no_upcast returned None", label));
         let b_tensor = Tensor::from_cuda_gpu(vec![k, n], gpu);
 
-        // Dispatch.
-        let ok = cuda_matmul_bf16_inplace(&a_tensor, &b_tensor, &mut out_tensor, m, k, n);
+        // Dispatch. `stream = null` selects the default stream,
+        // bit-exact with the M8.4c-original behaviour pre-M8.7.1.r.
+        let ok = cuda_matmul_bf16_inplace(
+            &a_tensor, &b_tensor, &mut out_tensor, m, k, n, std::ptr::null_mut(),
+        );
         assert!(
             ok,
             "[{}] cuda_matmul_bf16_inplace returned false on a known-good triple",
@@ -1201,8 +1252,17 @@ mod cuda_matmul_bf16_tests {
         let a_tensor = Tensor::new_cpu(vec![m, k], a_host.clone());
         let mut out_tensor = Tensor::new_cpu(vec![m, n], vec![0.0_f32; m * n]);
 
-        let ok =
-            super::cuda_matmul_bf16_inplace(&a_tensor, &b_tensor, &mut out_tensor, m, k, n);
+        // M8.7.1.r — `stream = null` = default stream = pre-M8.7.1.r
+        // behaviour bit-exact.
+        let ok = super::cuda_matmul_bf16_inplace(
+            &a_tensor,
+            &b_tensor,
+            &mut out_tensor,
+            m,
+            k,
+            n,
+            std::ptr::null_mut(),
+        );
         assert!(ok, "M8.4c dispatcher must accept BF16-resident triple");
 
         // F32 reference vs the BF16-decoded weight.
