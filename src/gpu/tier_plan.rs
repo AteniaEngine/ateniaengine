@@ -431,10 +431,80 @@ fn resolve_ram_headroom(model_total_bytes: u64, free_ram_bytes: u64) -> (u64, u6
 /// Internal bin-packer. `vram_budget_bytes` is the post-headroom (and
 /// post-staging-reservation, when applicable) VRAM budget — the
 /// planner will not subtract `VRAM_HEADROOM_BYTES` again.
+///
+/// **M9.6 (post-13B-smoke)** — two-pass design.
+///
+/// The first pass simulates the VRAM bin-packing without producing
+/// assignments, accumulating the source-dtype byte cost of every
+/// tensor that would land on VRAM. The "RAM pressure" — the bytes
+/// that will *not* land on VRAM and therefore compete for the RAM
+/// budget — is `model_total_bytes - vram_assigned_in_source_dtype`.
+/// The adaptive headroom rule (M7.2) is then evaluated against
+/// that pressure number, **not** against `model_total_bytes`.
+///
+/// Why this matters: the M7.2 rule was calibrated for the M4.7
+/// scenario where the entire model loaded into RAM (no tier-aware
+/// loader yet). M6+ sends substantial fractions of the model to
+/// VRAM and / or the M8.7 Disk-streaming pipeline; the in-RAM
+/// working set is much smaller than `model_total_bytes`. The 13B
+/// smoke (M9 honest cost, commit `997fd8c`) reserved 16.51 GiB of
+/// headroom on a 22.47 GiB free-RAM box and forced 137 tensors to
+/// Disk while runtime peak RAM stayed at 14.9 GiB. Adding the
+/// `ATENIA_RAM_HEADROOM_OVERRIDE_GIB=8` operator override (commit
+/// `d6e084c`) recovered 17.7 s/tok (vs 25.6 with the bad
+/// accounting and 20.7 M8.7 baseline). This commit replaces the
+/// override workaround with a structurally correct calculation:
+/// the headroom now matches the *post-VRAM* pressure, not the
+/// model total.
+///
+/// The override env var still wins when set — `resolve_ram_headroom`
+/// reads it first; this change only affects the M7.2 default path.
+///
+/// Backward compatibility:
+/// - When `free_vram_bytes = 0` (CPU-only / pre-M6 scenario),
+///   `vram_assigned = 0`, `ram_pressure = model_total_bytes`, and
+///   the M7.2 trigger fires exactly as before — preserves the
+///   M4.7.6.d BSOD-prevention contract.
+/// - When the model fits cleanly in VRAM + RAM (small models),
+///   the trigger does not fire under either calculation.
+/// - The two-pass cost is one extra walk of the tensor list with
+///   no allocations beyond a single u64 accumulator. Negligible.
 fn plan_inner(input: &TierPlanInput, vram_budget_bytes: u64) -> TierPlan {
-    let (ram_headroom, overflow) =
-        resolve_ram_headroom(input.model_total_bytes, input.free_ram_bytes);
+    // ---- Pass 1: dry VRAM simulation. -----------------------------
+    //
+    // Accumulate the **source-dtype** byte cost (`ram_cost_bytes`)
+    // of every tensor that would land on VRAM in this budget.
+    // Source-dtype is the right unit because `model_total_bytes`
+    // is also a sum of source-dtype bytes (see `pipeline.rs::sum_model_bytes`
+    // and `demo/mod.rs`); subtracting one from the other yields a
+    // RAM-pressure value in the same units, free of the M9 INT8
+    // cost-vs-allocation discrepancy.
+    let mut vram_remaining_dry = vram_budget_bytes;
+    let mut vram_assigned_in_source_dtype: u64 = 0;
+    for meta in &input.tensors {
+        if !is_gpu_eligible(meta) {
+            continue;
+        }
+        let vram_cost = meta.vram_cost_bytes(input.kernel_dtype);
+        if vram_remaining_dry >= vram_cost {
+            vram_remaining_dry -= vram_cost;
+            vram_assigned_in_source_dtype += meta.ram_cost_bytes();
+        }
+    }
+    let ram_pressure_bytes = input
+        .model_total_bytes
+        .saturating_sub(vram_assigned_in_source_dtype);
 
+    // ---- Headroom against the post-VRAM pressure. ------------------
+    //
+    // `resolve_ram_headroom` still reads
+    // `ATENIA_RAM_HEADROOM_OVERRIDE_GIB` first; if set, the M7.2
+    // computation below is bypassed entirely. This change makes
+    // the default path correct so the override becomes optional.
+    let (ram_headroom, overflow) =
+        resolve_ram_headroom(ram_pressure_bytes, input.free_ram_bytes);
+
+    // ---- Pass 2: real bin-packing with the corrected headroom. -----
     let mut vram_remaining = vram_budget_bytes;
     let mut ram_remaining = input.free_ram_bytes.saturating_sub(ram_headroom);
 
@@ -1276,12 +1346,28 @@ mod tests {
         let tensors = synth_13b_model();
         let model_total = sum_model_bytes(&tensors);
 
+        // **M9.6 update**: under the corrected post-VRAM headroom
+        // calculation, 13B on a 26 GiB free-RAM box now fits
+        // without Disk overflow (the M7.2 over-conservative path
+        // is fixed). To still exercise the M8.7 staging-reservation
+        // re-plan, this test now uses a tighter `free_ram_bytes`
+        // (16 GiB) so the adaptive trigger fires on the post-VRAM
+        // pressure (24.24 - 6.96 = 17.29 GiB > 0.7 × 16 = 11.2 GiB).
+        // The reduced free_ram pushes ~5 GiB to Disk, exactly the
+        // condition the staging reservation is meant to handle.
         let input = TierPlanInput {
             tensors,
             // 8 GiB free VRAM → 7 GiB usable after the M8 headroom,
             // matching the production 13B-on-this-box configuration.
             free_vram_bytes: 8 * 1024 * 1024 * 1024,
-            free_ram_bytes: 26 * 1024 * 1024 * 1024,
+            // 16 GiB free RAM — tight enough that the post-VRAM
+            // pressure (~17.3 GiB) overflows even after headroom,
+            // forcing Disk assignment. The same input pre-M9.6
+            // would have triggered Disk on the 26 GiB baseline by
+            // (incorrectly) accounting against full 24 GiB
+            // model_total; this test now matches the real
+            // post-fix semantics.
+            free_ram_bytes: 16 * 1024 * 1024 * 1024,
             model_total_bytes: model_total,
             total_ram_bytes: 32 * 1024 * 1024 * 1024,
             kernel_dtype: DType::BF16,
@@ -1297,7 +1383,9 @@ mod tests {
         // otherwise the staging reservation wouldn't apply.
         assert!(
             p_baseline.disk_bytes_assigned > 0,
-            "test precondition: 13B/32GiB must overflow to Disk in baseline"
+            "test precondition: 13B/16GiB-RAM must overflow to Disk \
+             in the baseline (post-VRAM pressure 17.3 GiB > usable \
+             RAM ~6.7 GiB after M9.6 headroom 9.3 GiB)"
         );
 
         // The public planner should detect Disk overflow and re-plan
@@ -1338,12 +1426,35 @@ mod tests {
             p.vram_bytes_assigned
         );
 
-        // RAM headroom invariant: must be untouched (staging only
-        // touches the VRAM budget, not the RAM headroom rule).
-        assert_eq!(p.ram_headroom_bytes, p_baseline.ram_headroom_bytes);
-        assert_eq!(
+        // **M9.6 update** — RAM headroom monotonicity invariant.
+        //
+        // Pre-M9.6 the headroom was computed against the full
+        // `model_total_bytes`, so the staging reservation (which
+        // only changes the VRAM budget) had zero effect on the RAM
+        // headroom — the test asserted bit-equality.
+        //
+        // Post-M9.6 the headroom is computed against the post-VRAM
+        // pressure (`model_total - vram_assigned_in_source_dtype`).
+        // When the staging reservation tightens the VRAM budget,
+        // the dry-run vram_assigned drops by ~270 MiB and
+        // ram_pressure climbs by the same amount; the headroom may
+        // grow proportionally (or the trigger may become more
+        // aggressive). The invariant we still pin: the staged
+        // plan's RAM headroom is **never smaller** than the
+        // baseline's (more pressure ⇒ ≥ same headroom).
+        assert!(
+            p.ram_headroom_bytes >= p_baseline.ram_headroom_bytes,
+            "M9.6: staged plan RAM headroom ({} B) must be ≥ baseline \
+             ({} B); tightening VRAM should never reduce RAM headroom",
+            p.ram_headroom_bytes,
+            p_baseline.ram_headroom_bytes,
+        );
+        assert!(
+            p.ram_headroom_overflow_bytes >= p_baseline.ram_headroom_overflow_bytes,
+            "M9.6: staged plan adaptive overflow ({} B) must be ≥ baseline \
+             ({} B); same monotonicity argument",
             p.ram_headroom_overflow_bytes,
-            p_baseline.ram_headroom_overflow_bytes
+            p_baseline.ram_headroom_overflow_bytes,
         );
 
         // Observability — `cargo test -- --nocapture` prints the
