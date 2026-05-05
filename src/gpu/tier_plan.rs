@@ -372,12 +372,68 @@ pub fn plan(input: &TierPlanInput) -> TierPlan {
     plan_inner(input, m8_7_budget)
 }
 
+/// **M9.6 (post-smoke)** — operator-side override of the M7.2
+/// adaptive RAM headroom rule.
+///
+/// Reads `ATENIA_RAM_HEADROOM_OVERRIDE_GIB`. If set to a parseable
+/// non-negative integer, the planner uses **that fixed value (in
+/// GiB)** as the RAM headroom and bypasses the adaptive trigger
+/// from [`adaptive_ram_headroom`]. If unset or unparseable, the
+/// M7.2 rule applies unchanged.
+///
+/// Use case: the M7.2 rule was calibrated against the M4.7 BSOD
+/// scenario where the *whole* model loaded into RAM (the tier-
+/// aware loader did not exist yet). M8/M9 send a substantial
+/// fraction of the model to VRAM, BF16-resident dispatch, or
+/// Disk-streaming pipeline; the in-RAM working set is much
+/// smaller than `model_total_bytes`. Empirically (M9 13B smoke),
+/// the adaptive rule reserved 16.51 GiB on a 22.47 GiB free-RAM
+/// box and forced 137 tensors to Disk while runtime peak RAM
+/// usage stayed at 14.9 GiB. This override lets a knowledgeable
+/// operator dial the headroom down explicitly.
+///
+/// **Operator assumes the BSOD risk** if they set the override
+/// below what the model actually needs. The flag is opt-in by
+/// design — the M7.2 default protects naive operators.
+///
+/// Returns `(ram_headroom_bytes, overflow_bytes)`. Under the
+/// override, `overflow_bytes` is reported as 0 (the adaptive
+/// trigger did not run).
+fn resolve_ram_headroom(model_total_bytes: u64, free_ram_bytes: u64) -> (u64, u64) {
+    if let Ok(v) = std::env::var("ATENIA_RAM_HEADROOM_OVERRIDE_GIB") {
+        if let Ok(gib) = v.trim().parse::<u64>() {
+            let headroom_bytes = gib * 1024 * 1024 * 1024;
+            // Operator-visible log so the smoke output makes the
+            // override and its risk obvious. crate::apx_is_silent()
+            // suppresses for tests / quiet runs.
+            if !crate::apx_is_silent() {
+                eprintln!(
+                    "[ATENIA] RAM headroom override: {} GiB \
+                     (ATENIA_RAM_HEADROOM_OVERRIDE_GIB={}, adaptive M7.2 bypassed — \
+                     operator assumes BSOD risk if model exceeds free RAM after this floor)",
+                    gib, v.trim(),
+                );
+            }
+            return (headroom_bytes, 0);
+        }
+        // Unparseable → log a warning but fall back to M7.2.
+        if !crate::apx_is_silent() {
+            eprintln!(
+                "[ATENIA] WARN: ATENIA_RAM_HEADROOM_OVERRIDE_GIB={:?} could not be parsed \
+                 as a non-negative integer; falling back to M7.2 adaptive headroom.",
+                v,
+            );
+        }
+    }
+    adaptive_ram_headroom(model_total_bytes, free_ram_bytes)
+}
+
 /// Internal bin-packer. `vram_budget_bytes` is the post-headroom (and
 /// post-staging-reservation, when applicable) VRAM budget — the
 /// planner will not subtract `VRAM_HEADROOM_BYTES` again.
 fn plan_inner(input: &TierPlanInput, vram_budget_bytes: u64) -> TierPlan {
     let (ram_headroom, overflow) =
-        adaptive_ram_headroom(input.model_total_bytes, input.free_ram_bytes);
+        resolve_ram_headroom(input.model_total_bytes, input.free_ram_bytes);
 
     let mut vram_remaining = vram_budget_bytes;
     let mut ram_remaining = input.free_ram_bytes.saturating_sub(ram_headroom);
@@ -1507,6 +1563,77 @@ mod tests {
              residency lands; until then they MUST match.",
             on, off,
         );
+    }
+
+    // -----------------------------------------------------------------
+    // M9.6 — RAM headroom override (operator opt-in to bypass M7.2).
+    // -----------------------------------------------------------------
+
+    /// Same env-var-serialisation discipline as the M9.2 lock —
+    /// `resolve_ram_headroom` reads a process-global env var so
+    /// parallel tests would race.
+    static M9_6_HEADROOM_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// **M9.6** — `resolve_ram_headroom` returns the override
+    /// when the env var is set, ignoring the M7.2 adaptive rule.
+    #[test]
+    fn m9_6_ram_headroom_override_bypasses_adaptive() {
+        let _g = M9_6_HEADROOM_LOCK.lock().unwrap();
+        let gib = 1024u64 * 1024 * 1024;
+
+        // Adaptive baseline: 13B-class model on a 32 GiB-free box
+        // triggers ~9.6 GiB extra → headroom 17.6 GiB total.
+        unsafe { std::env::remove_var("ATENIA_RAM_HEADROOM_OVERRIDE_GIB"); }
+        let (h_adaptive, o_adaptive) = resolve_ram_headroom(24 * gib, 32 * gib);
+        assert!(o_adaptive > 0, "adaptive trigger should fire on this model/free pair");
+        assert!(h_adaptive >= RAM_HEADROOM_BASE_BYTES + o_adaptive);
+
+        // Override: fixed 8 GiB, adaptive bypassed.
+        unsafe { std::env::set_var("ATENIA_RAM_HEADROOM_OVERRIDE_GIB", "8"); }
+        let (h_override, o_override) = resolve_ram_headroom(24 * gib, 32 * gib);
+        assert_eq!(h_override, 8 * gib,
+            "override = 8 GiB must produce headroom of exactly 8 GiB");
+        assert_eq!(o_override, 0,
+            "override path reports overflow = 0 (adaptive did not run)");
+        assert!(h_override < h_adaptive,
+            "override must produce a smaller headroom than the adaptive default \
+             on this model (otherwise the override is pointless)");
+
+        unsafe { std::env::remove_var("ATENIA_RAM_HEADROOM_OVERRIDE_GIB"); }
+    }
+
+    /// **M9.6** — unparseable override falls back to adaptive rule
+    /// (defensive: malformed env vars don't silently disable the
+    /// safety net).
+    #[test]
+    fn m9_6_ram_headroom_override_falls_back_on_garbage() {
+        let _g = M9_6_HEADROOM_LOCK.lock().unwrap();
+        let gib = 1024u64 * 1024 * 1024;
+
+        unsafe { std::env::set_var("ATENIA_RAM_HEADROOM_OVERRIDE_GIB", "not_a_number"); }
+        let (h, _) = resolve_ram_headroom(24 * gib, 32 * gib);
+        unsafe { std::env::remove_var("ATENIA_RAM_HEADROOM_OVERRIDE_GIB"); }
+
+        let (h_adaptive, _) = adaptive_ram_headroom(24 * gib, 32 * gib);
+        assert_eq!(h, h_adaptive,
+            "unparseable override must fall back to M7.2 adaptive headroom");
+    }
+
+    /// **M9.6** — override = 0 GiB is *legal* (operator wants no
+    /// headroom). The planner will then use the entire free_ram
+    /// budget for tensors. This is dangerous and the operator
+    /// owns the risk; the resolver does not protect against it.
+    #[test]
+    fn m9_6_ram_headroom_override_accepts_zero() {
+        let _g = M9_6_HEADROOM_LOCK.lock().unwrap();
+        let gib = 1024u64 * 1024 * 1024;
+
+        unsafe { std::env::set_var("ATENIA_RAM_HEADROOM_OVERRIDE_GIB", "0"); }
+        let (h, o) = resolve_ram_headroom(24 * gib, 32 * gib);
+        unsafe { std::env::remove_var("ATENIA_RAM_HEADROOM_OVERRIDE_GIB"); }
+
+        assert_eq!(h, 0);
+        assert_eq!(o, 0);
     }
 
     /// **M9.2 regression** — without the flag the planner is
