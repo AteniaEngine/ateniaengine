@@ -330,7 +330,7 @@ Architecture in place, full end-to-end wiring in progress:
   - 4 of 5 `PolicySignalKind` variants produced; `FragmentationWarning` deferred
   - `FailureCounter` and `LatencyMonitor` as internal state producers
 
-**v20 — Real model runtime integration (in progress, M1–M8 closed):**
+**v20 — Real model runtime integration (in progress, M1–M8.6 closed):**
 
 | Milestone | What it closed | HANDOFF |
 |---|---|---|
@@ -343,7 +343,9 @@ Architecture in place, full end-to-end wiring in progress:
 | **M6** | Tier-aware GPU loader. **1.46×** on Llama 2 7B Chat with bit-identical output | [M6](./docs/HANDOFF_APX_V20_M6.md) |
 | **M7** | 13B-friendly tiers. Disk fast-path + adaptive RAM headroom; 13B on 32 GiB box without BSOD | [M7](./docs/HANDOFF_APX_V20_M7.md) |
 | **M8** | BF16-resident VRAM kernels (Path B). **1.31× on 7B / 1.36× on 13B**; F64 4-model passes ADR-004 with margin 21–12,500× | [M8](./docs/HANDOFF_APX_V20_M8.md) |
-| **M8.7** *(next active)* | Disk → GPU JIT pipeline. Projection **~5–7 s/tok for the 13B** based on M8.0b's measured 32.7 ms / 135 MiB pipelined throughput | — |
+| **M8.7** | Disk → GPU JIT pipeline. **20.7 s/tok on 13B (1.30× over M8 baseline)**, 154 disk-streamed matmuls per forward, 98.7 % CPU-prefetch hit rate, argmax bit-exact with M8 | [M8.7](./docs/HANDOFF_APX_V20_M8.7.md) |
+| **M8.6** | BF16 KV cache (D62 resolved). Default flipped on after TinyLlama 1.1B determinism fixture came back bit-identical; **3.2 GiB → 1.6 GiB at seq=2048** on Llama 2 13B; `ATENIA_LEGACY_F32_KV_CACHE=1` opt-out | [M8.6](./docs/HANDOFF_APX_V20_M8.6.md) |
+| **M9** *(next active)* | INT8 weight quantisation (W8A16 per-channel). Target: 13B 24 GiB BF16 → 12 GiB INT8, eliminating the Disk overflow problem space rather than optimising within it | — |
 
 **Later:**
 

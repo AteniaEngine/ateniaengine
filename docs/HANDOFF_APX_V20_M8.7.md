@@ -207,8 +207,8 @@ within it.
   via M8.7.1.a (98.7 % hit rate).
 - **`Graph::execute_inference` provides the inference fast
   path.** Record-tape gating on backward-incompatible kernels
-  (M8.7.0 streaming, future M8.6 BF16 KV cache, etc.) becomes a
-  drop-in pattern.
+  (M8.7.0 streaming, M8.6 BF16 KV cache landed in commit
+  `4398183`, etc.) becomes a drop-in pattern.
 - **`exec_gpu_segment` deprecation contract documented.** The
   guard already disables the legacy path under M8.7; full removal
   is tracked.
@@ -221,9 +221,12 @@ within it.
   extended). Hardware blocker on the dev box (free VRAM working
   set ~540 MiB vs ~670 MiB peak). Re-enabling on a 24 GB-class
   GPU is a ~600-line pure addition.
-- **M8.6 (BF16 KV cache, D62).** Independent ~1-day side path
-  documented in `HANDOFF_M8.md`. Saves 1.6 GiB of RAM in seq_len
-  2048 on 13B. Unblocked, not gated by M8.7.
+- **M8.6 (BF16 KV cache, D62).** ✅ Closed in commit `4398183`
+  (tag `v0.8.6-m8.6`). The independent 1-day side path landed
+  after M8.7. Headlines: 3.2 GiB → 1.6 GiB at seq=2048 on 13B,
+  TinyLlama 1.1B determinism fixture bit-identical, opt-out via
+  `ATENIA_LEGACY_F32_KV_CACHE=1`. See
+  [HANDOFF M8.6](./HANDOFF_APX_V20_M8.6.md).
 - **`exec_gpu_segment` removal.** The path is unused under M8.7
   but still compiled in. APX 4.x test surface needs an audit
   before removal. Tracked in `docs/TECH_DEBT.md`.

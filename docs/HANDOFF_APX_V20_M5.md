@@ -126,8 +126,16 @@ lands as M5.5 / M6 once correctness is locked.
 KV cache currently stores F32 — half the memory at BF16
 costs ~30% extra compute on the decode-step concat path,
 not worth the complexity to ship in M5 correctness.
-**Status:** F32 shipped in M5.b; BF16 upgrade is M5.f.b
-work (deferred — not a closure blocker).
+**Status (updated 2026-05):** F32 shipped in M5.b. **BF16
+upgrade resolved in M8.6.1** (commit `4398183`, tag
+`v0.8.6-m8.6`). The graph itself stays F32; the cast is
+applied only in the runtime ledger between
+`harvest_cache_*` and the next step's
+`overwrite_parameter`. TinyLlama 1.1B determinism
+fixture came back bit-identical under the BF16 default
+(zero token drift on 8-token gen), so the upgrade is
+on by default with `ATENIA_LEGACY_F32_KV_CACHE=1` as
+the opt-out. See [HANDOFF M8.6](./HANDOFF_APX_V20_M8.6.md).
 
 ### D63. Perplexity validation as M5.f acceptance gate
 
@@ -368,11 +376,13 @@ once M6 lands GPU offload at production-shape matmuls.
 
 ### M5.f.b deferrals
 
-- **BF16 KV cache** (D62 second phase). F32 cache works;
-  BF16 would halve the cache RAM at decode time. Not on the
-  M5 critical path because the cache is small relative to
-  the model: at seq=2048 on 13B, F32 cache is 3.2 GiB —
-  irrelevant against 24 GiB of weights.
+- **BF16 KV cache** (D62 second phase). **Resolved in M8.6.1
+  (`4398183`, tag `v0.8.6-m8.6`)** — see
+  [HANDOFF M8.6](./HANDOFF_APX_V20_M8.6.md). At M5 close this
+  was deferred because the F32 cache (3.2 GiB at seq=2048 on
+  13B) was small against 24 GiB of weights; M8.6 picked it up
+  as a 1-day side path once the M9 INT8 prep work made the
+  KV-cache RAM line item more relevant to the planner budget.
 - **Perplexity validation** (D63). The R2 graph-level proof
   + the D67 determinism fixture + the visible coherence on
   13B are stronger evidence at M5 close than a perplexity

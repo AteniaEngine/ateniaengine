@@ -246,7 +246,14 @@ resolved under Path B.
 Two natural follow-ups, each with its own gating data already
 landed in the M8 cycle:
 
-### Option 1 — M8.6 (BF16 KV cache, D62)
+### Option 1 — M8.6 (BF16 KV cache, D62) ✅ **closed**
+
+> **Update (2026-05):** This option was picked up after M8.7 and
+> closed in commit `4398183` (tag `v0.8.6-m8.6`). The full
+> closing notes — sub-phase ledger, validation gates, API
+> surface, and hand-off to M9 — live in
+> [HANDOFF M8.6](./HANDOFF_APX_V20_M8.6.md). The historical
+> framing below is preserved for context.
 
 Cheap, deterministic, well-scoped. Migrate `KvCache` from F32
 to BF16 with cast on write/read. Validate ADR-004 (envelope

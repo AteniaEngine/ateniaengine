@@ -1,6 +1,6 @@
 # TECH DEBT — known pre-existing failures
 
-Last reviewed: tier-aware loader default flip (commit `afaa975`).
+Last reviewed: M8.6.1 BF16 KV cache default flip (commit `4398183`).
 
 ## `exec_gpu_segment` (APX 4.3 legacy) deprecation
 
@@ -114,6 +114,29 @@ to call the helper.
 20.85s baseline (since CPU AVX2 matmul on 159 disk weights
 dominates today), `cargo test --lib` 185/185 + the existing
 M8.7.0 ignored CUDA test still passing.
+
+## `ATENIA_BF16_KV_CACHE` deprecation (M8.6.1)
+
+The opt-in flag from M8.6.0 (`b796eaa`) was inverted at commit
+`4398183` once the TinyLlama 1.1B-Chat 8-token determinism
+fixture came back bit-identical under the BF16 ledger. BF16 is
+now the default; `ATENIA_LEGACY_F32_KV_CACHE=1` is the new
+opt-out. The deprecated flag `ATENIA_BF16_KV_CACHE` is still
+recognised — it becomes a silent no-op because the path is
+default — and **does not** emit a deprecation warning, because
+the flag's intent (BF16 ledger) is exactly what the new default
+delivers; warning would be noise.
+
+**Removal plan**: keep the silent-no-op stub through one more
+major milestone (M9 or M10, whichever lands first) so external
+scripts that still set the flag have a chance to drop it. Then
+delete the read entirely from `src/nn/llama/generator.rs`. The
+opt-out variable `ATENIA_LEGACY_F32_KV_CACHE` stays indefinitely
+— it preserves the M5.b F32 cache path as an emergency rollback
+for any future operator who hits a model where the BF16 round-
+trip drift is not tolerable. See
+[HANDOFF M8.6 §3](./HANDOFF_APX_V20_M8.6.md#3-decisions) (D87 +
+D88) for the full decision record.
 
 ## `ATENIA_TIER_AWARE_LOADER` deprecation
 
