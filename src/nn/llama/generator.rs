@@ -44,7 +44,9 @@ use std::io::Write;
 
 use crate::amg::builder::GraphBuilder;
 use crate::amg::graph::Graph;
-use crate::amg::kv_cache::{KvCacheBuildSpec, KvCacheHandles};
+use crate::amg::kv_cache::{
+    cast_kv_cell_bf16_to_f32, cast_kv_cell_f32_to_bf16, KvCacheBuildSpec, KvCacheHandles,
+};
 use crate::amg::weight_store::WeightStore;
 use crate::nn::llama::config::LlamaConfig;
 use crate::tensor::Tensor;
@@ -194,6 +196,20 @@ where
     let prompt_len = prompt_ids.len();
     let vocab = cfg.vocab_size;
 
+    // M8.6 — BF16 KV cache opt-in. Read once at the entry
+    // point so a long generation cannot toggle mid-flight.
+    // When `ATENIA_BF16_KV_CACHE=1`, harvested K/V tensors
+    // are truncated to BF16 in the runtime ledger between
+    // decode steps, halving the resident byte cost (1.6 GiB
+    // savings at seq=2048 on Llama 2 13B). The graph itself
+    // stays F32: each step decodes BF16 → F32 right before
+    // `overwrite_parameter` so the compute path is bit-exact
+    // with the F32-cache path modulo a single BF16 round-trip
+    // (drift envelope ~3e-3, well under ADR-004's 0.5).
+    let bf16_kv = std::env::var("ATENIA_BF16_KV_CACHE")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+
     // ---- Prefill ----
     let prefill_tokens: Vec<f32> = prompt_ids.iter().map(|&t| t as f32).collect();
     let prefill_input = Tensor::new_cpu(vec![1, prompt_len], prefill_tokens);
@@ -222,6 +238,11 @@ where
     let kv_handles = h.kv_handles.expect("prefill must produce kv_handles");
     let mut cache_k = harvest_cache_k(&g_prefill, &kv_handles);
     let mut cache_v = harvest_cache_v(&g_prefill, &kv_handles);
+    // M8.6 — truncate ledger to BF16 if enabled.
+    if bf16_kv {
+        cache_k = cache_k.iter().map(cast_kv_cell_f32_to_bf16).collect();
+        cache_v = cache_v.iter().map(cast_kv_cell_f32_to_bf16).collect();
+    }
 
     let mut generated: Vec<u32> = Vec::with_capacity(gen_cfg.max_new_tokens);
     // Drop the prefill graph — its weights are Arc-shared
@@ -275,9 +296,22 @@ where
         let kv_d = h_d.kv_handles.as_ref()
             .expect("decode build_llama_with_store must produce kv_handles");
         for (li, layer) in kv_d.per_layer.iter().enumerate() {
-            g_d.overwrite_parameter(layer.cache_k_param_id, cache_k[li].clone())
+            // M8.6 — if the ledger holds BF16 cells, decode
+            // back to F32 before patching the graph slot.
+            // The F32 path is a no-op clone for `cast_*`.
+            let k_for_slot = if bf16_kv {
+                cast_kv_cell_bf16_to_f32(&cache_k[li])
+            } else {
+                cache_k[li].clone()
+            };
+            let v_for_slot = if bf16_kv {
+                cast_kv_cell_bf16_to_f32(&cache_v[li])
+            } else {
+                cache_v[li].clone()
+            };
+            g_d.overwrite_parameter(layer.cache_k_param_id, k_for_slot)
                 .expect("decode: overwrite cache_K");
-            g_d.overwrite_parameter(layer.cache_v_param_id, cache_v[li].clone())
+            g_d.overwrite_parameter(layer.cache_v_param_id, v_for_slot)
                 .expect("decode: overwrite cache_V");
         }
 
@@ -288,9 +322,15 @@ where
         // Greedy argmax over the single seq position.
         next_token = greedy_argmax_at(&logits_d_data, 0, vocab);
 
-        // Harvest new cache state.
+        // Harvest new cache state. M8.6 — re-truncate to
+        // BF16 if the ledger lives at half precision; the
+        // graph output is always F32.
         cache_k = harvest_cache_k(&g_d, kv_d);
         cache_v = harvest_cache_v(&g_d, kv_d);
+        if bf16_kv {
+            cache_k = cache_k.iter().map(cast_kv_cell_f32_to_bf16).collect();
+            cache_v = cache_v.iter().map(cast_kv_cell_f32_to_bf16).collect();
+        }
     }
 
     Ok(generated)

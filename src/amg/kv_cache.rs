@@ -59,7 +59,8 @@
 //! single precision change with the same R2 falsifier
 //! re-run as the gate.
 
-use crate::tensor::Tensor;
+use crate::tensor::tensor::{bf16_bits_to_f32, f32_to_bf16_bits};
+use crate::tensor::{Tensor, TensorStorage};
 
 /// Tensor category — the third kind the M5 research lock
 /// (D59) introduces alongside the implicit Parameter /
@@ -106,6 +107,39 @@ impl TensorKind {
     }
 }
 
+/// **M8.6 (D62)** — storage precision for KV cells held in
+/// the runtime ledger between decode steps.
+///
+/// `F32` (default) preserves the M5.b contract bit-exactly:
+/// every cell stays in the same precision the graph computed
+/// in. `BF16` halves the resident byte cost (1.6 GiB savings
+/// at seq=2048 on 13B) by truncating each cell to 16 bits at
+/// harvest time. The graph itself stays F32: the cast is
+/// applied **only** to the ledger tensors that flow between
+/// `harvest_cache_*` and the next step's
+/// [`crate::amg::graph::Graph::overwrite_parameter`] call.
+/// Drift envelope vs F32-cache baseline is bounded by a
+/// single BF16 round-trip (~3e-3 relative); ADR-004 still
+/// passes with margin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum KvCellDtype {
+    /// F32 cells, bit-exact M5.b behaviour. Default.
+    #[default]
+    F32,
+    /// BF16 cells, half the byte cost, M8.6 opt-in.
+    BF16,
+}
+
+impl KvCellDtype {
+    /// Bytes per cell (1 logical scalar) under this precision.
+    pub const fn bytes_per_cell(self) -> usize {
+        match self {
+            KvCellDtype::F32 => 4,
+            KvCellDtype::BF16 => 2,
+        }
+    }
+}
+
 /// Per-layer KV slice for the cache-aware attention path.
 ///
 /// Shapes follow the post-permute attention layout the
@@ -127,10 +161,29 @@ impl KvLayer {
     /// [`KvCache::new`] at construction time so per-layer
     /// reallocation never happens during decode.
     pub fn empty(batch: usize, num_kv_heads: usize, head_dim: usize) -> Self {
+        Self::empty_with_dtype(batch, num_kv_heads, head_dim, KvCellDtype::F32)
+    }
+
+    /// **M8.6** — build an empty layer in the requested
+    /// `cell_dtype`. Behaviourally identical to
+    /// [`Self::empty`] when `dtype == KvCellDtype::F32`.
+    /// Under `KvCellDtype::BF16` the K and V tensors are
+    /// pre-allocated as `TensorStorage::CpuBf16(Vec<u16>)`
+    /// with `seq_filled = 0`.
+    pub fn empty_with_dtype(
+        batch: usize, num_kv_heads: usize, head_dim: usize,
+        dtype: KvCellDtype,
+    ) -> Self {
         let shape = vec![batch, num_kv_heads, 0, head_dim];
-        Self {
-            k: Tensor::new_cpu(shape.clone(), Vec::new()),
-            v: Tensor::new_cpu(shape, Vec::new()),
+        match dtype {
+            KvCellDtype::F32 => Self {
+                k: Tensor::new_cpu(shape.clone(), Vec::new()),
+                v: Tensor::new_cpu(shape, Vec::new()),
+            },
+            KvCellDtype::BF16 => Self {
+                k: Tensor::new_cpu_bf16(shape.clone(), Vec::new()),
+                v: Tensor::new_cpu_bf16(shape, Vec::new()),
+            },
         }
     }
 
@@ -150,6 +203,13 @@ pub struct KvCacheConfig {
     pub num_layers: usize,
     pub num_kv_heads: usize,
     pub head_dim: usize,
+    /// **M8.6 (D62)** — precision of KV cells in the runtime
+    /// ledger. Defaults to [`KvCellDtype::F32`] (M5.b
+    /// behaviour); set to [`KvCellDtype::BF16`] to halve the
+    /// resident byte cost. The active session reads the
+    /// `ATENIA_BF16_KV_CACHE=1` flag at the generator entry
+    /// point and propagates it through this field.
+    pub cell_dtype: KvCellDtype,
 }
 
 impl KvCacheConfig {
@@ -162,6 +222,15 @@ impl KvCacheConfig {
     pub fn bytes_per_token_f32(&self) -> usize {
         // K and V each: num_layers × num_kv_heads × head_dim × 4 bytes
         2 * self.num_layers * self.num_kv_heads * self.head_dim * 4
+    }
+
+    /// **M8.6** — per-token K+V byte cost under the active
+    /// `cell_dtype`. Returns the same value as
+    /// [`Self::bytes_per_token_f32`] when `cell_dtype` is
+    /// `F32`, and exactly half under `BF16`.
+    pub fn bytes_per_token(&self) -> usize {
+        2 * self.num_layers * self.num_kv_heads * self.head_dim
+            * self.cell_dtype.bytes_per_cell()
     }
 }
 
@@ -196,7 +265,10 @@ impl KvCache {
     /// first `append` call grows the underlying `Vec<f32>`.
     pub fn new(config: KvCacheConfig) -> Self {
         let layers = (0..config.num_layers)
-            .map(|_| KvLayer::empty(config.batch, config.num_kv_heads, config.head_dim))
+            .map(|_| KvLayer::empty_with_dtype(
+                config.batch, config.num_kv_heads, config.head_dim,
+                config.cell_dtype,
+            ))
             .collect();
         Self { config, layers }
     }
@@ -263,10 +335,11 @@ impl KvCache {
             // so we replace the layer with a fresh empty
             // one. The allocator will reuse the freed page
             // on the next append.
-            *layer = KvLayer::empty(
+            *layer = KvLayer::empty_with_dtype(
                 self.config.batch,
                 self.config.num_kv_heads,
                 self.config.head_dim,
+                self.config.cell_dtype,
             );
         }
     }
@@ -277,6 +350,17 @@ impl KvCache {
         self.layers.iter()
             .map(|l| l.k.shape.iter().product::<usize>() + l.v.shape.iter().product::<usize>())
             .sum::<usize>() * 4
+    }
+
+    /// **M8.6** — total bytes resident under the active
+    /// `cell_dtype`. Equivalent to `resident_bytes_f32` for
+    /// F32 caches; halves it for BF16. Mirrors the per-token
+    /// helper [`KvCacheConfig::bytes_per_token`].
+    pub fn resident_bytes(&self) -> usize {
+        let cells: usize = self.layers.iter()
+            .map(|l| l.k.shape.iter().product::<usize>() + l.v.shape.iter().product::<usize>())
+            .sum();
+        cells * self.config.cell_dtype.bytes_per_cell()
     }
 }
 
@@ -397,10 +481,62 @@ fn append_along_seq_axis(dst: &mut Tensor, slice: &Tensor) -> Result<(), KvCache
     let head_dim = dst.shape[3];
     let total_seq = prev_seq + new_seq;
 
-    // Decode both into Vec<f32> regardless of underlying
-    // storage. M5.b is F32-first; this also handles the
-    // `TensorStorage::Cpu(Vec<f32>)` happy path with no
-    // extra copy when both sides are already F32.
+    // M8.6: dispatch on dst storage. BF16 dst requires we
+    // truncate the (potentially F32) slice to BF16 bits as we
+    // concat; F32 dst follows the original M5.b path bit-exact.
+    let dst_is_bf16 = matches!(
+        &dst.storage,
+        TensorStorage::CpuBf16(_) | TensorStorage::CpuBf16Shared(_)
+    );
+
+    if dst_is_bf16 {
+        // BF16 path: build the concat in `Vec<u16>` bits
+        // directly. The slice may arrive in F32 (the harvest
+        // path materialises the graph output as F32 even when
+        // the cache cell_dtype is BF16) — we truncate via
+        // `f32_to_bf16_bits`. If the slice is already BF16 we
+        // copy the raw bits; copy_to_cpu_vec() would round-
+        // trip through F32, which is bit-exact for BF16
+        // values but redundant.
+        let mut out: Vec<u16> = Vec::with_capacity(batch * kv_heads * total_seq * head_dim);
+
+        // Read prev (already BF16 by construction).
+        let prev_bits: Vec<u16> = match &dst.storage {
+            TensorStorage::CpuBf16(b) => b.clone(),
+            TensorStorage::CpuBf16Shared(arc) => (**arc).clone(),
+            _ => unreachable!("dst_is_bf16 guard"),
+        };
+
+        // Read slice as F32 (universal accessor) and truncate.
+        let slice_f32 = slice.copy_to_cpu_vec();
+        let slice_bits: Vec<u16> = if matches!(
+            &slice.storage,
+            TensorStorage::CpuBf16(_) | TensorStorage::CpuBf16Shared(_)
+        ) {
+            // Bit-exact extraction without an F32 round-trip.
+            match &slice.storage {
+                TensorStorage::CpuBf16(b) => b.clone(),
+                TensorStorage::CpuBf16Shared(arc) => (**arc).clone(),
+                _ => unreachable!(),
+            }
+        } else {
+            slice_f32.iter().map(|&f| f32_to_bf16_bits(f)).collect()
+        };
+
+        for b in 0..batch {
+            for h in 0..kv_heads {
+                let prev_off = ((b * kv_heads + h) * prev_seq) * head_dim;
+                out.extend_from_slice(&prev_bits[prev_off .. prev_off + prev_seq * head_dim]);
+                let slice_off = ((b * kv_heads + h) * new_seq) * head_dim;
+                out.extend_from_slice(&slice_bits[slice_off .. slice_off + new_seq * head_dim]);
+            }
+        }
+
+        *dst = Tensor::new_cpu_bf16(vec![batch, kv_heads, total_seq, head_dim], out);
+        return Ok(());
+    }
+
+    // F32 path (M5.b bit-exact behaviour).
     let prev_data = dst.copy_to_cpu_vec();
     let slice_data = slice.copy_to_cpu_vec();
 
@@ -424,6 +560,48 @@ fn append_along_seq_axis(dst: &mut Tensor, slice: &Tensor) -> Result<(), KvCache
 
     *dst = Tensor::new_cpu(vec![batch, kv_heads, total_seq, head_dim], out);
     Ok(())
+}
+
+/// **M8.6** — convert a freshly harvested K/V tensor (F32 from
+/// the graph output) into a BF16-backed `Tensor::CpuBf16`,
+/// truncating each value via [`f32_to_bf16_bits`].
+///
+/// Used by the generator's harvest path when
+/// `ATENIA_BF16_KV_CACHE=1`: the graph stays F32, but the
+/// ledger between decode steps holds half-precision cells.
+/// The next step's `overwrite_parameter` sees a BF16 tensor
+/// and the corresponding decode helper converts it back to
+/// F32 before the slot is patched.
+pub fn cast_kv_cell_f32_to_bf16(t: &Tensor) -> Tensor {
+    // Already BF16? No-op (defensive: harvest should produce
+    // F32 today, but the cast is idempotent).
+    if matches!(
+        &t.storage,
+        TensorStorage::CpuBf16(_) | TensorStorage::CpuBf16Shared(_)
+    ) {
+        return t.clone();
+    }
+    let f32_data = t.copy_to_cpu_vec();
+    let bits: Vec<u16> = f32_data.iter().map(|&f| f32_to_bf16_bits(f)).collect();
+    Tensor::new_cpu_bf16(t.shape.clone(), bits)
+}
+
+/// **M8.6** — inverse of [`cast_kv_cell_f32_to_bf16`].
+/// Decodes a BF16-backed K/V ledger tensor back to F32 so the
+/// graph's F32 parameter slot can ingest it via
+/// `overwrite_parameter`. F32 inputs pass through unchanged.
+pub fn cast_kv_cell_bf16_to_f32(t: &Tensor) -> Tensor {
+    match &t.storage {
+        TensorStorage::CpuBf16(bits) => {
+            let f32_data: Vec<f32> = bits.iter().map(|&b| bf16_bits_to_f32(b)).collect();
+            Tensor::new_cpu(t.shape.clone(), f32_data)
+        }
+        TensorStorage::CpuBf16Shared(arc) => {
+            let f32_data: Vec<f32> = arc.iter().map(|&b| bf16_bits_to_f32(b)).collect();
+            Tensor::new_cpu(t.shape.clone(), f32_data)
+        }
+        _ => t.clone(),
+    }
 }
 
 #[cfg(test)]
@@ -450,6 +628,7 @@ mod tests {
     fn empty_cache_reports_zero_seq_len() {
         let cache = KvCache::new(KvCacheConfig {
             batch: 1, num_layers: 4, num_kv_heads: 8, head_dim: 16,
+            cell_dtype: KvCellDtype::F32,
         });
         assert!(cache.is_empty());
         assert_eq!(cache.seq_len(), 0);
@@ -463,7 +642,7 @@ mod tests {
 
     #[test]
     fn append_advances_seq_len_per_layer() {
-        let cfg = KvCacheConfig { batch: 1, num_layers: 2, num_kv_heads: 2, head_dim: 4 };
+        let cfg = KvCacheConfig { batch: 1, num_layers: 2, num_kv_heads: 2, head_dim: 4, cell_dtype: KvCellDtype::F32 };
         let mut cache = KvCache::new(cfg);
 
         // Append a 5-token slice to layer 0.
@@ -489,7 +668,7 @@ mod tests {
         // `cache.append(slice_a) + cache.append(slice_b) +
         //  cache.get(layer)` must equal manually concating
         // [slice_a, slice_b] along axis 2.
-        let cfg = KvCacheConfig { batch: 1, num_layers: 1, num_kv_heads: 3, head_dim: 4 };
+        let cfg = KvCacheConfig { batch: 1, num_layers: 1, num_kv_heads: 3, head_dim: 4, cell_dtype: KvCellDtype::F32 };
         let mut cache = KvCache::new(cfg);
 
         let k_a = arange_tensor(vec![1, 3, 2, 4], 1.0);
@@ -531,7 +710,7 @@ mod tests {
 
     #[test]
     fn clear_resets_all_layers_to_empty() {
-        let cfg = KvCacheConfig { batch: 1, num_layers: 3, num_kv_heads: 2, head_dim: 4 };
+        let cfg = KvCacheConfig { batch: 1, num_layers: 3, num_kv_heads: 2, head_dim: 4, cell_dtype: KvCellDtype::F32 };
         let mut cache = KvCache::new(cfg);
         let k = arange_tensor(vec![1, 2, 7, 4], 1.0);
         let v = arange_tensor(vec![1, 2, 7, 4], 1.0);
@@ -552,7 +731,7 @@ mod tests {
 
     #[test]
     fn append_rejects_bad_shapes() {
-        let cfg = KvCacheConfig { batch: 1, num_layers: 1, num_kv_heads: 2, head_dim: 4 };
+        let cfg = KvCacheConfig { batch: 1, num_layers: 1, num_kv_heads: 2, head_dim: 4, cell_dtype: KvCellDtype::F32 };
         let mut cache = KvCache::new(cfg);
 
         // Wrong rank.
@@ -581,6 +760,7 @@ mod tests {
         // 2× the BF16 figure.
         let cfg = KvCacheConfig {
             batch: 1, num_layers: 40, num_kv_heads: 40, head_dim: 128,
+            cell_dtype: KvCellDtype::F32,
         };
         // 40 layers × 2 (K+V) × 40 heads × 128 dim × 4 bytes
         // = 1_638_400 bytes = 1.5625 MiB
@@ -641,7 +821,7 @@ mod tests {
         // on KV-cache-shaped tensors `[batch, n_kv, seq, head_dim]`
         // matches the runtime KvCache::append behaviour
         // bit-exactly.
-        let cfg = KvCacheConfig { batch: 1, num_layers: 1, num_kv_heads: 2, head_dim: 4 };
+        let cfg = KvCacheConfig { batch: 1, num_layers: 1, num_kv_heads: 2, head_dim: 4, cell_dtype: KvCellDtype::F32 };
         let mut cache = KvCache::new(cfg);
 
         let cache_k = arange_tensor(vec![1, 2, 3, 4], 1.0);  // 3 cached tokens
