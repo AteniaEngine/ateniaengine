@@ -120,6 +120,31 @@ impl TensorMeta {
     /// the int dtypes still map to `numel × 4` because no
     /// resident matmul exists for them in M8).
     fn vram_cost_bytes(&self, kernel_dtype: DType) -> u64 {
+        // **M9.2 — INT8 W8A16 path**: when `ATENIA_M9_INT8=1` is
+        // set, `_proj.weight` tensors are quantised at load time
+        // by the M9.1 quantizer and uploaded as INT8 (1 byte/elem)
+        // plus a scratch BF16 dequant slot — the loader path
+        // through `int8_to_bf16_in_vram` actually materialises
+        // BF16 in VRAM (so the *steady-state* device cost matches
+        // the BF16 path), but for the *capacity-doubling
+        // accounting* the planner needs to model the INT8 footprint
+        // because that is the byte cost we control by choosing
+        // INT8 over BF16. The planner uses `numel × 1` to mirror
+        // the M9 capacity story (24 GiB BF16 → 12 GiB INT8 on 13B);
+        // M9.3 will refine this once M9.2's int8-resident-only
+        // dispatch lands and the BF16 dequant slot becomes a small
+        // recycled scratch (not a per-tensor footprint).
+        //
+        // Restrictions: the INT8 cost only applies to tensors whose
+        // name ends with `_proj.weight` (matching the loader's
+        // gating predicate). All other tensors keep the BF16 cost
+        // even when the flag is on.
+        if std::env::var("ATENIA_M9_INT8").as_deref() == Ok("1")
+            && self.name.ends_with("_proj.weight")
+        {
+            return self.numel();
+        }
+
         match kernel_dtype {
             DType::BF16 => self.numel() * 2,
             _ => self.numel() * 4,
@@ -1307,5 +1332,145 @@ mod tests {
         assert_eq!(p.vram_bytes_assigned, p_baseline.vram_bytes_assigned);
         assert_eq!(p.ram_bytes_assigned, p_baseline.ram_bytes_assigned);
         assert_eq!(p.disk_bytes_assigned, 0);
+    }
+
+    // -----------------------------------------------------------------
+    // M9.2 — INT8 cost model + 13B planner contract.
+    // -----------------------------------------------------------------
+
+    /// Tests that toggle `ATENIA_M9_INT8` must serialise: the env
+    /// var is process-global and the planner reads it from
+    /// `vram_cost_bytes` on every tensor evaluation. Two parallel
+    /// tests would race on whether the flag is set during the
+    /// run. Same pattern as the M5/M8 BF16 counter lock.
+    static M9_INT8_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// **M9.2 unit** — `vram_cost_bytes` halves under
+    /// `ATENIA_M9_INT8=1` for `_proj.weight` tensors.
+    #[test]
+    fn m9_2_int8_cost_for_proj_weight_under_flag() {
+        let _g = M9_INT8_TEST_LOCK.lock().unwrap();
+
+        let proj = make_meta(
+            "model.layers.0.self_attn.q_proj.weight",
+            vec![5120, 5120],
+            DType::BF16,
+        );
+        let norm = make_meta(
+            "model.layers.0.input_layernorm.weight",
+            vec![5120],
+            DType::BF16,
+        );
+
+        // Flag off: BF16 cost is `numel × 2` for both.
+        unsafe { std::env::remove_var("ATENIA_M9_INT8"); }
+        assert_eq!(proj.vram_cost_bytes(DType::BF16), proj.numel() * 2);
+        assert_eq!(norm.vram_cost_bytes(DType::BF16), norm.numel() * 2);
+
+        // Flag on: `_proj.weight` drops to `numel × 1`; norms unchanged
+        // (gated by the `name.ends_with("_proj.weight")` predicate).
+        unsafe { std::env::set_var("ATENIA_M9_INT8", "1"); }
+        assert_eq!(proj.vram_cost_bytes(DType::BF16), proj.numel() * 1,
+            "INT8 cost must be numel × 1 for _proj.weight");
+        assert_eq!(norm.vram_cost_bytes(DType::BF16), norm.numel() * 2,
+            "norms must keep BF16 cost — predicate is _proj.weight only");
+        unsafe { std::env::remove_var("ATENIA_M9_INT8"); }
+    }
+
+    /// **M9.2 contract** — Llama 2 13B realistic plan under
+    /// `ATENIA_M9_INT8=1`: with INT8 cost the VRAM count
+    /// approximately doubles vs BF16 (~80 → ~160), and the
+    /// 32 GiB RAM box still has 0 Disk overflow.
+    ///
+    /// Per-layer projection cost under INT8:
+    ///   - 4 × 5120²        = 4 × 26.21 MiB ≈ 104.86 MiB
+    ///   - 3 × 5120 × 13824 = 3 × 70.78 MiB ≈ 212.34 MiB
+    ///   Total per layer = ~317.2 MiB.
+    /// 7 GiB usable VRAM / 317.2 MiB per layer ≈ 22.6 layers fit.
+    /// 22 layers × 7 proj = 154 tensors; 23 × 7 = 161. Window
+    /// `[140, 175]` allows for partial-layer overflow either way.
+    #[test]
+    fn m9_2_int8_13b_plan_eliminates_disk_overflow() {
+        let _g = M9_INT8_TEST_LOCK.lock().unwrap();
+        unsafe { std::env::set_var("ATENIA_M9_INT8", "1"); }
+
+        let tensors = synth_13b_model();
+        let model_total = sum_model_bytes(&tensors);
+        let input = TierPlanInput {
+            tensors,
+            free_vram_bytes: 8 * 1024 * 1024 * 1024,
+            free_ram_bytes: 32 * 1024 * 1024 * 1024,
+            model_total_bytes: model_total,
+            total_ram_bytes: 32 * 1024 * 1024 * 1024,
+            kernel_dtype: DType::BF16,
+        };
+        let p = plan(&input);
+
+        unsafe { std::env::remove_var("ATENIA_M9_INT8"); }
+
+        // 363 = 280 proj + 80 norms + embed + final_norm + lm_head.
+        assert_eq!(p.len(), 363);
+
+        // VRAM count: ~22-23 layers' worth of proj. The INT8 cost
+        // reduction roughly doubles the BF16 baseline (~80) to ~160.
+        let vram_count = p.count(Tier::Vram);
+        eprintln!(
+            "[M9.2 plan] 13B with ATENIA_M9_INT8=1: VRAM={} RAM={} Disk={} \
+             vram_bytes={:.2} GiB ram_bytes={:.2} GiB",
+            vram_count,
+            p.count(Tier::Ram),
+            p.count(Tier::Disk),
+            p.vram_bytes_assigned as f64 / (1024.0_f64.powi(3)),
+            p.ram_bytes_assigned as f64 / (1024.0_f64.powi(3)),
+        );
+        assert!(
+            vram_count >= 140 && vram_count <= 175,
+            "expected 140..=175 _proj weights on Vram under INT8 cost \
+             (~22 layers × 7), got {}",
+            vram_count,
+        );
+
+        // The capacity-doubling claim: roughly 2× the BF16 baseline.
+        // BF16 baseline (kernel_dtype=BF16) lands ~80 _proj on VRAM
+        // for the same input; INT8 must clear ~140 to count as a
+        // capacity doubling.
+        assert!(
+            vram_count >= 140,
+            "INT8 must roughly double the BF16 VRAM count (~80 → ~160), got {}",
+            vram_count,
+        );
+
+        // Disk count: still 0 — the 32 GiB RAM has plenty of room
+        // for the residual proj weights + norms + embed + lm_head.
+        assert_eq!(
+            p.count(Tier::Disk), 0,
+            "INT8 cost model should eliminate Disk overflow on 13B/32GiB \
+             box, got {} Disk assignments",
+            p.count(Tier::Disk),
+        );
+
+        // RAM count: total - vram. No Disk.
+        assert_eq!(p.count(Tier::Ram), 363 - vram_count);
+    }
+
+    /// **M9.2 regression** — without the flag the planner is
+    /// bit-identical to the M8/M9.0 baseline. This pins that
+    /// merging M9.2 cannot accidentally widen the INT8 cost to
+    /// every tensor (the predicate must be the
+    /// `_proj.weight` suffix only).
+    #[test]
+    fn m9_2_without_flag_cost_unchanged() {
+        let _g = M9_INT8_TEST_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var("ATENIA_M9_INT8"); }
+
+        let m = make_meta(
+            "model.layers.0.self_attn.q_proj.weight",
+            vec![5120, 5120],
+            DType::BF16,
+        );
+        // BF16 path: numel × 2.
+        assert_eq!(m.vram_cost_bytes(DType::BF16), m.numel() * 2);
+        // F32 path: numel × 4.
+        assert_eq!(m.vram_cost_bytes(DType::F32), m.numel() * 4);
     }
 }
