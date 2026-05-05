@@ -2,6 +2,72 @@
 
 Last reviewed: tier-aware loader default flip (commit `afaa975`).
 
+## M8.7.0 disk-streamed matmul not firing through the killer demo
+
+**Symptom (post commit `4e126f0`)**: with `ATENIA_M8_7_ENABLED=1`
+and 159 Disk-tier weights in the 13B tier plan,
+`disk_streamed_matmul_count` stays at 0 across the full 4-token
+forward of `examples/llama2_13b_demo.rs`. Other counters confirm
+the rest of the pipeline is healthy: `vram_bf16_matmul_count = 80`
+(M8.4c path firing for VRAM-resident weights),
+`gpu_matmul_resident_count = 80` (mixed-residency dispatch live),
+logits sane, argmax matches the M8 close baseline.
+
+**Why it matters**: M8.7.0 was unit-tested with a synthetic
+`SharedParam::Disk` tensor (drift gate 3.28e-3 vs ADR-004 0.5,
+counter advances by 1 per dispatch — see
+`tests/cuda::matmul::cuda_matmul_disk_streamed_tests`), but the
+full-stack smoke through the demo is the first time the path was
+exercised against a real `WeightStore` produced by the tier-aware
+loader's Disk arm. The unit tests exercise the dispatch helper in
+isolation; this issue is in the **routing** that decides whether
+to call the helper.
+
+**Hypotheses (to investigate next session)**:
+
+- **H1** — `register_param_from_store` produces a `Tensor` whose
+  `storage` does not preserve `TensorStorage::Disk(handle)`. The
+  builder calls `p.to_tensor()` on the `SharedParam::Disk`; if
+  that path materialises the handle into RAM/Cpu storage instead
+  of forwarding it as `TensorStorage::Disk`, the M8.7.0 hook in
+  `src/amg/graph.rs:3110-3168` never sees a Disk-storage `b`.
+  This is the highest-probability hypothesis given the unit test
+  passes with a hand-built `Tensor::from_disk`.
+- **H2** — A pre-MatMul operator (Reshape, Transpose, etc.) in
+  the Llama graph consumes the parameter `Tensor` and triggers
+  `ensure_decoded`, materialising the Disk handle to F32 CPU
+  before the MatMul arm runs. The dispatch then sees a regular
+  `Cpu` operand and falls through to the legacy AVX2 path.
+- **H3** — `record_tape == true` at execute time. The M8.7.0 hook
+  is gated on `!record_tape` (inference only). If the demo's
+  `graph.execute(...)` defaults to record_tape=true, the hook is
+  silently skipped.
+- **H4** — `gpu_can_run_matmul(m, k, n)` rejects the specific
+  shapes of Disk-tier weights (e.g. K-dim or N-dim outside the
+  gate) before reaching the M8.7.0 hook, **or** the hook is
+  placed after a `return` from another MatMul arm that fires
+  first.
+
+**Recommended investigation order**:
+
+1. Add a single `eprintln!` in the M8.7.0 hook arm reporting
+   `(record_tape, b.storage.variant())` and run a one-token 13B
+   smoke. Pins H3 and H1 in one shot.
+2. If H3 confirmed, push the gate inside the dispatch helper or
+   relax it — the helper itself is inference-friendly (no
+   gradient capture).
+3. If H1 confirmed, audit `SharedParam::Disk::to_tensor` and
+   `register_param_from_store` for the storage forwarding.
+4. Re-run the smoke; expect `disk_streamed_matmul_count` to
+   advance to 159 (one per Disk-tier weight in the 13B forward).
+
+**Validation gate when fixed**: 13B smoke with the demo and
+`ATENIA_M8_BF16_KERNEL=1 ATENIA_M8_7_ENABLED=1` should report
+`disk_streamed_matmul_count = 159`, total forward time below the
+20.85s baseline (since CPU AVX2 matmul on 159 disk weights
+dominates today), `cargo test --lib` 185/185 + the existing
+M8.7.0 ignored CUDA test still passing.
+
 ## `ATENIA_TIER_AWARE_LOADER` deprecation
 
 The opt-in flag from D74 of `HANDOFF_APX_V20_M6.md` was inverted at
