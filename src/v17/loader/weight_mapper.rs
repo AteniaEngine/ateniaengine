@@ -887,15 +887,20 @@ impl WeightMapper {
 
                     if m9_int8 {
                         // M9.4 — per-group (Q8_0-style) quantisation.
-                        // Group size 128 along the K axis. The M9.4
-                        // F64 fixture under per-channel produced
-                        // drift 1.10–8.88 across the 4 production
-                        // models; per-group localises the scale to
-                        // 128-element blocks, recovering the ADR-004
-                        // margin lost to per-column outliers. The
-                        // CUDA dispatch path uses the matching
-                        // `int8_to_bf16_per_group` kernel.
-                        const M9_4_GROUP_SIZE: usize = 128;
+                        // Group size 32 along the K axis (matching
+                        // llama.cpp's Q8_0 production default). The
+                        // initial M9.4 g=128 attempt produced drifts
+                        // 0.516, 1.44, 2.34, 11.25 across the 4
+                        // production models — better than per-channel
+                        // (1.10, 2.98, 4.27, 8.88) but still over the
+                        // ADR-004 0.5 gate. g=32 reduces the per-block
+                        // outlier influence ~4× further, recovering
+                        // the additional margin Llama-family weights
+                        // need to clear the gate. The CUDA dispatch
+                        // path uses the matching
+                        // `int8_to_bf16_per_group` kernel which is
+                        // independent of `group_size`.
+                        const M9_4_GROUP_SIZE: usize = 32;
                         let (q, scales) =
                             crate::tensor::quantizer::absmax_per_group_symmetric(
                                 &values,
