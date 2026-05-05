@@ -155,6 +155,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/cuda/batch_matmul.cu");
     println!("cargo:rerun-if-changed=src/cuda/fused_linear_silu.cu");
     println!("cargo:rerun-if-changed=src/cuda/bf16_to_f32.cu");
+    println!("cargo:rerun-if-changed=src/cuda/int8_to_bf16.cu");
 
     eprintln!("[DEBUG] Using NVCC path: {}", nvcc_path);
     eprintln!("[DEBUG] CU file path: {}", cu_path);
@@ -418,6 +419,54 @@ fn main() {
     eprintln!(
         "---- BF16_TO_F32 LIB STDERR ----\n{}",
         String::from_utf8_lossy(&bf16_lib.stderr)
+    );
+
+    // M9.0 — INT8 → BF16 per-channel dequant kernel for the
+    // `examples/bench_int8_w8a16.rs` microbench (gating data
+    // for M9 INT8 weight quantisation).
+    let int8_out = Command::new(&nvcc_path)
+        .args(&[
+            "-ccbin",
+            msvc_bin.as_str(),
+            "-c",
+            "src/cuda/int8_to_bf16.cu",
+            "-o",
+            "int8_to_bf16.obj",
+            "-Xcompiler",
+            "/MD",
+            "-Xcompiler",
+            "/EHsc",
+        ])
+        .output()
+        .expect("Failed to run NVCC (int8_to_bf16)");
+
+    eprintln!("---- INT8_TO_BF16 NVCC STATUS: {:?} ----", int8_out.status.code());
+    eprintln!(
+        "---- INT8_TO_BF16 NVCC STDOUT ----\n{}",
+        String::from_utf8_lossy(&int8_out.stdout)
+    );
+    eprintln!(
+        "---- INT8_TO_BF16 NVCC STDERR ----\n{}",
+        String::from_utf8_lossy(&int8_out.stderr)
+    );
+
+    if !int8_out.status.success() {
+        panic!("CUDA int8_to_bf16 kernel compilation failed");
+    }
+
+    let int8_lib = Command::new(&lib_exe)
+        .args(&["/OUT:int8_to_bf16.lib", "int8_to_bf16.obj"])
+        .output()
+        .expect("Failed to create int8_to_bf16 library.");
+
+    eprintln!("---- INT8_TO_BF16 LIB STATUS: {:?} ----", int8_lib.status.code());
+    eprintln!(
+        "---- INT8_TO_BF16 LIB STDOUT ----\n{}",
+        String::from_utf8_lossy(&int8_lib.stdout)
+    );
+    eprintln!(
+        "---- INT8_TO_BF16 LIB STDERR ----\n{}",
+        String::from_utf8_lossy(&int8_lib.stderr)
     );
 
     // Link against cudart from the same toolkit we used to compile kernels.
