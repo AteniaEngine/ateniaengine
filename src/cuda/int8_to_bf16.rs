@@ -65,6 +65,15 @@ unsafe extern "C" {
         k: c_int,
         n: c_int,
     ) -> c_int;
+
+    fn int8_to_bf16_per_group_launch_device(
+        d_int8: *const c_void,
+        d_scales: *const f32,
+        d_bf16: *mut c_void,
+        k: c_int,
+        n: c_int,
+        group_size: c_int,
+    ) -> c_int;
 }
 
 #[link(name = "cudart")]
@@ -213,6 +222,90 @@ pub fn int8_to_bf16_in_vram(
     Some(gpu_bf16)
     // `scratch` drops here — INT8 + scales staging is freed.
     // `gpu_bf16` moved into the return value, survives.
+}
+
+/// **M9.4** — per-group analogue of [`int8_to_bf16_in_vram`].
+///
+/// `q.len()` must equal `product(shape)`; `scales.len()` must
+/// equal `ceil(K / group_size) * N` where
+/// `K = product(shape[..-1])` and `N = shape[-1]`. Same RAII +
+/// cleanup contract as the per-channel variant. Increments
+/// [`INT8_RESIDENT_COUNT`] on success; counter remains untouched
+/// on any failure.
+pub fn int8_per_group_to_bf16_in_vram(
+    q: &[i8],
+    scales: &[f32],
+    shape: &[usize],
+    group_size: usize,
+) -> Option<TensorGPU> {
+    if !super::cuda_available() {
+        return None;
+    }
+    if shape.is_empty() || group_size == 0 {
+        return None;
+    }
+
+    let numel: usize = shape.iter().product();
+    if q.len() != numel {
+        return None;
+    }
+    let n = *shape.last().unwrap();
+    if n == 0 {
+        return None;
+    }
+    let k: usize = numel / n;
+    let num_groups = (k + group_size - 1) / group_size;
+    if scales.len() != num_groups * n {
+        return None;
+    }
+    if numel == 0 {
+        return None;
+    }
+
+    let bytes_int8 = numel;
+    let bytes_scales = scales.len() * std::mem::size_of::<f32>();
+
+    let mut scratch = ScratchAllocs::new();
+    let d_int8 = scratch.alloc(bytes_int8)?;
+    let d_scales = scratch.alloc(bytes_scales)?;
+
+    let gpu_bf16 = TensorGPU::new_bf16(numel).ok()?;
+
+    unsafe {
+        let rc = cudaMemcpy(
+            d_int8,
+            q.as_ptr() as *const c_void,
+            bytes_int8,
+            CUDA_MEMCPY_HOST_TO_DEVICE,
+        );
+        if rc != 0 {
+            return None;
+        }
+        let rc = cudaMemcpy(
+            d_scales,
+            scales.as_ptr() as *const c_void,
+            bytes_scales,
+            CUDA_MEMCPY_HOST_TO_DEVICE,
+        );
+        if rc != 0 {
+            return None;
+        }
+
+        let rc = int8_to_bf16_per_group_launch_device(
+            d_int8,
+            d_scales as *const f32,
+            gpu_bf16.device_ptr() as *mut c_void,
+            k as c_int,
+            n as c_int,
+            group_size as c_int,
+        );
+        if rc != 0 {
+            return None;
+        }
+    }
+
+    INT8_RESIDENT_COUNT.fetch_add(1, Ordering::Relaxed);
+    Some(gpu_bf16)
 }
 
 #[cfg(test)]

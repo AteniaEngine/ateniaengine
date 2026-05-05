@@ -68,3 +68,73 @@ extern "C" int int8_to_bf16_per_channel_launch_device(
     cudaError_t err = cudaGetLastError();
     return (int)err;
 }
+
+// =====================================================================
+// M9.4 — per-group (Q8_0-style) dequant kernel.
+// =====================================================================
+//
+// Generalises the per-channel kernel above by partitioning the K axis
+// into blocks of `group_size` consecutive elements; each (group, col)
+// pair has its own F32 scale. Scales layout: row-major
+// `[num_groups, N]` with `num_groups = ceil(K / group_size)`.
+//
+// For element at (k, n):
+//     g = k / group_size
+//     scale = d_scales[g * N + n]
+//     w_bf16[k, n] = bf16_truncate( (float)w_int8[k, n] * scale )
+//
+// The kernel does not require K to be a multiple of `group_size`; the
+// last group may be partial. The Rust caller ensures the group count
+// passed in `num_groups` matches the scales buffer.
+
+extern "C" __global__ void int8_to_bf16_per_group_kernel(
+    const int8_t*  __restrict__ d_int8,
+    const float*   __restrict__ d_scales,
+    uint16_t*      __restrict__ d_bf16,
+    int K,
+    int N,
+    int group_size
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = K * N;
+    if (idx >= total) return;
+
+    int row = idx / N;
+    int col = idx % N;
+    int group = row / group_size;
+    int8_t  q  = d_int8[idx];
+    float   f  = (float)q * d_scales[group * N + col];
+    uint32_t bits = __float_as_uint(f);
+    d_bf16[idx] = (uint16_t)(bits >> 16);   // BF16 truncation
+}
+
+extern "C" int int8_to_bf16_per_group_launch_device(
+    const void*   d_int8,
+    const float*  d_scales,
+    void*         d_bf16,
+    int           k,
+    int           n,
+    int           group_size
+) {
+    long long total = (long long)k * (long long)n;
+    if (total <= 0) return 0;
+    if (group_size <= 0) return -2;
+
+    int block = 256;
+    long long grid_ll = (total + (long long)block - 1) / (long long)block;
+    int grid = (grid_ll > 65535 * 1024) ? (65535 * 1024) : (int)grid_ll;
+    if (grid_ll > (long long)grid) {
+        return -1;
+    }
+
+    int8_to_bf16_per_group_kernel<<<grid, block>>>(
+        (const int8_t*)d_int8,
+        d_scales,
+        (uint16_t*)d_bf16,
+        k,
+        n,
+        group_size
+    );
+    cudaError_t err = cudaGetLastError();
+    return (int)err;
+}

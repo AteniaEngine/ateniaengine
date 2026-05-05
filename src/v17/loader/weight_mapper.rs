@@ -886,22 +886,35 @@ impl WeightMapper {
                         && entry.name.ends_with("_proj.weight");
 
                     if m9_int8 {
+                        // M9.4 — per-group (Q8_0-style) quantisation.
+                        // Group size 128 along the K axis. The M9.4
+                        // F64 fixture under per-channel produced
+                        // drift 1.10–8.88 across the 4 production
+                        // models; per-group localises the scale to
+                        // 128-element blocks, recovering the ADR-004
+                        // margin lost to per-column outliers. The
+                        // CUDA dispatch path uses the matching
+                        // `int8_to_bf16_per_group` kernel.
+                        const M9_4_GROUP_SIZE: usize = 128;
                         let (q, scales) =
-                            crate::tensor::quantizer::absmax_per_channel_symmetric(
+                            crate::tensor::quantizer::absmax_per_group_symmetric(
                                 &values,
                                 &current_shape,
+                                M9_4_GROUP_SIZE,
                             );
                         drop(values);
 
-                        let gpu = crate::cuda::int8_to_bf16::int8_to_bf16_in_vram(
+                        let gpu = crate::cuda::int8_to_bf16::int8_per_group_to_bf16_in_vram(
                             &q,
                             &scales,
                             &current_shape,
+                            M9_4_GROUP_SIZE,
                         )
                         .ok_or_else(|| {
                             LoaderError::InvalidFormat(format!(
-                                "INT8→BF16 VRAM upload failed for '{}' (M9.2 path)",
-                                entry.name
+                                "INT8 per-group → BF16 VRAM upload failed for '{}' \
+                                 (M9.4 path, group_size = {})",
+                                entry.name, M9_4_GROUP_SIZE,
                             ))
                         })?;
 

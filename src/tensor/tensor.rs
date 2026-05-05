@@ -217,6 +217,26 @@ pub enum TensorStorage {
         q: Vec<i8>,
         scales: Vec<f32>,
         shape: Vec<usize>,
+        /// **M9.4** — block size along the per-quantisation axis
+        /// (the leading axis when the weight is `[K, N]` row-
+        /// major). Each `(group, column)` pair owns one F32
+        /// scale; the dequantised value is
+        /// `(q[k, n] as f32) * scales[(k / group_size) * N + n]`.
+        ///
+        /// `group_size == K` (or any value ≥ K) collapses to
+        /// per-channel quantisation (one scale per output
+        /// column). M9.1 shipped only this case. M9.4 introduces
+        /// `group_size = 128` (Q8_0-style block quantisation)
+        /// which reduces the absmax-per-group scale to local
+        /// outliers and recovers ADR-004 margin lost by the
+        /// per-channel cascade.
+        ///
+        /// `scales.len()` must equal
+        /// `ceil(K / group_size) * N`. The
+        /// [`Tensor::new_cpu_int8_per_group`] constructor enforces
+        /// this; the per-channel constructor passes through with
+        /// `group_size = K` (one group per column).
+        group_size: usize,
     },
 }
 
@@ -797,25 +817,59 @@ impl Tensor {
     /// numerically-plausible-but-wrong output and is hard to diagnose
     /// downstream.
     pub fn new_cpu_int8(shape: Vec<usize>, q: Vec<i8>, scales: Vec<f32>) -> Self {
+        // Per-channel construction: one scale per output column.
+        // Equivalent to `new_cpu_int8_per_group(shape, q, scales, K)`
+        // where `K = product(shape[..-1])`. M9.1 shipped this.
+        let k_axis: usize = if shape.len() <= 1 {
+            1
+        } else {
+            shape[..shape.len() - 1].iter().product()
+        };
+        Self::new_cpu_int8_per_group(shape, q, scales, k_axis)
+    }
+
+    /// **M9.4** — construct an INT8 W8A16 weight tensor with
+    /// per-block (Q8_0-style) quantisation. `group_size` is the
+    /// number of elements along the leading `K` axis sharing one
+    /// scale. `group_size == K` collapses to per-channel; the
+    /// canonical M9.4 value is 128.
+    ///
+    /// # Panics
+    /// - `q.len() != product(shape)`
+    /// - `scales.len() != ceil(K / group_size) * N`
+    /// - `shape.is_empty()`
+    /// - `group_size == 0`
+    pub fn new_cpu_int8_per_group(
+        shape: Vec<usize>,
+        q: Vec<i8>,
+        scales: Vec<f32>,
+        group_size: usize,
+    ) -> Self {
         assert!(!shape.is_empty(),
-            "Tensor::new_cpu_int8: shape must be non-empty");
+            "Tensor::new_cpu_int8_per_group: shape must be non-empty");
+        assert!(group_size > 0,
+            "Tensor::new_cpu_int8_per_group: group_size must be > 0");
         let expected_q: usize = shape.iter().product();
         assert_eq!(
             q.len(), expected_q,
-            "Tensor::new_cpu_int8: q.len() = {} does not match product(shape) = {} (shape = {:?})",
+            "Tensor::new_cpu_int8_per_group: q.len() = {} does not match product(shape) = {} (shape = {:?})",
             q.len(), expected_q, shape,
         );
-        let expected_scales = *shape.last().unwrap();
+        let n = *shape.last().unwrap();
+        let k: usize = if shape.len() <= 1 { 1 } else { shape[..shape.len() - 1].iter().product() };
+        let num_groups = if k == 0 { 0 } else { (k + group_size - 1) / group_size };
+        let expected_scales = num_groups * n;
         assert_eq!(
             scales.len(), expected_scales,
-            "Tensor::new_cpu_int8: scales.len() = {} does not match shape's last dim = {} (shape = {:?})",
-            scales.len(), expected_scales, shape,
+            "Tensor::new_cpu_int8_per_group: scales.len() = {} does not match \
+             ceil(K / group_size) * N = ceil({} / {}) * {} = {} (shape = {:?})",
+            scales.len(), k, group_size, n, expected_scales, shape,
         );
         let strides = Self::compute_strides(&shape, &Layout::Contiguous);
         let inner_shape = shape.clone();
         Self {
             shape,
-            storage: TensorStorage::CpuInt8 { q, scales, shape: inner_shape },
+            storage: TensorStorage::CpuInt8 { q, scales, shape: inner_shape, group_size },
             device: Device::CPU,
             dtype: DType::Int8,
             layout: Layout::Contiguous,
@@ -1039,26 +1093,30 @@ impl Tensor {
                     }
                 }
             }
-            // M9.1 — INT8 dequant on access. The shape carried in the
-            // variant is the canonical source of N (last axis); the
-            // scales vector is `len = N`. Per-element dequant is
-            // `(q[k, n] as f32) * scales[n]` for the standard
-            // [K, N] row-major weight layout. No SIMD bulk path yet
-            // (M9.4 may add one if profiling shows it matters); the
-            // hot-path consumer is the GPU dispatch via
-            // `int8_to_bf16_in_vram`, which doesn't go through this
-            // function.
-            TensorStorage::CpuInt8 { q, scales, shape: int8_shape } => {
+            // M9.1 + M9.4 — INT8 dequant on access. `group_size` is
+            // the per-quantisation block size along the K axis;
+            // when `group_size == K` (or any value ≥ K) this
+            // collapses to per-channel (M9.1 behaviour).
+            // M9.4 default is 128 — Q8_0-style block quantisation.
+            // No SIMD bulk path yet; the hot-path consumer is the
+            // GPU dispatch via `int8_per_group_to_bf16_in_vram`,
+            // which doesn't go through this function.
+            TensorStorage::CpuInt8 { q, scales, shape: int8_shape, group_size } => {
                 let n = *int8_shape.last().expect("CpuInt8: shape must be non-empty");
                 let total = q.len();
+                let k = if n == 0 { 0 } else { total / n };
+                let g = *group_size;
+                let num_groups = if k == 0 { 0 } else { (k + g - 1) / g };
                 debug_assert_eq!(total, int8_shape.iter().product::<usize>(),
                     "CpuInt8: q.len() must equal product(shape)");
-                debug_assert_eq!(scales.len(), n,
-                    "CpuInt8: scales.len() must equal shape's last dim (N)");
+                debug_assert_eq!(scales.len(), num_groups * n,
+                    "CpuInt8: scales.len() must equal ceil(K / group_size) * N");
                 let mut out = vec![0.0_f32; total];
                 for idx in 0..total {
+                    let row = idx / n;
                     let col = idx % n;
-                    out[idx] = (q[idx] as f32) * scales[col];
+                    let group = row / g;
+                    out[idx] = (q[idx] as f32) * scales[group * n + col];
                 }
                 out
             }
@@ -1198,20 +1256,25 @@ impl Tensor {
                 self.dtype = DType::F32;
                 Ok(self)
             }
-            // M9.1 — INT8 → F32 dequant on transition. Same
+            // M9.1 + M9.4 — INT8 → F32 dequant on transition. Same
             // arithmetic as the `copy_to_cpu_vec` arm but mutates
             // self.storage so subsequent calls hit the Cpu
             // fast-path. The scales vector is dropped on transition
             // — the dequantised F32 values are now self-describing.
-            TensorStorage::CpuInt8 { q, scales, shape: int8_shape } => {
+            TensorStorage::CpuInt8 { q, scales, shape: int8_shape, group_size } => {
                 let n = *int8_shape.last().expect("CpuInt8: shape must be non-empty");
                 let total = q.len();
+                let k = if n == 0 { 0 } else { total / n };
+                let g = *group_size;
+                let num_groups = if k == 0 { 0 } else { (k + g - 1) / g };
                 debug_assert_eq!(total, int8_shape.iter().product::<usize>());
-                debug_assert_eq!(scales.len(), n);
+                debug_assert_eq!(scales.len(), num_groups * n);
                 let mut cpu_vec = vec![0.0_f32; total];
                 for idx in 0..total {
+                    let row = idx / n;
                     let col = idx % n;
-                    cpu_vec[idx] = (q[idx] as f32) * scales[col];
+                    let group = row / g;
+                    cpu_vec[idx] = (q[idx] as f32) * scales[group * n + col];
                 }
                 self.storage = TensorStorage::Cpu(cpu_vec);
                 self.dtype = DType::F32;
