@@ -899,10 +899,21 @@ impl WeightMapper {
                         // boundaries. Neither satisfies ADR-004 (< 0.5)
                         // universally — the path is shipped as opt-in
                         // for operators who accept the
-                        // capacity-vs-drift trade-off. ADR-004-strict
-                        // INT8 requires either FFN-only mixed precision
-                        // (M9.5) or outlier decomposition (LLM.int8 /
-                        // GPTQ / AWQ); both are M10+ territory.
+                        // capacity-vs-drift trade-off.
+                        //
+                        // **M9.2 honest cost note**: the device buffer
+                        // returned by `int8_per_group_to_bf16_in_vram`
+                        // is BF16 (numel × 2 bytes), allocated via
+                        // `TensorGPU::new_bf16(numel)`. The INT8 + scales
+                        // host transients are freed on upload; they do
+                        // NOT contribute to steady-state VRAM. The
+                        // tier_plan cost model agrees (also `numel × 2`
+                        // for these tensors) — so the planner places
+                        // the same VRAM count as the M8 baseline; the
+                        // benefit M9.2 ships under this flag is the
+                        // M9.0 matmul speedup, NOT capacity-doubling.
+                        // True INT8 residency (and the `numel × 1`
+                        // cost) needs M9.3 (deferred).
                         const M9_4_GROUP_SIZE: usize = 128;
                         let (q, scales) =
                             crate::tensor::quantizer::absmax_per_group_symmetric(
