@@ -1,0 +1,147 @@
+# Numeric Certification — Atenia Engine
+
+## What this is
+
+Atenia Engine ships with **per-checkpoint numeric certificates** that document, with empirical data, the drift envelope of every supported model under each execution mode (`certified`, `fast`). The certificate is a JSON manifest versioned alongside the model checkpoint, named `<model>.numcert.json`.
+
+The contract is simple: the engine offers two execution modes; a manifest tells you, for a specific checkpoint on a specific Atenia version, what numerical drift each mode produces against an F64 ground-truth reference. Operators choose modes with data, not folklore. Auditors verify the manifest with a single `cargo test` invocation.
+
+This is the production form of the value proposition the project carries on its README: *correctness as a per-checkpoint certificate, not a runtime tax*. ADR-004 (F64 reference) provides the truth; ADR-005 (fast mode envelope) provides the trade-off framework; this document operationalises both into a per-checkpoint artefact.
+
+## The two execution modes
+
+| Mode | Activated by | GPU GEMM | Drift profile | When to use |
+|------|--------------|----------|---------------|-------------|
+| `certified` (default) | (no flag) or `ATENIA_M8_BF16_KERNEL=1` without `ATENIA_FAST_MODE` | `cublasGemmEx(F32, F32, F32)` with `CUBLAS_COMPUTE_32F_FAST_TF32` (TF32 Tensor Cores) — Path B M8.4c + M10.2.0 | ADR-004 strict (`max_abs_diff < 0.5` vs F64) holds on the 4-model fixture | Research, audited deployments, any output whose numerical equivalence to F64 ground truth must be defensible |
+| `fast` | `ATENIA_FAST_MODE=1` | `cublasGemmEx(BF16, BF16, F32)` — native BF16 Tensor Cores (M10.2.1) | Industry-standard BF16 drift profile, ADR-005 envelope, may fail ADR-004 strict per-model | Chat / generation workloads where argmax-equivalence at near-tie positions is acceptable and the per-matmul speedup matters |
+
+Both modes share storage (BF16 weight in VRAM via M4.7.2 / M8.3) and tier-aware loading (M6 / M7 / M8.7). The mode swap only changes the GEMM dispatch.
+
+## Schema
+
+A manifest is JSON with the following top-level fields. Reference manifests for the four fixture models are in `docs/numcert/`.
+
+```json
+{
+  "schema_version": "1.0.0",
+  "model": "Human-readable checkpoint name",
+  "model_family": "Builder family (llama-2, llama-3-rope-scaling, llama-2-with-qkv-bias, ...)",
+  "model_path_hint": "Suggested relative path inside an Atenia checkout",
+  "atenia_version": "Atenia version that produced these numbers",
+  "f64_fixture_version": "Version of the F64 reference fixture used",
+  "f64_fixture_test": "Path to the test that consumes this fixture",
+  "generated_at": "YYYY-MM-DD",
+  "generated_on": "Hardware string (GPU + RAM + OS)",
+
+  "drift_envelope": {
+    "certified_mode": {
+      "max_abs_diff_vs_f64": <number>,
+      "argmax_match_4_of_4": <bool>,
+      "adr_004_strict_pass": <bool>,
+      "adr_004_threshold": 0.5,
+      "adr_004_margin": <number>,        // threshold / drift; >1 means inside the gate
+      "kernel_path": "Description of the kernel chain used"
+    },
+    "fast_mode": {
+      "max_abs_diff_vs_f64": <number>,
+      "argmax_match_4_of_4": <bool>,
+      // When 4_of_4 is false, additional fields document the partial match:
+      "argmax_match_count": <int>,
+      "argmax_match_total": <int>,
+      "argmax_mismatch_positions": [<int>, ...],
+      "adr_004_strict_pass": <bool>,
+      "adr_004_threshold": 0.5,
+      "adr_004_margin": <number>,        // when pass = true
+      "adr_004_overshoot_factor": <number>, // when pass = false; drift / threshold
+      "kernel_path": "Description of the kernel chain used"
+    }
+  },
+
+  "recommended_mode": "certified" | "fast",
+  "recommended_mode_rationale": "Why this checkpoint is recommended for this mode",
+
+  "per_tensor_policy": null,
+  "per_tensor_policy_status": "Reserved for M10.3+ dispatcher",
+
+  "verification": {
+    "command": "cargo test command that reproduces these numbers",
+    "env_for_certified": "Env vars for certified mode",
+    "env_for_fast": "Env vars for fast mode",
+    "expected_dispatch_counter_certified": "What vram_bf16_matmul_count should advance by",
+    "expected_dispatch_counter_fast": "What vram_bf16_native_matmul_count should advance by"
+  }
+}
+```
+
+### Why two drift numbers per mode are not enough on their own
+
+`max_abs_diff_vs_f64` is the worst per-element drift across the 4-position fixture forward output. It is a useful end-to-end summary but it does not tell you **which token decision the drift might flip**. The `argmax_match_*` fields capture that: they record whether the engine, under the mode in question, would have produced the same next-token argmax as the F64 reference at every position. A model can satisfy `max_abs_diff < 0.5` and still flip an argmax at a near-tie position — Llama 3.2 1B under fast mode is exactly this case (drift 0.27, but the position-2 argmax differs from F64).
+
+For chat workloads the argmax match is the structurally relevant gate; for scientific workloads `max_abs_diff` matters in its own right.
+
+## How a manifest is generated
+
+Today (M10.3 v1) manifests are generated **manually** from the data the F64 fixture prints. The process for each model in the 4-model fixture:
+
+1. Run the fixture in `certified` mode:
+   ```sh
+   cargo test --release --test m8_5_full_family_validation_test -- \
+     --ignored m8_5_<model>_under_bf16_kernel_matches_f64 --nocapture
+   ```
+   (with the appropriate `*_SAFETENSORS_PATH` and `ATENIA_M8_BF16_KERNEL=1` env vars).
+
+2. Re-run with `ATENIA_FAST_MODE=1` added.
+
+3. Collect from the test output:
+   - `max drift vs F64 = <number>` (one per mode)
+   - The 4 argmax MATCH/MISMATCH lines (one per mode)
+   - The `BF16 matmul calls: certified=<n> native=<m>` line (verifies dispatch routing)
+
+4. Fill in the manifest schema with the numbers; calculate `adr_004_margin` (= 0.5 / drift) when drift < 0.5, or `adr_004_overshoot_factor` (= drift / 0.5) when drift >= 0.5.
+
+5. Pick `recommended_mode` based on:
+   - Fast mode passes ADR-004 strict AND argmax 4/4 → `fast`
+   - Otherwise → `certified`
+   The rationale field explains the trade-off in plain language so an operator reading the manifest can override the recommendation knowingly.
+
+A future milestone (M11+) is expected to automate this: a `cargo run --bin atenia-certify --model <path>` subcommand that produces the manifest as a structured artefact instead of hand-editing JSON. The schema is stable enough today (`schema_version: "1.0.0"`) that automation is purely an ergonomics upgrade, not a contract change.
+
+## How an operator verifies a manifest
+
+The whole point of the manifest is that **anyone can verify it** without trusting the publisher. The `verification` block is the contract: it specifies the exact `cargo test` invocation that reproduces the numbers, with the env vars and expected counter deltas. An auditor:
+
+1. Clones the Atenia repo at the version the manifest claims (`atenia_version` field).
+2. Sets the fixture-checkpoint env var (`*_SAFETENSORS_PATH=<their copy of the model>`).
+3. Runs the verification command for `certified` mode.
+4. Reads the printed drift; compares to `drift_envelope.certified_mode.max_abs_diff_vs_f64`.
+5. Repeats for `fast` mode with `ATENIA_FAST_MODE=1`.
+6. Confirms the `BF16 matmul calls:` line shows the expected counter delta — proving the dispatcher actually routed through the claimed kernel, not silently fell back to a different path.
+
+If any of those checks disagree with the manifest, the manifest is invalid. There is no opaque infrastructure between the manifest claim and the verification command.
+
+## How the manifest is versioned
+
+A manifest is produced for a specific `(checkpoint, atenia_version)` pair. When either side changes the manifest must be regenerated. Concretely:
+
+- **Same checkpoint, new Atenia version**: re-run the fixture and check the drift numbers; if the new version changes the kernel or the GEMM compute mode (e.g. M10.2.0's TF32 swap), the manifest needs to be updated to reflect the new envelope. The verification block must point to the new commit / version.
+- **Same Atenia version, new checkpoint**: a fine-tuned variant of an existing model is structurally a new checkpoint; the manifest of the base model does not transfer. Re-run the fixture from scratch.
+- **Atenia version where the fixture itself changed**: bump `f64_fixture_version`. The schema's `f64_fixture_version` field is precisely so a v2 fixture (e.g. a 10-model expansion in M11) can coexist with v1 manifests until they are regenerated.
+
+The recommended distribution flow: the manifest is a sibling file to `model.safetensors` in the model directory. A model card (HuggingFace or otherwise) can publish the manifest as a downloadable artefact alongside the weights. Atenia's `models/` checkout convention (already used by the F64 fixture) makes this trivial to wire.
+
+## What this does NOT promise (yet)
+
+- **Per-tensor policy dispatch** is reserved for M10.3+. The `per_tensor_policy` field is `null` in v1 manifests; the `_status` field documents what the future will do. Once landed, the dispatcher reads the manifest at load time and dispatches each matmul through the precision mode the manifest prescribes for that tensor.
+- **Coverage beyond the 4-model fixture**: M10.3 v1 ships manifests for TinyLlama 1.1B, SmolLM2 1.7B, Qwen 2.5 1.5B, Llama 3.2 1B (the M4.6 family). Llama 2 7B and 13B Chat have end-to-end smoke evidence but no F64 reference (size). M11 expands to the top-10 model list with manifests for each.
+- **Statistical claims at scale**: each manifest is a 4-position end-to-end snapshot. Adversarial prompts or long-context sequences may surface drift profiles outside the fixture's coverage. The manifest's `recommended_mode_rationale` flags this where relevant (SmolLM2 and Llama 3.2 explicitly).
+
+## Reference manifests
+
+The four manifests shipped in this repo (`docs/numcert/`) are reference copies for the M4.6 family. Operators bringing their own checkpoint should generate a fresh manifest using the procedure above. The fixture models double as the regression sentinels for any future change to the kernel chain — if a manifest's drift would change under a kernel update, that is the signal to revisit ADR-004 / ADR-005 with new evidence.
+
+## Related
+
+- [ADR-004 — F64 reference as default](./decisions/ADR-004-f64-reference-as-default.md)
+- [ADR-005 — Fast mode (BF16-TC) drift envelope](./decisions/ADR-005-fast-mode-bf16-tc-envelope.md)
+- [ROADMAP.md §"Numeric contract strategy"](../ROADMAP.md#numeric-contract-strategy)
+- The 4-model F64 fixture: [`tests/m8_5_full_family_validation_test.rs`](../tests/m8_5_full_family_validation_test.rs)
