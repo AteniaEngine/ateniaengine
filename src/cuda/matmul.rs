@@ -473,7 +473,25 @@ const CUDA_R_32F: c_int = 0;
 // the constant.
 #[allow(dead_code)]
 const CUDA_R_16BF: c_int = 14;
+/// **M10.2.0** — pre-TF32 production compute mode. Kept reachable
+/// because the M10.2.0 swap to `CUBLAS_COMPUTE_32F_FAST_TF32` is
+/// gated empirically: if a future benchmark/fixture run shows the
+/// TF32 truncation harms a specific model class, the production
+/// path can revert to `CUBLAS_COMPUTE_32F` by swapping one
+/// constant in `cuda_matmul_bf16_inplace`. Without the
+/// `#[allow(dead_code)]` the compiler regresses warning hygiene.
+#[allow(dead_code)]
 const CUBLAS_COMPUTE_32F: c_int = 68;
+/// **M10.2.0** — TF32 Tensor Core compute mode. Inputs stay
+/// `CUDA_R_32F`, but cuBLAS truncates internally to TF32 (8-bit
+/// exponent like F32, 10-bit mantissa) and dispatches through
+/// the Ada/Hopper Tensor Cores. Engages TC throughput on sm_89
+/// without changing the cuBLAS-side input dtype. TF32 mantissa is
+/// 8× more precise per element than BF16 (10 bits vs 7), keeping
+/// the cascaded drift within ADR-004 strict — validated under the
+/// 4-model F64 fixture before this constant became the production
+/// compute mode for `cuda_matmul_bf16_inplace` (Path B M8.4c).
+const CUBLAS_COMPUTE_32F_FAST_TF32: c_int = 77;
 const CUBLAS_GEMM_DEFAULT: c_int = -1;
 
 #[link(name = "cublas")]
@@ -761,7 +779,7 @@ pub fn cuda_matmul_bf16_inplace(
             d_a_f32, CUDA_R_32F, k as c_int,
             &beta as *const f32 as *const c_void,
             d_out_f32, CUDA_R_32F, n as c_int,
-            CUBLAS_COMPUTE_32F,
+            CUBLAS_COMPUTE_32F_FAST_TF32,
             CUBLAS_GEMM_DEFAULT,
         );
         if rc != 0 {
