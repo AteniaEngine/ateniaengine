@@ -8,15 +8,36 @@ This roadmap communicates scope and priority, not calendar commitments. Versions
 
 ## Product vision
 
+> **Atenia runs any model on any modest hardware, as fast as the best engines, with correctness certified and audited per checkpoint.**
+
 Atenia Engine is not only a research project — it is a real product. The long-term goals that shape every milestone:
 
 - **Run on the user's hardware.** Anyone with commodity hardware (8 GB VRAM laptop GPU, 16 GB RAM CPU-only box, no GPU at all) should be able to load and run modern open-weight models locally — no NVIDIA datacenter, no cloud dependency, no recurring inference bill.
-- **Usable speeds, not just feasibility.** "It runs" is the M4.7 / M7 contract. The new bar is "fast enough to use": single-digit seconds per token on a 13B model with 8 GB VRAM + 32 GB RAM, sub-second on small models on CPU only. The benchmark is `llama.cpp` on the same hardware.
+- **Performance comparable to llama.cpp.** The production hot path uses native BF16 with NVIDIA Tensor Cores (and the equivalent fast paths on every other vendor at v22+). "Fast enough to use" means single-digit s/tok on a 13B model with 8 GB VRAM + 32 GB RAM, comparable to `llama.cpp` on the same box.
+- **Correctness as a per-checkpoint certificate, not as a runtime tax.** Atenia ships its F64 reference fixture (ADR-004) as **certification data** versioned with each model — auditable by third parties, reproducible offline. F32 execution remains available as the `certified` mode for operators who need bit-magnitude guarantees in the math; the default `fast` mode delivers industry-standard BF16-TC speed with the certificate proving end-to-end drift bounds. **No competitor in the ecosystem ships per-checkpoint numerical certificates.**
+- **Tier-aware execution as the structural differentiator.** VRAM → RAM → NVMe placement decided at load time by a pure planner over `(metadata, free_ram, free_vram, kernel_dtype)`, with Disk → GPU JIT pipeline (M8.7) and selective LRU spill (M4.7.5) covering the beyond-VRAM cases. **No competitor does this end-to-end on commodity hardware** — vLLM / TGI assume datacenter VRAM, llama.cpp does GGUF-format offload but not arbitrary safetensors with per-tensor planning.
 - **Vendor independence.** CUDA today, multi-vendor (Intel iGPU, AMD ROCm, Apple Metal) at v22+. The engine's core never assumes NVIDIA-specific behaviour; cross-vendor portability is structural, not retrofitted.
 - **Training, eventually.** Inference is the v20 / v21 frontier. Backward over loaded models, fine-tuning on commodity hardware, and on-device adaptation are the v25+ horizon. Every loader, kernel, and storage decision today is checked for compatibility with that future.
 - **Beyond text, eventually.** Image, music, and video models follow the same offload + tier-aware execution pattern proven on Llama-family text models. The text-LLM path is the proving ground; the layers above (multimodal, generative media) reuse the same infrastructure.
 
-Every roadmap item below is checked against these five vectors. A milestone that improves benchmark numbers but couples the codebase to a single vendor is rejected; a milestone that hardens portability without a near-term speed gain is accepted.
+Every roadmap item below is checked against these vectors. A milestone that improves benchmark numbers but couples the codebase to a single vendor is rejected; a milestone that hardens portability or certifies correctness without a near-term speed gain is accepted.
+
+---
+
+## Numeric contract strategy
+
+**Why "F32 always" is not the right differentiator any more.** Atenia chose F32 execution + F64 validation as its public technical claim (ADR-004). The M10.0 baseline made the cost concrete: F32 GEMM on the GPU pays ~3× per-matmul over the BF16-with-Tensor-Cores path that `cublasGemmEx(BF16, BF16, F32)` enables on sm_89 hardware. PyTorch / vLLM / llama.cpp / TGI all default to BF16-TC and ship. Atenia paying the F32 tax on every matmul is the dominant reason Mistral 7B sits at ~12 s/tok where the same hardware delivers 1–2 s/tok under industry-default precision. The "F32 in the math" line on the README is real but it is not what makes Atenia worth using — the F64 certification of those F32 results **is**, and that certificate survives a precision change in the production path.
+
+**Why BF16-TC + per-checkpoint certification is the right differentiator.** The F64 fixture is the most expensive and most unique asset Atenia has built. Used as a runtime gate, it taxes every forward; used as **certification data versioned with the model**, it becomes a verifiable third-party-auditable claim ("this checkpoint is certified to drift < δ vs F64 under policy X") that nobody else in the ecosystem ships. This reframes the value proposition from "Atenia is slow because it is correct" to **"Atenia is as fast as everyone else, and ships proof of correctness with the model"**. The fixture is no longer a runtime cost — it is the data that makes the certificate non-empty.
+
+**The path: A → D.**
+
+- **A — Two-mode execution (M10.2, next).** Default `fast` mode runs BF16-TC native; opt-in `certified` mode runs the current Path B (F32 GEMM, ADR-004 strict). Operator chooses; the F64 fixture certifies drift bounds for both modes on every model. Implementation cost is medium (one new kernel arm + one flag); empirical data from `fast` runs informs which tensors actually need F32 in production.
+- **D — Per-tensor numeric contract (M10.3+, destination).** The F64 fixture prescribes per-tensor precision policy for each certified checkpoint. Manifest (`<model>.numcert.json`) is versioned with the checkpoint and read by the loader; dispatcher routes per-tensor between BF16-TC and F32-upcast based on the manifest's measured per-tensor sensitivity. The public claim becomes *"Atenia runs this checkpoint with a guaranteed end-to-end drift bound under policy X, derived from the F64 fixture, audited at certification time"* — data-backed, not implementation-promised.
+
+**What is NOT done.** "Strip the F64 fixture and run BF16 desnudo" (Option B from the architectural analysis) was rejected: it converts Atenia into `vLLM-but-in-Rust` and abandons the only differentiator distinct from "it's Rust". The F64 fixture stays — its role moves from runtime gate to certification data.
+
+**What ADR-004 says.** ADR-004 already anticipates this transition (§"Trigger to Revisit": "When a new precision mode is introduced, add a new ADR with the drift envelope evidence"). M10.2 lands with that evidence; M10.3 closes the loop.
 
 ---
 
@@ -41,12 +62,21 @@ Atenia Engine is currently working through APX v20 (Real Model Runtime Integrati
 
   **M10.1 (GEMV M=1 specialisation) attempted and reverted.** Hypothesis: `matrixmultiply::sgemm`'s panel-packing overhead dominated decode-step matmuls (M=1) and a column-parallel AVX2 GEMV kernel without packing would lift CPU matmul ~5×. Implementation landed (kernel + interceptor + 5 unit tests, 214/214 lib green, drift envelope 1e-2 vs scalar reference). Empirical result on Mistral 7B: **1.13× lift** (12.85 → 11.38 s/tok), and on TinyLlama CPU: **1.00× lift** (1.78 → 1.79 s/tok, within noise). The forward profile post-implementation showed MatMul `avg per-op = 49 388 μs` vs baseline `49 845 μs` — **0.9 % difference**. The hypothesis was wrong: matrixmultiply was not packing-bound, both paths were memory-bound on the strided B-access pattern, and a kernel without packing reproduces the same bandwidth ceiling. Rolled back in full; bench logs and analysis in `bench_logs/`.
 
-  The four candidate tracks documented in [HANDOFF M9 §10](./docs/HANDOFF_APX_V20_M9.md#10-open-issues--how-to-resume) (α/β/γ/δ) remain the menu for the actual M10 lift, now ranked by the M10.0 + M10.1 evidence:
+  **M10.2 (next active milestone) — Two-mode execution: BF16-TC fast path.** Implements Option A from the [Numeric contract strategy](#numeric-contract-strategy) section above. Adds a second `cublasGemmEx(BF16, BF16, F32)` kernel arm that engages NVIDIA Tensor Cores natively, gated by `ATENIA_FAST_MODE=1`. Path B M8.4c (F32 GEMM with BF16 weight upcast) stays as the `certified` mode for operators who need ADR-004 strict in the runtime math. Validation: F64 4-model fixture re-run under `fast`; argmax must remain bit-exact with `certified` on TinyLlama / SmolLM2 / Qwen 2.5 / Llama 3.2 (the M4.6 family, where the F64 reference fits in dev-box memory); end-to-end drift envelope characterised on Mistral 7B / Llama 2 13B against `certified` (no F64 reference for these — too large — but argmax + intermediate-layer sampling provide proxy gates). Targets:
 
-  - **Track β (LLM.int8 outlier decomposition) — top priority.** Recovers ADR-004-class accuracy per the literature while halving the per-tensor weight cost. Direct path to the Llama 2 13B target (projected ~5–7 s/tok if it preserves the ~2× M9 microbench lift over M8.4c without the drift profile).
+  - Mistral 7B: 12 s/tok → **~5–6 s/tok** (M8.0 microbench measured BF16-TC at 2.2× over F32 on the 4 dominant decode shapes; 7B steady-state should track that).
+  - Llama 2 13B: 18 s/tok → **~8–10 s/tok** (M8.7 disk-streamed matmul shapes on the same multiplier, with the per-matmul tax cut).
+
+  Default flip from `certified` to `fast` happens **only after** empirical validation that argmax + per-position drift on every model in the certification fixture is within an explicitly-documented envelope; the flip is a separate sub-step (`M10.2.flip`) gated on data, not a compile-time choice. M10.2 is the first milestone where Atenia's runtime numerical mode is operator-selectable; the F64 fixture provides the data both modes are measured against.
+
+  The drift data collected during M10.2 (per-tensor BF16 vs F32 sensitivity on the 4 fixture models) seeds **M10.3 — Per-tensor numeric contract (Option D)**: a `<model>.numcert.json` manifest versioned with the checkpoint that prescribes per-tensor precision policy, read by the loader, dispatched per-tensor by the matmul executor. M10.3 is the destination of the architectural transition and the milestone where Atenia's correctness claim becomes a third-party-auditable artifact instead of a runtime promise. Scope and budget for M10.3 finalised after M10.2 closes with empirical per-tensor data in hand.
+
+  The four candidate tracks documented in [HANDOFF M9 §10](./docs/HANDOFF_APX_V20_M9.md#10-open-issues--how-to-resume) (α/β/γ/δ) remain the menu for the **post-M10.2** lift on top of the BF16-TC baseline, now ranked by the combined M10.0 / M10.1 / M10.2 evidence:
+
+  - **Track β (LLM.int8 outlier decomposition).** Recovers ADR-004-class accuracy per the literature while halving the per-tensor weight cost again. Direct path to closing the residual gap on Llama 2 13B after M10.2 lands its 2× lift.
   - **Track γ (GPTQ / AWQ with calibration).** State-of-the-art INT8/INT4 quality. Larger scope than β; revisit if β under-delivers on drift.
-  - **Track δ (production hardening, no quantisation).** Defer M9 to opt-in, ship the engine on the M8.7 numbers, fold this into M12.
-  - **Track α (M9.5 FFN-only).** Investigation already showed this is unlikely to pass ADR-004 in 4/4 models; deferred.
+  - **Track δ (production hardening, no quantisation).** Now folded into M12.
+  - **Track α (M9.5 FFN-only).** Investigation already showed this is unlikely to pass ADR-004 in 4/4 models; deferred unless M10.3 per-tensor data revives it.
 
 ### Hardware limits discovered (M10.0 + M10.1)
 
