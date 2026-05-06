@@ -233,6 +233,39 @@ This repository contains the architectural foundation and the reference implemen
 
 ---
 
+## 📐 Numeric certification
+
+Atenia certifies every supported model with **auditable drift data versus an F64 ground-truth reference**. Each checkpoint ships with a `<model>.numcert.json` manifest (in [`docs/numcert/`](./docs/numcert/)) that documents, with measured numbers, exactly how much each execution mode drifts from the F64 reference on a 4-position fixture forward — **and exactly which `cargo test` invocation reproduces those numbers.**
+
+This is the core differentiator: **no other inference engine in the ecosystem ships per-checkpoint numerical certificates.** PyTorch / vLLM / llama.cpp / TGI run with industry-default BF16 and ask you to trust that the numbers are good enough; Atenia runs at the same speed where it matters and ships the proof.
+
+**Two execution modes**, both auditable:
+
+- **`certified`** *(default)* — `cublasGemmEx(F32, F32, F32)` with `CUBLAS_COMPUTE_32F_FAST_TF32` (TF32 Tensor Cores). Every model in the M4.6 fixture passes [ADR-004](./docs/decisions/ADR-004-f64-reference-as-default.md) strict (`max_abs_diff < 0.5` vs F64) with margin 2.3× to 51× depending on the model. Use for research, audited deployments, anything whose numerical equivalence to F64 must be defensible.
+- **`fast`** *(opt-in via `ATENIA_FAST_MODE=1`)* — native BF16 Tensor Cores via `cublasGemmEx(BF16, BF16, F32)`. Industry-standard drift profile documented per-checkpoint in [ADR-005](./docs/decisions/ADR-005-fast-mode-bf16-tc-envelope.md). 1.14× to 1.19× faster on 13B-class workloads (M8.7 path) over certified; up to ~2× on a fully-VRAM-resident model. Use for chat / generation workloads where industry-standard drift is acceptable.
+
+**Empirical drift envelope** (4-model F64 fixture, dev hardware):
+
+| Model               | Certified drift | Fast drift  | Recommended mode |
+|---------------------|----------------:|------------:|------------------|
+| TinyLlama 1.1B Chat | 0.076039        | 0.901545    | `certified`       |
+| SmolLM2 1.7B        | 0.217142        | 2.331949    | `certified`       |
+| Qwen 2.5 1.5B       | 0.022496        | 0.184907    | **`fast`**        |
+| Llama 3.2 1B Inst.  | 0.009715        | 0.268043    | `certified` (argmax flip at pos 2 under fast) |
+
+Every number above is reproducible. Run
+
+```sh
+cargo test --release --test m8_5_full_family_validation_test \
+  -- --ignored --nocapture
+```
+
+with `ATENIA_M8_BF16_KERNEL=1` (and optionally `ATENIA_FAST_MODE=1` for fast-mode numbers) and the four `*_SAFETENSORS_PATH` env vars pointed at your local checkpoint copies. The fixture prints the drift, argmax match, and dispatcher counter delta — every value in the manifest is verifiable against this output.
+
+See [docs/CERTIFICATION.md](./docs/CERTIFICATION.md) for the full schema, generation procedure, and operator verification flow.
+
+---
+
 ## ⚙️ Execution Is Not Plumbing
 
 In most AI systems, execution is treated as plumbing:
