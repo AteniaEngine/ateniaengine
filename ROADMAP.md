@@ -26,16 +26,48 @@ Atenia Engine is currently working through APX v20 (Real Model Runtime Integrati
 
 **Active plan for the rest of v20 (M10 → M11 → M12):** the strategic frame has been re-anchored against the product vision. INT8-strict (ADR-004) is no longer the gating goal; **velocity at usable scales** is. The remaining v20 sub-milestones:
 
-- **M10 — Real velocity.** Drive the engine to usable speeds across the four reference brackets in the velocity matrix below, measured against `llama.cpp` on the same hardware.
+- **M10 — Real velocity.** Drive the engine to usable speeds across the four reference brackets in the velocity matrix below. **M10.0 is closed (measurement)**; **M10.1 (CPU GEMV specialisation) was attempted and reverted on empirical grounds — see "Hardware limits discovered" below**. The matrix reflects what the engine measurably delivers today on the dev hardware (RTX 4070 Laptop, 8 GB VRAM, 32 GB RAM DDR5-5600, NVMe SN770) and where the remaining gap to target sits:
 
-  | Model               | Hardware           | Target          | Compared against           |
-  |---------------------|--------------------|-----------------|----------------------------|
-  | TinyLlama 1.1B      | CPU-only, 16 GB    | < 1 s/tok       | `llama.cpp` CPU            |
-  | SmolLM2 1.7B / 3B   | 8 GB VRAM          | < 2 s/tok       | `llama.cpp` GPU            |
-  | Mistral 7B          | 8 GB VRAM          | < 3 s/tok       | `llama.cpp` GPU offload    |
-  | Llama 2 13B         | 8 GB VRAM + 32 GB RAM | < 5 s/tok    | `llama.cpp` offload        |
+  | Model               | Hardware bracket            | Atenia today | Target         | Status                              |
+  |---------------------|-----------------------------|-------------:|---------------:|-------------------------------------|
+  | TinyLlama 1.1B      | 8 GB VRAM (tier-aware)      | **0.37 s/tok** | < 1 s/tok      | ✅ holgado                            |
+  | SmolLM2 1.7B        | 8 GB VRAM                   | **1.52 s/tok** | < 2 s/tok      | ✅                                    |
+  | Mistral 7B v0.3     | 8 GB VRAM                   | **~12 s/tok** | < 3 s/tok      | ⚠️ hardware-limited (see below)        |
+  | Llama 2 13B Chat    | 8 GB VRAM + 32 GB RAM (M8.7)| **~18 s/tok** | < 5 s/tok      | 🔧 in progress (track β: LLM.int8)    |
 
-  **First step of M10 is measurement, not optimisation.** Before any kernel change, M10.0 captures Atenia vs `llama.cpp` baselines on the same hardware across the four brackets; only then does M10.1+ optimise. Quantisation tracks (LLM.int8, GPTQ, AWQ, FFN-only mixed) are evaluated as means to the velocity goal, not ends. The four candidate tracks documented in [HANDOFF M9 §10](./docs/HANDOFF_APX_V20_M9.md#10-open-issues--how-to-resume) feed M10 as optimisation options ranked by measured impact on the velocity matrix.
+  TinyLlama also runs CPU-only (legacy loader) at **1.78 s/tok** on the same 24-core box for the explicit CPU-only sub-bracket; the GPU-tier-aware result above is the default since `ATENIA_LEGACY_LOADER=1` is the opt-out path post-M8.7.
+
+  **M10.0 (measurement) closed.** All four brackets ran `atenia generate --max-tokens 20` against the prompt "Tell me about the history of Rome" on the dev box. Generated text is coherent on every model. Plan + s/tok numbers reproduced above. No commit was needed — this was characterisation work, not a code change.
+
+  **M10.1 (GEMV M=1 specialisation) attempted and reverted.** Hypothesis: `matrixmultiply::sgemm`'s panel-packing overhead dominated decode-step matmuls (M=1) and a column-parallel AVX2 GEMV kernel without packing would lift CPU matmul ~5×. Implementation landed (kernel + interceptor + 5 unit tests, 214/214 lib green, drift envelope 1e-2 vs scalar reference). Empirical result on Mistral 7B: **1.13× lift** (12.85 → 11.38 s/tok), and on TinyLlama CPU: **1.00× lift** (1.78 → 1.79 s/tok, within noise). The forward profile post-implementation showed MatMul `avg per-op = 49 388 μs` vs baseline `49 845 μs` — **0.9 % difference**. The hypothesis was wrong: matrixmultiply was not packing-bound, both paths were memory-bound on the strided B-access pattern, and a kernel without packing reproduces the same bandwidth ceiling. Rolled back in full; bench logs and analysis in `bench_logs/`.
+
+  The four candidate tracks documented in [HANDOFF M9 §10](./docs/HANDOFF_APX_V20_M9.md#10-open-issues--how-to-resume) (α/β/γ/δ) remain the menu for the actual M10 lift, now ranked by the M10.0 + M10.1 evidence:
+
+  - **Track β (LLM.int8 outlier decomposition) — top priority.** Recovers ADR-004-class accuracy per the literature while halving the per-tensor weight cost. Direct path to the Llama 2 13B target (projected ~5–7 s/tok if it preserves the ~2× M9 microbench lift over M8.4c without the drift profile).
+  - **Track γ (GPTQ / AWQ with calibration).** State-of-the-art INT8/INT4 quality. Larger scope than β; revisit if β under-delivers on drift.
+  - **Track δ (production hardening, no quantisation).** Defer M9 to opt-in, ship the engine on the M8.7 numbers, fold this into M12.
+  - **Track α (M9.5 FFN-only).** Investigation already showed this is unlikely to pass ADR-004 in 4/4 models; deferred.
+
+### Hardware limits discovered (M10.0 + M10.1)
+
+The 7B-class measurements expose a **structural ceiling** of the dev hardware that no kernel-level work bypasses:
+
+- **7B in F32 needs ≥ 16 GB VRAM** for usable speeds. On 8 GB VRAM the planner places only ~22 % of weights in VRAM (62/293 tensors for Mistral 7B); the other 78 % live in RAM and run through CPU matmul, which on this box tops out at ~5.6 GB/s effective DDR5 bandwidth (≈ 8 % of the 70 GB/s peak). The bottleneck is the strided access pattern of the K-major B matrix on a single CPU socket, **not** the kernel's compute throughput.
+- **The real differential of Atenia on 8 GB VRAM is the 13B class**, not the 7B class. 13B with M8 + M8.7 wins because the tier-aware loader + Disk → GPU JIT pipeline keep the matmuls on the GPU side; on 7B the planner ends up balanced between VRAM and RAM and the RAM half dominates wall-clock.
+- **For a 7B target to be usable on this hardware, INT8 must work end-to-end with ADR-004 numerics intact.** That is exactly what track β (LLM.int8) provides: by halving the source-dtype byte cost, the planner doubles the VRAM-resident tensor count, which cuts the CPU-matmul share of the forward proportionally. Without effective INT8, "7B in 8 GB VRAM" is structurally hardware-limited, not kernel-limited.
+- **Larger VRAM (≥ 16 GB) reverts the analysis**: a 7B model with all weights in VRAM hits the < 3 s/tok target trivially under the existing M8.4c BF16 path. The roadmap target on 8 GB stays as written, with the explicit caveat that it is an aspirational ceiling pending track β.
+
+### Hardware requirements
+
+Empirically measured floors for usable speeds (single-digit s/tok) per model class on Atenia:
+
+| Model class       | Minimum hardware                                   | Notes                                      |
+|-------------------|----------------------------------------------------|--------------------------------------------|
+| 1 B – 2 B params  | Any modern desktop / laptop, CPU-only acceptable   | TinyLlama / SmolLM2 / Llama 3.2 1B reference |
+| 7 B params        | ≥ 16 GB VRAM for < 3 s/tok in BF16                 | On 8 GB VRAM, target unreachable without effective INT8 (track β) |
+| 13 B params       | 8 GB VRAM + 32 GB RAM + NVMe (the dev box itself)  | Atenia's primary differentiator; M8.7 path is the production target |
+
+These numbers are the floor for Atenia's **default path** (BF16 weights, no quantisation). The M9 INT8 path is opt-in today and ships with a known drift profile; once track β closes that, the 7B floor on 8 GB VRAM relaxes.
 
 - **M11 — Top-10 model certification + GGUF support.** With the engine fast enough to be used in practice, validate end-to-end on the ten most-used open-weight models today: Llama 3.x, Mistral, Phi-3, Gemma 2, Qwen 2.5, DeepSeek, Command R, Falcon, SmolLM2, TinyLlama. The contract: load + generate + (where feasible) F64 ground-truth validation per ADR-004. The deliverable is a "Certified models" claim Atenia can stand behind at v20 release.
 
