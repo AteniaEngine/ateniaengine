@@ -6,11 +6,40 @@ This roadmap communicates scope and priority, not calendar commitments. Versions
 
 ---
 
+## Product vision
+
+Atenia Engine is not only a research project — it is a real product. The long-term goals that shape every milestone:
+
+- **Run on the user's hardware.** Anyone with commodity hardware (8 GB VRAM laptop GPU, 16 GB RAM CPU-only box, no GPU at all) should be able to load and run modern open-weight models locally — no NVIDIA datacenter, no cloud dependency, no recurring inference bill.
+- **Usable speeds, not just feasibility.** "It runs" is the M4.7 / M7 contract. The new bar is "fast enough to use": single-digit seconds per token on a 13B model with 8 GB VRAM + 32 GB RAM, sub-second on small models on CPU only. The benchmark is `llama.cpp` on the same hardware.
+- **Vendor independence.** CUDA today, multi-vendor (Intel iGPU, AMD ROCm, Apple Metal) at v22+. The engine's core never assumes NVIDIA-specific behaviour; cross-vendor portability is structural, not retrofitted.
+- **Training, eventually.** Inference is the v20 / v21 frontier. Backward over loaded models, fine-tuning on commodity hardware, and on-device adaptation are the v25+ horizon. Every loader, kernel, and storage decision today is checked for compatibility with that future.
+- **Beyond text, eventually.** Image, music, and video models follow the same offload + tier-aware execution pattern proven on Llama-family text models. The text-LLM path is the proving ground; the layers above (multimodal, generative media) reuse the same infrastructure.
+
+Every roadmap item below is checked against these five vectors. A milestone that improves benchmark numbers but couples the codebase to a single vendor is rejected; a milestone that hardens portability without a near-term speed gain is accepted.
+
+---
+
 ## Status overview
 
 Atenia Engine is currently working through APX v20 (Real Model Runtime Integration). Earlier versions (v12 through v19) are complete. The most recently closed sub-milestone is **M9: INT8 W8A16 weight quantisation, shipped as opt-in / experimental — net production speedup confirmed after post-close fixes**. The full INT8 infrastructure is in place (quantizer, CUDA per-group dequant kernel, `TensorStorage::CpuInt8`, loader integration, tier-planner cost model). The first close (`74da82b`) was honest about ADR-004 fail but also exposed two surrounding-infrastructure defects: a lying VRAM cost model and an over-conservative M7.2 RAM headroom rule. Three post-close commits fixed them: `997fd8c` (honest cost `numel × 2`), `d6e084c` (`ATENIA_RAM_HEADROOM_OVERRIDE_GIB` opt-in), and `0d0b4a5` (two-pass `plan_inner` with `ram_pressure = model_total - vram_assigned_in_source_dtype`). End-to-end smoke on Llama 2 13B / dev-box: **M9 default 18.8 s/tok vs M8.7 baseline 20.7 s/tok (−9%); with `ATENIA_RAM_HEADROOM_OVERRIDE_GIB=8`, 17.7 s/tok (−14%)**. The numerical contract was NOT met: simple absmax INT8 (per-channel and per-group {32, 128}) misses ADR-004's `< 0.5` drift gate on 4 of 4 models in the F64 fixture (best result Llama 3.2 1B at 0.516 under g=128). M9 stays opt-in **for the drift reason**, not for the performance reason; operators who accept the drift profile now get a measurable speedup; ADR-004-strict INT8 is deferred to M9.5+ (FFN-only mixed precision) or M10 (LLM.int8 / GPTQ outlier decomposition). The previous closure was **M8.6: BF16 KV cache (D62 resolved; default flipped on after the TinyLlama 1.1B-Chat 8-token determinism fixture came back bit-identical; 1.6 GiB RAM savings at seq=2048 on Llama 2 13B; legacy F32 path preserved behind `ATENIA_LEGACY_F32_KV_CACHE=1`)**. The full M4.7 → M4.8 → M4.9 → M5 → M6 → M7 → M8 → M8.7 → M8.6 trajectory is closed: Llama 2 13B Chat runs end-to-end on dev-class commodity hardware (RTX 4070 Laptop, 8 GB VRAM, 32 GB RAM, NVMe spill cache); as of M6 the tier-aware loader doubled the speed of the 7B Chat over the CPU baseline; as of M7 the 13B Chat ran the first time on the box without BSOD via automatic Disk overflow; as of M8 the BF16-resident VRAM kernels gave 1.36× over M7.3; and as of M8.7 **`ATENIA_M8_BF16_KERNEL=1 ATENIA_M8_7_ENABLED=1 atenia generate --model models/llama-2-13b-chat` streams 154 disk-tier weights per forward through the BF16 GPU dispatch with a 98.7 % CPU prefetch hit rate, dropping the 13B per-token cost from 27.0 s/tok (M8) to 20.7 s/tok — 1.30× faster than the M8 baseline, argmax bit-exact with M8**.
 
-**Next active milestone: TBD — pending strategic decision.** Four candidate tracks documented in [HANDOFF M9 §10](./docs/HANDOFF_APX_V20_M9.md#10-open-issues--how-to-resume): **(α) M9.5 FFN-only mixed precision** (~3 days, attacks the cascade-depth term in the drift equation by halving quantised layer count); **(β) M10 outlier decomposition** (LLM.int8 / Dettmers, ~1-2 weeks, recovers ADR-004-class accuracy per the literature); **(γ) M10 GPTQ / AWQ with calibration** (~2 weeks, state-of-the-art quality for INT8 / INT4); **(δ) M10 production hardening, no quantisation** (deepen M8.6 / M8.7 / SignalBus instead, leave M9 as opt-in for operators who accept the trade-off).
+**Active plan for the rest of v20 (M10 → M11 → M12):** the strategic frame has been re-anchored against the product vision. INT8-strict (ADR-004) is no longer the gating goal; **velocity at usable scales** is. The remaining v20 sub-milestones:
+
+- **M10 — Real velocity.** Drive the engine to usable speeds across the four reference brackets in the velocity matrix below, measured against `llama.cpp` on the same hardware.
+
+  | Model               | Hardware           | Target          | Compared against           |
+  |---------------------|--------------------|-----------------|----------------------------|
+  | TinyLlama 1.1B      | CPU-only, 16 GB    | < 1 s/tok       | `llama.cpp` CPU            |
+  | SmolLM2 1.7B / 3B   | 8 GB VRAM          | < 2 s/tok       | `llama.cpp` GPU            |
+  | Mistral 7B          | 8 GB VRAM          | < 3 s/tok       | `llama.cpp` GPU offload    |
+  | Llama 2 13B         | 8 GB VRAM + 32 GB RAM | < 5 s/tok    | `llama.cpp` offload        |
+
+  **First step of M10 is measurement, not optimisation.** Before any kernel change, M10.0 captures Atenia vs `llama.cpp` baselines on the same hardware across the four brackets; only then does M10.1+ optimise. Quantisation tracks (LLM.int8, GPTQ, AWQ, FFN-only mixed) are evaluated as means to the velocity goal, not ends. The four candidate tracks documented in [HANDOFF M9 §10](./docs/HANDOFF_APX_V20_M9.md#10-open-issues--how-to-resume) feed M10 as optimisation options ranked by measured impact on the velocity matrix.
+
+- **M11 — Top-10 model certification.** With the engine fast enough to be used in practice, validate end-to-end on the ten most-used open-weight models today: Llama 3.x, Mistral, Phi-3, Gemma 2, Qwen 2.5, DeepSeek, Command R, Falcon, SmolLM2, TinyLlama. The contract: load + generate + (where feasible) F64 ground-truth validation per ADR-004. The deliverable is a "Certified models" claim Atenia can stand behind at v20 release.
+
+- **M12 — Production hardening.** Guards, structured logging, adaptive thresholds, installer / first-run UX. Converts the engine from "runs end-to-end on a developer box with the right env vars" into "installable and usable by someone who is not a developer". This is the work previously labelled v21 in this roadmap; it is now folded into v20 to ship as part of the v20 close.
 
 See [docs/HANDOFF_APX_V20_M9.md](./docs/HANDOFF_APX_V20_M9.md) for the most recent closing notes — including the full 12-run experiment matrix (3 quantisation strategies × 4 production models) and the empirical "g=128 aligns with `head_dim`" finding. [docs/HANDOFF_APX_V20_M8.6.md](./docs/HANDOFF_APX_V20_M8.6.md) for the prior milestone closure; [docs/HANDOFF_APX_V20_M8.7.md](./docs/HANDOFF_APX_V20_M8.7.md) for M8.7.
 
@@ -30,6 +59,24 @@ Detailed closing notes per milestone live in the `docs/` directory:
 - [docs/HANDOFF_APX_V20_M8.7.md](./docs/HANDOFF_APX_V20_M8.7.md) — Disk → GPU JIT pipeline (M8.7.0 single-tensor staging + M8.7.1.a CPU prefetch + M8.7.1.r Path B stream-aware refactor; 13B 20.7 s/tok with 154 disk-streamed matmuls per forward and 98.7 % prefetch hit rate; M8.7.1.b/c deferred for VRAM-budget reasons, documented for future revival)
 - [docs/HANDOFF_APX_V20_M8.6.md](./docs/HANDOFF_APX_V20_M8.6.md) — BF16 KV cache (D62 resolved; runtime ledger F32→BF16 cast in harvest, BF16→F32 in reinject; graph stays F32; TinyLlama 1.1B determinism fixture bit-identical under BF16 default; 1.6 GiB savings at seq=2048 on 13B; `ATENIA_LEGACY_F32_KV_CACHE=1` opt-out)
 - [docs/HANDOFF_APX_V20_M9.md](./docs/HANDOFF_APX_V20_M9.md) — INT8 W8A16 weight quantisation, shipped as opt-in (`ATENIA_M9_INT8=1`); per-group g=128 (Q8_0) production storage; M9.0 microbench measured ~2× speedup over M8.4c on the 4 dominant Llama 13B shapes; planner places 167 VRAM tensors / 0 Disk on 13B; ADR-004 strict NOT satisfied — full 12-run experiment matrix and follow-up options α/β/γ/δ documented for the next operator
+
+---
+
+## Certified models (today)
+
+Models that already run end-to-end on the engine. The full M11 certification pass (ADR-004 strict + greedy-generation contract + tokenizer round-trip) closes the formal claim across the top-10 list; what is below is the empirical state of the codebase right now.
+
+| Model                  | Status                                          | Validation                                       |
+|------------------------|-------------------------------------------------|--------------------------------------------------|
+| TinyLlama 1.1B Chat    | ✅ Loader + inference + generation              | ADR-004 F64 fixture (drift 1.4e-4); D67 determinism |
+| SmolLM2 1.7B           | ✅ Loader + inference + generation              | ADR-004 F64 fixture (drift 1.4e-3)               |
+| Qwen 2.5 1.5B          | ✅ Loader + inference + generation              | ADR-004 F64 fixture (drift 2.9e-2)               |
+| Llama 3.2 1B Instruct  | ✅ Loader + inference + generation              | ADR-004 F64 fixture (drift 1.3e-4); RoPE llama3 scaling |
+| Llama 2 7B Chat        | ✅ Loader + inference + generation              | M6 / M8 end-to-end smoke; no F64 fixture (size)  |
+| Llama 2 13B Chat       | ✅ Loader + inference + generation (beyond-VRAM)| M4.7 / M7.3 / M8.7 / M9 smokes; no F64 fixture (size) |
+| Mistral 7B v0.3        | ✅ Loader (M4.7.1.c — 291 tensors / 3 shards / 14.5 GB BF16) | Loader-only; full inference path slated for M11 |
+
+The four small models (TinyLlama, SmolLM2, Qwen 2.5 1.5B, Llama 3.2 1B) form the M4.6 / M4.7.2.e / M4.7.3.f / M4.7.4.f / M4.7.5.f / M4.8.f / M8.5 regression fixture and are exercised under every numerical-contract milestone. The two 13B-class checkpoints (Llama 2 7B and 13B) are validated end-to-end at the generation level (`atenia generate` produces coherent text, argmax bit-exact across milestone gates) but not under the F64 fixture due to peak-memory cost. Mistral 7B has loader parity but the full forward path is queued for M11.
 
 ---
 
@@ -346,9 +393,9 @@ See [HANDOFF M8.6](./docs/HANDOFF_APX_V20_M8.6.md) for the full closing notes.
 
 ---
 
-## v21 — Production-ready execution guards
+## v21 — M12: Production hardening (formerly "production-ready execution guards")
 
-The Guards layer (v16) and Policies layer (v15) currently operate on a model that was satisfactory for scaffolding but will need hardening to consume SignalBus output reliably under production conditions. v21 focuses on:
+**Renamed and rescoped under the new product framing.** This is the work that turns the engine into something a non-developer can install and use: it is the **M12** sub-milestone of the v20 close in narrative terms, retained under the "v21" version label for backwards-compatible reference. The Guards layer (v16) and Policies layer (v15) currently operate on a model that was satisfactory for scaffolding but will need hardening to consume SignalBus output reliably under production conditions. v21 / M12 focuses on:
 
 - Guard verdict stability under noisy signals (already partly addressed at the Policy layer; extending the same hysteresis-aware behavior to Guards)
 - Recovery and rollback paths exercised against real model workloads (the M4.7 and M5 outputs are where this work is exercised non-synthetically)
