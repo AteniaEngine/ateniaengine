@@ -37,7 +37,15 @@ Atenia Engine is currently working through APX v20 (Real Model Runtime Integrati
 
   **First step of M10 is measurement, not optimisation.** Before any kernel change, M10.0 captures Atenia vs `llama.cpp` baselines on the same hardware across the four brackets; only then does M10.1+ optimise. Quantisation tracks (LLM.int8, GPTQ, AWQ, FFN-only mixed) are evaluated as means to the velocity goal, not ends. The four candidate tracks documented in [HANDOFF M9 §10](./docs/HANDOFF_APX_V20_M9.md#10-open-issues--how-to-resume) feed M10 as optimisation options ranked by measured impact on the velocity matrix.
 
-- **M11 — Top-10 model certification.** With the engine fast enough to be used in practice, validate end-to-end on the ten most-used open-weight models today: Llama 3.x, Mistral, Phi-3, Gemma 2, Qwen 2.5, DeepSeek, Command R, Falcon, SmolLM2, TinyLlama. The contract: load + generate + (where feasible) F64 ground-truth validation per ADR-004. The deliverable is a "Certified models" claim Atenia can stand behind at v20 release.
+- **M11 — Top-10 model certification + GGUF support.** With the engine fast enough to be used in practice, validate end-to-end on the ten most-used open-weight models today: Llama 3.x, Mistral, Phi-3, Gemma 2, Qwen 2.5, DeepSeek, Command R, Falcon, SmolLM2, TinyLlama. The contract: load + generate + (where feasible) F64 ground-truth validation per ADR-004. The deliverable is a "Certified models" claim Atenia can stand behind at v20 release.
+
+  **GGUF format support is scoped inside M11** because a meaningful share of the top-10 list is published primarily — and sometimes only — as GGUF on HuggingFace. The work covers:
+
+  - **GGUF reader** (header + metadata + tensor descriptors), structurally analogous to the `safetensors` reader shipped at M4.
+  - **Dequantisation kernels Q4 / Q8 → F32 / BF16**, reusing the M9 INT8 dequant infrastructure (`int8_to_bf16_in_vram`, `TensorStorage::CpuInt8`, the per-group symmetric scale layout) as the structural base. Q8_0 is already the M9 production storage format; Q4_0 / Q4_K extend the same pattern to 4-bit per-group with one extra zero-point term.
+  - **GGUF → HuggingFace name mapping**, so the same Llama / Mistral / Qwen builders consume GGUF checkpoints without per-format graph variants.
+
+  Why GGUF is M11 scope and not earlier: M10 is a velocity milestone on the safetensors checkpoints already certified (the four small models + Llama 2 7B / 13B + Mistral 7B), so it is bottlenecked by kernels and tier-planning, not by loaders. Pulling GGUF into M10 would dilute the velocity contract with format-compatibility work. M11's certification scope is the natural home: it is the milestone where "what models can Atenia actually run" is the deliverable, and the M9 dequant work makes the marginal cost of adding GGUF substantially lower than starting cold.
 
 - **M12 — Production hardening.** Guards, structured logging, adaptive thresholds, installer / first-run UX. Converts the engine from "runs end-to-end on a developer box with the right env vars" into "installable and usable by someone who is not a developer". This is the work previously labelled v21 in this roadmap; it is now folded into v20 to ship as part of the v20 close.
 
