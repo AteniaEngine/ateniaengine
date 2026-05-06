@@ -71,7 +71,7 @@ use std::sync::Mutex;
 use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::amg::weight_store::{SharedParam, WeightStore};
 use atenia_engine::cuda::cuda_available;
-use atenia_engine::cuda::matmul::vram_bf16_matmul_count;
+use atenia_engine::cuda::matmul::{vram_bf16_matmul_count, vram_bf16_native_matmul_count};
 use atenia_engine::gpu::tier_plan::{plan, TensorMeta, TierPlanInput};
 use atenia_engine::nn::llama::{
     build_llama, build_llama_with_store, llama_weight_mapper, LlamaConfig, LlamaRuntime,
@@ -84,6 +84,49 @@ use atenia_engine::v17::loader::weight_mapper::{
 
 const TOKENS: [f32; 4] = [1.0, 100.0, 200.0, 300.0];
 const ADR_004_THRESHOLD: f64 = 0.5;
+
+/// **M10.2.1** — under fast mode (`ATENIA_FAST_MODE=1`) the
+/// dispatcher routes to `cuda_matmul_bf16_native_inplace` whose
+/// drift profile is documented in ADR-005, not ADR-004. The
+/// fixture switches to a document-only behaviour: drift and
+/// argmax match are still printed, but the strict gates are not
+/// asserted. This keeps the fixture re-runnable under fast mode
+/// for empirical envelope tracking without converting an
+/// expected drift difference into a panic.
+fn is_fast_mode() -> bool {
+    std::env::var("ATENIA_FAST_MODE").as_deref() == Ok("1")
+}
+
+/// Strict assertion under certified mode; soft print under fast.
+fn assert_drift_within_adr_004(label: &str, drift: f64) {
+    if is_fast_mode() {
+        eprintln!(
+            "[FAST_MODE] {} drift {:.6} (ADR-004 threshold {} not enforced — \
+             see ADR-005 for fast-mode envelope)",
+            label, drift, ADR_004_THRESHOLD
+        );
+        return;
+    }
+    assert!(
+        drift < ADR_004_THRESHOLD,
+        "{} M8 drift {:.6} exceeds {} (ADR-004) — PARAR per protocol",
+        label, drift, ADR_004_THRESHOLD
+    );
+}
+
+/// Strict argmax match under certified; soft print under fast.
+fn assert_argmax_4_4(label: &str, matches: [bool; 4]) {
+    if is_fast_mode() {
+        let n_match = matches.iter().filter(|m| **m).count();
+        eprintln!(
+            "[FAST_MODE] {} argmax {}/4 (per-position equivalence not enforced; \
+             ADR-005 envelope)",
+            label, n_match
+        );
+        return;
+    }
+    assert_eq!(matches, [true; 4], "{} M8 argmax mismatch", label);
+}
 
 /// Process-wide serialisation for any test that touches
 /// `ATENIA_M8_BF16_KERNEL` or snapshots the BF16 counters.
@@ -391,22 +434,41 @@ fn run_one_model_m8(
     // ---- Forward pass. Snapshot vram_bf16_matmul_count to verify
     // the dispatcher actually fired the BF16 path on at least one
     // matmul.
+    // **M10.2.1** — fast mode routes through the native BF16-TC
+    // kernel which advances `vram_bf16_native_matmul_count`
+    // instead of the certified counter. Snapshot both so the
+    // dispatch-fired assertion below picks the right one.
     let bf16_matmul_before = vram_bf16_matmul_count();
+    let bf16_native_before = vram_bf16_native_matmul_count();
+    let fast_mode_active =
+        std::env::var("ATENIA_FAST_MODE").as_deref() == Ok("1");
     let tokens = Tensor::new_cpu(vec![1, 4], TOKENS.to_vec());
     println!("Running forward (M8 BF16 dispatcher active)...");
     let fwd_start = std::time::Instant::now();
     let outputs = graph_for_exec.execute(vec![tokens]);
     println!("Forward: {:.2}s", fwd_start.elapsed().as_secs_f32());
     let bf16_matmul_after = vram_bf16_matmul_count();
+    let bf16_native_after = vram_bf16_native_matmul_count();
     let bf16_matmul_delta = bf16_matmul_after - bf16_matmul_before;
+    let bf16_native_delta = bf16_native_after - bf16_native_before;
     println!(
-        "BF16 matmul calls: {} during forward",
-        bf16_matmul_delta
+        "BF16 matmul calls: certified={}  native={}  (fast_mode={})",
+        bf16_matmul_delta, bf16_native_delta, fast_mode_active,
     );
+    let dispatch_fired = if fast_mode_active {
+        bf16_native_delta > 0
+    } else {
+        bf16_matmul_delta > 0
+    };
+    let counter_label = if fast_mode_active {
+        "vram_bf16_native_matmul_count"
+    } else {
+        "vram_bf16_matmul_count"
+    };
     assert!(
-        bf16_matmul_delta > 0,
-        "{}: vram_bf16_matmul_count did not advance — dispatcher did NOT take the BF16 arm",
-        label
+        dispatch_fired,
+        "{}: {} did not advance — dispatcher did NOT take the BF16 arm",
+        label, counter_label,
     );
 
     let atenia_logits = outputs[0].as_cpu_slice();
@@ -592,13 +654,8 @@ fn m8_5_tinyllama_under_bf16_kernel_matches_f64() {
         201,
         32_000,
     );
-    assert!(
-        drift < ADR_004_THRESHOLD,
-        "TinyLlama M8 drift {:.6} exceeds {} (ADR-004) — PARAR per protocol",
-        drift,
-        ADR_004_THRESHOLD
-    );
-    assert_eq!(matches, [true; 4], "TinyLlama M8 argmax mismatch");
+    assert_drift_within_adr_004("TinyLlama 1.1B", drift);
+    assert_argmax_4_4("TinyLlama 1.1B", matches);
 }
 
 #[test]
@@ -621,13 +678,8 @@ fn m8_5_smollm2_under_bf16_kernel_matches_f64() {
         218,
         49_152,
     );
-    assert!(
-        drift < ADR_004_THRESHOLD,
-        "SmolLM2 M8 drift {:.6} exceeds {} (ADR-004) — PARAR per protocol",
-        drift,
-        ADR_004_THRESHOLD
-    );
-    assert_eq!(matches, [true; 4], "SmolLM2 M8 argmax mismatch");
+    assert_drift_within_adr_004("SmolLM2 1.7B", drift);
+    assert_argmax_4_4("SmolLM2 1.7B", matches);
 }
 
 #[test]
@@ -650,13 +702,8 @@ fn m8_5_qwen25_under_bf16_kernel_matches_f64() {
         338,
         151_936,
     );
-    assert!(
-        drift < ADR_004_THRESHOLD,
-        "Qwen 2.5 M8 drift {:.6} exceeds {} (ADR-004) — PARAR per protocol",
-        drift,
-        ADR_004_THRESHOLD
-    );
-    assert_eq!(matches, [true; 4], "Qwen 2.5 M8 argmax mismatch");
+    assert_drift_within_adr_004("Qwen 2.5 1.5B", drift);
+    assert_argmax_4_4("Qwen 2.5 1.5B", matches);
 }
 
 #[test]
@@ -679,13 +726,8 @@ fn m8_5_llama_3_2_under_bf16_kernel_matches_f64() {
         146,
         128_256,
     );
-    assert!(
-        drift < ADR_004_THRESHOLD,
-        "Llama 3.2 M8 drift {:.6} exceeds {} (ADR-004) — PARAR per protocol",
-        drift,
-        ADR_004_THRESHOLD
-    );
-    assert_eq!(matches, [true; 4], "Llama 3.2 M8 argmax mismatch");
+    assert_drift_within_adr_004("Llama 3.2 1B", drift);
+    assert_argmax_4_4("Llama 3.2 1B", matches);
 }
 
 // **Hash to make HashMap import not stale** — referenced indirectly

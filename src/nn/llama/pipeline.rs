@@ -78,6 +78,26 @@ use crate::v17::loader::loader_errors::LoaderError;
 use crate::v17::loader::safetensors_reader::SafetensorsReader;
 use crate::v17::loader::sharded_reader::ShardedSafetensorsReader;
 use super::builder::{build_llama, LlamaRuntime};
+
+/// **M10.2.1** — fast-mode gate read once per process, exposed for
+/// the GPU dispatcher (`gpu::dispatch::hooks`) to choose between
+/// `cuda_matmul_bf16_inplace` (certified, Path B M8.4c +
+/// COMPUTE_32F_FAST_TF32) and `cuda_matmul_bf16_native_inplace`
+/// (fast, BF16-TC native, drift industrial, ADR-005 envelope).
+///
+/// Setting `ATENIA_FAST_MODE=1` flips this to `true`. The flag also
+/// implies BF16 storage (`m8_bf16_resolver` short-circuits to `true`
+/// when fast mode is active, overriding the M7.2 RAM-based
+/// heuristic) — fast mode is structurally incompatible with the
+/// F32 storage path because the native kernel reads BF16 directly
+/// from VRAM.
+///
+/// Read once via `LazyLock` so the value is process-stable and
+/// hot-reads in the dispatcher are a single atomic load.
+pub static FAST_MODE_ACTIVE: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| {
+        std::env::var("ATENIA_FAST_MODE").as_deref() == Ok("1")
+    });
 use super::generator::{
     generate_greedy, GenerateError, GeneratedToken, GenerationConfig, TokenSink,
 };
@@ -274,10 +294,32 @@ impl GenerationPipeline {
             let env_requested = std::env::var("ATENIA_M8_BF16_KERNEL")
                 .as_deref()
                 == Ok("1");
+            // **M10.2.1** — fast mode (`ATENIA_FAST_MODE=1`) implies
+            // M8 BF16 storage (the native fast kernel consumes a
+            // BF16-resident weight) and overrides the M7.2 RAM-based
+            // M8 heuristic. Read once at first load via the
+            // `FAST_MODE_ACTIVE` LazyLock below.
+            let fast_mode = *FAST_MODE_ACTIVE;
+            if fast_mode {
+                eprintln!(
+                    "[ATENIA] Fast mode active (BF16-TC native, drift \
+                     industrial, no ADR-004 strict guarantee). \
+                     Routes through cuda_matmul_bf16_native_inplace \
+                     instead of cuda_matmul_bf16_inplace; cublasGemmEx \
+                     with CUDA_R_16BF inputs + COMPUTE_32F. See ADR-005 \
+                     for the drift envelope and per-checkpoint \
+                     certification policy."
+                );
+            }
             // `model_total_bytes` is computed inside each load
             // branch; we wire the conditional inline there so both
             // branches share the same logic.
             let m8_bf16_resolver = |model_total_bytes: u64| -> bool {
+                if fast_mode {
+                    // Fast mode requires BF16 storage in VRAM —
+                    // override the M7.2 RAM-based heuristic.
+                    return true;
+                }
                 if !env_requested {
                     return false;
                 }

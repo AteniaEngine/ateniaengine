@@ -17,7 +17,7 @@ use crate::tensor::{DType, Tensor, TensorStorage};
 use crate::cuda::{
     self,
     matmul::cuda_matmul,
-    matmul::cuda_matmul_bf16_inplace,
+    matmul::{cuda_matmul_bf16_inplace, cuda_matmul_bf16_native_inplace},
     matmul::cuda_matmul_inplace,
     matmul::cuda_matmul_non_pooled,
     fused_linear_silu::cuda_fused_linear_silu,
@@ -314,10 +314,22 @@ pub fn try_gpu_matmul(a: &Tensor, b: &Tensor, out: &mut Tensor) -> bool {
             "[GPU-TRACE] try_gpu_matmul: BRANCH=bf16_mixed_resident \
              (a=Cpu, b=Cuda(BF16), out=Cpu)"
         );
+        // M10.2.1 — BF16-TC native fast path (`ATENIA_FAST_MODE=1`)
+        // routes the same operand triple through the native BF16
+        // GEMM (no F32 upcast transient), engaging the Tensor Cores
+        // directly with `CUDA_R_16BF` inputs. The `certified` path
+        // (Path B M8.4c, F32 upcast + COMPUTE_32F_FAST_TF32 since
+        // M10.2.0) is the default; fast mode is opt-in and ships
+        // outside ADR-004 strict per ADR-005 (drift envelope
+        // documented per checkpoint).
         // M8.7.1.r — pass `null` stream = default stream = bit-exact
         // with M8.4c pre-M8.7.1.r. Future M8.7.1.b/c will swap this
         // for a dedicated compute stream.
-        let ok = cuda_matmul_bf16_inplace(a, b, out, m, k, n, std::ptr::null_mut());
+        let ok = if *crate::nn::llama::pipeline::FAST_MODE_ACTIVE {
+            cuda_matmul_bf16_native_inplace(a, b, out, m, k, n, std::ptr::null_mut())
+        } else {
+            cuda_matmul_bf16_inplace(a, b, out, m, k, n, std::ptr::null_mut())
+        };
         if ok {
             // The BF16 path increments its own counter
             // (`vram_bf16_matmul_count`) inside

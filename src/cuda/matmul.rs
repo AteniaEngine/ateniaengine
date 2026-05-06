@@ -831,6 +831,203 @@ pub fn cuda_matmul_bf16_inplace(
 }
 
 // ===========================================================================
+// M10.2.1 — BF16-TC native fast path (CUDA_R_16BF inputs, F32 acc + output)
+// ===========================================================================
+
+/// **M10.2.1** — counter for successful `cuda_matmul_bf16_native_inplace`
+/// calls. Disjoint from [`VRAM_BF16_MATMUL_COUNT`] (the M8.4c
+/// "certified" path that upcasts BF16 weight to F32 before the GEMM):
+/// every call to the native fast path increments this counter on
+/// success and never advances `VRAM_BF16_MATMUL_COUNT`. Lets a smoke
+/// or test prove that fast mode actually fired without re-counting
+/// certified-path matmuls.
+static VRAM_BF16_NATIVE_MATMUL_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Public reader for [`VRAM_BF16_NATIVE_MATMUL_COUNT`].
+pub fn vram_bf16_native_matmul_count() -> usize {
+    VRAM_BF16_NATIVE_MATMUL_COUNT.load(Ordering::Relaxed)
+}
+
+/// **M10.2.1** — BF16-Tensor-Core native matmul (fast mode).
+///
+/// Numerically equivalent to the M8.4-original path that M8.4c
+/// rejected for ADR-004 strict reasons: BF16 activation × BF16
+/// weight × F32 accumulate, dispatched through Ada/Hopper Tensor
+/// Cores via `cublasGemmEx` with `CUDA_R_16BF` inputs and
+/// `CUBLAS_COMPUTE_32F`.
+///
+/// Trade-off vs [`cuda_matmul_bf16_inplace`] (Path B M8.4c
+/// "certified"):
+///
+/// - **+**: ~2× speedup on the four Llama 13B decode shapes per
+///   the M8.0 microbench. No host-side upcast, no on-device upcast
+///   transient, BF16 PCIe transfer (half the bytes vs F32).
+/// - **−**: cascaded BF16 activation truncation through 16-28
+///   transformer layers drives the M8.5 4-model F64 fixture drift
+///   to the M8.4-original range (0.07–2.33 across the four models;
+///   3 of 4 fail ADR-004 strict by construction).
+///
+/// Selection between the two paths is operator-driven via the
+/// `ATENIA_FAST_MODE=1` environment variable, read at the
+/// dispatcher level (not here — this function is a pure kernel).
+/// ADR-005 documents the envelope of fast mode and the reframing
+/// of ADR-004 to a per-checkpoint certification rather than a
+/// blanket runtime guarantee.
+///
+/// Same I/O contract as [`cuda_matmul_bf16_inplace`]:
+///   - `a`: F32 host (`TensorStorage::Cpu` / `CpuShared`). Cast to
+///     BF16 host-side before the H→D upload (the only place the
+///     activation ever lives in BF16; the AMG graph never sees it).
+///   - `b`: BF16 in VRAM (`TensorStorage::Cuda` with `dtype = BF16`).
+///     Consumed directly — no upcast, no transient.
+///   - `out`: F32 host. The downloaded F32 output is written into
+///     `out.as_cpu_slice_mut()` after `ensure_cpu`.
+///
+/// Returns `true` on success (output written, counter incremented).
+/// Returns `false` on any precondition or CUDA / cuBLAS error;
+/// every device buffer allocated up to the failure point is freed
+/// before the `false` return via [`NonPooledAllocs`]'s `Drop`.
+///
+/// Stream handling is identical to [`cuda_matmul_bf16_inplace`]:
+/// caller-supplied `stream` is bound to the cuBLAS handle for the
+/// duration of the GEMM and used for both H→D and D→H async
+/// memcpy. With `stream = null` the behaviour is bit-exact with
+/// the default-stream sync semantics.
+pub fn cuda_matmul_bf16_native_inplace(
+    a: &Tensor,
+    b: &Tensor,
+    out: &mut Tensor,
+    m: usize,
+    k: usize,
+    n: usize,
+    stream: *mut c_void,
+) -> bool {
+    // 1. Validate b is a BF16-resident TensorGPU.
+    let b_gpu = match &b.storage {
+        TensorStorage::Cuda(gpu) if gpu.dtype() == DType::BF16 => gpu,
+        _ => return false,
+    };
+    if b_gpu.size_bytes() != k * n * 2 {
+        return false;
+    }
+
+    // 2. cuBLAS handle (process-wide).
+    let handle = match cublas_handle() {
+        Some(h) => h,
+        None => return false,
+    };
+
+    // 3. Validate F32 activation and cast host-side to BF16. The
+    //    cast is a single `f32_to_bf16_bits` per element; for
+    //    decode-step (M=1) shapes this is `K` truncations totaling
+    //    a few KiB of work — negligible vs the GEMM itself. The
+    //    BF16 buffer is dropped at function exit.
+    let a_slice = a.as_cpu_slice();
+    if a_slice.len() != m * k {
+        return false;
+    }
+    let a_bf16: Vec<u16> = a_slice
+        .iter()
+        .map(|&f| crate::tensor::tensor::f32_to_bf16_bits(f))
+        .collect();
+    let bytes_a_bf16 = m * k * 2;
+    let bytes_out_f32 = m * n * 4;
+
+    // 4. Allocate the per-call BF16 activation upload buffer and
+    //    the F32 output buffer via `NonPooledAllocs`. No weight
+    //    transient (the BF16 weight is consumed directly).
+    let mut allocs = NonPooledAllocs::new();
+    let d_a_bf16 = match allocs.alloc(bytes_a_bf16) {
+        Some(p) => p,
+        None => return false,
+    };
+    let d_out_f32 = match allocs.alloc(bytes_out_f32) {
+        Some(p) => p,
+        None => return false,
+    };
+
+    // 5. H→D upload of the BF16 activation on the caller-supplied
+    //    `stream`. With `stream = null` this is bit-exact with the
+    //    default-stream sync behaviour.
+    unsafe {
+        let rc = cudaMemcpyAsync(
+            d_a_bf16,
+            a_bf16.as_ptr() as *const c_void,
+            bytes_a_bf16,
+            CUDA_MEMCPY_HOST_TO_DEVICE,
+            stream,
+        );
+        if rc != 0 {
+            return false;
+        }
+    }
+
+    // 6. cublasGemmEx — same row-major-via-transpose trick as
+    //    `cuda_matmul_bf16_inplace`, but with `CUDA_R_16BF` inputs
+    //    and `CUBLAS_COMPUTE_32F` (BF16 → F32 accumulate, hardware
+    //    Tensor Cores on sm_89). Output stays `CUDA_R_32F`.
+    //    Compute mode is the strict 32-bit accumulate (NOT the
+    //    `_FAST_TF32` variant from M10.2.0 — the inputs are already
+    //    BF16, so TF32 truncation has nothing to do).
+    let alpha: f32 = 1.0;
+    let beta: f32 = 0.0;
+    unsafe {
+        let rc = cublasSetStream_v2(handle, stream);
+        if rc != 0 {
+            return false;
+        }
+        let rc = cublasGemmEx(
+            handle,
+            CUBLAS_OP_N, CUBLAS_OP_N,
+            n as c_int, m as c_int, k as c_int,
+            &alpha as *const f32 as *const c_void,
+            // First operand in column-major view = B^T (the row-major
+            // BF16 weight `b`). Leading dim n.
+            b_gpu.device_ptr() as *const c_void, CUDA_R_16BF, n as c_int,
+            // Second operand = A^T (the row-major BF16 activation).
+            // Leading dim k.
+            d_a_bf16, CUDA_R_16BF, k as c_int,
+            &beta as *const f32 as *const c_void,
+            d_out_f32, CUDA_R_32F, n as c_int,
+            CUBLAS_COMPUTE_32F,
+            CUBLAS_GEMM_DEFAULT,
+        );
+        if rc != 0 {
+            return false;
+        }
+    }
+
+    // 7. D→H download on the same stream + single
+    //    `cudaStreamSynchronize` after — mirrors M8.7.1.r.
+    if out.ensure_cpu().is_err() {
+        return false;
+    }
+    unsafe {
+        let out_slice = out.as_cpu_slice_mut();
+        if out_slice.len() != m * n {
+            return false;
+        }
+        let rc = cudaMemcpyAsync(
+            out_slice.as_mut_ptr() as *mut c_void,
+            d_out_f32,
+            bytes_out_f32,
+            CUDA_MEMCPY_DEVICE_TO_HOST,
+            stream,
+        );
+        if rc != 0 {
+            return false;
+        }
+        let rc = cudaStreamSynchronize(stream);
+        if rc != 0 {
+            return false;
+        }
+    }
+
+    VRAM_BF16_NATIVE_MATMUL_COUNT.fetch_add(1, Ordering::Relaxed);
+    true
+}
+
+// ===========================================================================
 // M8.7.0 — Disk → GPU JIT pipeline (single-tensor MVP)
 // ===========================================================================
 
@@ -1403,6 +1600,99 @@ mod cuda_matmul_bf16_tests {
              {} elements diverged out of {}",
             bitwise_mismatches,
             from_on_device.len()
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // M10.2.1 — counter contract for cuda_matmul_bf16_native_inplace
+    // -----------------------------------------------------------------------
+
+    /// **M10.2.1** — running a known-good triple through the native
+    /// fast kernel must advance `VRAM_BF16_NATIVE_MATMUL_COUNT` by
+    /// exactly one. Disjoint from the certified-path counter.
+    /// Skips on hosts without a CUDA driver.
+    #[test]
+    fn fast_path_advances_native_counter_and_not_certified() {
+        if !cuda_available() {
+            eprintln!("CUDA not available, skipping");
+            return;
+        }
+        let _guard = BF16_COUNTER_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+
+        let (m, k, n) = (1usize, 64usize, 64usize);
+        let a_host: Vec<f32> = synth_f32(m * k, 7);
+        let b_host: Vec<f32> = synth_f32(k * n, 13);
+        let b_bf16: Vec<u16> = b_host.iter().map(|&f| f32_to_bf16_bits(f)).collect();
+
+        let a_tensor = Tensor::new_cpu(vec![m, k], a_host);
+        let mut out_tensor = Tensor::new_cpu(vec![m, n], vec![0.0_f32; m * n]);
+        let gpu = bf16_to_vram_no_upcast(&b_bf16, &[k, n])
+            .expect("bf16_to_vram_no_upcast returned None on a known-good shape");
+        let b_tensor = Tensor::from_cuda_gpu(vec![k, n], gpu);
+
+        let native_before = super::vram_bf16_native_matmul_count();
+        let certified_before = super::vram_bf16_matmul_count();
+
+        let ok = super::cuda_matmul_bf16_native_inplace(
+            &a_tensor, &b_tensor, &mut out_tensor, m, k, n, std::ptr::null_mut(),
+        );
+        assert!(
+            ok,
+            "cuda_matmul_bf16_native_inplace returned false on a known-good triple"
+        );
+
+        let native_after = super::vram_bf16_native_matmul_count();
+        let certified_after = super::vram_bf16_matmul_count();
+
+        assert_eq!(
+            native_after - native_before,
+            1,
+            "VRAM_BF16_NATIVE_MATMUL_COUNT must advance by exactly 1 \
+             after a successful fast-path call (got delta {})",
+            native_after - native_before
+        );
+        assert_eq!(
+            certified_after, certified_before,
+            "fast path must not advance the certified counter"
+        );
+    }
+
+    /// **M10.2.1** — running through the certified path must NOT
+    /// advance the native fast-path counter.
+    #[test]
+    fn certified_path_does_not_advance_native_counter() {
+        if !cuda_available() {
+            eprintln!("CUDA not available, skipping");
+            return;
+        }
+        let _guard = BF16_COUNTER_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+
+        let (m, k, n) = (1usize, 64usize, 64usize);
+        let a_host: Vec<f32> = synth_f32(m * k, 7);
+        let b_host: Vec<f32> = synth_f32(k * n, 13);
+        let b_bf16: Vec<u16> = b_host.iter().map(|&f| f32_to_bf16_bits(f)).collect();
+
+        let a_tensor = Tensor::new_cpu(vec![m, k], a_host);
+        let mut out_tensor = Tensor::new_cpu(vec![m, n], vec![0.0_f32; m * n]);
+        let gpu = bf16_to_vram_no_upcast(&b_bf16, &[k, n])
+            .expect("bf16_to_vram_no_upcast returned None on a known-good shape");
+        let b_tensor = Tensor::from_cuda_gpu(vec![k, n], gpu);
+
+        let native_before = super::vram_bf16_native_matmul_count();
+
+        let ok = super::cuda_matmul_bf16_inplace(
+            &a_tensor, &b_tensor, &mut out_tensor, m, k, n, std::ptr::null_mut(),
+        );
+        assert!(ok, "certified path returned false on a known-good triple");
+
+        let native_after = super::vram_bf16_native_matmul_count();
+        assert_eq!(
+            native_after, native_before,
+            "certified path must not advance VRAM_BF16_NATIVE_MATMUL_COUNT"
         );
     }
 }
