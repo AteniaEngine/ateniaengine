@@ -596,6 +596,27 @@ impl GenerationPipeline {
             )?;
         }
 
+        // 5.5. **M10.3.1.1** — stamp per-tensor matmul policy onto
+        //      each VRAM-resident TensorGPU from the manifest's
+        //      `per_tensor_policy` (or the whole-model
+        //      `recommended_mode` fallback if the manifest is
+        //      v1.0.0). Walks names + params once; every Cuda
+        //      variant gets a precision byte the dispatcher
+        //      reads at matmul time. Tensors not yet uploaded to
+        //      VRAM (Bf16 / F32 / Disk) are stamped lazily — once
+        //      they transition to Cuda via
+        //      `upload_layer_bf16_to_vram` (M6) the dispatcher's
+        //      None-fallback to FAST_MODE_ACTIVE preserves the
+        //      M10.3.1.0 contract.
+        //
+        //      Placed outside the tier-aware vs legacy if/else
+        //      so all three paths (tier-aware sharded,
+        //      tier-aware single, legacy extract_from_graph)
+        //      produce a stamped store identically.
+        if let Some(ref m) = manifest {
+            store.apply_per_tensor_policy(m);
+        }
+
         // 6. Drop scratch graph. The Llama graph also holds
         //    the causal-mask Parameter (zero-shape-on-build)
         //    which is not in the store — it's recomputed by

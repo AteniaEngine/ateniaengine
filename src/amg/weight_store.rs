@@ -269,6 +269,61 @@ impl WeightStore {
     pub fn len(&self) -> usize { self.params.len() }
     pub fn is_empty(&self) -> bool { self.params.is_empty() }
 
+    /// **M10.3.1.1** — stamp each VRAM-resident parameter's
+    /// `TensorGPU` with the per-tensor matmul precision policy
+    /// resolved from the numeric certification manifest. Called
+    /// once after the loader has populated the store and before
+    /// the first forward; subsequent dispatcher reads see the
+    /// stamped value via `gpu.matmul_policy_byte()` and route
+    /// per-tensor between the certified and fast kernels.
+    ///
+    /// Tensors whose storage variant is not `Cuda` are left
+    /// alone — only `cuda_matmul_bf16_inplace` /
+    /// `cuda_matmul_bf16_native_inplace` consume the policy
+    /// today (the dispatcher's `bf16_mixed_resident` arm). When
+    /// M10.3.1.x extends per-tensor dispatch to the disk-streamed
+    /// or RAM-resident paths, this method extends with arms for
+    /// those variants.
+    ///
+    /// Returns the number of parameters stamped (Cuda variant
+    /// count) for caller-side telemetry / smoke assertions.
+    pub fn apply_per_tensor_policy(
+        &mut self,
+        manifest: &crate::nn::llama::numcert::NumcertManifest,
+    ) -> usize {
+        use crate::nn::llama::numcert::MatmulMode;
+        use crate::gpu::tensor::tensor_gpu::{
+            MATMUL_POLICY_BYTE_CERTIFIED, MATMUL_POLICY_BYTE_FAST,
+        };
+        let mut stamped = 0usize;
+        let mut fast_count = 0usize;
+        let mut certified_count = 0usize;
+        for (param, name) in self.params.iter_mut().zip(self.names.iter()) {
+            if let SharedParam::Cuda { gpu, .. } = param {
+                let mode = manifest.resolve_for(name);
+                let byte = match mode {
+                    MatmulMode::Certified => {
+                        certified_count += 1;
+                        MATMUL_POLICY_BYTE_CERTIFIED
+                    }
+                    MatmulMode::Fast => {
+                        fast_count += 1;
+                        MATMUL_POLICY_BYTE_FAST
+                    }
+                };
+                gpu.set_matmul_policy_byte(Some(byte));
+                stamped += 1;
+            }
+        }
+        eprintln!(
+            "[ATENIA] Numeric contract: per-tensor policy applied — \
+             {} VRAM tensors stamped ({} fast, {} certified) from {}.",
+            stamped, fast_count, certified_count,
+            manifest.source.display(),
+        );
+        stamped
+    }
+
     /// **M6 step 4b** — return the parameter indices belonging
     /// to a given Llama layer. Recognises the HuggingFace
     /// convention `model.layers.<N>.<...>` used by Llama 2 /

@@ -314,18 +314,34 @@ pub fn try_gpu_matmul(a: &Tensor, b: &Tensor, out: &mut Tensor) -> bool {
             "[GPU-TRACE] try_gpu_matmul: BRANCH=bf16_mixed_resident \
              (a=Cpu, b=Cuda(BF16), out=Cpu)"
         );
-        // M10.2.1 — BF16-TC native fast path (`ATENIA_FAST_MODE=1`)
-        // routes the same operand triple through the native BF16
-        // GEMM (no F32 upcast transient), engaging the Tensor Cores
-        // directly with `CUDA_R_16BF` inputs. The `certified` path
-        // (Path B M8.4c, F32 upcast + COMPUTE_32F_FAST_TF32 since
-        // M10.2.0) is the default; fast mode is opt-in and ships
-        // outside ADR-004 strict per ADR-005 (drift envelope
-        // documented per checkpoint).
+        // M10.2.1 + M10.3.1.1 — route this matmul through the
+        // certified or fast kernel based on, in order:
+        //   1. The tensor's per-tensor policy stamped on the
+        //      `TensorGPU` by `WeightStore::apply_per_tensor_policy`
+        //      from the manifest's `per_tensor_policy` (M10.3.1.1).
+        //   2. If the policy byte is `None`, fall back to the
+        //      process-global `FAST_MODE_ACTIVE` set by the
+        //      manifest's `recommended_mode` or `ATENIA_FAST_MODE=1`
+        //      (M10.3.1.0).
+        //
+        // Reading `b.storage` for the policy keeps the hot path
+        // O(1) — a single byte from the Cuda variant. The policy
+        // travels with the `TensorGPU` (cloned cheaply via Arc-
+        // backed `InnerGpuPtr` + plain field copy on the outer).
+        let policy_byte = if let TensorStorage::Cuda(gpu_b) = &b.storage {
+            gpu_b.matmul_policy_byte()
+        } else {
+            None
+        };
+        let use_fast = match policy_byte {
+            Some(crate::gpu::tensor::tensor_gpu::MATMUL_POLICY_BYTE_FAST) => true,
+            Some(crate::gpu::tensor::tensor_gpu::MATMUL_POLICY_BYTE_CERTIFIED) => false,
+            _ => *crate::nn::llama::pipeline::FAST_MODE_ACTIVE,
+        };
         // M8.7.1.r — pass `null` stream = default stream = bit-exact
         // with M8.4c pre-M8.7.1.r. Future M8.7.1.b/c will swap this
         // for a dedicated compute stream.
-        let ok = if *crate::nn::llama::pipeline::FAST_MODE_ACTIVE {
+        let ok = if use_fast {
             cuda_matmul_bf16_native_inplace(a, b, out, m, k, n, std::ptr::null_mut())
         } else {
             cuda_matmul_bf16_inplace(a, b, out, m, k, n, std::ptr::null_mut())

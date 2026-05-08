@@ -56,7 +56,21 @@ pub struct TensorGPU {
     /// `to_cpu` panics if dtype is not F32 (defensive against a
     /// future call site that forgets to switch).
     dtype: DType,
+    /// **M10.3.1.1** — per-tensor matmul precision policy. `None`
+    /// means "use the global `FAST_MODE_ACTIVE` fallback"
+    /// (M10.3.1.0 contract). `Some(0)` = certified, `Some(1)` =
+    /// fast. Encoded as `Option<u8>` instead of
+    /// `Option<MatmulMode>` to keep this module dependency-free
+    /// (the enum lives in `nn::llama::numcert`); the dispatcher
+    /// translates back to the enum at the read site.
+    matmul_policy_byte: Option<u8>,
 }
+
+/// Sentinel byte values mirroring `nn::llama::numcert::MatmulMode`.
+/// Kept in sync by the inverse mapping in
+/// `cuda_matmul_policy_to_byte` / the dispatcher's read site.
+pub const MATMUL_POLICY_BYTE_CERTIFIED: u8 = 0;
+pub const MATMUL_POLICY_BYTE_FAST: u8 = 1;
 
 impl Clone for TensorGPU {
     fn clone(&self) -> Self {
@@ -65,6 +79,7 @@ impl Clone for TensorGPU {
             rows: self.rows,
             cols: self.cols,
             dtype: self.dtype,
+            matmul_policy_byte: self.matmul_policy_byte,
         }
     }
 }
@@ -97,6 +112,7 @@ impl TensorGPU {
             rows,
             cols,
             dtype: DType::F32,
+            matmul_policy_byte: None,
         })
     }
 
@@ -111,6 +127,7 @@ impl TensorGPU {
             rows,
             cols,
             dtype: DType::F32,
+            matmul_policy_byte: None,
         })
     }
 
@@ -137,6 +154,7 @@ impl TensorGPU {
             rows: numel,
             cols: 1,
             dtype: DType::BF16,
+            matmul_policy_byte: None,
         })
     }
 
@@ -166,6 +184,7 @@ impl TensorGPU {
             rows: numel,
             cols: 1,
             dtype: DType::BF16,
+            matmul_policy_byte: None,
         })
     }
 
@@ -230,5 +249,26 @@ impl TensorGPU {
     /// [`crate::cuda::bf16_to_f32`].
     pub fn dtype(&self) -> DType {
         self.dtype
+    }
+
+    /// **M10.3.1.1** — read the per-tensor matmul precision
+    /// policy byte. `None` means "use the global
+    /// `FAST_MODE_ACTIVE` fallback" (M10.3.1.0 contract).
+    ///
+    /// The byte is `MATMUL_POLICY_BYTE_CERTIFIED` (0) or
+    /// `MATMUL_POLICY_BYTE_FAST` (1). The dispatcher in
+    /// `gpu::dispatch::hooks` reads this and routes between
+    /// `cuda_matmul_bf16_inplace` and
+    /// `cuda_matmul_bf16_native_inplace` accordingly.
+    pub fn matmul_policy_byte(&self) -> Option<u8> {
+        self.matmul_policy_byte
+    }
+
+    /// **M10.3.1.1** — set the per-tensor matmul precision
+    /// policy. Called by `WeightStore::apply_per_tensor_policy`
+    /// once after load with the manifest-resolved value for
+    /// each weight tensor's name.
+    pub fn set_matmul_policy_byte(&mut self, byte: Option<u8>) {
+        self.matmul_policy_byte = byte;
     }
 }
