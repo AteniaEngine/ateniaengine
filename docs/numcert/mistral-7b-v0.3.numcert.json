@@ -1,0 +1,72 @@
+{
+  "$schema": "../../docs/CERTIFICATION.md#schema",
+  "schema_version": "2.0.0",
+  "model": "Mistral-7B-Instruct-v0.3",
+  "model_family": "llama-2",
+  "model_path_hint": "models/mistral-7b-v0.3/model.safetensors[.index.json]",
+  "atenia_version": "0.11.0-M11.A",
+  "f64_fixture_version": "n/a — 7B class out of dev-box F64 budget",
+  "f64_fixture_test": "tests/m8_5_full_family_validation_test.rs (NOT applicable — see drift_envelope notes)",
+  "generated_at": "2026-05-08",
+  "generated_on": "RTX 4070 Laptop (sm_89), 8 GB VRAM, 32 GB RAM, Windows 11",
+
+  "drift_envelope": {
+    "certified_mode": {
+      "max_abs_diff_vs_f64": null,
+      "argmax_match_4_of_4": null,
+      "adr_004_strict_pass": null,
+      "adr_004_threshold": 0.5,
+      "kernel_path": "cuda_matmul_bf16_inplace (Path B M8.4c) + CUBLAS_COMPUTE_32F_FAST_TF32 (M10.2.0)",
+      "validation_notes": "F64 reference not generated for 7B-class checkpoints on the dev box (peak memory budget for F64 forward exceeds 32 GB). Validation falls back to greedy generation smoke under both modes against the same prompt, comparing argmax and decoded text. See validation block below."
+    },
+    "fast_mode": {
+      "max_abs_diff_vs_f64": null,
+      "argmax_match_4_of_4": null,
+      "adr_004_strict_pass": null,
+      "adr_004_threshold": 0.5,
+      "kernel_path": "cuda_matmul_bf16_native_inplace (M10.2.1) — CUDA_R_16BF inputs, COMPUTE_32F",
+      "validation_notes": "Drift envelope inherited from ADR-005 family characterisation (M4.6 fixture worst-case 4.7× over ADR-004 strict on SmolLM2). Mistral 7B is not in the F64 fixture; treat fast-mode drift on this checkpoint as 'industry-standard BF16-TC' with the ADR-005 caveat applied."
+    }
+  },
+
+  "smoke_validation": {
+    "prompt": "Tell me about the history of Rome",
+    "max_tokens": 20,
+    "certified_text": ".\n\nRome is the capital of Italy and the largest city in the country. It is",
+    "fast_text": ".\n\nRome is the capital of Italy and the largest city in the country. It is",
+    "argmax_match_certified_vs_fast": true,
+    "certified_s_per_tok": 12.19,
+    "fast_s_per_tok": 8.98,
+    "fast_speedup_over_certified": 1.36,
+    "tier_plan_certified": {
+      "vram_tensors": 62,
+      "ram_tensors": 229,
+      "disk_tensors": 0
+    },
+    "tier_plan_fast": {
+      "vram_tensors": 114,
+      "ram_tensors": 169,
+      "disk_tensors": 8
+    },
+    "interpretation": "Bit-identical generated text under both modes on this prompt. Fast mode tier-plan also moves more tensors to VRAM (114 vs 62) thanks to the BF16-direct kernel — the M8 BF16 kernel doubles VRAM capacity, which fast mode exploits structurally."
+  },
+
+  "recommended_mode": "certified",
+  "recommended_mode_rationale": "Without an F64 ground-truth reference for Mistral 7B, the conservative default is the certified path (Path B + TF32 — the same kernel that holds ADR-004 strict on the M4.6 family within margin 2.3× to 51×). Fast mode produced bit-identical argmax on this single prompt, but adversarial-prompt and long-context drift remain uncharacterised. Operators wanting the 1.36× speedup can opt in via per-tensor policy override or ATENIA_FAST_MODE=1; the family-pattern FFN-only override below is the recommended middle ground.",
+
+  "per_tensor_policy": {
+    "default": "certified",
+    "overrides": [
+      {"pattern": "*.mlp.*_proj.weight", "mode": "fast"}
+    ]
+  },
+  "per_tensor_policy_status": "Schema v2.0.0 (M11.A) — same structural heuristic as the M4.6 family (TinyLlama / SmolLM2 / Llama 3.2): FFN gate/up/down on fast, attention Q/K/V/O on certified. The heuristic is not validated against an F64 fixture for Mistral 7B, but is consistent with the GPTQ / SmoothQuant literature finding that FFN tolerates BF16-TC drift more readily than attention. Empirical refinement (M11.A.refine or M10.3.1.2+) can sweep per-tensor sensitivity once a reduced F64 reference is available.",
+
+  "verification": {
+    "command_certified": "ATENIA_M8_BF16_KERNEL=1 ATENIA_M8_7_ENABLED=1 ATENIA_DISK_TIER_DIR=<cache> atenia generate --prompt 'Tell me about the history of Rome' --model models/mistral-7b-v0.3 --max-tokens 20",
+    "command_fast": "ATENIA_FAST_MODE=1 ATENIA_M8_7_ENABLED=1 ATENIA_DISK_TIER_DIR=<cache> atenia generate --prompt 'Tell me about the history of Rome' --model models/mistral-7b-v0.3 --max-tokens 20",
+    "expected_dispatch_counter_certified": "vram_bf16_matmul_count delta > 0 (no fixed value — depends on the per-tensor policy stamping)",
+    "expected_dispatch_counter_fast": "vram_bf16_native_matmul_count delta > 0",
+    "expected_text_prefix": ".\\n\\nRome is the capital of Italy and the largest city in the country."
+  }
+}
