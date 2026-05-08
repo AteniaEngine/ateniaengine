@@ -1,6 +1,6 @@
 {
   "$schema": "../../docs/CERTIFICATION.md#schema",
-  "schema_version": "1.0.0",
+  "schema_version": "2.0.0",
   "model": "TinyLlama-1.1B-Chat-v1.0",
   "model_family": "llama-2",
   "model_path_hint": "models/tinyllama-1.1b/model.safetensors",
@@ -32,8 +32,13 @@
   "recommended_mode": "certified",
   "recommended_mode_rationale": "Fast mode drift 0.90 exceeds ADR-004 strict gate by 1.8×. Argmax 4/4 holds in fast mode for the 4-position fixture, so chat / completion workloads with greedy or low-temperature sampling MAY use fast mode at the operator's discretion; any workload requiring numerical equivalence to F64 ground truth must use certified mode.",
 
-  "per_tensor_policy": null,
-  "per_tensor_policy_status": "Reserved for M10.3+ dispatcher. Per-tensor sensitivity analysis pending; the v1 manifest documents whole-model drift envelopes only.",
+  "per_tensor_policy": {
+    "default": "certified",
+    "overrides": [
+      {"pattern": "*.mlp.*_proj.weight", "mode": "fast"}
+    ]
+  },
+  "per_tensor_policy_status": "Schema v2.0.0 (M10.3.1.1) — structural heuristic from GPTQ / SmoothQuant literature: FFN tolerates BF16-TC drift more readily than attention. FFN gate/up/down projections take fast; Q/K/V/O attention projections, lm_head, and layer norms fall through to certified. Empirical per-tensor sensitivity analysis (M10.3.1.2+) may refine these overrides; the v2 default-conservative heuristic is the lower-risk starting point given TinyLlama's whole-model fast-mode drift overshoots ADR-004 by 1.8×.",
 
   "verification": {
     "command": "cargo test --release --test m8_5_full_family_validation_test -- --ignored m8_5_tinyllama_under_bf16_kernel_matches_f64 --nocapture",

@@ -1,6 +1,6 @@
 {
   "$schema": "../../docs/CERTIFICATION.md#schema",
-  "schema_version": "1.0.0",
+  "schema_version": "2.0.0",
   "model": "SmolLM2-1.7B-Instruct",
   "model_family": "llama-2",
   "model_path_hint": "models/smollm2-1.7b-instruct/model.safetensors",
@@ -32,8 +32,13 @@
   "recommended_mode": "certified",
   "recommended_mode_rationale": "SmolLM2 is the worst-case sentinel of the M4.6 fixture under fast mode: drift 2.33 exceeds the ADR-004 strict gate by 4.7×, the largest overshoot in the family. Likely root cause is a less-clipped activation distribution from training, producing more magnitude that the BF16 7-bit mantissa cannot represent without rounding. The certified-mode margin is also the family's tightest at 2.3× — operators planning longer-context generation or temperature > 0 sampling should benchmark with the actual prompt distribution before committing to either mode.",
 
-  "per_tensor_policy": null,
-  "per_tensor_policy_status": "Reserved for M10.3+ dispatcher. SmolLM2's worst-case profile makes it a high-priority target for per-tensor sensitivity analysis: the v2 manifest is expected to identify which 1-2 layers carry the bulk of the drift and prescribe certified mode for those alone, while keeping fast mode on the rest. M9 INT8 fixture data already showed SmolLM2 outliers do not localise in 32-block or 128-block groups.",
+  "per_tensor_policy": {
+    "default": "certified",
+    "overrides": [
+      {"pattern": "*.mlp.*_proj.weight", "mode": "fast"}
+    ]
+  },
+  "per_tensor_policy_status": "Schema v2.0.0 (M10.3.1.1) — same structural heuristic as the rest of the M4.6 family (FFN → fast; attention / lm_head / norms → certified). SmolLM2's whole-model fast-mode drift is the worst-case sentinel of the fixture (2.33, 4.7× over ADR-004); the conservative v2 heuristic exposes only FFN to fast, on the assumption from M9 fixture data that attention layers carry the bulk of the outliers SmolLM2 cannot tolerate. M10.3.1.2+ empirical analysis is expected to refine: a per-layer sweep may identify the 1-2 attention layers carrying most of the drift and let the rest of attention move to fast as well.",
 
   "verification": {
     "command": "cargo test --release --test m8_5_full_family_validation_test -- --ignored m8_5_smollm2_under_bf16_kernel_matches_f64 --nocapture",
