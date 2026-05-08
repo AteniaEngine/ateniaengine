@@ -78,26 +78,106 @@ use crate::v17::loader::loader_errors::LoaderError;
 use crate::v17::loader::safetensors_reader::SafetensorsReader;
 use crate::v17::loader::sharded_reader::ShardedSafetensorsReader;
 use super::builder::{build_llama, LlamaRuntime};
+use super::numcert;
 
-/// **M10.2.1** — fast-mode gate read once per process, exposed for
-/// the GPU dispatcher (`gpu::dispatch::hooks`) to choose between
+/// **M10.2.1 / M10.3.1.0** — fast-mode gate, exposed for the GPU
+/// dispatcher (`gpu::dispatch::hooks`) to choose between
 /// `cuda_matmul_bf16_inplace` (certified, Path B M8.4c +
 /// COMPUTE_32F_FAST_TF32) and `cuda_matmul_bf16_native_inplace`
 /// (fast, BF16-TC native, drift industrial, ADR-005 envelope).
 ///
-/// Setting `ATENIA_FAST_MODE=1` flips this to `true`. The flag also
-/// implies BF16 storage (`m8_bf16_resolver` short-circuits to `true`
-/// when fast mode is active, overriding the M7.2 RAM-based
-/// heuristic) — fast mode is structurally incompatible with the
-/// F32 storage path because the native kernel reads BF16 directly
-/// from VRAM.
+/// Resolution priority (M10.3.1.0):
+///   1. `ATENIA_FAST_MODE=1` env var — operator override, wins
+///      unconditionally.
+///   2. `<model_dir>/model.numcert.json` `recommended_mode` —
+///      checkpoint-default chosen by the certification author.
+///   3. `false` (certified) — safe fallback when the env var is
+///      not set and no manifest is present.
 ///
-/// Read once via `LazyLock` so the value is process-stable and
-/// hot-reads in the dispatcher are a single atomic load.
-pub static FAST_MODE_ACTIVE: std::sync::LazyLock<bool> =
-    std::sync::LazyLock::new(|| {
+/// The pipeline calls [`init_fast_mode_active`] during model load
+/// to resolve the value. The first read after init returns the
+/// resolved boolean; reads before init fall through to the env
+/// var so direct callers (tests, micro-benches) that bypass the
+/// pipeline keep the M10.2.1 semantics unchanged.
+///
+/// Stored in a `OnceLock` so the value is process-stable and the
+/// hot-path read in the dispatcher is a single atomic load.
+pub static FAST_MODE_ACTIVE: FastModeGate = FastModeGate::new();
+
+/// Wrapper around the `OnceLock<bool>` that exposes a `Deref`-
+/// shaped `*FAST_MODE_ACTIVE` read identical to the M10.2.1
+/// `LazyLock<bool>` API the dispatcher uses today, while
+/// supporting one-shot initialisation from the pipeline.
+pub struct FastModeGate {
+    cell: std::sync::OnceLock<bool>,
+}
+
+impl FastModeGate {
+    const fn new() -> Self {
+        Self { cell: std::sync::OnceLock::new() }
+    }
+
+    /// Read the resolved value. If the pipeline has called
+    /// [`init_fast_mode_active`] the resolved boolean is
+    /// returned; otherwise the env var is consulted on the fly
+    /// (preserves the M10.2.1 contract for direct-dispatcher
+    /// callers that never go through the pipeline, e.g. unit
+    /// tests in `cuda::matmul::tests`).
+    pub fn get(&self) -> bool {
+        if let Some(v) = self.cell.get() {
+            return *v;
+        }
         std::env::var("ATENIA_FAST_MODE").as_deref() == Ok("1")
-    });
+    }
+}
+
+impl std::ops::Deref for FastModeGate {
+    type Target = bool;
+    fn deref(&self) -> &bool {
+        // Match the LazyLock<bool>::deref shape so existing call
+        // sites (`*FAST_MODE_ACTIVE`) keep compiling. Returns a
+        // reference to a static — safe because both branches
+        // produce a `'static` reference.
+        if let Some(v) = self.cell.get() {
+            return v;
+        }
+        // Lazy fallback: cache the env-derived value the first
+        // time anyone reads through `Deref` without explicit
+        // init. Subsequent reads observe the cached value.
+        let env = std::env::var("ATENIA_FAST_MODE").as_deref() == Ok("1");
+        let _ = self.cell.set(env);
+        // Safe: `set` either succeeded (we just stored it) or
+        // raced and someone else stored the value first; either
+        // way `get` now returns `Some`.
+        self.cell.get().expect("OnceLock populated above")
+    }
+}
+
+/// **M10.3.1.0** — pipeline calls this once per process when it
+/// loads the first model; subsequent loads see the same gate
+/// (process-stable). Resolution priority is documented on
+/// [`FAST_MODE_ACTIVE`]. Returns the resolved boolean for the
+/// caller to log.
+///
+/// Idempotent: calling more than once with the same resolved
+/// value is a no-op; calling again with a different value is
+/// silently ignored (the first model loaded wins, which matches
+/// the operator's intent — they pointed `--model` at one
+/// checkpoint per process).
+pub fn init_fast_mode_active(
+    manifest: Option<&numcert::NumcertManifest>,
+) -> bool {
+    let env_override = std::env::var("ATENIA_FAST_MODE").as_deref() == Ok("1");
+    let resolved = if env_override {
+        true
+    } else if let Some(m) = manifest {
+        matches!(m.recommended_mode, numcert::MatmulMode::Fast)
+    } else {
+        false
+    };
+    let _ = FAST_MODE_ACTIVE.cell.set(resolved);
+    resolved
+}
 use super::generator::{
     generate_greedy, GenerateError, GeneratedToken, GenerationConfig, TokenSink,
 };
@@ -191,6 +271,62 @@ impl GenerationPipeline {
 
         // 2. Tokenizer.
         let tokenizer = AteniaTokenizer::from_model_dir(&model_dir)?;
+
+        // 2.5. **M10.3.1.0** — numeric contract manifest. Read the
+        //      sibling `model.numcert.json` (if present) before the
+        //      M8 / fast-mode resolver runs below; the manifest's
+        //      `recommended_mode` is the per-checkpoint default that
+        //      replaces the bare `ATENIA_FAST_MODE` global. Resolution
+        //      priority lives on `FAST_MODE_ACTIVE`; here we just
+        //      surface the file we found (or didn't) and pin the
+        //      value into the OnceLock so every subsequent dispatcher
+        //      read is process-stable.
+        let manifest = numcert::load_manifest(&model_dir);
+        let env_fast_override =
+            std::env::var("ATENIA_FAST_MODE").as_deref() == Ok("1");
+        let fast_resolved = init_fast_mode_active(manifest.as_ref());
+        match (&manifest, env_fast_override) {
+            (Some(m), false) => eprintln!(
+                "[ATENIA] Numeric contract: {} found — recommended mode: {} \
+                 (schema {}). FAST_MODE_ACTIVE = {}.",
+                m.source.display(),
+                if matches!(m.recommended_mode, numcert::MatmulMode::Fast) {
+                    "fast"
+                } else {
+                    "certified"
+                },
+                m.schema_version,
+                fast_resolved,
+            ),
+            (Some(m), true) => eprintln!(
+                "[ATENIA] Numeric contract: {} found — recommended mode: {} \
+                 (schema {}). ATENIA_FAST_MODE=1 env override active; \
+                 FAST_MODE_ACTIVE = true.",
+                m.source.display(),
+                if matches!(m.recommended_mode, numcert::MatmulMode::Fast) {
+                    "fast"
+                } else {
+                    "certified"
+                },
+                m.schema_version,
+            ),
+            (None, false) => eprintln!(
+                "[ATENIA] Numeric contract: no manifest at {}/{} — \
+                 defaulting to certified mode (FAST_MODE_ACTIVE = false). \
+                 Set ATENIA_FAST_MODE=1 to opt into fast without a manifest, \
+                 or ship a model.numcert.json sibling for per-checkpoint \
+                 selection.",
+                model_dir.display(),
+                numcert::MANIFEST_FILENAME,
+            ),
+            (None, true) => eprintln!(
+                "[ATENIA] Numeric contract: no manifest at {}/{}; \
+                 ATENIA_FAST_MODE=1 env override active; \
+                 FAST_MODE_ACTIVE = true.",
+                model_dir.display(),
+                numcert::MANIFEST_FILENAME,
+            ),
+        }
 
         // 3. Scratch graph (zero-init parameters; will get
         //    populated by the loader and then hoisted into

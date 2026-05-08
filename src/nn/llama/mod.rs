@@ -15,6 +15,7 @@ pub mod builder;
 pub mod builder_shared;
 pub mod config;
 pub mod generator;
+pub mod numcert;
 pub mod pipeline;
 pub mod weight_loading;
 
