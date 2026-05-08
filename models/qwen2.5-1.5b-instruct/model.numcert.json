@@ -1,0 +1,45 @@
+{
+  "$schema": "../../docs/CERTIFICATION.md#schema",
+  "schema_version": "1.0.0",
+  "model": "Qwen2.5-1.5B-Instruct",
+  "model_family": "llama-2-with-qkv-bias",
+  "model_path_hint": "models/qwen2.5-1.5b-instruct/model.safetensors",
+  "atenia_version": "0.10.3-M10.3",
+  "f64_fixture_version": "4-model-v1",
+  "f64_fixture_test": "tests/m8_5_full_family_validation_test.rs::m8_5_qwen25_under_bf16_kernel_matches_f64",
+  "generated_at": "2026-05-06",
+  "generated_on": "RTX 4070 Laptop (sm_89), 8 GB VRAM, 32 GB RAM, Windows 11",
+
+  "drift_envelope": {
+    "certified_mode": {
+      "max_abs_diff_vs_f64": 0.022496,
+      "argmax_match_4_of_4": true,
+      "adr_004_strict_pass": true,
+      "adr_004_threshold": 0.5,
+      "adr_004_margin": 22.0,
+      "kernel_path": "cuda_matmul_bf16_inplace (Path B M8.4c) + CUBLAS_COMPUTE_32F_FAST_TF32 (M10.2.0)"
+    },
+    "fast_mode": {
+      "max_abs_diff_vs_f64": 0.184907,
+      "argmax_match_4_of_4": true,
+      "adr_004_strict_pass": true,
+      "adr_004_threshold": 0.5,
+      "adr_004_margin": 2.7,
+      "kernel_path": "cuda_matmul_bf16_native_inplace (M10.2.1) — CUDA_R_16BF inputs, COMPUTE_32F"
+    }
+  },
+
+  "recommended_mode": "fast",
+  "recommended_mode_rationale": "Qwen 2.5 1.5B is the only model in the M4.6 fixture where fast mode passes ADR-004 strict (drift 0.18 < 0.5 with 2.7× margin) AND argmax stays 4/4. The Qwen training profile (with QKV bias terms and a modest hidden_size 1536) appears more tolerant of BF16 activation truncation than the rest of the family. Fast mode is recommended for production; certified mode remains available for any workload where the additional 22× drift margin is required (research, audited deployments).",
+
+  "per_tensor_policy": null,
+  "per_tensor_policy_status": "Reserved for M10.3+ dispatcher. Qwen's tolerance under fast mode suggests every weight could safely take the fast path; the v2 manifest may simply mirror that. The QKV bias tensors (unique to Qwen in this fixture) are a candidate for explicit fast-path certification.",
+
+  "verification": {
+    "command": "cargo test --release --test m8_5_full_family_validation_test -- --ignored m8_5_qwen25_under_bf16_kernel_matches_f64 --nocapture",
+    "env_for_certified": "ATENIA_M8_BF16_KERNEL=1 QWEN25_SAFETENSORS_PATH=<path>",
+    "env_for_fast": "ATENIA_M8_BF16_KERNEL=1 ATENIA_FAST_MODE=1 QWEN25_SAFETENSORS_PATH=<path>",
+    "expected_dispatch_counter_certified": "vram_bf16_matmul_count delta = 196 (= 7 × 28 layers)",
+    "expected_dispatch_counter_fast": "vram_bf16_native_matmul_count delta = 196"
+  }
+}

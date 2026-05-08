@@ -1,0 +1,48 @@
+{
+  "$schema": "../../docs/CERTIFICATION.md#schema",
+  "schema_version": "1.0.0",
+  "model": "Llama-3.2-1B-Instruct",
+  "model_family": "llama-3-rope-scaling",
+  "model_path_hint": "models/llama-3.2-1b-instruct/model.safetensors",
+  "atenia_version": "0.10.3-M10.3",
+  "f64_fixture_version": "4-model-v1",
+  "f64_fixture_test": "tests/m8_5_full_family_validation_test.rs::m8_5_llama_3_2_under_bf16_kernel_matches_f64",
+  "generated_at": "2026-05-06",
+  "generated_on": "RTX 4070 Laptop (sm_89), 8 GB VRAM, 32 GB RAM, Windows 11",
+
+  "drift_envelope": {
+    "certified_mode": {
+      "max_abs_diff_vs_f64": 0.009715,
+      "argmax_match_4_of_4": true,
+      "adr_004_strict_pass": true,
+      "adr_004_threshold": 0.5,
+      "adr_004_margin": 51.0,
+      "kernel_path": "cuda_matmul_bf16_inplace (Path B M8.4c) + CUBLAS_COMPUTE_32F_FAST_TF32 (M10.2.0)"
+    },
+    "fast_mode": {
+      "max_abs_diff_vs_f64": 0.268043,
+      "argmax_match_4_of_4": false,
+      "argmax_match_count": 3,
+      "argmax_match_total": 4,
+      "argmax_mismatch_positions": [2],
+      "adr_004_strict_pass": true,
+      "adr_004_threshold": 0.5,
+      "adr_004_margin": 1.9,
+      "kernel_path": "cuda_matmul_bf16_native_inplace (M10.2.1) — CUDA_R_16BF inputs, COMPUTE_32F"
+    }
+  },
+
+  "recommended_mode": "certified",
+  "recommended_mode_rationale": "Drift in fast mode (0.27) passes ADR-004 strict, but argmax flips at position 2 (id 171 under fast vs id 863 under F64) — a near-tie that BF16 activation truncation tilts to a different token. For a chat model in production this is the structurally relevant failure mode: the next-token decision is wrong on 1 of 4 sampled positions. Certified mode is recommended; fast mode is acceptable only for workloads that explicitly tolerate occasional argmax flips (e.g. high-temperature sampling where the argmax at greedy is not the realised choice anyway).",
+
+  "per_tensor_policy": null,
+  "per_tensor_policy_status": "Reserved for M10.3+ dispatcher. Llama 3.2 uses the rope_scaling: llama3 piecewise frequency scaling (M4.6 Phase C); per-tensor analysis should pay particular attention to whether the RoPE-adjacent attention weights tolerate fast mode, since that's where the position-2 argmax flip is most likely originating.",
+
+  "verification": {
+    "command": "cargo test --release --test m8_5_full_family_validation_test -- --ignored m8_5_llama_3_2_under_bf16_kernel_matches_f64 --nocapture",
+    "env_for_certified": "ATENIA_M8_BF16_KERNEL=1 LLAMA32_SAFETENSORS_PATH=<path>",
+    "env_for_fast": "ATENIA_M8_BF16_KERNEL=1 ATENIA_FAST_MODE=1 LLAMA32_SAFETENSORS_PATH=<path>",
+    "expected_dispatch_counter_certified": "vram_bf16_matmul_count delta = 112 (= 7 × 16 layers)",
+    "expected_dispatch_counter_fast": "vram_bf16_native_matmul_count delta = 112"
+  }
+}
