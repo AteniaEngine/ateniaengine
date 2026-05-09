@@ -389,6 +389,20 @@ impl GenerationPipeline {
                     let h = phi3::build_phi3(&mut gb, &config, &runtime, token_input_id);
                     (h.logits_id, h.param_ids, h.param_names)
                 }
+                "Gemma2ForCausalLM" => {
+                    eprintln!(
+                        "[ATENIA] Architecture: Gemma2ForCausalLM — routing to gemma2 builder \
+                         (dual-norm, GeGLU, SoftCap@50/30, embedding scale; sliding-window \
+                         deferred — full causal attention for context < 4096)."
+                    );
+                    let h = crate::nn::llama::gemma2::build_gemma2(
+                        &mut gb,
+                        &config,
+                        &runtime,
+                        token_input_id,
+                    );
+                    (h.logits_id, h.param_ids, h.param_names)
+                }
                 "LlamaForCausalLM" | "Qwen2ForCausalLM" | "MistralForCausalLM" => {
                     let h = build_llama(&mut gb, &config, &runtime, token_input_id);
                     (h.logits_id, h.param_ids, h.param_names)
@@ -397,9 +411,10 @@ impl GenerationPipeline {
                     return Err(PipelineError::Loader(LoaderError::InvalidFormat(format!(
                         "unsupported architectures[0] = \"{other}\"; \
                          Atenia today supports LlamaForCausalLM (and \
-                         Qwen2 / Mistral variants) and Phi3ForCausalLM. \
-                         See M11.B for Phi-3 routing and the M11.C / M11.D \
-                         tracks for further architectures."
+                         Qwen2 / Mistral variants), Phi3ForCausalLM, and \
+                         Gemma2ForCausalLM. See M11.B for Phi-3 routing, \
+                         M11.C for Gemma 2 routing, and the M11.D track for \
+                         further architectures."
                     ))));
                 }
             };
@@ -411,6 +426,11 @@ impl GenerationPipeline {
         //    gate_up_proj) the Llama mapper doesn't know about.
         let mut mapper = match architecture.as_str() {
             "Phi3ForCausalLM" => phi3::phi3_weight_mapper(&config, &param_names, &param_ids)?,
+            "Gemma2ForCausalLM" => crate::nn::llama::gemma2::gemma2_weight_mapper(
+                &config,
+                &param_names,
+                &param_ids,
+            )?,
             _ => llama_weight_mapper(&config, &param_names, &param_ids)?,
         };
         mapper.set_store_params_as_bf16(bf16_storage);

@@ -839,12 +839,16 @@ pub fn build_with_store(
     store: &crate::amg::weight_store::WeightStore,
     kv_cache: Option<&crate::amg::kv_cache::KvCacheBuildSpec>,
 ) -> Result<crate::nn::llama::builder_shared::LlamaHandlesShared, crate::nn::llama::builder_shared::BuildError> {
-    if config.model_type.as_deref() == Some("phi3") {
-        build_phi3_with_store(gb, config, runtime, token_input_id, store, kv_cache)
-    } else {
-        crate::nn::llama::builder_shared::build_llama_with_store(
+    match config.model_type.as_deref() {
+        Some("phi3") => {
+            build_phi3_with_store(gb, config, runtime, token_input_id, store, kv_cache)
+        }
+        Some("gemma2") => crate::nn::llama::gemma2::build_gemma2_with_store(
             gb, config, runtime, token_input_id, store, kv_cache,
-        )
+        ),
+        _ => crate::nn::llama::builder_shared::build_llama_with_store(
+            gb, config, runtime, token_input_id, store, kv_cache,
+        ),
     }
 }
 
