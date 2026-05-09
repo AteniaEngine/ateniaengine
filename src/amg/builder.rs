@@ -286,6 +286,28 @@ impl GraphBuilder {
         )
     }
 
+    /// **M11.B step 3.5** — construct a `NodeType::SliceLastDim`
+    /// node that takes the contiguous range `[start..end)` of the
+    /// input's last axis. Validation of the range against the
+    /// actual input shape happens at executor time (the input
+    /// shape is not always known at build time when the input is
+    /// a non-parameter node). The build-time contract enforced
+    /// here is `start < end`; the rest is the executor's job.
+    ///
+    /// See [`NodeType::SliceLastDim`] for the layout contract
+    /// and intended use case (runtime split of fused weight
+    /// matmul outputs for Phi-3 / Phi-3.5 / Gemma 2).
+    pub fn slice_last_dim(&mut self, x_id: usize, start: usize, end: usize) -> usize {
+        assert!(
+            start < end,
+            "GraphBuilder::slice_last_dim: start ({start}) must be < end ({end})"
+        );
+        self.add_node(
+            NodeType::SliceLastDim { start, end },
+            vec![x_id],
+        )
+    }
+
     pub fn build(self) -> super::graph::Graph {
         let mut graph = super::graph::Graph::new(self.nodes);
 
@@ -429,5 +451,151 @@ mod m11_b_step2_tests {
                 "executor output[{i}] is not finite: {v} — LongRope branch is broken"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod m11_b_step3_5_tests {
+    //! **M11.B step 3.5** — `NodeType::SliceLastDim` end-to-end
+    //! tests. Covers: (a) prefix slice, (b) suffix slice, (c)
+    //! Phi-3.5 Q-projection-shape slice, (d) a 3-rank slice
+    //! preserves leading dims, (e) backstop on degenerate
+    //! ranges (start >= end, end > last_dim).
+    use super::*;
+    use crate::tensor::Tensor;
+
+    /// Helper: build `[input → slice_last_dim → output]` and run
+    /// once with the given input tensor. Returns the resulting
+    /// shape and flat data for comparison.
+    fn slice_once(
+        input_shape: Vec<usize>,
+        input_data: Vec<f32>,
+        start: usize,
+        end: usize,
+    ) -> (Vec<usize>, Vec<f32>) {
+        let mut gb = GraphBuilder::new();
+        let x = gb.input();
+        let s = gb.slice_last_dim(x, start, end);
+        let _ = gb.output(s);
+        let mut graph = gb.build();
+        let outs = graph.execute(vec![Tensor::new_cpu(input_shape, input_data)]);
+        assert_eq!(outs.len(), 1, "graph should produce exactly one output");
+        let out = &outs[0];
+        (out.shape.clone(), out.copy_to_cpu_vec())
+    }
+
+    /// Prefix slice: `[4, 8]` with `start=0, end=3` → `[4, 3]`.
+    /// Each row is the first three elements of the input row.
+    #[test]
+    fn slice_last_dim_prefix_4x8() {
+        let data: Vec<f32> = (0..32).map(|i| i as f32).collect();
+        let (shape, out) = slice_once(vec![4, 8], data, 0, 3);
+        assert_eq!(shape, vec![4, 3]);
+        assert_eq!(out.len(), 12);
+        // Row 0 starts at index 0: [0, 1, 2]
+        // Row 1 starts at index 8: [8, 9, 10]
+        // Row 2 starts at index 16: [16, 17, 18]
+        // Row 3 starts at index 24: [24, 25, 26]
+        let expected: Vec<f32> = vec![
+            0.0, 1.0, 2.0,
+            8.0, 9.0, 10.0,
+            16.0, 17.0, 18.0,
+            24.0, 25.0, 26.0,
+        ];
+        assert_eq!(out, expected);
+    }
+
+    /// Suffix slice: `[4, 8]` with `start=3, end=8` → `[4, 5]`.
+    /// Each row is the last five elements of the input row.
+    #[test]
+    fn slice_last_dim_suffix_4x8() {
+        let data: Vec<f32> = (0..32).map(|i| i as f32).collect();
+        let (shape, out) = slice_once(vec![4, 8], data, 3, 8);
+        assert_eq!(shape, vec![4, 5]);
+        // Row 0: indices 3..8 of input row 0 = [3, 4, 5, 6, 7]
+        // Row 3: indices 3..8 of input row 3 = [27, 28, 29, 30, 31]
+        let expected: Vec<f32> = vec![
+            3.0, 4.0, 5.0, 6.0, 7.0,
+            11.0, 12.0, 13.0, 14.0, 15.0,
+            19.0, 20.0, 21.0, 22.0, 23.0,
+            27.0, 28.0, 29.0, 30.0, 31.0,
+        ];
+        assert_eq!(out, expected);
+    }
+
+    /// Phi-3.5 Mini Q-slice shape: `[2, 3, 9216]` with
+    /// `start=0, end=3072` → `[2, 3, 3072]`. The fused QKV matmul
+    /// output has the layout `[batch, seq, n_heads_q*head_dim +
+    /// 2*n_heads_kv*head_dim]`; slicing the first
+    /// `n_heads_q*head_dim` (= 32*96 = 3072) values along the
+    /// last axis yields the Q activation.
+    #[test]
+    fn slice_last_dim_phi35_q_shape() {
+        let total: usize = 2 * 3 * 9216;
+        let data: Vec<f32> = (0..total).map(|i| i as f32 * 1e-4).collect();
+        let (shape, out) = slice_once(vec![2, 3, 9216], data.clone(), 0, 3072);
+        assert_eq!(shape, vec![2, 3, 3072]);
+        assert_eq!(out.len(), 2 * 3 * 3072);
+        // Spot-check first three values of each (batch, seq) row
+        // match the input's [0..3] of the same row.
+        for b in 0..2 {
+            for s in 0..3 {
+                let in_row_off = (b * 3 + s) * 9216;
+                let out_row_off = (b * 3 + s) * 3072;
+                for k in 0..3 {
+                    assert_eq!(
+                        out[out_row_off + k],
+                        data[in_row_off + k],
+                        "Q slice mismatch at (b={b}, s={s}, k={k})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// 3-rank slice preserves both leading dims. Catches a bug
+    /// where the executor accidentally collapses leading dims.
+    #[test]
+    fn slice_last_dim_preserves_leading_dims() {
+        let total = 2 * 4 * 6;
+        let data: Vec<f32> = (0..total).map(|i| i as f32).collect();
+        let (shape, out) = slice_once(vec![2, 4, 6], data, 1, 4);
+        assert_eq!(shape, vec![2, 4, 3]);
+        assert_eq!(out.len(), 24);
+        // Sample (b=1, s=2): input row offset = (1 * 4 + 2) * 6 = 36.
+        // Slice [1..4] → indices 37, 38, 39 of the flat input.
+        let in_row_off = (1 * 4 + 2) * 6;
+        let out_row_off = (1 * 4 + 2) * 3;
+        for k in 0..3 {
+            assert_eq!(
+                out[out_row_off + k],
+                (in_row_off + 1 + k) as f32,
+                "row (b=1, s=2) mismatch at k={k}"
+            );
+        }
+    }
+
+    /// `start >= end` must panic at builder time (caught by the
+    /// `slice_last_dim` helper's assert before any node is added).
+    #[test]
+    #[should_panic(expected = "start (5) must be < end (5)")]
+    fn slice_last_dim_builder_rejects_start_eq_end() {
+        let mut gb = GraphBuilder::new();
+        let x = gb.input();
+        let _ = gb.slice_last_dim(x, 5, 5);
+    }
+
+    /// `end > last_dim` is caught at executor time (the input
+    /// shape is not statically known at build time). Forward
+    /// the request and confirm it panics with a clear message.
+    #[test]
+    #[should_panic(expected = "exceeds last-axis length")]
+    fn slice_last_dim_executor_rejects_end_past_last_dim() {
+        let mut gb = GraphBuilder::new();
+        let x = gb.input();
+        let s = gb.slice_last_dim(x, 0, 100); // last-dim is 8
+        let _ = gb.output(s);
+        let mut graph = gb.build();
+        let _ = graph.execute(vec![Tensor::new_cpu(vec![2, 8], vec![0.0; 16])]);
     }
 }

@@ -233,6 +233,55 @@ pub enum NodeType {
     /// tape extension that lands with the next training-mode
     /// milestone).
     Concat { axis: usize },
+    /// **M11.B step 3.5** — take a contiguous slice of the input
+    /// tensor's **last** axis. Inputs: `[x]`. The output keeps
+    /// every leading dimension intact and replaces the last
+    /// dimension with `end - start`.
+    ///
+    /// ## Shape
+    ///
+    /// Given input `[d0, d1, ..., d_{N-1}]`, output is
+    /// `[d0, d1, ..., end - start]`. `start` is inclusive,
+    /// `end` is exclusive. The contract `0 <= start < end
+    /// <= d_{N-1}` is enforced at executor time; out-of-range
+    /// values panic.
+    ///
+    /// ## Primary use case
+    ///
+    /// Runtime split of fused weight matmul outputs for
+    /// architectures that ship `qkv_proj` and `gate_up_proj`
+    /// fused (Phi-3 / Phi-3.5 in M11.B; expected to apply to
+    /// Gemma 2 in M11.C). The fused weight is loaded as a
+    /// single parameter; after the matmul that produces a
+    /// `[..., (n_q + 2 n_kv) * head_dim]` activation, three
+    /// `SliceLastDim` nodes split it into Q / K / V activations.
+    /// Same pattern halves a `gate_up` matmul output for the
+    /// SwiGLU FFN.
+    ///
+    /// ## Implementation
+    ///
+    /// Forward materialises the input to CPU (defensive
+    /// `ensure_cpu` to handle BF16 / Cuda / Disk-resident
+    /// inputs) and copies the selected last-axis range row-by-
+    /// row. Output is `Layout::Contiguous` and a fresh `Vec`
+    /// — a slice on a `Vec<f32>` does not yield a separate
+    /// owned buffer in Rust without `Cow`-shaped storage,
+    /// which Atenia's Tensor does not currently expose, so the
+    /// implementation copies. For Phi-3.5 Mini's split the
+    /// per-call cost is `~B * 3072 * 8` bytes (24 KB at seq=2)
+    /// — negligible vs the matmul that produces the input.
+    ///
+    /// Backward is unimplemented for now (forward-only is
+    /// sufficient for inference; training-time gradient
+    /// scatter into the parent slice lives in the autograd
+    /// extension that lands with the next training-mode
+    /// milestone). Mirrors `NodeType::Concat`'s status.
+    SliceLastDim {
+        start: usize,
+        /// Exclusive upper bound. Must satisfy `start < end <=
+        /// last_dim_of_input`.
+        end: usize,
+    },
     /// No-op placeholder used for structurally removed nodes.
     NoOp,
     Output,

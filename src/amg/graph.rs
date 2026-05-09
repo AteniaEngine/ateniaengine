@@ -1335,6 +1335,7 @@ impl Graph {
                 NodeType::Conv2D(_) => in_len == 2 || in_len == 3,
                 NodeType::MaxPool2D(_) => in_len == 1,
                 NodeType::Concat { .. } => in_len == 2,
+                NodeType::SliceLastDim { .. } => in_len == 1,
                 NodeType::NoOp => in_len == 1,
             };
 
@@ -3141,6 +3142,58 @@ impl Graph {
                     }
 
                     self.nodes[node_id].set_output(crate::tensor::Tensor::new_cpu(out_shape, out));
+                }
+            }
+            NodeType::SliceLastDim { start, end } => {
+                // **M11.B step 3.5** — take the contiguous range
+                // `[start..end)` of the input's last axis. Output
+                // shape replaces the last dim with `end - start`;
+                // every leading dim stays intact.
+                let inputs = self.nodes[node_id].inputs.clone();
+                if inputs.len() != 1 {
+                    return;
+                }
+                let x_opt = self.nodes[inputs[0]].output.as_ref();
+                if let Some(mut x) = x_opt.cloned() {
+                    // Defensive decode-on-access: any tier-aware
+                    // upstream may have placed the input on Cuda /
+                    // BF16 / Disk. Materialise to Cpu(F32) before
+                    // slicing.
+                    x.ensure_cpu().expect(
+                        "SliceLastDim: Disk/BF16/Cuda → Cpu materialisation failed",
+                    );
+                    if x.shape.is_empty() {
+                        panic!(
+                            "SliceLastDim: input must have rank >= 1, got shape {:?}",
+                            x.shape
+                        );
+                    }
+                    let last_dim = *x.shape.last().expect("rank >= 1 above");
+                    if start >= end {
+                        panic!(
+                            "SliceLastDim: start ({start}) must be < end ({end})"
+                        );
+                    }
+                    if end > last_dim {
+                        panic!(
+                            "SliceLastDim: end ({end}) exceeds last-axis length {last_dim} \
+                             (input shape {:?})",
+                            x.shape
+                        );
+                    }
+                    let new_last = end - start;
+                    let outer_count: usize = x.shape[.. x.shape.len() - 1].iter().product();
+                    let in_data = x.as_cpu_slice();
+                    let mut out_data: Vec<f32> = Vec::with_capacity(outer_count * new_last);
+                    for i in 0 .. outer_count {
+                        let base = i * last_dim;
+                        out_data.extend_from_slice(&in_data[base + start .. base + end]);
+                    }
+                    let mut out_shape = x.shape.clone();
+                    let last = out_shape.len() - 1;
+                    out_shape[last] = new_last;
+                    self.nodes[node_id]
+                        .set_output(crate::tensor::Tensor::new_cpu(out_shape, out_data));
                 }
             }
             NodeType::NoOp => {
