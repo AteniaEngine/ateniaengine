@@ -140,6 +140,14 @@ fn get_usize(v: &Value, key: &str) -> Result<usize, ConfigError> {
     Ok(get_u64(v, key)? as usize)
 }
 
+/// Strict scalar-`u32` reader. Currently unused at the call-site
+/// (M11.A.1 swapped both `bos_token_id` and `eos_token_id` to
+/// [`get_u32_or_first_of_array`] for Llama 3.x compatibility).
+/// Kept reachable so a future config field that requires strict
+/// scalar semantics has the helper available; flipping to
+/// `#[allow(dead_code)]` instead of deletion preserves the
+/// type-checked behaviour for that future caller.
+#[allow(dead_code)]
 fn get_u32(v: &Value, key: &str) -> Result<u32, ConfigError> {
     let n = get_u64(v, key)?;
     if n > u32::MAX as u64 {
@@ -149,6 +157,64 @@ fn get_u32(v: &Value, key: &str) -> Result<u32, ConfigError> {
         )));
     }
     Ok(n as u32)
+}
+
+/// **M11.A.1** — read a scalar `u32` field that may also appear as
+/// a non-empty array of integers; the first element is returned.
+///
+/// Llama 3.x ships `eos_token_id` as an array of three sentinel
+/// tokens — `[end_of_text, end_of_message, eot_id]` — to support
+/// the multi-turn chat protocol where any of the three terminates
+/// generation. Atenia's downstream consumers (`generator::is_eos`)
+/// compare against a single `u32` today; the first array entry is
+/// the canonical end-of-generation token (`128001` =
+/// `<|end_of_text|>` for Llama 3.1 / 3.2). A future M11.A.x can
+/// extend the contract to honour every sentinel — that is a
+/// generator-side change, not a config-side change.
+///
+/// Returns:
+/// - `Ok(n)` when the field is a scalar `u32`.
+/// - `Ok(arr[0])` when the field is a non-empty array of `u32`.
+/// - `Err` when the field is missing, a non-integer scalar, an
+///   empty array, or an array containing non-integer entries.
+fn get_u32_or_first_of_array(v: &Value, key: &str) -> Result<u32, ConfigError> {
+    let raw = v.get(key).ok_or_else(|| {
+        ConfigError::Parse(format!("missing field `{}`", key))
+    })?;
+    if let Some(n) = raw.as_u64() {
+        if n > u32::MAX as u64 {
+            return Err(ConfigError::Parse(format!(
+                "field `{}` value {} exceeds u32::MAX",
+                key, n
+            )));
+        }
+        return Ok(n as u32);
+    }
+    if let Some(arr) = raw.as_array() {
+        if arr.is_empty() {
+            return Err(ConfigError::Parse(format!(
+                "field `{}` is an empty array (expected ≥ 1 token id)",
+                key
+            )));
+        }
+        let first = arr[0].as_u64().ok_or_else(|| {
+            ConfigError::Parse(format!(
+                "field `{}` is an array but the first element is not an integer",
+                key
+            ))
+        })?;
+        if first > u32::MAX as u64 {
+            return Err(ConfigError::Parse(format!(
+                "field `{}` first array element {} exceeds u32::MAX",
+                key, first
+            )));
+        }
+        return Ok(first as u32);
+    }
+    Err(ConfigError::Parse(format!(
+        "field `{}` must be an integer or a non-empty integer array",
+        key
+    )))
 }
 
 fn get_f32(v: &Value, key: &str) -> Result<f32, ConfigError> {
@@ -356,8 +422,11 @@ impl LlamaConfig {
             tie_word_embeddings: get_bool(&v, "tie_word_embeddings")?,
             attention_bias: get_optional_bool(&v, "attention_bias")?,
             model_type: get_optional_string(&v, "model_type")?,
-            bos_token_id: get_u32(&v, "bos_token_id")?,
-            eos_token_id: get_u32(&v, "eos_token_id")?,
+            bos_token_id: get_u32_or_first_of_array(&v, "bos_token_id")?,
+            // **M11.A.1** — Llama 3.x ships eos_token_id as a
+            // 3-element array of sentinel tokens. Take the first
+            // (canonical end-of-text); see helper docstring.
+            eos_token_id: get_u32_or_first_of_array(&v, "eos_token_id")?,
             pad_token_id: get_optional_u32(&v, "pad_token_id")?,
             head_dim: get_optional_usize(&v, "head_dim")?,
             rope_scaling: get_rope_scaling(&v)?,
@@ -498,5 +567,81 @@ impl LlamaConfig {
             )));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Minimal Llama-style config covering every required field so
+    /// that the parser focuses on the field under test.
+    fn base_config_value(eos_field: serde_json::Value) -> serde_json::Value {
+        json!({
+            "architectures": ["LlamaForCausalLM"],
+            "bos_token_id": 1,
+            "eos_token_id": eos_field,
+            "hidden_act": "silu",
+            "hidden_size": 64,
+            "intermediate_size": 256,
+            "max_position_embeddings": 2048,
+            "model_type": "llama",
+            "num_attention_heads": 4,
+            "num_hidden_layers": 2,
+            "num_key_value_heads": 4,
+            "rms_norm_eps": 1e-5,
+            "rope_theta": 10_000.0,
+            "tie_word_embeddings": false,
+            "torch_dtype": "bfloat16",
+            "transformers_version": "4.46.1",
+            "vocab_size": 32_000
+        })
+    }
+
+    /// **M11.A.1 test** — scalar `eos_token_id` (Llama 1 / 2 /
+    /// SmolLM2 / Qwen / Mistral / Falcon3 shape) parses unchanged.
+    #[test]
+    fn eos_token_id_scalar_parses() {
+        let v = base_config_value(json!(2));
+        let cfg = LlamaConfig::from_json_str(&v.to_string()).expect("scalar eos parses");
+        assert_eq!(cfg.eos_token_id, 2);
+    }
+
+    /// **M11.A.1 test** — array `eos_token_id` (Llama 3.x shape)
+    /// parses; the first element is taken as the canonical EOS.
+    #[test]
+    fn eos_token_id_array_takes_first() {
+        let v = base_config_value(json!([128001, 128008, 128009]));
+        let cfg = LlamaConfig::from_json_str(&v.to_string()).expect("array eos parses");
+        assert_eq!(cfg.eos_token_id, 128001);
+    }
+
+    /// **M11.A.1 test** — empty array is a parse error (the field
+    /// is structurally meaningless without at least one sentinel).
+    #[test]
+    fn eos_token_id_empty_array_rejected() {
+        let v = base_config_value(json!([]));
+        let err = LlamaConfig::from_json_str(&v.to_string())
+            .expect_err("empty array must fail");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("eos_token_id") && msg.contains("empty"),
+            "error should mention field and emptiness, got: {msg}"
+        );
+    }
+
+    /// **M11.A.1 test** — array whose first element is not an
+    /// integer (e.g. accidentally `["128001"]`) is a parse error.
+    #[test]
+    fn eos_token_id_array_non_integer_first_rejected() {
+        let v = base_config_value(json!(["not-a-number", 128001]));
+        let err = LlamaConfig::from_json_str(&v.to_string())
+            .expect_err("non-integer first element must fail");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("eos_token_id"),
+            "error should mention the field, got: {msg}"
+        );
     }
 }
