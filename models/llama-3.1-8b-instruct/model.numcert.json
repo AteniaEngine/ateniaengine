@@ -1,0 +1,88 @@
+{
+  "$schema": "../../docs/CERTIFICATION.md#schema",
+  "schema_version": "2.0.0",
+  "model": "Llama-3.1-8B-Instruct",
+  "model_family": "llama-3-rope-scaling",
+  "model_path_hint": "models/llama-3.1-8b-instruct/model.safetensors[.index.json]",
+  "atenia_version": "0.11.1-M11.A.2",
+  "f64_fixture_version": "n/a — 8B class out of dev-box F64 budget",
+  "f64_fixture_test": "tests/m8_5_full_family_validation_test.rs (NOT applicable — see drift_envelope notes)",
+  "generated_at": "2026-05-09",
+  "generated_on": "RTX 4070 Laptop (sm_89), 8 GB VRAM, 32 GB RAM, Windows 11",
+
+  "config_summary": {
+    "architectures": "LlamaForCausalLM",
+    "hidden_size": 4096,
+    "num_hidden_layers": 32,
+    "num_attention_heads": 32,
+    "num_key_value_heads": 8,
+    "intermediate_size": 14336,
+    "rope_theta": 500000.0,
+    "rope_scaling": "llama3 piecewise frequency scaling",
+    "tie_word_embeddings": false,
+    "vocab_size": 128256,
+    "eos_token_id": [128001, 128008, 128009],
+    "max_position_embeddings": 131072
+  },
+  "config_compatibility_notes": "Llama 3.1 8B Instruct ships with three EOS sentinels (end_of_text + 2 end_of_message). Atenia's LlamaConfig parser was extended in M11.A.1 to deserialize eos_token_id as either a scalar or array (commit ac70581); array variant takes the first element as primary EOS while the rest are ignored at the runtime level. GQA real (32 Q / 8 KV heads). RoPE llama3 piecewise frequency scaling (M4.6 Phase C path).",
+
+  "drift_envelope": {
+    "certified_mode": {
+      "max_abs_diff_vs_f64": null,
+      "argmax_match_4_of_4": null,
+      "adr_004_strict_pass": null,
+      "adr_004_threshold": 0.5,
+      "kernel_path": "cuda_matmul_bf16_inplace (Path B M8.4c) + CUBLAS_COMPUTE_32F_FAST_TF32 (M10.2.0)",
+      "validation_notes": "F64 reference not generated for 8B-class checkpoints on the dev box (peak memory budget for F64 forward exceeds 32 GB). Validation falls back to greedy generation smoke under both modes, comparing argmax and decoded text against the same prompt."
+    },
+    "fast_mode": {
+      "max_abs_diff_vs_f64": null,
+      "argmax_match_4_of_4": null,
+      "adr_004_strict_pass": null,
+      "adr_004_threshold": 0.5,
+      "kernel_path": "cuda_matmul_bf16_native_inplace (M10.2.1) — CUDA_R_16BF inputs, COMPUTE_32F",
+      "validation_notes": "Drift envelope inherited from ADR-005 family characterisation. Llama 3.1 8B is not in the F64 fixture; treat fast-mode drift on this checkpoint as 'industry-standard BF16-TC' with the ADR-005 caveat applied."
+    }
+  },
+
+  "smoke_validation": {
+    "prompt": "Tell me about the history of Rome",
+    "max_tokens": 20,
+    "certified_text": "The history of Rome is a long and complex one, spanning over 12 centuries. It is a",
+    "fast_text": "The history of Rome is a long and complex one, spanning over 12 centuries. It is a",
+    "argmax_match_certified_vs_fast": true,
+    "certified_s_per_tok": 13.05,
+    "fast_s_per_tok": 10.91,
+    "fast_speedup_over_certified": 1.20,
+    "tier_plan_certified": {
+      "vram_tensors": 116,
+      "ram_tensors": 175,
+      "disk_tensors": 0
+    },
+    "tier_plan_fast": {
+      "vram_tensors": 124,
+      "ram_tensors": 167,
+      "disk_tensors": 0
+    },
+    "interpretation": "Bit-identical generated text under both modes on this prompt. Fast mode tier-plan moves 8 additional tensors to VRAM (124 vs 116) — Llama 3.1 8B is on the boundary where M8 BF16 storage already accommodated most of the GPU-eligible weights under certified, so the fast-mode VRAM gain is modest. The 1.20× lift reflects the per-matmul kernel difference, not capacity reorganisation."
+  },
+
+  "recommended_mode": "certified",
+  "recommended_mode_rationale": "Without an F64 ground-truth reference for Llama 3.1 8B on the dev box, the conservative default is the certified path. Fast mode produced bit-identical argmax in this single-prompt smoke. Note that Llama 3.1 8B is the production target sub-bracket of M10's velocity matrix that comes closest to llama.cpp parity on 8 GB VRAM — operators wanting the 1.20× speedup can opt in via per-tensor policy override or ATENIA_FAST_MODE=1.",
+
+  "per_tensor_policy": {
+    "default": "certified",
+    "overrides": [
+      {"pattern": "*.mlp.*_proj.weight", "mode": "fast"}
+    ]
+  },
+  "per_tensor_policy_status": "Schema v2.0.0 (M11.A.2) — same family-wide structural heuristic as Mistral 7B, Falcon3 7B, and the M4.6 fixture (TinyLlama / SmolLM2 / Llama 3.2 1B): FFN gate/up/down on fast, attention Q/K/V/O on certified. Llama 3.x's RoPE llama3 scaling and the GQA configuration (32 Q / 8 KV) keep attention compute compact; the FFN dominates the parameter count and benefits most from fast routing.",
+
+  "verification": {
+    "command_certified": "ATENIA_M8_BF16_KERNEL=1 ATENIA_M8_7_ENABLED=1 ATENIA_DISK_TIER_DIR=<cache> ATENIA_RAM_HEADROOM_OVERRIDE_GIB=8 atenia generate --prompt 'Tell me about the history of Rome' --model models/llama-3.1-8b-instruct --max-tokens 20",
+    "command_fast": "ATENIA_FAST_MODE=1 ATENIA_M8_7_ENABLED=1 ATENIA_DISK_TIER_DIR=<cache> ATENIA_RAM_HEADROOM_OVERRIDE_GIB=8 atenia generate --prompt 'Tell me about the history of Rome' --model models/llama-3.1-8b-instruct --max-tokens 20",
+    "expected_dispatch_counter_certified": "vram_bf16_matmul_count delta > 0",
+    "expected_dispatch_counter_fast": "vram_bf16_native_matmul_count delta > 0",
+    "expected_text_prefix": "The history of Rome is a long and complex one, spanning over 12 centuries"
+  }
+}
