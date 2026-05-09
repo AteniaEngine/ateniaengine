@@ -96,6 +96,103 @@ pub fn compute_inv_freqs_llama3(
         .collect()
 }
 
+/// **M11.B** — Microsoft Phi-3 / Phi-3.5 LongRope inverse-frequency
+/// schedule.
+///
+/// Implements the algorithm at
+/// `huggingface/transformers::modeling_rope_utils::_compute_longrope_parameters`:
+/// pick `short_factor` or `long_factor` per the observed sequence
+/// length, then divide the base inverse frequencies element-wise.
+///
+/// ```text
+///   factor[i] = if seq_len > original_max_pos { long_factor[i] }
+///               else                          { short_factor[i] }
+///   inv_freq[i] = 1 / (factor[i] * base^(2i / head_dim))
+/// ```
+///
+/// Both `short_factor` and `long_factor` must have length
+/// `head_dim / 2` — this matches the `inv_freq` indexing used by
+/// the half-split RoPE kernel (`apply_rope_with_inv_freqs`).
+///
+/// All math is computed in `f64` and cast to `f32` at the end. With
+/// Phi-3.5's `base = 10_000`, the intermediate `base^(2i/d)` term
+/// stays well within `f32` precision, but routing through `f64`
+/// matches the reference implementation and keeps the numerics
+/// faithful for reproducibility.
+///
+/// # Panics
+/// - `short_factor.len() != head_dim / 2`
+/// - `long_factor.len() != head_dim / 2`
+pub fn compute_inv_freqs_longrope(
+    head_dim: usize,
+    base_freq: u32,
+    short_factor: &[f32],
+    long_factor: &[f32],
+    original_max_pos: u32,
+    seq_len: usize,
+) -> Vec<f32> {
+    let half = head_dim / 2;
+    assert_eq!(
+        short_factor.len(),
+        half,
+        "compute_inv_freqs_longrope: short_factor length {} != head_dim/2 ({})",
+        short_factor.len(),
+        half
+    );
+    assert_eq!(
+        long_factor.len(),
+        half,
+        "compute_inv_freqs_longrope: long_factor length {} != head_dim/2 ({})",
+        long_factor.len(),
+        half
+    );
+
+    let factor: &[f32] = if (seq_len as u32) > original_max_pos {
+        long_factor
+    } else {
+        short_factor
+    };
+    let base = base_freq as f64;
+
+    (0..half)
+        .map(|i| {
+            let exp = (i as f64) * 2.0 / (head_dim as f64);
+            let inv_freq_base = 1.0_f64 / base.powf(exp);
+            (inv_freq_base / factor[i] as f64) as f32
+        })
+        .collect()
+}
+
+/// **M11.B** — `attention_factor` derivation for the LongRope
+/// scaling. Multiplies cos/sin by this scalar when the scaling
+/// is active to compensate the wider context window:
+///
+/// ```text
+///   scale = max_position_embeddings / original_max_position_embeddings
+///   if scale > 1.0:
+///       attention_factor = sqrt(1 + ln(scale) / ln(original_max_position_embeddings))
+///   else:
+///       attention_factor = 1.0
+/// ```
+///
+/// The function expects integer-valued context lengths and
+/// returns the scalar in `f32`. Computed in `f64` and cast at
+/// the end for the same reason as
+/// `compute_inv_freqs_longrope`.
+pub fn compute_attention_factor_longrope(
+    original_max_position_embeddings: u32,
+    max_position_embeddings: u32,
+) -> f32 {
+    let original = original_max_position_embeddings as f64;
+    let configured = max_position_embeddings as f64;
+    if configured <= original || original <= 1.0 {
+        return 1.0;
+    }
+    let scale = configured / original;
+    let attention_factor = (1.0 + scale.ln() / original.ln()).sqrt();
+    attention_factor as f32
+}
+
 fn validate_shape(shape: &[usize], head_dim: usize, op: &str) {
     assert_eq!(
         shape.len(),
@@ -440,6 +537,134 @@ mod llama3_scaling_tests {
                 expected
             );
         }
+    }
+}
+
+/// **M11.B** — LongRope scaling tests.
+///
+/// Validates the per-dimension factor selection (short vs long
+/// path keyed by `seq_len`) and the bit-exact identity case
+/// (factor = [1.0, ...] reproduces unscaled inv_freq).
+#[cfg(test)]
+mod longrope_scaling_tests {
+    use super::{
+        compute_attention_factor_longrope, compute_inv_freqs,
+        compute_inv_freqs_longrope,
+    };
+
+    /// Phi-3.5 Mini parameters: head_dim = 96, theta = 10000,
+    /// original_max_pos = 4096, max_pos = 131072.
+    const HEAD_DIM: usize = 96;
+    const BASE: u32 = 10_000;
+    const ORIGINAL_MAX_POS: u32 = 4096;
+
+    fn ones_factor() -> Vec<f32> {
+        vec![1.0_f32; HEAD_DIM / 2]
+    }
+
+    /// `seq_len <= original_max_pos` selects `short_factor`.
+    /// With `short_factor = [1.0, ...]` the result must equal
+    /// the unscaled `compute_inv_freqs`.
+    #[test]
+    fn longrope_short_path_with_unit_factor_matches_unscaled() {
+        let short = ones_factor();
+        let long: Vec<f32> = (0..HEAD_DIM / 2)
+            .map(|i| 2.0 + i as f32)
+            .collect();
+        let scaled =
+            compute_inv_freqs_longrope(HEAD_DIM, BASE, &short, &long, ORIGINAL_MAX_POS, 1024);
+        let unscaled = compute_inv_freqs(HEAD_DIM, BASE);
+        assert_eq!(scaled.len(), unscaled.len());
+        for (i, (s, u)) in scaled.iter().zip(unscaled.iter()).enumerate() {
+            let diff = (s - u).abs();
+            assert!(
+                diff < 1e-7,
+                "short-path with unit factor must match unscaled at i={}: \
+                 got {:.6e}, expected {:.6e}, diff={:.3e}",
+                i, s, u, diff
+            );
+        }
+    }
+
+    /// `seq_len > original_max_pos` selects `long_factor`. With
+    /// `long_factor[i] = 2.0` for all i, the result must equal
+    /// the unscaled `compute_inv_freqs` divided by 2.
+    #[test]
+    fn longrope_long_path_divides_by_factor() {
+        let short = ones_factor();
+        let long: Vec<f32> = vec![2.0_f32; HEAD_DIM / 2];
+        let scaled = compute_inv_freqs_longrope(
+            HEAD_DIM,
+            BASE,
+            &short,
+            &long,
+            ORIGINAL_MAX_POS,
+            (ORIGINAL_MAX_POS + 1) as usize,
+        );
+        let unscaled = compute_inv_freqs(HEAD_DIM, BASE);
+        for (i, (s, u)) in scaled.iter().zip(unscaled.iter()).enumerate() {
+            let expected = u / 2.0;
+            let diff = (s - expected).abs();
+            assert!(
+                diff < 1e-7,
+                "long-path with factor=2 must equal unscaled / 2 at i={}: \
+                 got {:.6e}, expected {:.6e}, diff={:.3e}",
+                i, s, expected, diff
+            );
+        }
+    }
+
+    /// Boundary: `seq_len == original_max_pos` is the upper edge
+    /// of the short range. The function uses strict `>` for the
+    /// long-factor switch, so equality stays on the short path.
+    #[test]
+    fn longrope_boundary_uses_short_factor() {
+        let short: Vec<f32> = vec![3.0_f32; HEAD_DIM / 2];
+        let long: Vec<f32> = vec![5.0_f32; HEAD_DIM / 2];
+        let scaled_at_boundary = compute_inv_freqs_longrope(
+            HEAD_DIM,
+            BASE,
+            &short,
+            &long,
+            ORIGINAL_MAX_POS,
+            ORIGINAL_MAX_POS as usize,
+        );
+        let unscaled = compute_inv_freqs(HEAD_DIM, BASE);
+        // boundary case takes short_factor = 3.0
+        for (i, (s, u)) in scaled_at_boundary.iter().zip(unscaled.iter()).enumerate() {
+            let expected = u / 3.0;
+            let diff = (s - expected).abs();
+            assert!(diff < 1e-7, "boundary at i={i}: got {s} expected {expected}");
+        }
+    }
+
+    /// `compute_attention_factor_longrope` returns 1.0 when the
+    /// configured context window does not exceed the pre-training
+    /// window — there is no extension to compensate for.
+    #[test]
+    fn longrope_attention_factor_is_one_when_no_extension() {
+        let af = compute_attention_factor_longrope(4096, 4096);
+        assert_eq!(af, 1.0);
+        let af_smaller = compute_attention_factor_longrope(8192, 4096);
+        assert_eq!(af_smaller, 1.0);
+    }
+
+    /// Phi-3.5 Mini case: original=4096, max=131072 → scale=32.
+    /// Reference value computed in pure f64:
+    ///   sqrt(1 + ln(32) / ln(4096)) ≈ 1.190.
+    #[test]
+    fn longrope_attention_factor_phi35_mini() {
+        let af = compute_attention_factor_longrope(4096, 131072);
+        let scale = 131072.0_f64 / 4096.0_f64;
+        let expected = (1.0_f64 + scale.ln() / (4096.0_f64).ln()).sqrt() as f32;
+        let diff = (af - expected).abs();
+        assert!(
+            diff < 1e-6,
+            "attention_factor mismatch: got {af}, expected {expected}, diff={diff:.3e}"
+        );
+        // Sanity: must be > 1 (we are extending the context).
+        assert!(af > 1.0);
+        assert!(af < 1.5, "Phi-3.5 attention_factor should sit around 1.19");
     }
 }
 

@@ -95,6 +95,53 @@ pub enum RopeScaling {
         /// reference (8192 for Llama 3.2).
         original_max_position_embeddings: u32,
     },
+    /// **M11.B** — Microsoft Phi-3 / Phi-3.5 LongRope scaling.
+    ///
+    /// Per-dimension scaling factors that swap based on the
+    /// observed sequence length:
+    ///
+    /// - When `seq_len <= original_max_position_embeddings`, the
+    ///   inverse frequency at index `i` is divided by
+    ///   `short_factor[i]`.
+    /// - When `seq_len > original_max_position_embeddings`, the
+    ///   inverse frequency at index `i` is divided by
+    ///   `long_factor[i]`.
+    ///
+    /// Both factor vectors must have length `head_dim / 2`.
+    ///
+    /// Additionally, when scaling is active, `cos`/`sin` outputs
+    /// are multiplied by an `attention_factor` derived from the
+    /// `max_position_embeddings / original_max_position_embeddings`
+    /// ratio:
+    ///
+    /// ```text
+    ///   scale = max_position_embeddings / original_max_position_embeddings
+    ///   attention_factor = sqrt(1 + ln(scale) / ln(original_max_position_embeddings))
+    ///                          when scale > 1.0
+    ///                      else 1.0
+    /// ```
+    ///
+    /// Reference:
+    /// `huggingface/transformers::modeling_rope_utils::_compute_longrope_parameters`.
+    LongRope {
+        /// Per-dimension factor vector applied when
+        /// `seq_len <= original_max_position_embeddings`. Length
+        /// must equal `head_dim / 2`.
+        short_factor: Vec<f32>,
+        /// Per-dimension factor vector applied when
+        /// `seq_len > original_max_position_embeddings`. Length
+        /// must equal `head_dim / 2`.
+        long_factor: Vec<f32>,
+        /// Pre-training context length (4096 for Phi-3.5 Mini).
+        /// Drives both the short/long factor switch and the
+        /// `attention_factor` derivation.
+        original_max_position_embeddings: u32,
+        /// Configured max-context length (131072 for Phi-3.5
+        /// Mini). Used together with
+        /// `original_max_position_embeddings` to derive the
+        /// `attention_factor`.
+        max_position_embeddings: u32,
+    },
 }
 
 /// Errors that can arise while loading or validating a Llama-family config.
@@ -333,11 +380,75 @@ fn get_rope_scaling(v: &Value) -> Result<Option<RopeScaling>, ConfigError> {
                 original_max_position_embeddings,
             }))
         }
+        // **M11.B** — Phi-3 / Phi-3.5 LongRope scaling.
+        Some("longrope") => {
+            let short_factor = parse_f32_array(block, "short_factor", "rope_scaling.longrope")?;
+            let long_factor = parse_f32_array(block, "long_factor", "rope_scaling.longrope")?;
+            // `original_max_position_embeddings` and
+            // `max_position_embeddings` are top-level fields on
+            // the Phi-3 config, not inside the rope_scaling
+            // block. Read them from the outer config `v`.
+            let original_max_position_embeddings = v
+                .get("original_max_position_embeddings")
+                .and_then(|x| x.as_u64())
+                .ok_or_else(|| {
+                    ConfigError::Parse(
+                        "rope_scaling.longrope requires top-level integer \
+                         `original_max_position_embeddings`"
+                            .into(),
+                    )
+                })? as u32;
+            let max_position_embeddings = v
+                .get("max_position_embeddings")
+                .and_then(|x| x.as_u64())
+                .ok_or_else(|| {
+                    ConfigError::Parse(
+                        "rope_scaling.longrope requires top-level integer \
+                         `max_position_embeddings`"
+                            .into(),
+                    )
+                })? as u32;
+            Ok(Some(RopeScaling::LongRope {
+                short_factor,
+                long_factor,
+                original_max_position_embeddings,
+                max_position_embeddings,
+            }))
+        }
         // Unknown / unsupported scaling — treat as no-scaling.
-        // Future variants (yarn, longrope, dynamic) will land as
+        // Future variants (yarn, dynamic) will land as
         // explicit branches before this catch-all.
         _ => Ok(None),
     }
+}
+
+/// Parse a JSON array field into a `Vec<f32>`. Used by the
+/// LongRope branch to read the per-dimension factor vectors.
+/// Errors with a clear context-prefixed message when the field
+/// is missing, not an array, or contains a non-numeric element.
+fn parse_f32_array(
+    block: &Value,
+    key: &str,
+    context: &str,
+) -> Result<Vec<f32>, ConfigError> {
+    let arr = block
+        .get(key)
+        .and_then(|x| x.as_array())
+        .ok_or_else(|| {
+            ConfigError::Parse(format!(
+                "{context} requires array field `{key}`"
+            ))
+        })?;
+    arr.iter()
+        .enumerate()
+        .map(|(i, x)| {
+            x.as_f64().map(|v| v as f32).ok_or_else(|| {
+                ConfigError::Parse(format!(
+                    "{context}.{key}[{i}] is not a number"
+                ))
+            })
+        })
+        .collect()
 }
 
 fn get_optional_u32(v: &Value, key: &str) -> Result<Option<u32>, ConfigError> {
@@ -642,6 +753,73 @@ mod tests {
         assert!(
             msg.contains("eos_token_id"),
             "error should mention the field, got: {msg}"
+        );
+    }
+
+    /// **M11.B test** — Phi-3.5 LongRope rope_scaling block parses
+    /// into the new `RopeScaling::LongRope` variant. Reference
+    /// shape from `models/phi-3.5-mini-instruct/config.json`:
+    /// `type: "longrope"`, two factor arrays of length head_dim/2,
+    /// and the original / max position embeddings at the top
+    /// level of the config.
+    #[test]
+    fn rope_scaling_longrope_parses_into_variant() {
+        let mut v = base_config_value(json!(32_000));
+        // Top-level fields the LongRope branch needs.
+        v["original_max_position_embeddings"] = json!(4096);
+        v["max_position_embeddings"] = json!(131_072);
+        // Factor vectors of length head_dim/2 = 32 (head_dim = 64
+        // because hidden_size = 64 / num_heads = 4 in
+        // base_config_value; LongRope only cares that
+        // `factor.len() == head_dim/2`, the parser does not
+        // validate the length here — that happens at
+        // `compute_inv_freqs_longrope` call time).
+        let short: Vec<f32> = (0..32).map(|i| 1.0 + i as f32 * 0.01).collect();
+        let long: Vec<f32> = (0..32).map(|i| 2.0 + i as f32 * 0.05).collect();
+        v["rope_scaling"] = json!({
+            "type": "longrope",
+            "short_factor": short,
+            "long_factor": long
+        });
+        let cfg = LlamaConfig::from_json_str(&v.to_string())
+            .expect("LongRope config must parse");
+        match cfg.effective_rope_scaling() {
+            Some(RopeScaling::LongRope {
+                short_factor,
+                long_factor,
+                original_max_position_embeddings,
+                max_position_embeddings,
+            }) => {
+                assert_eq!(short_factor.len(), 32);
+                assert_eq!(long_factor.len(), 32);
+                assert!((short_factor[0] - 1.0).abs() < 1e-6);
+                assert!((long_factor[0] - 2.0).abs() < 1e-6);
+                assert_eq!(*original_max_position_embeddings, 4096);
+                assert_eq!(*max_position_embeddings, 131_072);
+            }
+            other => panic!("expected RopeScaling::LongRope, got {other:?}"),
+        }
+    }
+
+    /// **M11.B test** — LongRope parser surfaces a clear error
+    /// when `original_max_position_embeddings` is missing from
+    /// the top level of the config (it lives outside the
+    /// rope_scaling block per the Phi-3 schema).
+    #[test]
+    fn rope_scaling_longrope_missing_original_max_pos_fails() {
+        let mut v = base_config_value(json!(32_000));
+        v["max_position_embeddings"] = json!(131_072);
+        v["rope_scaling"] = json!({
+            "type": "longrope",
+            "short_factor": [1.0, 1.0],
+            "long_factor": [2.0, 2.0]
+        });
+        let err = LlamaConfig::from_json_str(&v.to_string())
+            .expect_err("missing original_max_position_embeddings must fail");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("original_max_position_embeddings"),
+            "error should name the missing field, got: {msg}"
         );
     }
 }

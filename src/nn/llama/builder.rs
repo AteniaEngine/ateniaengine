@@ -229,6 +229,21 @@ fn build_transformer_block_llama(
                 gb.rope_scaled(k, head_dim, config.rope_theta, scaling),
             )
         }
+        // **M11.B** — Phi-3 / Phi-3.5 LongRope is parsed and the
+        // `compute_inv_freqs_longrope` primitive lives in
+        // `nn/rope.rs`, but the executor / AMG-node wire-up + the
+        // Phi3 builder land in follow-up commits. The Llama
+        // builder only emits Llama-family checkpoints, so a
+        // LongRope-bearing config reaching this match is a caller
+        // bug — Phi-3 checkpoints must route through the Phi3
+        // builder once it lands.
+        Some(crate::nn::llama::RopeScaling::LongRope { .. }) => {
+            panic!(
+                "LongRope rope_scaling reached the Llama builder. \
+                 Phi-3 / Phi-3.5 checkpoints must use the Phi3 builder \
+                 (M11.B in progress; LongRope executor wire-up still pending)."
+            );
+        }
     };
 
     // ---- 5. [b, s, h, d] → [b, h, s, d] ----

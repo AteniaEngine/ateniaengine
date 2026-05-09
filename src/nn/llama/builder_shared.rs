@@ -264,6 +264,15 @@ fn build_block_shared(
                 gb.rope_scaled_with_offset(k, head_dim, config.rope_theta, scaling, position_offset),
             )
         }
+        // **M11.B** — see `builder::build_llama` for the same
+        // panic. LongRope must route through a Phi3 builder.
+        Some(crate::nn::llama::RopeScaling::LongRope { .. }) => {
+            panic!(
+                "LongRope rope_scaling reached the Llama builder. \
+                 Phi-3 / Phi-3.5 checkpoints must use the Phi3 builder \
+                 (M11.B in progress; LongRope executor wire-up still pending)."
+            );
+        }
     };
 
     // ---- 5. [b, s, h, d] → [b, h, s, d] ----
