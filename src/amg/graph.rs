@@ -1336,6 +1336,7 @@ impl Graph {
                 NodeType::MaxPool2D(_) => in_len == 1,
                 NodeType::Concat { .. } => in_len == 2,
                 NodeType::SliceLastDim { .. } => in_len == 1,
+                NodeType::SoftCap { .. } => in_len == 1,
                 NodeType::NoOp => in_len == 1,
             };
 
@@ -3192,6 +3193,41 @@ impl Graph {
                     let mut out_shape = x.shape.clone();
                     let last = out_shape.len() - 1;
                     out_shape[last] = new_last;
+                    self.nodes[node_id]
+                        .set_output(crate::tensor::Tensor::new_cpu(out_shape, out_data));
+                }
+            }
+            NodeType::SoftCap { cap_bits } => {
+                // **M11.C step 2** — Gemma 2 soft-cap:
+                // out[i] = cap * tanh(in[i] / cap).
+                // Output shape == input shape. Materialise to
+                // CPU defensively (input may be Cuda / BF16 /
+                // Disk-tier); same pattern as SliceLastDim.
+                let inputs = self.nodes[node_id].inputs.clone();
+                if inputs.len() != 1 {
+                    return;
+                }
+                let x_opt = self.nodes[inputs[0]].output.as_ref();
+                if let Some(mut x) = x_opt.cloned() {
+                    x.ensure_cpu().expect(
+                        "SoftCap: Disk/BF16/Cuda → Cpu materialisation failed",
+                    );
+                    let cap = f32::from_bits(cap_bits);
+                    // Defensive: builder enforces cap > 0.0,
+                    // but this guards against a hand-constructed
+                    // node bypassing the builder.
+                    if !(cap > 0.0) || !cap.is_finite() {
+                        panic!(
+                            "SoftCap: cap must be a finite positive f32, got {cap}"
+                        );
+                    }
+                    let inv_cap = 1.0_f32 / cap;
+                    let in_data = x.as_cpu_slice();
+                    let mut out_data: Vec<f32> = Vec::with_capacity(in_data.len());
+                    for &v in in_data {
+                        out_data.push(cap * (v * inv_cap).tanh());
+                    }
+                    let out_shape = x.shape.clone();
                     self.nodes[node_id]
                         .set_output(crate::tensor::Tensor::new_cpu(out_shape, out_data));
                 }

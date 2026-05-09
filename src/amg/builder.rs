@@ -308,6 +308,33 @@ impl GraphBuilder {
         )
     }
 
+    /// **M11.C step 2** — construct a `NodeType::SoftCap` node:
+    /// `out[i] = cap * tanh(in[i] / cap)`.
+    ///
+    /// Build-time contract: `cap` must be finite and strictly
+    /// positive. The executor re-validates defensively, but this
+    /// assertion gives a clear failure at graph-construction time
+    /// when a builder pass passes a bad scalar.
+    ///
+    /// `cap` is stored as `f32::to_bits(cap)` inside the node so
+    /// `NodeType` keeps its `Eq + Hash` derive (mirrors
+    /// `RmsNorm { eps_bits }`).
+    ///
+    /// See [`NodeType::SoftCap`] for the saturation contract,
+    /// numerical behaviour at extreme inputs, and intended use
+    /// case (Gemma 2 attention soft-cap at 50.0 and final-logit
+    /// soft-cap at 30.0).
+    pub fn soft_cap(&mut self, x_id: usize, cap: f32) -> usize {
+        assert!(
+            cap.is_finite() && cap > 0.0,
+            "GraphBuilder::soft_cap: cap must be a finite positive f32, got {cap}"
+        );
+        self.add_node(
+            NodeType::SoftCap { cap_bits: cap.to_bits() },
+            vec![x_id],
+        )
+    }
+
     pub fn build(self) -> super::graph::Graph {
         let mut graph = super::graph::Graph::new(self.nodes);
 
@@ -597,5 +624,182 @@ mod m11_b_step3_5_tests {
         let _ = gb.output(s);
         let mut graph = gb.build();
         let _ = graph.execute(vec![Tensor::new_cpu(vec![2, 8], vec![0.0; 16])]);
+    }
+}
+
+#[cfg(test)]
+mod m11_c_step2_tests {
+    //! **M11.C step 2** — `NodeType::SoftCap` end-to-end tests.
+    //! Covers: identity at zero, exact saturation point at `±cap`,
+    //! large-magnitude saturation behaviour (no NaN), shape
+    //! preservation, builder rejection of non-positive caps, and
+    //! a Gemma 2 attention-shape case for the 50.0 cap.
+    use super::*;
+    use crate::tensor::Tensor;
+
+    /// Helper: build `[input → soft_cap → output]` and execute
+    /// once with the given input tensor. Returns shape and
+    /// flat output for assertions.
+    fn soft_cap_once(
+        input_shape: Vec<usize>,
+        input_data: Vec<f32>,
+        cap: f32,
+    ) -> (Vec<usize>, Vec<f32>) {
+        let mut gb = GraphBuilder::new();
+        let x = gb.input();
+        let s = gb.soft_cap(x, cap);
+        let _ = gb.output(s);
+        let mut graph = gb.build();
+        let outs = graph.execute(vec![Tensor::new_cpu(input_shape, input_data)]);
+        assert_eq!(outs.len(), 1, "graph should produce exactly one output");
+        let out = &outs[0];
+        (out.shape.clone(), out.copy_to_cpu_vec())
+    }
+
+    /// `soft_cap(0.0, cap=50.0) == 0.0` exactly. `tanh(0) = 0`,
+    /// so `cap * 0 = 0`. Round-trip through the executor preserves
+    /// the bit pattern.
+    #[test]
+    fn soft_cap_identity_at_zero() {
+        let (shape, out) = soft_cap_once(vec![1, 1], vec![0.0], 50.0);
+        assert_eq!(shape, vec![1, 1]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0], 0.0_f32, "soft_cap(0) must be exactly 0");
+    }
+
+    /// At the exact saturation point `x = cap`, the output is
+    /// `cap * tanh(1)`. For cap=50 that's `50 * 0.7615941559…`.
+    /// Verify within a tight tolerance — `f32::tanh` precision
+    /// is ~1 ULP at unity argument.
+    #[test]
+    fn soft_cap_at_cap_equals_cap_times_tanh_one() {
+        let (_shape, out) = soft_cap_once(vec![2], vec![50.0, -50.0], 50.0);
+        let expected = 50.0_f32 * 1.0_f32.tanh();
+        assert!(
+            (out[0] - expected).abs() < 1e-5,
+            "soft_cap(cap) ≈ cap*tanh(1): got {}, expected {expected}",
+            out[0]
+        );
+        assert!(
+            (out[1] - (-expected)).abs() < 1e-5,
+            "soft_cap(-cap) ≈ -cap*tanh(1): got {}, expected {}",
+            out[1],
+            -expected
+        );
+    }
+
+    /// Saturation regime: `|x| >> cap` produces output very close
+    /// to `±cap`, and crucially is finite (no NaN, no Inf). This
+    /// is the regression check for the M11.C step 2 PARAR rule —
+    /// `f32::tanh(x/cap)` for `|x/cap| > ~9` returns exactly
+    /// `±1.0` so the output is exactly `±cap`.
+    #[test]
+    fn soft_cap_saturates_finite_no_nan() {
+        let extreme: Vec<f32> = vec![
+            1_000.0,        // 20× cap
+            -1_000.0,
+            1.0e6,          // 20000× cap
+            -1.0e6,
+            f32::MAX / 2.0, // ~1.7e38, still finite when divided
+            -f32::MAX / 2.0,
+        ];
+        let cap = 50.0_f32;
+        let (_shape, out) = soft_cap_once(vec![extreme.len()], extreme.clone(), cap);
+        for (i, v) in out.iter().enumerate() {
+            assert!(
+                v.is_finite(),
+                "soft_cap({}) produced non-finite output {v} — \
+                 PARAR: f32::tanh path leaks NaN/Inf",
+                extreme[i]
+            );
+            assert!(
+                v.abs() <= cap + 1e-4,
+                "soft_cap({}) overshot cap=50: got {v}",
+                extreme[i]
+            );
+        }
+        // Direction-of-saturation check: extreme positive → near +cap,
+        // extreme negative → near -cap.
+        assert!((out[0] - cap).abs() < 1e-4, "+1000 → +cap got {}", out[0]);
+        assert!((out[1] + cap).abs() < 1e-4, "-1000 → -cap got {}", out[1]);
+    }
+
+    /// Shape is preserved across the soft-cap. `[4, 8]` input
+    /// must yield `[4, 8]` output with element-wise application
+    /// of the scalar function.
+    #[test]
+    fn soft_cap_preserves_shape_4x8() {
+        let data: Vec<f32> = (0..32).map(|i| (i as f32 - 16.0) * 5.0).collect();
+        let (shape, out) = soft_cap_once(vec![4, 8], data.clone(), 30.0);
+        assert_eq!(shape, vec![4, 8]);
+        assert_eq!(out.len(), 32);
+        let cap = 30.0_f32;
+        for (i, &x) in data.iter().enumerate() {
+            let expected = cap * (x / cap).tanh();
+            assert!(
+                (out[i] - expected).abs() < 1e-5,
+                "elementwise mismatch at index {i}: got {} expected {}",
+                out[i],
+                expected
+            );
+        }
+    }
+
+    /// Gemma 2-shaped attention-score case: a `[1, num_heads,
+    /// seq, seq]` tensor with cap=50.0. Verifies the executor
+    /// handles the rank-4 layout the production graph will hand
+    /// it. Synthetic data spans values that are both well below
+    /// and well above the cap so both linear-regime and
+    /// saturation-regime branches of `f32::tanh` execute.
+    #[test]
+    fn soft_cap_gemma2_attention_shape() {
+        let shape = vec![1, 8, 4, 4];
+        let total: usize = shape.iter().product();
+        let data: Vec<f32> = (0..total)
+            .map(|i| (i as f32 - total as f32 / 2.0) * 2.0)
+            .collect();
+        let (out_shape, out) = soft_cap_once(shape.clone(), data.clone(), 50.0);
+        assert_eq!(out_shape, shape);
+        assert_eq!(out.len(), total);
+        let cap = 50.0_f32;
+        for (i, &x) in data.iter().enumerate() {
+            let expected = cap * (x / cap).tanh();
+            assert!(
+                (out[i] - expected).abs() < 1e-5,
+                "attn-shape mismatch at {i}"
+            );
+            assert!(out[i].is_finite(), "non-finite at {i}");
+        }
+    }
+
+    /// Builder rejects `cap == 0.0` (the saturation function is
+    /// undefined when `cap == 0` because `1/cap` is `+inf`).
+    #[test]
+    #[should_panic(expected = "cap must be a finite positive f32")]
+    fn soft_cap_builder_rejects_zero_cap() {
+        let mut gb = GraphBuilder::new();
+        let x = gb.input();
+        let _ = gb.soft_cap(x, 0.0);
+    }
+
+    /// Builder rejects negative caps. `out = cap * tanh(x/cap)`
+    /// is mathematically defined for cap < 0 (an odd-symmetric
+    /// reflection), but every real use-case wants positive caps,
+    /// and a negative cap usually indicates an upstream bug.
+    #[test]
+    #[should_panic(expected = "cap must be a finite positive f32")]
+    fn soft_cap_builder_rejects_negative_cap() {
+        let mut gb = GraphBuilder::new();
+        let x = gb.input();
+        let _ = gb.soft_cap(x, -1.0);
+    }
+
+    /// Builder rejects non-finite caps (NaN / ±Inf).
+    #[test]
+    #[should_panic(expected = "cap must be a finite positive f32")]
+    fn soft_cap_builder_rejects_nan_cap() {
+        let mut gb = GraphBuilder::new();
+        let x = gb.input();
+        let _ = gb.soft_cap(x, f32::NAN);
     }
 }

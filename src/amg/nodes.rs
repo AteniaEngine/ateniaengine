@@ -282,6 +282,51 @@ pub enum NodeType {
         /// last_dim_of_input`.
         end: usize,
     },
+    /// **M11.C step 2** — soft-cap (a.k.a. logit-cap, attention
+    /// soft-cap) primitive: `out[i] = cap * tanh(in[i] / cap)`.
+    ///
+    /// ## Numerical behaviour
+    ///
+    /// Saturates smoothly toward `±cap` as `|in[i]|` grows. For
+    /// `|in[i] / cap| > ~20`, `f32::tanh` returns exactly `±1.0`
+    /// (no NaN, no overflow), so the worst-case output is
+    /// `±cap` exactly. Around the origin the function is
+    /// approximately the identity (`tanh(x) ≈ x` for small `x`,
+    /// so `cap * tanh(x/cap) ≈ x`), preserving the dynamic
+    /// range of small logits.
+    ///
+    /// ## Storage
+    ///
+    /// `cap_bits` is `f32::to_bits(cap)`; recovered via
+    /// `f32::from_bits` at executor time. Same trick used by
+    /// `RmsNorm { eps_bits }` so `NodeType` can stay
+    /// `Eq + Hash`-derivable.
+    ///
+    /// ## Primary use case
+    ///
+    /// Gemma 2's two soft-caps:
+    /// - `cap = 50.0` on attention scores pre-softmax (every layer).
+    /// - `cap = 30.0` on the LM-head logits pre-sampling.
+    ///
+    /// No other certified-set architecture uses soft-cap, so the
+    /// node fires only on Gemma 2 paths.
+    ///
+    /// ## Implementation
+    ///
+    /// Forward materialises the input to CPU and applies the
+    /// scalar function elementwise. Output shape == input shape;
+    /// layout is fresh `Layout::Contiguous`. Backward is
+    /// unimplemented (forward-only is sufficient for inference;
+    /// derivative is `1 - tanh(x/cap)^2` if a future training
+    /// milestone needs it).
+    SoftCap {
+        /// `f32::to_bits(cap)`. Reading code must use
+        /// `f32::from_bits(cap_bits)`. The builder enforces
+        /// `cap > 0.0` so the `cap_bits = 0` (i.e. `+0.0`) and
+        /// `cap_bits = 0x80000000` (`-0.0`) bit patterns are
+        /// unreachable through the public API.
+        cap_bits: u32,
+    },
     /// No-op placeholder used for structurally removed nodes.
     NoOp,
     Output,
