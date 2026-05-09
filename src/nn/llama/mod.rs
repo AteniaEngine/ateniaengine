@@ -16,6 +16,7 @@ pub mod builder_shared;
 pub mod config;
 pub mod generator;
 pub mod numcert;
+pub mod phi3;
 pub mod pipeline;
 pub mod weight_loading;
 
