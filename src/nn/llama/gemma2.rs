@@ -151,6 +151,13 @@ where
     let _ = n_kv; // reserved for future native-GQA path; today the
                   // mapper tile-expands K/V to MHA shape.
 
+    // **M11.C step 4** — Gemma 2 decouples `n_heads_q * head_dim`
+    // from `hidden_size`. Gemma 2 2B: 8 * 256 = 2048 ≠ 2304.
+    // Llama-family checkpoints always have these equal, so the
+    // shared builder hard-codes `hidden`. Compute q_dim
+    // explicitly so this builder works on any Gemma 2 variant.
+    let q_dim = n_heads * head_dim;
+
     // ---- 1. Input layernorm (PRE-attention) ----
     let input_ln_gamma = register(
         gb,
@@ -166,21 +173,25 @@ where
     let q_proj_w = register(
         gb,
         &format!("{prefix}.self_attn.q_proj.weight"),
-        vec![hidden, hidden],
+        vec![hidden, q_dim],
         param_ids,
         param_names,
     )?;
+    // K and V are registered post-tile shape: the mapper's
+    // `TileGroupedDim` expands the kv_dim rows to q_dim before
+    // the load-time `Transpose2D`, so the slot here matches the
+    // post-transform [hidden, q_dim] layout.
     let k_proj_w = register(
         gb,
         &format!("{prefix}.self_attn.k_proj.weight"),
-        vec![hidden, hidden],
+        vec![hidden, q_dim],
         param_ids,
         param_names,
     )?;
     let v_proj_w = register(
         gb,
         &format!("{prefix}.self_attn.v_proj.weight"),
-        vec![hidden, hidden],
+        vec![hidden, q_dim],
         param_ids,
         param_names,
     )?;
@@ -250,11 +261,12 @@ where
     let attn_out_back = gb.permute(attn_out, vec![0, 2, 1, 3]);
 
     // ---- 8. Output projection ----
-    let attn_out_flat = gb.reshape(attn_out_back, vec![bs, hidden as isize]);
+    // Gemma 2 o_proj maps q_dim → hidden (Gemma 2 2B: 2048 → 2304).
+    let attn_out_flat = gb.reshape(attn_out_back, vec![bs, q_dim as isize]);
     let o_proj_w = register(
         gb,
         &format!("{prefix}.self_attn.o_proj.weight"),
-        vec![hidden, hidden],
+        vec![q_dim, hidden],
         param_ids,
         param_names,
     )?;
