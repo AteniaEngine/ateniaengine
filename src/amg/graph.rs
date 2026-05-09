@@ -4952,19 +4952,71 @@ impl Graph {
                     return;
                 }
                 // Compute inverse frequencies once; the same vector is
-                // reused by the backward closure below. None means
-                // plain RoPE (legacy bit-identical path); Some means
-                // Llama 3 piecewise scaling.
-                let inv_freqs = match scaling {
+                // reused by the backward closure below. `None` means
+                // plain RoPE (legacy bit-identical path);
+                // `Some(Llama3(_))` activates Llama 3.x piecewise
+                // scaling; `Some(LongRope(_))` activates Phi-3
+                // per-dimension factor scaling (M11.B step 2).
+                //
+                // **M11.B step 2** — for LongRope we additionally
+                // need the actual sequence length the kernel will
+                // see (to pick short_factor vs long_factor). The
+                // input tensor's shape carries it: `[batch, seq_len,
+                // n_heads, head_dim]`. We fetch it before the
+                // `compute_inv_freqs_longrope` call. The
+                // `attention_factor` post-multiply is folded into
+                // the inv_freqs by multiplying every element — this
+                // is mathematically equivalent to scaling cos/sin
+                // afterwards because the kernel's
+                // `angle = pos * inv_freq` is linear in inv_freq,
+                // and cos/sin are evaluated at that scaled angle.
+                let inv_freqs = match scaling.as_ref() {
                     None => nn_rope::compute_inv_freqs(head_dim, base_freq),
-                    Some(s) => nn_rope::compute_inv_freqs_llama3(
-                        head_dim,
-                        base_freq,
-                        s.factor(),
-                        s.low_freq_factor(),
-                        s.high_freq_factor(),
-                        s.original_max_position_embeddings,
-                    ),
+                    Some(crate::amg::nodes::NodeRopeScaling::Llama3(s)) => {
+                        nn_rope::compute_inv_freqs_llama3(
+                            head_dim,
+                            base_freq,
+                            s.factor(),
+                            s.low_freq_factor(),
+                            s.high_freq_factor(),
+                            s.original_max_position_embeddings,
+                        )
+                    }
+                    Some(crate::amg::nodes::NodeRopeScaling::LongRope(s)) => {
+                        // Read the input shape to drive the short
+                        // vs long factor switch. Shape contract is
+                        // `[batch, seq_len, n_heads, head_dim]`;
+                        // `seq_len` is dim 1.
+                        let seq_len = self.nodes[inputs[0]]
+                            .output
+                            .as_ref()
+                            .map(|t| t.shape.get(1).copied().unwrap_or(0))
+                            .unwrap_or(0);
+                        let short = s.short_factor();
+                        let long = s.long_factor();
+                        let mut freqs = nn_rope::compute_inv_freqs_longrope(
+                            head_dim,
+                            base_freq,
+                            &short,
+                            &long,
+                            s.original_max_position_embeddings,
+                            seq_len,
+                        );
+                        // Post-multiply by attention_factor (folded
+                        // into inv_freqs — equivalent to scaling
+                        // cos/sin because `angle = pos · inv_freq`
+                        // is linear in `inv_freq`).
+                        let af = nn_rope::compute_attention_factor_longrope(
+                            s.original_max_position_embeddings,
+                            s.max_position_embeddings,
+                        );
+                        if (af - 1.0).abs() > f32::EPSILON {
+                            for f in freqs.iter_mut() {
+                                *f *= af;
+                            }
+                        }
+                        freqs
+                    }
                 };
                 let x_opt = self.nodes[inputs[0]].output.as_ref();
                 if let Some(mut x) = x_opt.cloned() {

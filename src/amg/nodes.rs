@@ -181,12 +181,14 @@ pub enum NodeType {
     ///   `u32` is used (not `f32`) so the variant remains
     ///   `Eq`-derivable; sub-integer base frequencies are not
     ///   used by any model in scope.
-    /// - `scaling`: optional Llama 3 piecewise frequency
-    ///   scaling. `None` reproduces plain RoPE bit-for-bit
-    ///   (TinyLlama, SmolLM2, Qwen 2.5). `Some(RopeScalingLlama3)`
-    ///   activates the long-context scaling used by Llama 3.x.
-    ///   See [`RopeScalingLlama3`] and
-    ///   [`crate::nn::rope::compute_inv_freqs_llama3`].
+    /// - `scaling`: optional RoPE frequency scaling. `None`
+    ///   reproduces plain RoPE bit-for-bit (TinyLlama, SmolLM2,
+    ///   Qwen 2.5). `Some(NodeRopeScaling::Llama3(_))` activates
+    ///   the Llama 3.x piecewise scaling. `Some(NodeRopeScaling::
+    ///   LongRope(_))` activates the Phi-3 / Phi-3.5 per-dimension
+    ///   factor vectors. See [`NodeRopeScaling`],
+    ///   [`crate::nn::rope::compute_inv_freqs_llama3`], and
+    ///   [`crate::nn::rope::compute_inv_freqs_longrope`].
     /// - `position_offset`: M5.c.2.c addition. The first sequence
     ///   position to rotate against; positions are
     ///   `[position_offset..position_offset + seq_len)`. Default
@@ -195,7 +197,7 @@ pub enum NodeType {
     RoPE {
         head_dim: usize,
         base_freq: u32,
-        scaling: Option<RopeScalingLlama3>,
+        scaling: Option<NodeRopeScaling>,
         position_offset: u32,
     },
     /// Generic activation wrapper for APX 4.8+ (keeps SiLU variant for compat).
@@ -284,6 +286,77 @@ impl RopeScalingLlama3 {
     pub fn high_freq_factor(&self) -> f32 {
         f32::from_bits(self.high_freq_factor_bits)
     }
+}
+
+/// **M11.B step 2** — Microsoft Phi-3 / Phi-3.5 LongRope scaling
+/// parameters carried by [`NodeType::RoPE`].
+///
+/// The factor vectors are stored as `Vec<u32>` (raw `f32::to_bits`)
+/// for the same reason `RopeScalingLlama3` stores its scalars as
+/// `u32`: `Vec<u32>` derives `Eq + Hash`, so the enclosing
+/// [`NodeType`] keeps both traits without manual impls. The two
+/// vectors must have length `head_dim / 2` (validated by the
+/// runtime via [`crate::nn::rope::compute_inv_freqs_longrope`]).
+///
+/// `original_max_position_embeddings` and `max_position_embeddings`
+/// are integer-valued; the latter is needed to derive the runtime
+/// `attention_factor` (see
+/// [`crate::nn::rope::compute_attention_factor_longrope`]).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RopeScalingLongRope {
+    short_factor_bits: Vec<u32>,
+    long_factor_bits: Vec<u32>,
+    /// Pre-training context length (4096 for Phi-3.5 Mini).
+    pub original_max_position_embeddings: u32,
+    /// Configured max-context length (131072 for Phi-3.5 Mini).
+    pub max_position_embeddings: u32,
+}
+
+impl RopeScalingLongRope {
+    /// Build from the per-dimension `f32` factor vectors directly
+    /// read off the config. Both vectors must have length
+    /// `head_dim / 2`; the constructor stores them as `to_bits`
+    /// for the `Eq + Hash` derive on the enclosing `NodeType`.
+    pub fn new(
+        short_factor: &[f32],
+        long_factor: &[f32],
+        original_max_position_embeddings: u32,
+        max_position_embeddings: u32,
+    ) -> Self {
+        Self {
+            short_factor_bits: short_factor.iter().map(|f| f.to_bits()).collect(),
+            long_factor_bits: long_factor.iter().map(|f| f.to_bits()).collect(),
+            original_max_position_embeddings,
+            max_position_embeddings,
+        }
+    }
+
+    /// Recover the short-path per-dimension factors as `Vec<f32>`.
+    /// Allocates on each call; the call sites either run once per
+    /// forward pass (executor) or once per build (validation), so
+    /// the allocation cost is negligible.
+    pub fn short_factor(&self) -> Vec<f32> {
+        self.short_factor_bits.iter().map(|b| f32::from_bits(*b)).collect()
+    }
+
+    /// Recover the long-path per-dimension factors as `Vec<f32>`.
+    pub fn long_factor(&self) -> Vec<f32> {
+        self.long_factor_bits.iter().map(|b| f32::from_bits(*b)).collect()
+    }
+}
+
+/// **M11.B step 2** — discriminated union of the RoPE scaling
+/// schemes that AMG nodes can carry. Wraps either Llama 3
+/// piecewise scaling or Phi-3 LongRope scaling. Plain RoPE
+/// (TinyLlama / SmolLM2 / Qwen 2.5) is encoded by the absence of
+/// this enum (`scaling: None` on the `RoPE` node).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum NodeRopeScaling {
+    /// Llama 3.x piecewise inverse-frequency scaling.
+    Llama3(RopeScalingLlama3),
+    /// Phi-3 / Phi-3.5 LongRope (per-dimension factor vectors +
+    /// optional attention-factor compensation).
+    LongRope(RopeScalingLongRope),
 }
 
 #[derive(Clone, Debug)]
