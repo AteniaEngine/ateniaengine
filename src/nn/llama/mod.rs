@@ -14,6 +14,7 @@
 pub mod builder;
 pub mod builder_shared;
 pub mod config;
+pub mod gemma2;
 pub mod generator;
 pub mod numcert;
 pub mod phi3;
