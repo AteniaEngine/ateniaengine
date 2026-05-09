@@ -79,6 +79,7 @@ use crate::v17::loader::safetensors_reader::SafetensorsReader;
 use crate::v17::loader::sharded_reader::ShardedSafetensorsReader;
 use super::builder::{build_llama, LlamaRuntime};
 use super::numcert;
+use super::phi3;
 
 /// **M10.2.1 / M10.3.1.0** — fast-mode gate, exposed for the GPU
 /// dispatcher (`gpu::dispatch::hooks`) to choose between
@@ -238,6 +239,34 @@ impl From<GenerateError> for PipelineError {
     fn from(e: GenerateError) -> Self { PipelineError::Generate(e) }
 }
 
+/// **M11.B step 4b** — peek at `architectures[0]` from a HF
+/// `config.json` without going through the full `LlamaConfig`
+/// parser. Returns `Ok(Some("Phi3ForCausalLM"))`,
+/// `Ok(Some("LlamaForCausalLM"))`, etc. when the field is
+/// present and a non-empty array of strings; `Ok(None)` when the
+/// field is absent / null / empty / non-array (legacy configs);
+/// `Err` only on I/O or top-level JSON syntax errors.
+///
+/// Used by the pipeline routing branch to choose between
+/// `build_llama` and `phi3::build_phi3`. The `LlamaConfig`
+/// parser proper continues to ignore the `architectures` field
+/// (it consumes only the math-relevant fields), so the peek
+/// happens against the raw JSON rather than an extension to
+/// `LlamaConfig`.
+fn read_architectures_first(config_path: &Path) -> Result<Option<String>, PipelineError> {
+    let bytes = std::fs::read(config_path)
+        .map_err(PipelineError::Io)?;
+    let v: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|e| PipelineError::Config(ConfigError::Parse(format!(
+            "config.json JSON syntax error: {e}"
+        ))))?;
+    Ok(v.get("architectures")
+        .and_then(|x| x.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string()))
+}
+
 impl GenerationPipeline {
     /// Construct a pipeline by reading every artefact under
     /// `model_dir`. See module-level doc for the load
@@ -328,18 +357,62 @@ impl GenerationPipeline {
             ),
         }
 
+        // **M11.B step 4** — architecture detection. Before
+        // building the scratch graph, peek at the raw config JSON
+        // to read `architectures[0]`. Phi-3 / Phi-3.5 ships
+        // `Phi3ForCausalLM`; the Llama-family checkpoints ship
+        // `LlamaForCausalLM`. The two paths build different
+        // graphs and use different weight mappers; everything
+        // downstream of the build (graph wiring, weight loading,
+        // tier-aware planning) is the same shape because both
+        // builders return `(token_input_id, logits_id, param_ids,
+        // param_names)` with HF-convention names that the
+        // mapper consumes.
+        let architecture = read_architectures_first(&config_path)?
+            .unwrap_or_else(|| "LlamaForCausalLM".to_string());
+
         // 3. Scratch graph (zero-init parameters; will get
         //    populated by the loader and then hoisted into
         //    the store).
         let runtime = LlamaRuntime { batch: 1, seq: 1 };
         let mut gb = GraphBuilder::new();
         let token_input_id = gb.input();
-        let handles = build_llama(&mut gb, &config, &runtime, token_input_id);
-        let _ = gb.output(handles.logits_id);
+        // Build the architecture-specific graph and extract the
+        // shared (logits, param_ids, param_names) shape.
+        let (logits_id, param_ids, param_names): (usize, Vec<usize>, Vec<String>) =
+            match architecture.as_str() {
+                "Phi3ForCausalLM" => {
+                    eprintln!(
+                        "[ATENIA] Architecture: Phi3ForCausalLM — routing to phi3 builder \
+                         (LongRope + fused QKV / gate_up split via SliceLastDim)."
+                    );
+                    let h = phi3::build_phi3(&mut gb, &config, &runtime, token_input_id);
+                    (h.logits_id, h.param_ids, h.param_names)
+                }
+                "LlamaForCausalLM" | "Qwen2ForCausalLM" | "MistralForCausalLM" => {
+                    let h = build_llama(&mut gb, &config, &runtime, token_input_id);
+                    (h.logits_id, h.param_ids, h.param_names)
+                }
+                other => {
+                    return Err(PipelineError::Loader(LoaderError::InvalidFormat(format!(
+                        "unsupported architectures[0] = \"{other}\"; \
+                         Atenia today supports LlamaForCausalLM (and \
+                         Qwen2 / Mistral variants) and Phi3ForCausalLM. \
+                         See M11.B for Phi-3 routing and the M11.C / M11.D \
+                         tracks for further architectures."
+                    ))));
+                }
+            };
+        let _ = gb.output(logits_id);
         let mut scratch_graph = gb.build();
 
-        // 4. Load weights.
-        let mut mapper = llama_weight_mapper(&config, &handles.param_names, &handles.param_ids)?;
+        // 4. Load weights. Mapper is also architecture-specific
+        //    because Phi-3 has fused weight names (qkv_proj,
+        //    gate_up_proj) the Llama mapper doesn't know about.
+        let mut mapper = match architecture.as_str() {
+            "Phi3ForCausalLM" => phi3::phi3_weight_mapper(&config, &param_names, &param_ids)?,
+            _ => llama_weight_mapper(&config, &param_names, &param_ids)?,
+        };
         mapper.set_store_params_as_bf16(bf16_storage);
 
         let index_path = model_dir.join("model.safetensors.index.json");
@@ -511,8 +584,8 @@ impl GenerationPipeline {
                     &mut scratch_graph,
                     &mapper,
                     &plan,
-                    &handles.param_ids,
-                    &handles.param_names,
+                    &param_ids,
+                    &param_names,
                 )?;
                 store = s;
             } else if single_path.exists() {
@@ -558,8 +631,8 @@ impl GenerationPipeline {
                     &mut scratch_graph,
                     &reader,
                     &plan,
-                    &handles.param_ids,
-                    &handles.param_names,
+                    &param_ids,
+                    &param_names,
                 )?;
                 store = s;
             } else {
@@ -591,8 +664,8 @@ impl GenerationPipeline {
             //    parameter Arcs survive in the store.
             store = WeightStore::extract_from_graph(
                 &mut scratch_graph,
-                &handles.param_ids,
-                &handles.param_names,
+                &param_ids,
+                &param_names,
             )?;
         }
 

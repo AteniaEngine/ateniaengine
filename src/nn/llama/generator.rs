@@ -51,7 +51,8 @@ use crate::amg::weight_store::WeightStore;
 use crate::nn::llama::config::LlamaConfig;
 use crate::tensor::Tensor;
 use super::builder::LlamaRuntime;
-use super::builder_shared::{build_llama_with_store, BuildError, LlamaHandlesShared};
+use super::builder_shared::{BuildError, LlamaHandlesShared};
+use super::phi3::build_with_store;
 
 /// Configuration for one generation call.
 #[derive(Debug, Clone)]
@@ -231,7 +232,7 @@ where
     let token_in = gb.input();
     let runtime = LlamaRuntime { batch: 1, seq: prompt_len };
     let spec = KvCacheBuildSpec { cached_len: 0 };
-    let h: LlamaHandlesShared = build_llama_with_store(
+    let h: LlamaHandlesShared = build_with_store(
         &mut gb, cfg, &runtime, token_in, store, Some(&spec),
     )?;
     let _ = gb.output(h.logits_id);
@@ -299,7 +300,7 @@ where
         let token_in_d = gb_d.input();
         let runtime_d = LlamaRuntime { batch: 1, seq: 1 };
         let spec_d = KvCacheBuildSpec { cached_len };
-        let h_d = build_llama_with_store(
+        let h_d = build_with_store(
             &mut gb_d, cfg, &runtime_d, token_in_d, store, Some(&spec_d),
         )?;
         let _ = gb_d.output(h_d.logits_id);

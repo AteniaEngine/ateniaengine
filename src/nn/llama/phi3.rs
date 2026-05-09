@@ -512,6 +512,342 @@ pub fn build_phi3(
     }
 }
 
+/// **M11.B step 4** — Phi-3 counterpart of
+/// [`crate::nn::llama::builder_shared::build_llama_with_store`].
+/// Same shape contract (`(token_input, logits, params, kv_handles)`),
+/// same cache-aware behaviour (None → pre-fill / no cache; Some
+/// → decode-step with pre-rotated cached K, freshly-rotated new
+/// K, and `Concat`-axis-2 along the time dimension to produce
+/// `K_full` / `V_full`). Differences vs the Llama variant:
+///
+///   - one fused `qkv_proj` parameter, runtime-split via three
+///     `SliceLastDim` nodes after the matmul
+///   - one fused `gate_up_proj` parameter, runtime-split via
+///     two `SliceLastDim` nodes
+///   - LongRope (`rope_longrope_with_offset`) on Q and new K
+///   - K-side `1/sqrt(head_dim)` scale applied at the graph
+///     level (BroadcastMul against a `[1,1,1,1]` constant
+///     parameter) because the fused `qkv_proj` shares its
+///     rows with Q and V
+pub fn build_phi3_with_store(
+    gb: &mut GraphBuilder,
+    config: &LlamaConfig,
+    runtime: &LlamaRuntime,
+    token_input_id: usize,
+    store: &crate::amg::weight_store::WeightStore,
+    kv_cache: Option<&crate::amg::kv_cache::KvCacheBuildSpec>,
+) -> Result<crate::nn::llama::builder_shared::LlamaHandlesShared, crate::nn::llama::builder_shared::BuildError> {
+    use crate::amg::kv_cache::{KvCacheHandles, KvLayerHandle};
+    use crate::amg::weight_store::SharedParam;
+    use crate::nn::llama::builder_shared::{BuildError, LlamaHandlesShared};
+
+    config.validate().expect("invalid LlamaConfig (Phi-3 path)");
+
+    // Resolve LongRope scaling — same precondition as
+    // `build_phi3` (no-cache prefill builder).
+    let longrope_scaling = match config.effective_rope_scaling() {
+        Some(RopeScaling::LongRope {
+            short_factor,
+            long_factor,
+            original_max_position_embeddings,
+            max_position_embeddings,
+        }) => RopeScalingLongRope::new(
+            short_factor,
+            long_factor,
+            *original_max_position_embeddings,
+            *max_position_embeddings,
+        ),
+        other => panic!(
+            "build_phi3_with_store requires rope_scaling = LongRope, got {other:?}"
+        ),
+    };
+
+    // Helper closures local to this builder. They mirror the
+    // private helpers in `builder_shared.rs` but stay closed
+    // over `store` so we don't have to re-expose them publicly.
+    let lookup = |gb: &mut GraphBuilder,
+                  full_name: &str,
+                  expected_shape: Vec<usize>,
+                  param_ids: &mut Vec<usize>,
+                  param_names: &mut Vec<String>|
+     -> Result<usize, BuildError> {
+        let p: &SharedParam = store
+            .get_by_name(full_name)
+            .ok_or_else(|| BuildError::MissingParameter {
+                name: full_name.to_string(),
+            })?;
+        if p.shape() != expected_shape.as_slice() {
+            return Err(BuildError::ParameterShapeMismatch {
+                name: full_name.to_string(),
+                expected: expected_shape,
+                got: p.shape().to_vec(),
+            });
+        }
+        let tensor = p.to_tensor();
+        let node_id = gb.parameter(tensor);
+        param_ids.push(node_id);
+        param_names.push(full_name.to_string());
+        Ok(node_id)
+    };
+    let local_zero = |gb: &mut GraphBuilder, shape: Vec<usize>| -> usize {
+        let numel: usize = shape.iter().product();
+        let data = vec![0.0_f32; numel];
+        gb.parameter(Tensor::new_cpu(shape, data))
+    };
+
+    let mut param_ids: Vec<usize> = Vec::new();
+    let mut param_names: Vec<String> = Vec::new();
+    let mut kv_handles_inner: Vec<KvLayerHandle> = Vec::new();
+
+    let hidden = config.hidden_size;
+    let n_heads_q = config.num_attention_heads;
+    let n_heads_kv = config.num_key_value_heads;
+    let head_dim = config.effective_head_dim();
+    let intermediate = config.intermediate_size;
+    let batch = runtime.batch;
+    let seq = runtime.seq;
+
+    // ---- Causal mask (cache-aware) ----
+    let cached_len = kv_cache.map(|s| s.cached_len).unwrap_or(0);
+    let total_kv_seq = seq + cached_len;
+    let mut mask_data = vec![0.0_f32; seq * total_kv_seq];
+    for i in 0..seq {
+        for j in 0..total_kv_seq {
+            if j >= cached_len && (j - cached_len) > i {
+                mask_data[i * total_kv_seq + j] = f32::NEG_INFINITY;
+            }
+        }
+    }
+    let mask_tensor = Tensor::new_cpu(vec![1, 1, seq, total_kv_seq], mask_data);
+    let causal_mask_id = gb.parameter(mask_tensor);
+
+    // ---- Attention scale constant ----
+    let attention_scale = 1.0_f32 / (head_dim as f32).sqrt();
+    let attention_scale_id = gb.parameter(Tensor::new_cpu(
+        vec![1, 1, 1, 1],
+        vec![attention_scale],
+    ));
+
+    // ---- Embedding ----
+    let embed_w = lookup(
+        gb,
+        "model.embed_tokens.weight",
+        vec![config.vocab_size, config.hidden_size],
+        &mut param_ids,
+        &mut param_names,
+    )?;
+    let mut x = gb.index_select(embed_w, token_input_id);
+
+    let position_offset: u32 = kv_cache.map(|spec| spec.cached_len as u32).unwrap_or(0);
+    let bs = (batch * seq) as isize;
+
+    // ---- Transformer blocks ----
+    for layer_idx in 0..config.num_hidden_layers {
+        let prefix = format!("model.layers.{}", layer_idx);
+
+        // 1. Input layernorm
+        let input_ln_gamma = lookup(
+            gb,
+            &format!("{prefix}.input_layernorm.weight"),
+            vec![1, 1, hidden],
+            &mut param_ids,
+            &mut param_names,
+        )?;
+        let h_normed = gb.rms_norm(x, config.rms_norm_eps);
+        let h = gb.broadcast_mul(h_normed, input_ln_gamma);
+
+        // 2. Fused QKV projection
+        let qkv_out = (n_heads_q + 2 * n_heads_kv) * head_dim;
+        let qkv_w = lookup(
+            gb,
+            &format!("{prefix}.self_attn.qkv_proj.weight"),
+            vec![hidden, qkv_out],
+            &mut param_ids,
+            &mut param_names,
+        )?;
+        let h_flat = gb.reshape(h, vec![bs, hidden as isize]);
+        let qkv_flat = gb.matmul(h_flat, qkv_w);
+        let q_end = n_heads_q * head_dim;
+        let k_end = q_end + n_heads_kv * head_dim;
+        let v_end = qkv_out;
+        let q_flat = gb.slice_last_dim(qkv_flat, 0, q_end);
+        let k_flat = gb.slice_last_dim(qkv_flat, q_end, k_end);
+        let v_flat = gb.slice_last_dim(qkv_flat, k_end, v_end);
+
+        // 3. Multi-head reshape
+        let q_split = vec![batch as isize, seq as isize, n_heads_q as isize, head_dim as isize];
+        let kv_split = vec![batch as isize, seq as isize, n_heads_kv as isize, head_dim as isize];
+        let q = gb.reshape(q_flat, q_split.clone());
+        let k_unscaled = gb.reshape(k_flat, kv_split.clone());
+        let v = gb.reshape(v_flat, kv_split);
+
+        // 3.5 K-side attention scale (graph-level)
+        let k = gb.broadcast_mul(k_unscaled, attention_scale_id);
+
+        // 4. RoPE-LongRope with offset
+        let q_rope = gb.rope_longrope_with_offset(
+            q, head_dim, config.rope_theta, longrope_scaling.clone(), position_offset);
+        let k_rope = gb.rope_longrope_with_offset(
+            k, head_dim, config.rope_theta, longrope_scaling.clone(), position_offset);
+
+        // 5. [b, s, h, d] → [b, h, s, d]
+        let q_perm = gb.permute(q_rope, vec![0, 2, 1, 3]);
+        let new_k_perm = gb.permute(k_rope, vec![0, 2, 1, 3]);
+        let new_v_perm = gb.permute(v, vec![0, 2, 1, 3]);
+
+        // 6. Concat against cache (if any)
+        let (k_full, v_full, layer_handle): (usize, usize, Option<KvLayerHandle>) = match kv_cache {
+            None => (new_k_perm, new_v_perm, None),
+            Some(spec) => {
+                let cache_shape = vec![batch, n_heads_kv, spec.cached_len, head_dim];
+                let cache_k_id = local_zero(gb, cache_shape.clone());
+                let cache_v_id = local_zero(gb, cache_shape);
+                let k_full_id = gb.concat(cache_k_id, new_k_perm, 2);
+                let v_full_id = gb.concat(cache_v_id, new_v_perm, 2);
+                let handle = KvLayerHandle {
+                    cache_k_param_id: cache_k_id,
+                    cache_v_param_id: cache_v_id,
+                    k_full_node_id: k_full_id,
+                    v_full_node_id: v_full_id,
+                };
+                (k_full_id, v_full_id, Some(handle))
+            }
+        };
+
+        // 7. Attention
+        let k_full_t = gb.transpose_last_two(k_full);
+        let scores = gb.batch_matmul(q_perm, k_full_t);
+        let scores_masked = gb.broadcast_add(scores, causal_mask_id);
+        let attn_weights = gb.softmax(scores_masked);
+        let attn_out = gb.batch_matmul(attn_weights, v_full);
+        let attn_out_back = gb.permute(attn_out, vec![0, 2, 1, 3]);
+
+        // 8. Output projection
+        let attn_out_flat = gb.reshape(attn_out_back, vec![bs, hidden as isize]);
+        let o_proj_w = lookup(
+            gb,
+            &format!("{prefix}.self_attn.o_proj.weight"),
+            vec![hidden, hidden],
+            &mut param_ids,
+            &mut param_names,
+        )?;
+        let attn_proj_flat = gb.matmul(attn_out_flat, o_proj_w);
+        let attn_proj = gb.reshape(
+            attn_proj_flat,
+            vec![batch as isize, seq as isize, hidden as isize],
+        );
+        let x_residual_1 = gb.add(x, attn_proj);
+
+        // 9. Post-attention layernorm
+        let post_ln_gamma = lookup(
+            gb,
+            &format!("{prefix}.post_attention_layernorm.weight"),
+            vec![1, 1, hidden],
+            &mut param_ids,
+            &mut param_names,
+        )?;
+        let h2_normed = gb.rms_norm(x_residual_1, config.rms_norm_eps);
+        let h2 = gb.broadcast_mul(h2_normed, post_ln_gamma);
+
+        // 10. Fused gate_up SwiGLU
+        let gate_up_out = 2 * intermediate;
+        let gate_up_w = lookup(
+            gb,
+            &format!("{prefix}.mlp.gate_up_proj.weight"),
+            vec![hidden, gate_up_out],
+            &mut param_ids,
+            &mut param_names,
+        )?;
+        let down_proj_w = lookup(
+            gb,
+            &format!("{prefix}.mlp.down_proj.weight"),
+            vec![intermediate, hidden],
+            &mut param_ids,
+            &mut param_names,
+        )?;
+        let h2_flat = gb.reshape(h2, vec![bs, hidden as isize]);
+        let gate_up_flat = gb.matmul(h2_flat, gate_up_w);
+        let gate_flat = gb.slice_last_dim(gate_up_flat, 0, intermediate);
+        let up_flat = gb.slice_last_dim(gate_up_flat, intermediate, gate_up_out);
+        let silu_gate_flat = gb.silu(gate_flat);
+        let ffn_pre_down_flat = gb.mul(silu_gate_flat, up_flat);
+        let ffn_out_flat = gb.matmul(ffn_pre_down_flat, down_proj_w);
+        let ffn_out = gb.reshape(
+            ffn_out_flat,
+            vec![batch as isize, seq as isize, hidden as isize],
+        );
+
+        x = gb.add(x_residual_1, ffn_out);
+
+        if let Some(handle) = layer_handle {
+            kv_handles_inner.push(handle);
+        }
+    }
+
+    // ---- Final RMSNorm ----
+    let final_ln_gamma = lookup(
+        gb,
+        "model.norm.weight",
+        vec![1, 1, hidden],
+        &mut param_ids,
+        &mut param_names,
+    )?;
+    let x_normed = gb.rms_norm(x, config.rms_norm_eps);
+    let x_final = gb.broadcast_mul(x_normed, final_ln_gamma);
+
+    // ---- LM head ----
+    let x_flat = gb.reshape(x_final, vec![bs, hidden as isize]);
+    let lm_head_input = if config.tie_word_embeddings {
+        gb.transpose_2d(embed_w)
+    } else {
+        lookup(
+            gb,
+            "lm_head.weight",
+            vec![hidden, config.vocab_size],
+            &mut param_ids,
+            &mut param_names,
+        )?
+    };
+    let logits_flat = gb.matmul(x_flat, lm_head_input);
+    let logits = gb.reshape(
+        logits_flat,
+        vec![batch as isize, seq as isize, config.vocab_size as isize],
+    );
+
+    let kv_handles = kv_cache.map(|_| KvCacheHandles {
+        per_layer: kv_handles_inner,
+    });
+
+    Ok(LlamaHandlesShared {
+        token_input_id,
+        logits_id: logits,
+        param_ids,
+        param_names,
+        kv_handles,
+    })
+}
+
+/// **M11.B step 4** — dispatch wrapper that picks between the
+/// Llama and Phi-3 store-backed builders based on
+/// `config.model_type`. Used by the generator so the prefill /
+/// decode call sites stay architecture-agnostic.
+pub fn build_with_store(
+    gb: &mut GraphBuilder,
+    config: &LlamaConfig,
+    runtime: &LlamaRuntime,
+    token_input_id: usize,
+    store: &crate::amg::weight_store::WeightStore,
+    kv_cache: Option<&crate::amg::kv_cache::KvCacheBuildSpec>,
+) -> Result<crate::nn::llama::builder_shared::LlamaHandlesShared, crate::nn::llama::builder_shared::BuildError> {
+    if config.model_type.as_deref() == Some("phi3") {
+        build_phi3_with_store(gb, config, runtime, token_input_id, store, kv_cache)
+    } else {
+        crate::nn::llama::builder_shared::build_llama_with_store(
+            gb, config, runtime, token_input_id, store, kv_cache,
+        )
+    }
+}
+
 /// Build the [`WeightMapper`] for a Phi-3 / Phi-3.5 checkpoint.
 ///
 /// Differences vs `llama_weight_mapper`:
