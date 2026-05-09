@@ -228,6 +228,32 @@ pub enum LoadTransform {
     /// graph parameter `[1, 1, hidden]` that `BroadcastMul`
     /// expects (M4.5-b1).
     Reshape { target: Vec<usize> },
+
+    /// **M11.C step 3** — add `scalar` to every element of the
+    /// tensor at load time: `out[i] = in[i] + scalar`.
+    ///
+    /// Primary use case: Gemma 2 RmsNorm gamma pre-shift. Gemma 2
+    /// computes `(1 + gamma) * rms(x)` rather than the Llama-style
+    /// `gamma * rms(x)`. Folding the `+ 1.0` into the loaded gamma
+    /// (`AddScalar { scalar: 1.0 }`) lets the same RmsNorm graph
+    /// node serve both families without an extra runtime
+    /// `BroadcastAdd` against a `[1, 1, hidden]` constant
+    /// parameter.
+    ///
+    /// Storage: `f32` direct, mirroring the existing
+    /// `Scale { factor: f32 }` variant. The enclosing
+    /// `LoadTransform` enum derives `PartialEq` only — neither
+    /// `Eq` nor `Hash` — so the `f32::to_bits` pattern used by
+    /// `NodeType::SoftCap` and `NodeType::RmsNorm` is unnecessary
+    /// here.
+    ///
+    /// Composition: order-independent with `Transpose2D` (both are
+    /// elementwise / pure-permutation operations on the underlying
+    /// flat buffer). For Gemma 2 the gamma is 1-D so `Transpose2D`
+    /// never fires alongside `AddScalar` in practice; the
+    /// composition test exists to pin the behaviour for future
+    /// 2-D applications.
+    AddScalar { scalar: f32 },
 }
 
 /// One entry in [`WeightMapper`]: the graph parameter node that
@@ -815,6 +841,10 @@ impl WeightMapper {
                         }
                         current_shape = target.clone();
                     }
+                    // **M11.C step 3** — Gemma 2 RmsNorm gamma+1.
+                    LoadTransform::AddScalar { scalar } => {
+                        apply_add_scalar_in_place(&mut values, *scalar);
+                    }
                 }
             }
 
@@ -1168,6 +1198,10 @@ impl WeightMapper {
                         // Pure metadata change — data layout is unchanged.
                         current_shape = target.clone();
                     }
+                    // **M11.C step 3** — Gemma 2 RmsNorm gamma+1.
+                    LoadTransform::AddScalar { scalar } => {
+                        apply_add_scalar_in_place(&mut values, *scalar);
+                    }
                 }
             }
 
@@ -1435,6 +1469,19 @@ pub(crate) fn tile_grouped_dim(
     Ok(out)
 }
 
+/// **M11.C step 3** — add a constant scalar to every element of a
+/// flat F32 buffer. In-place operation; the caller owns the
+/// buffer. Used by both
+/// [`WeightMapper::load_one_shard_into`]-style appliers when a
+/// `LoadTransform::AddScalar` entry is present in the transform
+/// pipeline. Pure / branchless / no allocation; the elementwise
+/// loop autovectorises on `+x86_64-v2`.
+pub(crate) fn apply_add_scalar_in_place(values: &mut [f32], scalar: f32) {
+    for v in values.iter_mut() {
+        *v += scalar;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1549,5 +1596,131 @@ mod tests {
         // accessor).
         let again = vram_int8_path_count();
         assert_eq!(before, again);
+    }
+
+    // -----------------------------------------------------------------
+    // **M11.C step 3** — `LoadTransform::AddScalar` tests.
+    //
+    // Cover the helper, no-op path, composition with `Transpose2D`,
+    // and the round-trip through the public `set_transforms` API.
+    // The helper is the single source of truth invoked by both
+    // `load_into` arms (load_one_shard_into and the residency-plan
+    // variant), so testing it directly covers both call-sites by
+    // construction.
+    // -----------------------------------------------------------------
+
+    /// Helper applies the constant offset to every element.
+    /// Sample value chosen for Gemma 2 RmsNorm gamma+1 case.
+    #[test]
+    fn add_scalar_applies_constant_offset() {
+        let mut values = vec![0.5_f32, 1.0, 1.5];
+        apply_add_scalar_in_place(&mut values, 1.0);
+        assert_eq!(values, vec![1.5_f32, 2.0, 2.5]);
+    }
+
+    /// `AddScalar(0.0)` is a no-op (regression check: a future
+    /// short-circuit optimisation must not change behaviour for
+    /// scalar = 0).
+    #[test]
+    fn add_scalar_zero_is_noop() {
+        let original: Vec<f32> = (0..16).map(|i| i as f32 * 0.137).collect();
+        let mut values = original.clone();
+        apply_add_scalar_in_place(&mut values, 0.0);
+        assert_eq!(values, original);
+    }
+
+    /// `AddScalar` handles negative scalars correctly. Gemma 2
+    /// only uses `+1.0`, but the API accepts any finite f32.
+    #[test]
+    fn add_scalar_negative_value() {
+        let mut values = vec![10.0_f32, 20.0, 30.0];
+        apply_add_scalar_in_place(&mut values, -5.0);
+        assert_eq!(values, vec![5.0_f32, 15.0, 25.0]);
+    }
+
+    /// Empty buffer is a no-op and does not panic.
+    #[test]
+    fn add_scalar_empty_buffer_is_noop() {
+        let mut values: Vec<f32> = Vec::new();
+        apply_add_scalar_in_place(&mut values, 1.0);
+        assert!(values.is_empty());
+    }
+
+    /// Composition: `[AddScalar(1.0), Transpose2D]` on a `[2, 3]`
+    /// matrix must shift every element by 1.0 and then transpose.
+    /// Replicates the order the applier loop would execute.
+    #[test]
+    fn add_scalar_then_transpose2d_composition() {
+        // Source [2, 3]:
+        //   [[1, 2, 3],
+        //    [4, 5, 6]]
+        let mut values = vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let rows = 2;
+        let cols = 3;
+
+        // Step 1: AddScalar(1.0)
+        apply_add_scalar_in_place(&mut values, 1.0);
+        assert_eq!(
+            values,
+            vec![2.0_f32, 3.0, 4.0, 5.0, 6.0, 7.0],
+            "AddScalar(1.0) must shift every element by +1"
+        );
+
+        // Step 2: Transpose2D [2, 3] -> [3, 2]
+        let transposed = transpose_2d_flat(&values, rows, cols);
+        // Expected [3, 2]:
+        //   [[2, 5],
+        //    [3, 6],
+        //    [4, 7]]
+        let expected = vec![2.0_f32, 5.0, 3.0, 6.0, 4.0, 7.0];
+        assert_eq!(transposed, expected);
+    }
+
+    /// Composition is order-independent for `AddScalar` and
+    /// `Transpose2D` because both are pure-permutation /
+    /// elementwise ops on the underlying flat buffer modulo index
+    /// remapping. Reverse the order and confirm the same final
+    /// values (modulo flat-buffer ordering).
+    #[test]
+    fn add_scalar_transpose2d_order_independence() {
+        let original = vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let rows = 2;
+        let cols = 3;
+
+        // Order A: AddScalar then Transpose
+        let mut a = original.clone();
+        apply_add_scalar_in_place(&mut a, 1.0);
+        let order_a = transpose_2d_flat(&a, rows, cols);
+
+        // Order B: Transpose then AddScalar
+        let mut b = transpose_2d_flat(&original, rows, cols);
+        apply_add_scalar_in_place(&mut b, 1.0);
+
+        assert_eq!(
+            order_a, b,
+            "AddScalar and Transpose2D must commute (both are \
+             permutation/elementwise on the same buffer)"
+        );
+    }
+
+    /// Round-trip through the public `WeightMapper` API: register
+    /// a single transform, retrieve it, and confirm `PartialEq`
+    /// holds for the `AddScalar` variant. Ensures the new variant
+    /// participates in the existing equality / debug machinery
+    /// without requiring `Eq + Hash` (which `LoadTransform` does
+    /// not derive).
+    #[test]
+    fn set_transforms_accepts_add_scalar() {
+        let names = vec!["w".to_string()];
+        let ids = vec![3usize];
+        let mut mapper = WeightMapper::from_param_names_and_ids(&names, &ids).unwrap();
+        mapper
+            .set_transforms("w", vec![LoadTransform::AddScalar { scalar: 1.0 }])
+            .unwrap();
+        let entry = mapper.get_mapping("w").unwrap();
+        assert_eq!(
+            entry.transforms,
+            vec![LoadTransform::AddScalar { scalar: 1.0 }]
+        );
     }
 }
