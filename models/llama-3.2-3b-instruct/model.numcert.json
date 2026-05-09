@@ -1,0 +1,89 @@
+{
+  "$schema": "../../docs/CERTIFICATION.md#schema",
+  "schema_version": "2.0.0",
+  "model": "Llama-3.2-3B-Instruct",
+  "model_family": "llama-3-rope-scaling",
+  "model_path_hint": "models/llama-3.2-3b-instruct/model.safetensors[.index.json]",
+  "atenia_version": "0.11.1-M11.A.2",
+  "f64_fixture_version": "pending — F64 reference logits not yet generated for the 3B variant; tests/fixtures/llama32_3b_reference/expected_logits_f64.json missing. The 1B sibling has a fixture; 3B is structurally identical (same RoPE llama3 scaling, same builder) and a future PyTorch F64 generation pass can backfill it.",
+  "f64_fixture_test": "tests/m8_5_full_family_validation_test.rs (extension queued — see f64_fixture_version)",
+  "generated_at": "2026-05-09",
+  "generated_on": "RTX 4070 Laptop (sm_89), 8 GB VRAM, 32 GB RAM, Windows 11",
+
+  "config_summary": {
+    "architectures": "LlamaForCausalLM",
+    "hidden_size": 3072,
+    "num_hidden_layers": 28,
+    "num_attention_heads": 24,
+    "num_key_value_heads": 8,
+    "head_dim": 128,
+    "intermediate_size": 8192,
+    "rope_theta": 500000.0,
+    "rope_scaling": "llama3 piecewise frequency scaling",
+    "tie_word_embeddings": true,
+    "vocab_size": 128256,
+    "eos_token_id": [128001, 128008, 128009],
+    "max_position_embeddings": 131072
+  },
+  "config_compatibility_notes": "Llama 3.2 3B Instruct shares the same architectural template as Llama 3.2 1B (M4.6 Phase C) — RoPE llama3 piecewise frequency scaling, GQA, tied word embeddings — scaled to 28 layers / hidden=3072 / intermediate=8192 / head_dim=128 explicit. The eos_token_id array variant landed in M11.A.1 (commit ac70581) and applies here.",
+
+  "drift_envelope": {
+    "certified_mode": {
+      "max_abs_diff_vs_f64": null,
+      "argmax_match_4_of_4": null,
+      "adr_004_strict_pass": null,
+      "adr_004_threshold": 0.5,
+      "kernel_path": "cuda_matmul_bf16_inplace (Path B M8.4c) + CUBLAS_COMPUTE_32F_FAST_TF32 (M10.2.0)",
+      "validation_notes": "F64 fixture not yet generated for Llama 3.2 3B (~5.98 GiB BF16 fits the dev box at F64 with ~12 GiB peak — feasible, just queued for a separate PyTorch reference run). Validation today via greedy smoke under both modes."
+    },
+    "fast_mode": {
+      "max_abs_diff_vs_f64": null,
+      "argmax_match_4_of_4": null,
+      "adr_004_strict_pass": null,
+      "adr_004_threshold": 0.5,
+      "kernel_path": "cuda_matmul_bf16_native_inplace (M10.2.1) — CUDA_R_16BF inputs, COMPUTE_32F",
+      "validation_notes": "Drift envelope inherited from ADR-005 family characterisation. Llama 3.2 1B (the F64-fixture sibling) under fast mode shows drift 0.268 with ADR-004 strict 1.9× margin and a position-2 argmax flip; the 3B variant likely tracks similarly but a calibrated number requires the queued F64 fixture generation."
+    }
+  },
+
+  "smoke_validation": {
+    "prompt": "Tell me about the history of Rome",
+    "max_tokens": 20,
+    "certified_text": "The history of Rome is a long and complex one, spanning over 2,500 years. Here",
+    "fast_text": "The history of Rome is a long and complex one, spanning over 2,500 years. Here",
+    "argmax_match_certified_vs_fast": true,
+    "certified_s_per_tok": 7.11,
+    "fast_s_per_tok": 4.53,
+    "fast_speedup_over_certified": 1.57,
+    "tier_plan_certified": {
+      "vram_tensors": 126,
+      "ram_tensors": 128,
+      "disk_tensors": 0
+    },
+    "tier_plan_fast": {
+      "vram_tensors": 196,
+      "ram_tensors": 58,
+      "disk_tensors": 0
+    },
+    "interpretation": "Bit-identical generated text under both modes. Llama 3.2 3B fits comfortably in dev-box memory under both modes; fast mode tier-plan moves nearly the entire model into VRAM (196 / 254 = 77 % of GPU-eligible weights) thanks to BF16 storage doubling capacity. Speedup 1.57× — the largest fast/certified ratio in the M11.A family because the model is smaller and a higher fraction of matmuls hit the fast kernel."
+  },
+
+  "recommended_mode": "certified",
+  "recommended_mode_rationale": "Same conservative position as Llama 3.2 1B: certified passes ADR-004 strict on the 1B sibling with 51× margin (drift 0.0097); the 3B is structurally identical and is expected to behave similarly when the F64 fixture is generated. Fast mode produced bit-identical argmax in this single-prompt smoke; the 1B sibling under fast mode flipped argmax at position 2, so operators wanting the 1.57× lift via env override should validate against their actual prompts.",
+
+  "per_tensor_policy": {
+    "default": "certified",
+    "overrides": [
+      {"pattern": "*.mlp.*_proj.weight", "mode": "fast"}
+    ]
+  },
+  "per_tensor_policy_status": "Schema v2.0.0 (M11.A.2) — same family-wide structural heuristic as the rest of the certified set: FFN gate/up/down on fast, attention Q/K/V/O on certified. Mirrors the Llama 3.2 1B sibling's manifest exactly. Empirical refinement deferred until the F64 fixture for 3B is generated.",
+
+  "verification": {
+    "command_certified": "ATENIA_M8_BF16_KERNEL=1 atenia generate --prompt 'Tell me about the history of Rome' --model models/llama-3.2-3b-instruct --max-tokens 20",
+    "command_fast": "ATENIA_FAST_MODE=1 atenia generate --prompt 'Tell me about the history of Rome' --model models/llama-3.2-3b-instruct --max-tokens 20",
+    "expected_dispatch_counter_certified": "vram_bf16_matmul_count delta > 0",
+    "expected_dispatch_counter_fast": "vram_bf16_native_matmul_count delta > 0",
+    "expected_text_prefix": "The history of Rome is a long and complex one, spanning over 2,500 years"
+  }
+}
