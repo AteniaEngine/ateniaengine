@@ -1096,6 +1096,10 @@ mod tests {
                 original_max_position_embeddings: 2048,
                 max_position_embeddings: 4096,
             }),
+            attn_logit_softcapping: None,
+            final_logit_softcapping: None,
+            sliding_window: None,
+            query_pre_attn_scalar: None,
         };
         let runtime = LlamaRuntime { batch: 1, seq: 4 };
         let mut gb = GraphBuilder::new();

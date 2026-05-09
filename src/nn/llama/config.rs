@@ -69,6 +69,32 @@ pub struct LlamaConfig {
     /// `rope_type` is `"llama3"` (Llama 3.x). Anything else parses
     /// to `None` with a tracing-friendly warning at parse time.
     pub rope_scaling: Option<RopeScaling>,
+    /// **M11.C** — Gemma 2 attention-logit soft-cap (`50.0` for
+    /// Gemma 2 2B/9B/27B). When `Some(c)`, the attention scores
+    /// pre-softmax are passed through `c * tanh(x / c)`. `None`
+    /// for every non-Gemma-2 family (Llama, Mistral, Qwen, Phi-3,
+    /// Falcon3 — none of them apply attention-logit soft-cap).
+    pub attn_logit_softcapping: Option<f32>,
+    /// **M11.C** — Gemma 2 final-logit soft-cap (`30.0` for
+    /// Gemma 2). When `Some(c)`, the LM-head output is passed
+    /// through `c * tanh(x / c)` before sampling. `None` for
+    /// every non-Gemma-2 family.
+    pub final_logit_softcapping: Option<f32>,
+    /// **M11.C** — Gemma 2 sliding-window length (`4096` for
+    /// Gemma 2). When `Some(w)`, alternating layers (in Gemma 2:
+    /// the even-indexed ones) restrict attention to the last `w`
+    /// tokens. `None` for full-attention-only architectures.
+    pub sliding_window: Option<u32>,
+    /// **M11.C** — Gemma 2 attention-scale denominator
+    /// (`256` for Gemma 2 2B; the Q vectors are pre-divided by
+    /// `sqrt(query_pre_attn_scalar)` instead of the usual
+    /// `sqrt(head_dim)`). For Gemma 2 2B these coincide
+    /// (`head_dim = 256`), but the field is read explicitly so
+    /// future Gemma variants where they diverge work without
+    /// schema changes. `None` falls back to `sqrt(head_dim)`.
+    /// Encoded in the config as an integer (`256`); read as
+    /// `f32` for the downstream `1/sqrt(.)` computation.
+    pub query_pre_attn_scalar: Option<f32>,
 }
 
 /// Parsed `rope_scaling` block from a Llama-family `config.json`.
@@ -271,6 +297,13 @@ fn get_f32(v: &Value, key: &str) -> Result<f32, ConfigError> {
         .map(|f| f as f32)
 }
 
+/// Strict scalar-`bool` reader. **M11.C** swapped the
+/// `tie_word_embeddings` call-site to [`get_tie_word_embeddings`]
+/// (family-aware default for Gemma 2's omitted field). Kept
+/// reachable behind `#[allow(dead_code)]` so a future config
+/// field that requires hard-fail-on-missing semantics has a
+/// type-checked helper available.
+#[allow(dead_code)]
 fn get_bool(v: &Value, key: &str) -> Result<bool, ConfigError> {
     v.get(key)
         .and_then(|x| x.as_bool())
@@ -451,6 +484,52 @@ fn parse_f32_array(
         .collect()
 }
 
+/// **M11.C** — read an optional `f32` field that may be encoded
+/// as either a JSON float (`50.0`) or a JSON integer (`256`).
+/// Gemma 2's `query_pre_attn_scalar` ships as an integer in the
+/// reference HuggingFace config, while `attn_logit_softcapping`
+/// and `final_logit_softcapping` ship as floats. A single helper
+/// covers both shapes and rejects null / non-numeric values
+/// with a clear error.
+fn get_optional_f32(v: &Value, key: &str) -> Result<Option<f32>, ConfigError> {
+    match v.get(key) {
+        None => Ok(None),
+        Some(Value::Null) => Ok(None),
+        Some(other) => other
+            .as_f64()
+            .map(|f| Some(f as f32))
+            .ok_or_else(|| {
+                ConfigError::Parse(format!(
+                    "field `{}` is not a number (expected float or integer)",
+                    key
+                ))
+            }),
+    }
+}
+
+/// **M11.C** — read `tie_word_embeddings` with a family-aware
+/// default for missing fields. Gemma 2's official HuggingFace
+/// config omits the field entirely; the upstream `Gemma2Config`
+/// defaults it to `True`. Every other Llama-family checkpoint
+/// emits the field explicitly (Llama, Mistral, Qwen, Phi-3,
+/// Falcon3 all serialise it), so the missing-field branch fires
+/// only for `gemma`/`gemma2` today. Other families with the
+/// field absent still trigger the original "missing field"
+/// parse error to preserve fail-loud behaviour for unexpected
+/// config shapes.
+fn get_tie_word_embeddings(v: &Value) -> Result<bool, ConfigError> {
+    if let Some(explicit) = get_optional_bool(v, "tie_word_embeddings")? {
+        return Ok(explicit);
+    }
+    let model_type = v.get("model_type").and_then(|x| x.as_str());
+    match model_type {
+        Some("gemma") | Some("gemma2") => Ok(true),
+        _ => Err(ConfigError::Parse(
+            "missing or non-bool field `tie_word_embeddings`".into(),
+        )),
+    }
+}
+
 fn get_optional_u32(v: &Value, key: &str) -> Result<Option<u32>, ConfigError> {
     match v.get(key) {
         None => Ok(None),
@@ -530,7 +609,7 @@ impl LlamaConfig {
             max_position_embeddings: get_usize(&v, "max_position_embeddings")?,
             rope_theta: get_rope_theta(&v)?,
             rms_norm_eps: get_f32(&v, "rms_norm_eps")?,
-            tie_word_embeddings: get_bool(&v, "tie_word_embeddings")?,
+            tie_word_embeddings: get_tie_word_embeddings(&v)?,
             attention_bias: get_optional_bool(&v, "attention_bias")?,
             model_type: get_optional_string(&v, "model_type")?,
             bos_token_id: get_u32_or_first_of_array(&v, "bos_token_id")?,
@@ -541,6 +620,14 @@ impl LlamaConfig {
             pad_token_id: get_optional_u32(&v, "pad_token_id")?,
             head_dim: get_optional_usize(&v, "head_dim")?,
             rope_scaling: get_rope_scaling(&v)?,
+            // **M11.C** — Gemma 2 fields. All `None` for every
+            // non-Gemma-2 checkpoint, so existing parsers stay
+            // byte-equivalent on Llama / Mistral / Qwen / Phi-3 /
+            // Falcon3 fixtures.
+            attn_logit_softcapping: get_optional_f32(&v, "attn_logit_softcapping")?,
+            final_logit_softcapping: get_optional_f32(&v, "final_logit_softcapping")?,
+            sliding_window: get_optional_u32(&v, "sliding_window")?,
+            query_pre_attn_scalar: get_optional_f32(&v, "query_pre_attn_scalar")?,
         };
         cfg.validate()?;
         Ok(cfg)
@@ -799,6 +886,82 @@ mod tests {
             }
             other => panic!("expected RopeScaling::LongRope, got {other:?}"),
         }
+    }
+
+    /// **M11.C test** — minimal Gemma 2 config parses with the
+    /// four new fields populated and `tie_word_embeddings`
+    /// defaulted to `true` (Gemma 2 omits it from
+    /// `config.json`). Mirrors the production
+    /// `models/gemma-2-2b-it/config.json` shape: integer
+    /// `query_pre_attn_scalar`, float caps, integer
+    /// `sliding_window`, and missing `tie_word_embeddings`.
+    #[test]
+    fn gemma2_config_parses_with_softcaps_and_default_tie() {
+        let v = json!({
+            "architectures": ["Gemma2ForCausalLM"],
+            "attn_logit_softcapping": 50.0,
+            "bos_token_id": 2,
+            "eos_token_id": [1, 107],
+            "final_logit_softcapping": 30.0,
+            "head_dim": 256,
+            "hidden_act": "gelu_pytorch_tanh",
+            "hidden_size": 2304,
+            "intermediate_size": 9216,
+            "max_position_embeddings": 8192,
+            "model_type": "gemma2",
+            "num_attention_heads": 8,
+            "num_hidden_layers": 26,
+            "num_key_value_heads": 4,
+            "query_pre_attn_scalar": 256,
+            "rms_norm_eps": 1e-6,
+            "rope_theta": 10_000.0,
+            "sliding_window": 4096,
+            "vocab_size": 256_000
+            // tie_word_embeddings intentionally omitted.
+        });
+        let cfg = LlamaConfig::from_json_str(&v.to_string())
+            .expect("Gemma 2 config must parse");
+        assert_eq!(cfg.model_type.as_deref(), Some("gemma2"));
+        assert!(cfg.tie_word_embeddings, "gemma2 default = true");
+        assert!(cfg.attn_logit_softcapping
+            .map(|x| (x - 50.0).abs() < 1e-6)
+            .unwrap_or(false));
+        assert!(cfg.final_logit_softcapping
+            .map(|x| (x - 30.0).abs() < 1e-6)
+            .unwrap_or(false));
+        assert_eq!(cfg.sliding_window, Some(4096));
+        assert!(cfg.query_pre_attn_scalar
+            .map(|x| (x - 256.0).abs() < 1e-6)
+            .unwrap_or(false));
+        assert_eq!(cfg.eos_token_id, 1);
+        assert_eq!(cfg.head_dim, Some(256));
+    }
+
+    /// **M11.C test** — non-Gemma family with missing
+    /// `tie_word_embeddings` still hard-errors. Guards the
+    /// family-aware default from silently swallowing typos in
+    /// future Llama-family configs.
+    #[test]
+    fn missing_tie_word_embeddings_errors_for_non_gemma() {
+        let mut v = base_config_value(json!(2));
+        v.as_object_mut().unwrap().remove("tie_word_embeddings");
+        let err = LlamaConfig::from_json_str(&v.to_string())
+            .expect_err("missing tie_word_embeddings on llama must fail");
+        assert!(format!("{err}").contains("tie_word_embeddings"));
+    }
+
+    /// **M11.C test** — every Gemma 2 field defaults to `None`
+    /// on a vanilla Llama config so existing fixtures stay
+    /// byte-equivalent after the schema extension.
+    #[test]
+    fn llama_config_has_all_gemma2_fields_none() {
+        let v = base_config_value(json!(2));
+        let cfg = LlamaConfig::from_json_str(&v.to_string())
+            .expect("plain Llama config parses");
+        assert!(cfg.attn_logit_softcapping.is_none());
+        assert!(cfg.final_logit_softcapping.is_none());
+        assert!(cfg.sliding_window.is_none());
+        assert!(cfg.query_pre_attn_scalar.is_none());
     }
 
     /// **M11.B test** — LongRope parser surfaces a clear error
