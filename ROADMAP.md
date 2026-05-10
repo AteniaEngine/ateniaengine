@@ -132,6 +132,7 @@ Detailed closing notes per milestone live in the `docs/` directory:
 - [docs/HANDOFF_APX_V20_M8.7.md](./docs/HANDOFF_APX_V20_M8.7.md) — Disk → GPU JIT pipeline (M8.7.0 single-tensor staging + M8.7.1.a CPU prefetch + M8.7.1.r Path B stream-aware refactor; 13B 20.7 s/tok with 154 disk-streamed matmuls per forward and 98.7 % prefetch hit rate; M8.7.1.b/c deferred for VRAM-budget reasons, documented for future revival)
 - [docs/HANDOFF_APX_V20_M8.6.md](./docs/HANDOFF_APX_V20_M8.6.md) — BF16 KV cache (D62 resolved; runtime ledger F32→BF16 cast in harvest, BF16→F32 in reinject; graph stays F32; TinyLlama 1.1B determinism fixture bit-identical under BF16 default; 1.6 GiB savings at seq=2048 on 13B; `ATENIA_LEGACY_F32_KV_CACHE=1` opt-out)
 - [docs/HANDOFF_APX_V20_M9.md](./docs/HANDOFF_APX_V20_M9.md) — INT8 W8A16 weight quantisation, shipped as opt-in (`ATENIA_M9_INT8=1`); per-group g=128 (Q8_0) production storage; M9.0 microbench measured ~2× speedup over M8.4c on the 4 dominant Llama 13B shapes; planner places 167 VRAM tensors / 0 Disk on 13B; ADR-004 strict NOT satisfied — full 12-run experiment matrix and follow-up options α/β/γ/δ documented for the next operator
+- [docs/HANDOFF_APX_V20_M11_D_5.md](./docs/HANDOFF_APX_V20_M11_D_5.md) — GGUF Q4_K_M decoder + CLI support + functional certification; GGUF weight loading infrastructure, pipeline integration, decoder fixes, functional certification schema v2.0.0 (smoke-based, documented drift), model certifications: TinyLlama Q4_K_M/Q8_0, Llama-3.2-1B, SmolLM2-1.7B
 
 ---
 

@@ -217,6 +217,36 @@ cargo run --release --example llama2_13b_demo
 
 See [HANDOFF M9](./docs/HANDOFF_APX_V20_M9.md) for the full 12-run drift matrix and the four follow-up tracks.
 
+### Or: Atenia runs GGUF quantized models (M11.D.5 ✅)
+
+Atenia now supports GGUF format models with Q4_K_M and Q8_0 quantization. The CLI automatically detects GGUF files (`.gguf`) in the model directory and uses the GGUF loader path. Four models are certified with functional validation (smoke tests + documented drift):
+
+```powershell
+# TinyLlama Q4_K_M GGUF
+$env:ATENIA_M9_INT8 = "1"
+$env:ATENIA_M8_BF16_KERNEL = "1"
+cargo run --release --bin atenia generate --prompt "Hello" --model ./models/TinyLlama-1.1B-Chat-v1.0-Q4_K_M-GGUF --max-tokens 5
+```
+
+**GGUF functional certification schema v2.0.0:** Quantization intrinsically introduces numerical drift vs safetensors/F64. GGUF models use a functional validation approach: smoke tests confirm the model loads and generates coherent text, with documented drift measurements. ADR-004 strict thresholds do not apply to GGUF formats — this is not an Atenia bug but a property of the quantization itself.
+
+| Model               | Quantization | Validation          | Notes                           |
+|---------------------|-------------|---------------------|---------------------------------|
+| TinyLlama 1.1B Chat | Q4_K_M      | ✅ Smoke test (5 tok) | lm_head drift ~10.19 max_abs_diff |
+| TinyLlama 1.1B Chat | Q8_0        | ✅ Smoke test (5 tok) | drift ~2.28 max_abs_diff        |
+| Llama 3.2 1B Inst.  | Q4_K_M      | ✅ Smoke test (5 tok) | norm drift 0.0 (F16)           |
+| SmolLM2 1.7B        | Q4_K_M      | ✅ Smoke test (5 tok) | q_proj drift ~0.287 max_abs_diff |
+
+**GGUF features:**
+- GGUF reader (header + metadata + tensor descriptors)
+- F16 + Q8_0 + Q4_K_M dequantization kernels
+- GGUF → HuggingFace name mapping (Llama / Phi3 / Gemma2)
+- LlamaConfig extraction from GGUF metadata
+- CLI `atenia generate` automatic GGUF detection
+- `rope_freqs` metadata handling for Llama-3.2 RoPE scaling
+
+See [HANDOFF M11.D.5](./docs/HANDOFF_APX_V20_M11_D_5.md) for the full GGUF implementation details and certification schema.
+
 ---
 
 ## 🎯 Vision
