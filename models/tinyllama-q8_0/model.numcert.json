@@ -1,0 +1,65 @@
+{
+  "$schema": "../../docs/CERTIFICATION.md#schema",
+  "schema_version": "2.0.0",
+  "schema_variant": "gguf-functional",
+  "model": "TinyLlama-1.1B-Chat-v1.0-Q8_0-GGUF",
+  "model_family": "llama-2",
+  "model_path_hint": "models/tinyllama-q8_0/tinyllama-1.1b-chat-v1.0-q8_0.gguf",
+  "quantization_format": "Q8_0",
+  "atenia_version": "0.11.0-M11.D",
+  "generated_at": "2026-05-10",
+  "generated_on": "RTX 4070 Laptop (sm_89), 8 GB VRAM, 32 GB RAM, Windows 11",
+
+  "drift_envelope": {
+    "quantized_mode": {
+      "max_abs_diff_vs_safetensors": 2.28,
+      "argmax_match_4_of_4": true,
+      "adr_004_strict_pass": false,
+      "adr_004_threshold": 0.5,
+      "adr_004_overshoot_factor": 4.6,
+      "validation_method": "functional_smoke",
+      "validation_notes": "Quantization intrinsically introduces numerical drift vs safetensors/F64. Q8_0 is an 8-bit quantization format with better precision than Q4_K_M. Validation: greedy generation smoke test passed successfully. Full forward vs safetensors: max_abs_diff 2.28 (4.6x ADR-004 threshold). Argmax match: 4/4 (better than Q4_K_M due to higher precision). F16 tensors (norm): drift 0.0. Q8_0 tensors decode with moderate drift. This is expected behavior for Q8_0 quantization."
+    }
+  },
+
+  "recommended_mode": "quantized",
+  "recommended_mode_rationale": "GGUF models use quantization formats (Q4_K_M, Q8_0) that intrinsically introduce numerical drift beyond ADR-004 strict thresholds. This is not an Atenia bug but a property of the quantization itself. Validation is functional: smoke tests confirm model loads and generates coherent text. Q8_0 drift 2.28 vs safetensors is within expected range for 8-bit quantization and has better argmax consistency (4/4) than Q4_K_M (1/4). Use quantized mode for all GGUF workloads; certified/fast mode distinction does not apply to quantized formats.",
+
+  "per_tensor_policy": {
+    "default": "quantized",
+    "overrides": []
+  },
+  "per_tensor_policy_status": "GGUF models are fully quantized (Q8_0). Per-tensor mode switching (certified/fast) is not applicable; all tensors use the quantized format. F16 tensors (norm, some embeddings) decode to F32 without re-quantization. Q8_0 tensors decode to F32 via Q8_0 decoder. Mode selection is per-model format, not per-tensor.",
+
+  "verification": {
+    "smoke_test": {
+      "command": "cargo test --lib tinyllama_q8_0_gguf -- --ignored --nocapture",
+      "expected_behavior": "Model loads successfully, generates tokens"
+    },
+    "drift_diagnostics": {
+      "norm_test": "cargo test --test tinyllama_f64_validation_test tinyllama_q8_0_gguf_norm -- --ignored --nocapture",
+      "expected_norm_drift": "0.0 (F16 tensor)",
+      "full_forward_test": "Compare Q8_0 GGUF forward vs safetensors baseline",
+      "expected_forward_drift": "~2.28 with argmax 4/4"
+    }
+  },
+
+  "gguf_specific": {
+    "format": "Q8_0",
+    "block_size": 256,
+    "compression_ratio": "~2x vs F16",
+    "intrinsic_drift_note": "Q8_0 quantization introduces 8-bit precision loss. Drift vs safetensors is expected and intrinsic to the format. The model remains functionally correct for generation tasks despite numerical drift. Q8_0 has better precision than Q4_K_M (argmax 4/4 vs 1/4).",
+    "known_limitations": [
+      "Numerical drift vs safetensors exceeds ADR-004 threshold by 4.6x",
+      "Not suitable for workloads requiring exact numerical equivalence to F64",
+      "Best for chat/completion with greedy or low-temperature sampling",
+      "Higher precision than Q4_K_M but still quantized"
+    ],
+    "comparison_with_q4_k_m": {
+      "drift": "Q8_0: 2.28 vs Q4_K_M: 10.19 (4.5x lower drift)",
+      "argmax": "Q8_0: 4/4 vs Q4_K_M: 1/4 (better consistency)",
+      "size": "Q8_0: ~2x vs F16, Q4_K_M: ~4.5x vs F16",
+      "recommendation": "Use Q8_0 when precision matters more than size; use Q4_K_M for maximum compression"
+    }
+  }
+}

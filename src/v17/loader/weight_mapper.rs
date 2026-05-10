@@ -53,6 +53,8 @@ use crate::amg::weight_store::{SharedParam, WeightStore, WeightStoreError};
 use crate::gpu::tier_plan::{Tier, TierPlan};
 use crate::tensor::DType;
 
+use super::gguf_decode::decode_tensor;
+use super::gguf_reader::GgufReader;
 use super::loader_errors::LoaderError;
 use super::safetensors_reader::SafetensorsReader;
 
@@ -254,6 +256,8 @@ pub enum LoadTransform {
     /// composition test exists to pin the behaviour for future
     /// 2-D applications.
     AddScalar { scalar: f32 },
+
+    LlamaRopeUnpermuteRows { head_dim: usize },
 }
 
 /// One entry in [`WeightMapper`]: the graph parameter node that
@@ -320,10 +324,7 @@ impl WeightMapper {
     /// resulting `HashMap` would silently drop collisions — surfacing
     /// the duplicate as an error is preferable to a hard-to-debug
     /// load).
-    pub fn from_param_names_and_ids(
-        names: &[String],
-        ids: &[usize],
-    ) -> Result<Self, LoaderError> {
+    pub fn from_param_names_and_ids(names: &[String], ids: &[usize]) -> Result<Self, LoaderError> {
         if names.len() != ids.len() {
             return Err(LoaderError::InvalidFormat(format!(
                 "WeightMapper: names.len()={} differs from ids.len()={}; \
@@ -333,8 +334,7 @@ impl WeightMapper {
             )));
         }
 
-        let mut mapping: HashMap<String, WeightMapping> =
-            HashMap::with_capacity(names.len());
+        let mut mapping: HashMap<String, WeightMapping> = HashMap::with_capacity(names.len());
         for (name, id) in names.iter().zip(ids.iter()) {
             let entry = WeightMapping {
                 node_id: *id,
@@ -403,9 +403,8 @@ impl WeightMapper {
     /// arms agree on the same source of truth without two
     /// independent reads of process-global state.
     fn m8_bf16_kernel_active(&self) -> bool {
-        self.bf16_kernel_active.unwrap_or_else(|| {
-            std::env::var("ATENIA_M8_BF16_KERNEL").as_deref() == Ok("1")
-        })
+        self.bf16_kernel_active
+            .unwrap_or_else(|| std::env::var("ATENIA_M8_BF16_KERNEL").as_deref() == Ok("1"))
     }
 
     /// **M9.2** — gate for the INT8 W8A16 loader path. Reads
@@ -484,8 +483,7 @@ impl WeightMapper {
         // loop across multiple shard files without duplicating the
         // decode-transform-copy logic.
         let mut report = LoadReport::default();
-        let mut satisfied: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
+        let mut satisfied: std::collections::HashSet<String> = std::collections::HashSet::new();
         let outcome = self.load_one_shard_into(graph, reader, &mut satisfied)?;
         report.loaded = outcome.loaded;
         report.skipped = outcome.skipped;
@@ -626,10 +624,7 @@ impl WeightMapper {
             // beyond what the reader already paid for. This is
             // the path the M6 replan was designed to enable; the
             // peak-RAM contract is "BF16 source bytes only."
-            if tier == Tier::Vram
-                && entry.dtype == DType::BF16
-                && mapping.transforms.is_empty()
-            {
+            if tier == Tier::Vram && entry.dtype == DType::BF16 && mapping.transforms.is_empty() {
                 let numel: usize = entry.shape.iter().product();
                 let tensor = graph
                     .nodes
@@ -805,19 +800,14 @@ impl WeightMapper {
                         group_size,
                         repeats,
                     } => {
-                        values = tile_grouped_dim(
-                            &values,
-                            &current_shape,
-                            *dim,
-                            *group_size,
-                            *repeats,
-                        )
-                        .map_err(|msg| {
-                            LoaderError::InvalidFormat(format!(
-                                "tensor '{}': {}",
-                                entry.name, msg
-                            ))
-                        })?;
+                        values =
+                            tile_grouped_dim(&values, &current_shape, *dim, *group_size, *repeats)
+                                .map_err(|msg| {
+                                    LoaderError::InvalidFormat(format!(
+                                        "tensor '{}': {}",
+                                        entry.name, msg
+                                    ))
+                                })?;
                         current_shape[*dim] *= *repeats;
                     }
                     LoadTransform::Scale { factor } => {
@@ -832,11 +822,7 @@ impl WeightMapper {
                             return Err(LoaderError::InvalidFormat(format!(
                                 "tensor '{}': Reshape target {:?} (numel {}) does not match \
                                  current shape {:?} (numel {})",
-                                entry.name,
-                                target,
-                                target_numel,
-                                current_shape,
-                                current_numel
+                                entry.name, target, target_numel, current_shape, current_numel
                             )));
                         }
                         current_shape = target.clone();
@@ -844,6 +830,15 @@ impl WeightMapper {
                     // **M11.C step 3** — Gemma 2 RmsNorm gamma+1.
                     LoadTransform::AddScalar { scalar } => {
                         apply_add_scalar_in_place(&mut values, *scalar);
+                    }
+                    LoadTransform::LlamaRopeUnpermuteRows { head_dim } => {
+                        values = llama_rope_unpermute_rows(&values, &current_shape, *head_dim)
+                            .map_err(|msg| {
+                                LoaderError::InvalidFormat(format!(
+                                    "tensor '{}': {}",
+                                    entry.name, msg
+                                ))
+                            })?;
                     }
                 }
             }
@@ -884,11 +879,7 @@ impl WeightMapper {
             }
 
             // BF16 precision floor — same as `load_one_shard_into`.
-            if std::env::var("ATENIA_BF16_PRECISION_FLOOR")
-                .ok()
-                .as_deref()
-                == Some("1")
-            {
+            if std::env::var("ATENIA_BF16_PRECISION_FLOOR").ok().as_deref() == Some("1") {
                 for v in values.iter_mut() {
                     let bits = v.to_bits() & 0xFFFF_0000_u32;
                     *v = f32::from_bits(bits);
@@ -912,8 +903,7 @@ impl WeightMapper {
                     // returns; M9.3 will switch to keeping INT8
                     // resident with a recycled BF16 staging slot
                     // for the true capacity-doubling win.
-                    let m9_int8 = self.m9_int8_active()
-                        && entry.name.ends_with("_proj.weight");
+                    let m9_int8 = self.m9_int8_active() && entry.name.ends_with("_proj.weight");
 
                     if m9_int8 {
                         // M9.4 — per-group (Q8_0-style) quantisation.
@@ -945,12 +935,11 @@ impl WeightMapper {
                         // True INT8 residency (and the `numel × 1`
                         // cost) needs M9.3 (deferred).
                         const M9_4_GROUP_SIZE: usize = 128;
-                        let (q, scales) =
-                            crate::tensor::quantizer::absmax_per_group_symmetric(
-                                &values,
-                                &current_shape,
-                                M9_4_GROUP_SIZE,
-                            );
+                        let (q, scales) = crate::tensor::quantizer::absmax_per_group_symmetric(
+                            &values,
+                            &current_shape,
+                            M9_4_GROUP_SIZE,
+                        );
                         drop(values);
 
                         let gpu = crate::cuda::int8_to_bf16::int8_per_group_to_bf16_in_vram(
@@ -993,26 +982,21 @@ impl WeightMapper {
                         // BF16 buffer goes to VRAM via
                         // `bf16_to_vram_no_upcast` for direct
                         // consumption by `cuda_matmul_bf16_inplace`.
-                        let bits: Vec<u16> = values
-                            .iter()
-                            .map(|&v| (v.to_bits() >> 16) as u16)
-                            .collect();
+                        let bits: Vec<u16> =
+                            values.iter().map(|&v| (v.to_bits() >> 16) as u16).collect();
                         drop(values);
 
                         let m8_bf16_kernel = self.m8_bf16_kernel_active();
 
                         let gpu = if m8_bf16_kernel {
-                            crate::cuda::bf16_to_f32::bf16_to_vram_no_upcast(
-                                &bits,
-                                &current_shape,
-                            )
-                            .ok_or_else(|| {
-                                LoaderError::InvalidFormat(format!(
-                                    "BF16-resident VRAM slow-path upload failed for '{}' \
+                            crate::cuda::bf16_to_f32::bf16_to_vram_no_upcast(&bits, &current_shape)
+                                .ok_or_else(|| {
+                                    LoaderError::InvalidFormat(format!(
+                                        "BF16-resident VRAM slow-path upload failed for '{}' \
                                      (M8.4b path)",
-                                    entry.name
-                                ))
-                            })?
+                                        entry.name
+                                    ))
+                                })?
                         } else {
                             crate::cuda::bf16_to_f32::bf16_to_f32_resident_in_vram(
                                 &bits,
@@ -1043,10 +1027,8 @@ impl WeightMapper {
                 Tier::Disk => {
                     let cache_dir = crate::tensor::disk_tier::default_cache_dir();
                     let handle = if self.store_params_as_bf16 {
-                        let bits: Vec<u16> = values
-                            .iter()
-                            .map(|&v| (v.to_bits() >> 16) as u16)
-                            .collect();
+                        let bits: Vec<u16> =
+                            values.iter().map(|&v| (v.to_bits() >> 16) as u16).collect();
                         drop(values);
                         crate::tensor::disk_tier::write_bf16_tensor(&cache_dir, &bits)
                             .map_err(|e| LoaderError::IoError(e.to_string()))?
@@ -1086,10 +1068,8 @@ impl WeightMapper {
                             ))
                         })?;
                     if self.store_params_as_bf16 {
-                        let bits: Vec<u16> = values
-                            .iter()
-                            .map(|&v| (v.to_bits() >> 16) as u16)
-                            .collect();
+                        let bits: Vec<u16> =
+                            values.iter().map(|&v| (v.to_bits() >> 16) as u16).collect();
                         tensor.set_cpu_bf16_bits(bits);
                     } else {
                         let slice = tensor.as_cpu_slice_mut();
@@ -1161,19 +1141,14 @@ impl WeightMapper {
                         group_size,
                         repeats,
                     } => {
-                        values = tile_grouped_dim(
-                            &values,
-                            &current_shape,
-                            *dim,
-                            *group_size,
-                            *repeats,
-                        )
-                        .map_err(|msg| {
-                            LoaderError::InvalidFormat(format!(
-                                "tensor '{}': {}",
-                                entry.name, msg
-                            ))
-                        })?;
+                        values =
+                            tile_grouped_dim(&values, &current_shape, *dim, *group_size, *repeats)
+                                .map_err(|msg| {
+                                    LoaderError::InvalidFormat(format!(
+                                        "tensor '{}': {}",
+                                        entry.name, msg
+                                    ))
+                                })?;
                         current_shape[*dim] *= *repeats;
                     }
                     LoadTransform::Scale { factor } => {
@@ -1188,11 +1163,7 @@ impl WeightMapper {
                             return Err(LoaderError::InvalidFormat(format!(
                                 "tensor '{}': Reshape target {:?} (numel {}) does not match \
                                  current shape {:?} (numel {})",
-                                entry.name,
-                                target,
-                                target_numel,
-                                current_shape,
-                                current_numel
+                                entry.name, target, target_numel, current_shape, current_numel
                             )));
                         }
                         // Pure metadata change — data layout is unchanged.
@@ -1201,6 +1172,15 @@ impl WeightMapper {
                     // **M11.C step 3** — Gemma 2 RmsNorm gamma+1.
                     LoadTransform::AddScalar { scalar } => {
                         apply_add_scalar_in_place(&mut values, *scalar);
+                    }
+                    LoadTransform::LlamaRopeUnpermuteRows { head_dim } => {
+                        values = llama_rope_unpermute_rows(&values, &current_shape, *head_dim)
+                            .map_err(|msg| {
+                                LoaderError::InvalidFormat(format!(
+                                    "tensor '{}': {}",
+                                    entry.name, msg
+                                ))
+                            })?;
                     }
                 }
             }
@@ -1260,11 +1240,7 @@ impl WeightMapper {
             // F32 mantissa bits; the lower 16 mantissa bits are
             // zeroed. Implemented inline to avoid a half-crate
             // dependency for the spike.
-            if std::env::var("ATENIA_BF16_PRECISION_FLOOR")
-                .ok()
-                .as_deref()
-                == Some("1")
-            {
+            if std::env::var("ATENIA_BF16_PRECISION_FLOOR").ok().as_deref() == Some("1") {
                 for v in values.iter_mut() {
                     let bits = v.to_bits() & 0xFFFF_0000_u32;
                     *v = f32::from_bits(bits);
@@ -1282,8 +1258,7 @@ impl WeightMapper {
                 // the precision-floor simulation above and this
                 // down-convert apply the same operation. Round-trip on
                 // decode-on-access is exactly the same value.
-                let bits: Vec<u16> =
-                    values.iter().map(|&v| (v.to_bits() >> 16) as u16).collect();
+                let bits: Vec<u16> = values.iter().map(|&v| (v.to_bits() >> 16) as u16).collect();
                 tensor.set_cpu_bf16_bits(bits);
             } else {
                 let slice = tensor.as_cpu_slice_mut();
@@ -1309,6 +1284,241 @@ impl WeightMapper {
             .filter(|name| !satisfied_names.contains(name.as_str()))
             .cloned()
             .collect()
+    }
+
+    pub fn load_gguf_with_residency_plan(
+        &self,
+        graph: &mut Graph,
+        reader: &GgufReader,
+        name_map: &HashMap<String, String>,
+        plan: &TierPlan,
+        param_ids: &[usize],
+        param_names: &[String],
+    ) -> Result<(WeightStore, LoadReport), LoaderError> {
+        let mut report = LoadReport::default();
+        let mut satisfied: HashSet<String> = HashSet::new();
+        let mut store = WeightStore::new();
+        let mut already_inserted: HashSet<String> = HashSet::new();
+
+        for descriptor in &reader.tensors {
+            let Some(hf_name) = name_map.get(&descriptor.name) else {
+                report.skipped.push(descriptor.name.clone());
+                continue;
+            };
+            let Some(mapping) = self.mapping.get(hf_name.as_str()) else {
+                report.skipped.push(hf_name.clone());
+                continue;
+            };
+            let node_id = mapping.node_id;
+            let tier = plan.get(hf_name).unwrap_or(Tier::Ram);
+            let mut values = decode_tensor(reader, descriptor)?;
+            let mut current_shape: Vec<usize> =
+                descriptor.dimensions.iter().rev().map(|d| *d as usize).collect();
+            apply_transforms(
+                &mut values,
+                &mut current_shape,
+                hf_name,
+                &mapping.transforms,
+            )?;
+            self.write_loaded_tensor(
+                graph,
+                &mut store,
+                &mut already_inserted,
+                node_id,
+                hf_name,
+                tier,
+                values,
+                current_shape,
+            )?;
+            report.loaded += 1;
+            satisfied.insert(hf_name.clone());
+        }
+
+        report.missing = self.collect_missing(&satisfied);
+        finalize_ram_extract(graph, &mut store, &already_inserted, param_ids, param_names)?;
+        Ok((store, report))
+    }
+
+    pub fn load_gguf_into(
+        &self,
+        graph: &mut Graph,
+        reader: &GgufReader,
+        name_map: &HashMap<String, String>,
+    ) -> Result<LoadReport, LoaderError> {
+        let mut report = LoadReport::default();
+        let mut satisfied: HashSet<String> = HashSet::new();
+        for descriptor in &reader.tensors {
+            let Some(hf_name) = name_map.get(&descriptor.name) else {
+                report.skipped.push(descriptor.name.clone());
+                continue;
+            };
+            let Some(mapping) = self.mapping.get(hf_name.as_str()) else {
+                report.skipped.push(hf_name.clone());
+                continue;
+            };
+            let mut values = decode_tensor(reader, descriptor)?;
+            let mut current_shape: Vec<usize> =
+                descriptor.dimensions.iter().rev().map(|d| *d as usize).collect();
+            apply_transforms(
+                &mut values,
+                &mut current_shape,
+                hf_name,
+                &mapping.transforms,
+            )?;
+            let tensor = graph
+                .nodes
+                .get_mut(mapping.node_id)
+                .and_then(|n| n.output.as_mut())
+                .ok_or_else(|| {
+                    LoaderError::InvalidFormat(format!(
+                        "mapper points '{}' at node_id {} but that node has no \
+                         materialized tensor in the graph",
+                        hf_name, mapping.node_id
+                    ))
+                })?;
+            if current_shape != tensor.shape.as_slice() {
+                return Err(LoaderError::ShapeMismatch {
+                    tensor_name: hf_name.clone(),
+                    expected: tensor.shape.clone(),
+                    actual: current_shape,
+                });
+            }
+            if tensor.numel() != values.len() {
+                return Err(LoaderError::InvalidFormat(format!(
+                    "tensor '{}': element count {} after transforms does not match \
+                     graph parameter capacity {}",
+                    hf_name,
+                    values.len(),
+                    tensor.numel()
+                )));
+            }
+            if self.store_params_as_bf16 {
+                let bits: Vec<u16> = values.iter().map(|&v| (v.to_bits() >> 16) as u16).collect();
+                tensor.set_cpu_bf16_bits(bits);
+            } else {
+                tensor.as_cpu_slice_mut().copy_from_slice(&values);
+            }
+            report.loaded += 1;
+            satisfied.insert(hf_name.clone());
+        }
+        report.missing = self.collect_missing(&satisfied);
+        Ok(report)
+    }
+
+    fn write_loaded_tensor(
+        &self,
+        graph: &mut Graph,
+        store: &mut WeightStore,
+        already_inserted: &mut HashSet<String>,
+        node_id: usize,
+        name: &str,
+        tier: Tier,
+        values: Vec<f32>,
+        current_shape: Vec<usize>,
+    ) -> Result<(), LoaderError> {
+        let tensor_shape = graph
+            .nodes
+            .get(node_id)
+            .and_then(|n| n.output.as_ref())
+            .map(|t| t.shape.clone())
+            .ok_or_else(|| {
+                LoaderError::InvalidFormat(format!(
+                    "mapper points '{}' at node_id {} but that node has no \
+                     materialized tensor in the graph",
+                    name, node_id
+                ))
+            })?;
+        if current_shape != tensor_shape.as_slice() {
+            return Err(LoaderError::ShapeMismatch {
+                tensor_name: name.to_string(),
+                expected: tensor_shape,
+                actual: current_shape,
+            });
+        }
+        let dest_numel: usize = current_shape.iter().product();
+        if dest_numel != values.len() {
+            return Err(LoaderError::InvalidFormat(format!(
+                "tensor '{}': element count {} after transforms does not match \
+                 graph parameter capacity {}",
+                name,
+                values.len(),
+                dest_numel
+            )));
+        }
+        match tier {
+            Tier::Vram => {
+                let bits: Vec<u16> = values.iter().map(|&v| (v.to_bits() >> 16) as u16).collect();
+                let m8_bf16_kernel = self.m8_bf16_kernel_active();
+                let gpu = if m8_bf16_kernel {
+                    crate::cuda::bf16_to_f32::bf16_to_vram_no_upcast(&bits, &current_shape)
+                        .ok_or_else(|| {
+                            LoaderError::InvalidFormat(format!(
+                                "BF16-resident GGUF VRAM upload failed for '{}'",
+                                name
+                            ))
+                        })?
+                } else {
+                    crate::cuda::bf16_to_f32::bf16_to_f32_resident_in_vram(&bits, &current_shape)
+                        .ok_or_else(|| {
+                            LoaderError::InvalidFormat(format!(
+                                "BF16-to-VRAM GGUF upload failed for '{}'",
+                                name
+                            ))
+                        })?
+                };
+                store.params.push(SharedParam::Cuda {
+                    shape: current_shape,
+                    gpu,
+                });
+                store.names.push(name.to_string());
+                already_inserted.insert(name.to_string());
+                if m8_bf16_kernel {
+                    VRAM_BF16_SLOW_PATH_COUNT.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    VRAM_SLOW_PATH_COUNT.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            Tier::Disk => {
+                let cache_dir = crate::tensor::disk_tier::default_cache_dir();
+                let handle = if self.store_params_as_bf16 {
+                    let bits: Vec<u16> =
+                        values.iter().map(|&v| (v.to_bits() >> 16) as u16).collect();
+                    crate::tensor::disk_tier::write_bf16_tensor(&cache_dir, &bits)
+                        .map_err(|e| LoaderError::IoError(e.to_string()))?
+                } else {
+                    crate::tensor::disk_tier::write_f32_tensor(&cache_dir, &values)
+                        .map_err(|e| LoaderError::IoError(e.to_string()))?
+                };
+                store.params.push(SharedParam::Disk {
+                    shape: current_shape,
+                    handle,
+                });
+                store.names.push(name.to_string());
+                already_inserted.insert(name.to_string());
+                DISK_SLOW_PATH_COUNT.fetch_add(1, Ordering::Relaxed);
+            }
+            Tier::Ram => {
+                let tensor = graph
+                    .nodes
+                    .get_mut(node_id)
+                    .and_then(|n| n.output.as_mut())
+                    .ok_or_else(|| {
+                        LoaderError::InvalidFormat(format!(
+                            "mapper points '{}' at node_id {} but that node has no \
+                             materialized tensor in the graph",
+                            name, node_id
+                        ))
+                    })?;
+                if self.store_params_as_bf16 {
+                    let bits: Vec<u16> =
+                        values.iter().map(|&v| (v.to_bits() >> 16) as u16).collect();
+                    tensor.set_cpu_bf16_bits(bits);
+                } else {
+                    tensor.as_cpu_slice_mut().copy_from_slice(&values);
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1370,10 +1580,7 @@ pub fn finalize_ram_extract(
 
     let ram_store =
         WeightStore::extract_from_graph(graph, &ram_indices, &ram_names).map_err(|e| {
-            LoaderError::InvalidFormat(format!(
-                "Ram-tier extract_from_graph failed: {}",
-                e
-            ))
+            LoaderError::InvalidFormat(format!("Ram-tier extract_from_graph failed: {}", e))
         })?;
 
     for (i, p) in ram_store.params.into_iter().enumerate() {
@@ -1401,6 +1608,69 @@ pub(crate) fn transpose_2d_flat(values: &[f32], rows: usize, cols: usize) -> Vec
         }
     }
     out
+}
+
+fn apply_transforms(
+    values: &mut Vec<f32>,
+    current_shape: &mut Vec<usize>,
+    name: &str,
+    transforms: &[LoadTransform],
+) -> Result<(), LoaderError> {
+    for transform in transforms {
+        match transform {
+            LoadTransform::Transpose2D => {
+                if current_shape.len() != 2 {
+                    return Err(LoaderError::InvalidFormat(format!(
+                        "tensor '{}': Transpose2D requires a 2D tensor, \
+                         got rank {} (shape {:?})",
+                        name,
+                        current_shape.len(),
+                        current_shape
+                    )));
+                }
+                let rows = current_shape[0];
+                let cols = current_shape[1];
+                *values = transpose_2d_flat(values, rows, cols);
+                *current_shape = vec![cols, rows];
+            }
+            LoadTransform::TileGroupedDim {
+                dim,
+                group_size,
+                repeats,
+            } => {
+                *values = tile_grouped_dim(values, current_shape, *dim, *group_size, *repeats)
+                    .map_err(|msg| {
+                        LoaderError::InvalidFormat(format!("tensor '{}': {}", name, msg))
+                    })?;
+                current_shape[*dim] *= *repeats;
+            }
+            LoadTransform::Scale { factor } => {
+                for v in values.iter_mut() {
+                    *v *= *factor;
+                }
+            }
+            LoadTransform::Reshape { target } => {
+                let target_numel: usize = target.iter().product();
+                let current_numel: usize = current_shape.iter().product();
+                if target_numel != current_numel {
+                    return Err(LoaderError::InvalidFormat(format!(
+                        "tensor '{}': Reshape target {:?} (numel {}) does not match \
+                         current shape {:?} (numel {})",
+                        name, target, target_numel, current_shape, current_numel
+                    )));
+                }
+                *current_shape = target.clone();
+            }
+            LoadTransform::AddScalar { scalar } => {
+                apply_add_scalar_in_place(values, *scalar);
+            }
+            LoadTransform::LlamaRopeUnpermuteRows { head_dim } => {
+                *values = llama_rope_unpermute_rows(values, current_shape, *head_dim)
+                    .map_err(|msg| LoaderError::InvalidFormat(format!("tensor '{}': {}", name, msg)))?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Repeat each consecutive `group_size`-block along `dim` `repeats`
@@ -1462,6 +1732,57 @@ pub(crate) fn tile_grouped_dim(
                 let block_len = group_size * inner;
                 out[out_block..out_block + block_len]
                     .copy_from_slice(&values[in_group..in_group + block_len]);
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+pub(crate) fn llama_rope_unpermute_rows(
+    values: &[f32],
+    shape: &[usize],
+    head_dim: usize,
+) -> Result<Vec<f32>, String> {
+    if shape.len() != 2 {
+        return Err(format!(
+            "LlamaRopeUnpermuteRows: expected rank-2 shape, got {:?}",
+            shape
+        ));
+    }
+    if head_dim == 0 || head_dim % 2 != 0 {
+        return Err(format!(
+            "LlamaRopeUnpermuteRows: head_dim must be positive and even, got {}",
+            head_dim
+        ));
+    }
+    let rows = shape[0];
+    let cols = shape[1];
+    if rows % head_dim != 0 {
+        return Err(format!(
+            "LlamaRopeUnpermuteRows: rows {} is not divisible by head_dim {}",
+            rows, head_dim
+        ));
+    }
+    if values.len() != rows * cols {
+        return Err(format!(
+            "LlamaRopeUnpermuteRows: input length {} does not match shape {:?}",
+            values.len(),
+            shape
+        ));
+    }
+
+    let half = head_dim / 2;
+    let mut out = vec![0.0_f32; values.len()];
+    for head_base in (0..rows).step_by(head_dim) {
+        for i in 0..half {
+            let src0 = head_base + 2 * i;
+            let src1 = head_base + 2 * i + 1;
+            let dst0 = head_base + i;
+            let dst1 = head_base + i + half;
+            for c in 0..cols {
+                out[dst0 * cols + c] = values[src0 * cols + c];
+                out[dst1 * cols + c] = values[src1 * cols + c];
             }
         }
     }
@@ -1567,19 +1888,33 @@ mod tests {
         let _g = M9_INT8_LOADER_LOCK.lock().unwrap();
         let mapper = WeightMapper::from_param_names_and_ids(&[], &[]).unwrap();
 
-        unsafe { std::env::remove_var("ATENIA_M9_INT8"); }
-        assert!(!mapper.m9_int8_active(),
-            "flag unset → m9_int8_active() must be false");
+        unsafe {
+            std::env::remove_var("ATENIA_M9_INT8");
+        }
+        assert!(
+            !mapper.m9_int8_active(),
+            "flag unset → m9_int8_active() must be false"
+        );
 
-        unsafe { std::env::set_var("ATENIA_M9_INT8", "1"); }
-        assert!(mapper.m9_int8_active(),
-            "flag = '1' → m9_int8_active() must be true");
+        unsafe {
+            std::env::set_var("ATENIA_M9_INT8", "1");
+        }
+        assert!(
+            mapper.m9_int8_active(),
+            "flag = '1' → m9_int8_active() must be true"
+        );
 
-        unsafe { std::env::set_var("ATENIA_M9_INT8", "0"); }
-        assert!(!mapper.m9_int8_active(),
-            "flag = '0' → m9_int8_active() must be false (only '1' enables)");
+        unsafe {
+            std::env::set_var("ATENIA_M9_INT8", "0");
+        }
+        assert!(
+            !mapper.m9_int8_active(),
+            "flag = '0' → m9_int8_active() must be false (only '1' enables)"
+        );
 
-        unsafe { std::env::remove_var("ATENIA_M9_INT8"); }
+        unsafe {
+            std::env::remove_var("ATENIA_M9_INT8");
+        }
     }
 
     /// M9.2 — `vram_int8_path_count()` reads the static counter
@@ -1724,3 +2059,4 @@ mod tests {
         );
     }
 }
+

@@ -127,7 +127,23 @@ pub fn run(args: GenerateArgs) -> i32 {
         );
         return 2;
     }
-    if !args.model.join("config.json").exists() {
+    
+    // Detect GGUF vs HuggingFace checkpoint
+    let is_gguf = args.model.join("tokenizer.json").exists() 
+        && args.model.read_dir().ok().and_then(|mut entries| {
+            entries.find_map(|entry| {
+                entry.ok().and_then(|e| {
+                    let path = e.path();
+                    if path.extension().map_or(false, |ext| ext == "gguf") {
+                        Some(true)
+                    } else {
+                        None
+                    }
+                })
+            })
+        }).unwrap_or(false);
+    
+    if !is_gguf && !args.model.join("config.json").exists() {
         eprintln!(
             "error: model directory {} is missing config.json — does it actually contain a HuggingFace checkpoint?",
             args.model.display()
@@ -152,7 +168,12 @@ pub fn run(args: GenerateArgs) -> i32 {
         None
     };
     let load_start = std::time::Instant::now();
-    let pipe = match GenerationPipeline::from_model_dir(&args.model) {
+    let pipe = if is_gguf {
+        GenerationPipeline::from_model_dir_with_options(&args.model, true)
+    } else {
+        GenerationPipeline::from_model_dir(&args.model)
+    };
+    let pipe = match pipe {
         Ok(p) => p,
         Err(e) => {
             if let Some(hb) = heartbeat { hb.stop(); }

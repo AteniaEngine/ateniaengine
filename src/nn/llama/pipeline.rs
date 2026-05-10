@@ -69,17 +69,23 @@
 
 use std::path::{Path, PathBuf};
 
+use super::builder::{LlamaRuntime, build_llama};
+use super::numcert;
+use super::phi3;
 use crate::amg::builder::GraphBuilder;
 use crate::amg::weight_store::{UploadReport, WeightStore, WeightStoreError};
 use crate::nn::llama::config::{ConfigError, LlamaConfig};
+use crate::nn::llama::gguf_weight_loading::{
+    gemma2_gguf_weight_mapper, llama_gguf_weight_mapper, phi3_gguf_weight_mapper,
+};
 use crate::nn::llama::weight_loading::llama_weight_mapper;
 use crate::tokenizer::{AteniaTokenizer, ChatMessage, TokenizerError};
+use crate::v17::loader::gguf_config::{architecture_from_gguf, llama_config_from_gguf};
+use crate::v17::loader::gguf_reader::GgufReader;
+use crate::v17::loader::gguf_to_hf_naming::gguf_to_hf_name;
 use crate::v17::loader::loader_errors::LoaderError;
 use crate::v17::loader::safetensors_reader::SafetensorsReader;
 use crate::v17::loader::sharded_reader::ShardedSafetensorsReader;
-use super::builder::{build_llama, LlamaRuntime};
-use super::numcert;
-use super::phi3;
 
 /// **M10.2.1 / M10.3.1.0** — fast-mode gate, exposed for the GPU
 /// dispatcher (`gpu::dispatch::hooks`) to choose between
@@ -115,7 +121,9 @@ pub struct FastModeGate {
 
 impl FastModeGate {
     const fn new() -> Self {
-        Self { cell: std::sync::OnceLock::new() }
+        Self {
+            cell: std::sync::OnceLock::new(),
+        }
     }
 
     /// Read the resolved value. If the pipeline has called
@@ -165,9 +173,7 @@ impl std::ops::Deref for FastModeGate {
 /// silently ignored (the first model loaded wins, which matches
 /// the operator's intent — they pointed `--model` at one
 /// checkpoint per process).
-pub fn init_fast_mode_active(
-    manifest: Option<&numcert::NumcertManifest>,
-) -> bool {
+pub fn init_fast_mode_active(manifest: Option<&numcert::NumcertManifest>) -> bool {
     let env_override = std::env::var("ATENIA_FAST_MODE").as_deref() == Ok("1");
     let resolved = if env_override {
         true
@@ -180,7 +186,7 @@ pub fn init_fast_mode_active(
     resolved
 }
 use super::generator::{
-    generate_greedy, GenerateError, GeneratedToken, GenerationConfig, TokenSink,
+    GenerateError, GeneratedToken, GenerationConfig, TokenSink, generate_greedy,
 };
 
 /// Bundles everything needed to run inference against one
@@ -221,22 +227,34 @@ impl std::fmt::Display for PipelineError {
 impl std::error::Error for PipelineError {}
 
 impl From<std::io::Error> for PipelineError {
-    fn from(e: std::io::Error) -> Self { PipelineError::Io(e) }
+    fn from(e: std::io::Error) -> Self {
+        PipelineError::Io(e)
+    }
 }
 impl From<ConfigError> for PipelineError {
-    fn from(e: ConfigError) -> Self { PipelineError::Config(e) }
+    fn from(e: ConfigError) -> Self {
+        PipelineError::Config(e)
+    }
 }
 impl From<TokenizerError> for PipelineError {
-    fn from(e: TokenizerError) -> Self { PipelineError::Tokenizer(e) }
+    fn from(e: TokenizerError) -> Self {
+        PipelineError::Tokenizer(e)
+    }
 }
 impl From<LoaderError> for PipelineError {
-    fn from(e: LoaderError) -> Self { PipelineError::Loader(e) }
+    fn from(e: LoaderError) -> Self {
+        PipelineError::Loader(e)
+    }
 }
 impl From<WeightStoreError> for PipelineError {
-    fn from(e: WeightStoreError) -> Self { PipelineError::WeightStore(e) }
+    fn from(e: WeightStoreError) -> Self {
+        PipelineError::WeightStore(e)
+    }
 }
 impl From<GenerateError> for PipelineError {
-    fn from(e: GenerateError) -> Self { PipelineError::Generate(e) }
+    fn from(e: GenerateError) -> Self {
+        PipelineError::Generate(e)
+    }
 }
 
 /// **M11.B step 4b** — peek at `architectures[0]` from a HF
@@ -254,17 +272,104 @@ impl From<GenerateError> for PipelineError {
 /// happens against the raw JSON rather than an extension to
 /// `LlamaConfig`.
 fn read_architectures_first(config_path: &Path) -> Result<Option<String>, PipelineError> {
-    let bytes = std::fs::read(config_path)
-        .map_err(PipelineError::Io)?;
-    let v: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|e| PipelineError::Config(ConfigError::Parse(format!(
+    let bytes = std::fs::read(config_path).map_err(PipelineError::Io)?;
+    let v: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| {
+        PipelineError::Config(ConfigError::Parse(format!(
             "config.json JSON syntax error: {e}"
-        ))))?;
+        )))
+    })?;
     Ok(v.get("architectures")
         .and_then(|x| x.as_array())
         .and_then(|arr| arr.first())
         .and_then(|x| x.as_str())
         .map(|s| s.to_string()))
+}
+
+fn find_single_gguf(model_dir: &Path) -> Result<Option<PathBuf>, PipelineError> {
+    let mut ggufs = Vec::new();
+    if !model_dir.exists() {
+        return Ok(None);
+    }
+    for entry in std::fs::read_dir(model_dir).map_err(PipelineError::Io)? {
+        let path = entry.map_err(PipelineError::Io)?.path();
+        if path.extension().and_then(|x| x.to_str()) == Some("gguf") {
+            ggufs.push(path);
+        }
+    }
+    match ggufs.len() {
+        0 => Ok(None),
+        1 => Ok(ggufs.pop()),
+        _ => Err(PipelineError::Loader(LoaderError::InvalidFormat(format!(
+            "GGUF load expects exactly one .gguf file in {}; found {}",
+            model_dir.display(),
+            ggufs.len()
+        )))),
+    }
+}
+
+fn build_gguf_name_map(
+    reader: &GgufReader,
+) -> Result<std::collections::HashMap<String, String>, PipelineError> {
+    let arch = reader.architecture().ok_or_else(|| {
+        PipelineError::Loader(LoaderError::InvalidFormat(
+            "GGUF file is missing general.architecture metadata".to_string(),
+        ))
+    })?;
+    let mut map = std::collections::HashMap::with_capacity(reader.tensors.len());
+    for descriptor in &reader.tensors {
+        let hf_name = gguf_to_hf_name(&descriptor.name, arch).ok_or_else(|| {
+            PipelineError::Loader(LoaderError::InvalidFormat(format!(
+                "GGUF tensor '{}' has no known HuggingFace name mapping for architecture '{}'",
+                descriptor.name, arch
+            )))
+        })?;
+        if map
+            .insert(descriptor.name.clone(), hf_name.clone())
+            .is_some()
+        {
+            return Err(PipelineError::Loader(LoaderError::InvalidFormat(format!(
+                "GGUF tensor '{}' appears more than once",
+                descriptor.name
+            ))));
+        }
+    }
+    Ok(map)
+}
+
+fn gguf_tensor_metas(
+    reader: &GgufReader,
+    name_map: &std::collections::HashMap<String, String>,
+) -> Result<Vec<crate::gpu::tier_plan::TensorMeta>, PipelineError> {
+    let mut metas = Vec::with_capacity(reader.tensors.len());
+    for descriptor in &reader.tensors {
+        let hf_name = name_map.get(&descriptor.name).ok_or_else(|| {
+            PipelineError::Loader(LoaderError::InvalidFormat(format!(
+                "GGUF tensor '{}' missing from name map",
+                descriptor.name
+            )))
+        })?;
+        let dtype = match descriptor.tensor_type {
+            crate::v17::loader::gguf_reader::GgufTensorType::F32 => crate::tensor::DType::F32,
+            crate::v17::loader::gguf_reader::GgufTensorType::F16 => crate::tensor::DType::F16,
+            crate::v17::loader::gguf_reader::GgufTensorType::Q8_0 => crate::tensor::DType::Int8,
+            crate::v17::loader::gguf_reader::GgufTensorType::Q4_K => crate::tensor::DType::Int8,
+            crate::v17::loader::gguf_reader::GgufTensorType::Q6_K => crate::tensor::DType::Int8,
+            other => {
+                return Err(PipelineError::Loader(LoaderError::UnsupportedDType(
+                    format!(
+                        "GGUF tensor '{}' has unsupported type {:?} for M11.D.3",
+                        descriptor.name, other
+                    ),
+                )));
+            }
+        };
+        metas.push(crate::gpu::tier_plan::TensorMeta {
+            name: hf_name.clone(),
+            shape: descriptor.dimensions.iter().map(|d| *d as usize).collect(),
+            dtype,
+        });
+    }
+    Ok(metas)
 }
 
 impl GenerationPipeline {
@@ -275,9 +380,7 @@ impl GenerationPipeline {
     /// for TinyLlama and ~3 minutes for Llama 2 13B on the
     /// dev box (matches the M4.7.6 / M4.8 numbers — load
     /// dominated by safetensors decode + transform).
-    pub fn from_model_dir<P: AsRef<Path>>(
-        model_dir: P,
-    ) -> Result<Self, PipelineError> {
+    pub fn from_model_dir<P: AsRef<Path>>(model_dir: P) -> Result<Self, PipelineError> {
         Self::from_model_dir_with_options(model_dir, true)
     }
 
@@ -291,12 +394,25 @@ impl GenerationPipeline {
     ) -> Result<Self, PipelineError> {
         let model_dir = model_dir.as_ref().to_path_buf();
 
+        let gguf_path = find_single_gguf(&model_dir)?;
+        let gguf_reader = match gguf_path.as_ref() {
+            Some(path) => Some(GgufReader::read_from_path(path)?),
+            None => None,
+        };
+        let is_gguf = gguf_reader.is_some();
+
         // 1. Config.
         let config_path = model_dir.join("config.json");
-        if !config_path.exists() {
-            return Err(PipelineError::MissingFile(config_path.display().to_string()));
+        if !is_gguf && !config_path.exists() {
+            return Err(PipelineError::MissingFile(
+                config_path.display().to_string(),
+            ));
         }
-        let config = LlamaConfig::from_json_file(&config_path)?;
+        let config = if let Some(reader) = gguf_reader.as_ref() {
+            llama_config_from_gguf(reader)?
+        } else {
+            LlamaConfig::from_json_file(&config_path)?
+        };
 
         // 2. Tokenizer.
         let tokenizer = AteniaTokenizer::from_model_dir(&model_dir)?;
@@ -311,8 +427,7 @@ impl GenerationPipeline {
         //      value into the OnceLock so every subsequent dispatcher
         //      read is process-stable.
         let manifest = numcert::load_manifest(&model_dir);
-        let env_fast_override =
-            std::env::var("ATENIA_FAST_MODE").as_deref() == Ok("1");
+        let env_fast_override = std::env::var("ATENIA_FAST_MODE").as_deref() == Ok("1");
         let fast_resolved = init_fast_mode_active(manifest.as_ref());
         match (&manifest, env_fast_override) {
             (Some(m), false) => eprintln!(
@@ -368,8 +483,12 @@ impl GenerationPipeline {
         // builders return `(token_input_id, logits_id, param_ids,
         // param_names)` with HF-convention names that the
         // mapper consumes.
-        let architecture = read_architectures_first(&config_path)?
-            .unwrap_or_else(|| "LlamaForCausalLM".to_string());
+        let architecture = if let Some(reader) = gguf_reader.as_ref() {
+            architecture_from_gguf(reader)?
+        } else {
+            read_architectures_first(&config_path)?
+                .unwrap_or_else(|| "LlamaForCausalLM".to_string())
+        };
 
         // 3. Scratch graph (zero-init parameters; will get
         //    populated by the loader and then hoisted into
@@ -424,14 +543,24 @@ impl GenerationPipeline {
         // 4. Load weights. Mapper is also architecture-specific
         //    because Phi-3 has fused weight names (qkv_proj,
         //    gate_up_proj) the Llama mapper doesn't know about.
-        let mut mapper = match architecture.as_str() {
-            "Phi3ForCausalLM" => phi3::phi3_weight_mapper(&config, &param_names, &param_ids)?,
-            "Gemma2ForCausalLM" => crate::nn::llama::gemma2::gemma2_weight_mapper(
-                &config,
-                &param_names,
-                &param_ids,
-            )?,
-            _ => llama_weight_mapper(&config, &param_names, &param_ids)?,
+        let mut mapper = if is_gguf {
+            match architecture.as_str() {
+                "Phi3ForCausalLM" => phi3_gguf_weight_mapper(&config, &param_names, &param_ids)?,
+                "Gemma2ForCausalLM" => {
+                    gemma2_gguf_weight_mapper(&config, &param_names, &param_ids)?
+                }
+                _ => llama_gguf_weight_mapper(&config, &param_names, &param_ids)?,
+            }
+        } else {
+            match architecture.as_str() {
+                "Phi3ForCausalLM" => phi3::phi3_weight_mapper(&config, &param_names, &param_ids)?,
+                "Gemma2ForCausalLM" => crate::nn::llama::gemma2::gemma2_weight_mapper(
+                    &config,
+                    &param_names,
+                    &param_ids,
+                )?,
+                _ => llama_weight_mapper(&config, &param_names, &param_ids)?,
+            }
         };
         mapper.set_store_params_as_bf16(bf16_storage);
 
@@ -465,16 +594,14 @@ impl GenerationPipeline {
                  ATENIA_LEGACY_LOADER=1 to opt out instead."
             );
         }
-        let tier_aware =
-            std::env::var("ATENIA_LEGACY_LOADER").as_deref() != Ok("1");
+        let tier_aware = std::env::var("ATENIA_LEGACY_LOADER").as_deref() != Ok("1");
         if !tier_aware {
             eprintln!(
                 "[ATENIA] Legacy loader active (ATENIA_LEGACY_LOADER=1): \
                  tier-aware placement disabled."
             );
         }
-        let gpu_residency =
-            std::env::var("ATENIA_GPU_RESIDENCY").as_deref() == Ok("1");
+        let gpu_residency = std::env::var("ATENIA_GPU_RESIDENCY").as_deref() == Ok("1");
 
         if tier_aware && gpu_residency {
             eprintln!(
@@ -492,12 +619,9 @@ impl GenerationPipeline {
             // Probe live machine state once, build a single plan,
             // then dispatch to the multi-shard or single-shard
             // tier-aware loader.
-            let free_ram_bytes =
-                crate::gpu::safety::resource_check::probe_free_ram_bytes();
-            let free_vram_bytes =
-                crate::gpu::safety::resource_check::probe_free_vram_bytes();
-            let total_ram_bytes =
-                crate::gpu::safety::resource_check::probe_total_ram_bytes();
+            let free_ram_bytes = crate::gpu::safety::resource_check::probe_free_ram_bytes();
+            let free_vram_bytes = crate::gpu::safety::resource_check::probe_free_vram_bytes();
+            let total_ram_bytes = crate::gpu::safety::resource_check::probe_total_ram_bytes();
 
             // **M8.3 / M8.4c** — kernel dtype for the VRAM-resident
             // matmul path. The env var `ATENIA_M8_BF16_KERNEL=1` is
@@ -520,9 +644,7 @@ impl GenerationPipeline {
             // it, the model dominates RAM and overflowing to Disk
             // is structural; above it (model fits in RAM with
             // headroom), the M8 BF16 path is gratuitous.
-            let env_requested = std::env::var("ATENIA_M8_BF16_KERNEL")
-                .as_deref()
-                == Ok("1");
+            let env_requested = std::env::var("ATENIA_M8_BF16_KERNEL").as_deref() == Ok("1");
             // **M10.2.1** — fast mode (`ATENIA_FAST_MODE=1`) implies
             // M8 BF16 storage (the native fast kernel consumes a
             // BF16-resident weight) and overrides the M7.2 RAM-based
@@ -568,7 +690,56 @@ impl GenerationPipeline {
                 model_dominates
             };
 
-            if index_path.exists() {
+            if let Some(reader) = gguf_reader.as_ref() {
+                let name_map = build_gguf_name_map(reader)?;
+                let metas = gguf_tensor_metas(reader, &name_map)?;
+                let model_total_bytes = sum_model_bytes(&metas);
+                let m8_bf16_effective = m8_bf16_resolver(model_total_bytes);
+                let kernel_dtype = if m8_bf16_effective {
+                    crate::tensor::DType::BF16
+                } else {
+                    crate::tensor::DType::F32
+                };
+                log_m8_kernel_dtype(kernel_dtype);
+                mapper.set_bf16_kernel_active(Some(m8_bf16_effective));
+                let plan_input = crate::gpu::tier_plan::TierPlanInput {
+                    tensors: metas,
+                    free_vram_bytes,
+                    free_ram_bytes,
+                    model_total_bytes,
+                    total_ram_bytes,
+                    kernel_dtype,
+                };
+                let plan = crate::gpu::tier_plan::plan(&plan_input);
+                log_adaptive_headroom(
+                    plan_input.model_total_bytes,
+                    plan_input.free_ram_bytes,
+                    plan_input.total_ram_bytes,
+                    &plan,
+                );
+                log_tier_plan(&plan);
+                let (s, report) = mapper.load_gguf_with_residency_plan(
+                    &mut scratch_graph,
+                    reader,
+                    &name_map,
+                    &plan,
+                    &param_ids,
+                    &param_names,
+                )?;
+                // Allow rope_freqs as skipped tensor (RoPE scaling metadata, not a model weight)
+                let acceptable_skipped: Vec<&str> = vec!["rope_freqs"];
+                let unexpected_skipped: Vec<_> = report.skipped.iter()
+                    .filter(|s| !acceptable_skipped.iter().any(|a| s.contains(a)))
+                    .cloned()
+                    .collect();
+                if !unexpected_skipped.is_empty() || !report.missing.is_empty() {
+                    return Err(PipelineError::Loader(LoaderError::InvalidFormat(format!(
+                        "GGUF load incomplete: unexpected_skipped={:?}, missing={:?}",
+                        unexpected_skipped, report.missing
+                    ))));
+                }
+                store = s;
+            } else if index_path.exists() {
                 let sharded = ShardedSafetensorsReader::open(&index_path)?;
                 let metas = sharded.collect_tensor_metas()?;
                 let model_total_bytes = sum_model_bytes(&metas);
@@ -657,14 +828,29 @@ impl GenerationPipeline {
                 store = s;
             } else {
                 return Err(PipelineError::MissingFile(format!(
-                    "{} or {}",
+                    "{} or {} or a single .gguf file",
                     single_path.display(),
                     index_path.display()
                 )));
             }
         } else {
             // Legacy load path — unchanged from M5.f.a.
-            if index_path.exists() {
+            if let Some(reader) = gguf_reader.as_ref() {
+                let name_map = build_gguf_name_map(reader)?;
+                let report = mapper.load_gguf_into(&mut scratch_graph, reader, &name_map)?;
+                // Allow rope_freqs as skipped tensor (RoPE scaling metadata, not a model weight)
+                let acceptable_skipped: Vec<&str> = vec!["rope_freqs"];
+                let unexpected_skipped: Vec<_> = report.skipped.iter()
+                    .filter(|s| !acceptable_skipped.iter().any(|a| s.contains(a)))
+                    .cloned()
+                    .collect();
+                if !unexpected_skipped.is_empty() || !report.missing.is_empty() {
+                    return Err(PipelineError::Loader(LoaderError::InvalidFormat(format!(
+                        "GGUF load incomplete: unexpected_skipped={:?}, missing={:?}",
+                        unexpected_skipped, report.missing
+                    ))));
+                }
+            } else if index_path.exists() {
                 let sharded = ShardedSafetensorsReader::open(&index_path)?;
                 let _report = sharded.load_into(&mut scratch_graph, &mapper)?;
             } else if single_path.exists() {
@@ -682,11 +868,7 @@ impl GenerationPipeline {
             //    scratch graph's parameter slots are `Shared`
             //    views, so dropping the graph is safe — the
             //    parameter Arcs survive in the store.
-            store = WeightStore::extract_from_graph(
-                &mut scratch_graph,
-                &param_ids,
-                &param_names,
-            )?;
+            store = WeightStore::extract_from_graph(&mut scratch_graph, &param_ids, &param_names)?;
         }
 
         // 5.5. **M10.3.1.1** — stamp per-tensor matmul policy onto
@@ -776,7 +958,12 @@ impl GenerationPipeline {
             );
         }
 
-        Ok(Self { config, tokenizer, store, model_dir })
+        Ok(Self {
+            config,
+            tokenizer,
+            store,
+            model_dir,
+        })
     }
 
     /// Run greedy generation against the loaded model.
@@ -791,9 +978,8 @@ impl GenerationPipeline {
         sink: &mut S,
     ) -> Result<String, PipelineError> {
         let prompt_text = if self.tokenizer.has_chat_template() {
-            self.tokenizer.apply_chat_template(&[
-                ChatMessage::user(prompt.to_string()),
-            ])?
+            self.tokenizer
+                .apply_chat_template(&[ChatMessage::user(prompt.to_string())])?
         } else {
             prompt.to_string()
         };
@@ -841,8 +1027,7 @@ impl GenerationPipeline {
                 return String::new();
             }
             generated_ids.push(id);
-            let full = tokenizer.decode(&generated_ids, true)
-                .unwrap_or_default();
+            let full = tokenizer.decode(&generated_ids, true).unwrap_or_default();
             // Diff: bytes added by the latest token. Robust
             // to multi-byte UTF-8 because we slice on
             // `emitted_text.len()` (byte length) and the
@@ -871,8 +1056,12 @@ impl GenerationPipeline {
         };
 
         let _ids = generate_greedy(
-            &self.config, &self.store, &prompt_ids, &gen_cfg,
-            decode, &mut recording,
+            &self.config,
+            &self.store,
+            &prompt_ids,
+            &gen_cfg,
+            decode,
+            &mut recording,
         )?;
 
         Ok(joined)
@@ -985,5 +1174,158 @@ impl<'a, S: TokenSink + ?Sized> TokenSink for TextRecordingSink<'a, S> {
     fn on_token(&mut self, t: &GeneratedToken) {
         self.joined.push_str(&t.text);
         self.inner.on_token(t);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires models/tinyllama-q8_0 with GGUF + tokenizer.json locally"]
+    fn loads_tinyllama_q8_0_gguf_pipeline_without_generation() {
+        let model_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("models/tinyllama-q8_0");
+        if !model_dir
+            .join("tinyllama-1.1b-chat-v1.0.Q8_0.gguf")
+            .exists()
+            || !model_dir.join("tokenizer.json").exists()
+            || !model_dir.join("tokenizer_config.json").exists()
+        {
+            eprintln!(
+                "[skip] TinyLlama Q8_0 GGUF pipeline test requires .gguf, tokenizer.json, \
+                 and tokenizer_config.json in {}",
+                model_dir.display()
+            );
+            return;
+        }
+        let pipe = GenerationPipeline::from_model_dir_with_options(&model_dir, true)
+            .expect("TinyLlama Q8_0 GGUF pipeline load");
+        assert_eq!(pipe.config.num_hidden_layers, 22);
+        assert_eq!(pipe.config.hidden_size, 2048);
+        assert_eq!(pipe.config.vocab_size, 32_000);
+        assert!(!pipe.config.tie_word_embeddings);
+        assert!(
+            pipe.store
+                .names
+                .iter()
+                .any(|n| n == "model.embed_tokens.weight"),
+            "HF-mapped embed tensor must be present in WeightStore"
+        );
+        assert!(
+            pipe.store.names.iter().any(|n| n == "lm_head.weight"),
+            "HF-mapped untied lm_head tensor must be present in WeightStore"
+        );
+        assert!(
+            pipe.store
+                .names
+                .iter()
+                .any(|n| n == "model.layers.0.self_attn.q_proj.weight"),
+            "HF-mapped block tensor must be present in WeightStore"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires models/tinyllama-q8_0 with GGUF + tokenizer files locally"]
+    fn generates_one_token_from_tinyllama_q8_0_gguf() {
+        let model_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("models/tinyllama-q8_0");
+        if !model_dir
+            .join("tinyllama-1.1b-chat-v1.0.Q8_0.gguf")
+            .exists()
+            || !model_dir.join("tokenizer.json").exists()
+            || !model_dir.join("tokenizer_config.json").exists()
+        {
+            eprintln!(
+                "[skip] TinyLlama Q8_0 GGUF generation test requires .gguf, tokenizer.json, \
+                 and tokenizer_config.json in {}",
+                model_dir.display()
+            );
+            return;
+        }
+        let pipe = GenerationPipeline::from_model_dir_with_options(&model_dir, true)
+            .expect("TinyLlama Q8_0 GGUF pipeline load");
+        let mut sink = crate::nn::llama::generator::CollectingTokenSink::default();
+        let text = pipe
+            .generate_raw("Hello", 1, &mut sink)
+            .expect("TinyLlama Q8_0 GGUF one-token generation");
+        assert_eq!(sink.tokens.len(), 1);
+        assert!(sink.tokens[0].token_id < pipe.config.vocab_size as u32);
+        assert_eq!(text, sink.tokens[0].text);
+    }
+
+    #[test]
+    #[ignore = "requires models/TinyLlama-1.1B-Chat-v1.0-Q4_K_M-GGUF with GGUF + tokenizer files locally"]
+    fn loads_tinyllama_q4_k_m_gguf_pipeline_without_generation() {
+        let model_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("models/TinyLlama-1.1B-Chat-v1.0-Q4_K_M-GGUF");
+        if !model_dir
+            .join("tinyllama-1.1b-chat-v1.0-q4_k_m.gguf")
+            .exists()
+            || !model_dir.join("tokenizer.json").exists()
+            || !model_dir.join("tokenizer_config.json").exists()
+        {
+            eprintln!(
+                "[skip] TinyLlama Q4_K_M GGUF pipeline test requires .gguf, tokenizer.json, \
+                 and tokenizer_config.json in {}",
+                model_dir.display()
+            );
+            return;
+        }
+        let pipe = GenerationPipeline::from_model_dir_with_options(&model_dir, true)
+            .expect("TinyLlama Q4_K_M GGUF pipeline load");
+        assert_eq!(pipe.config.num_hidden_layers, 22);
+        assert_eq!(pipe.config.hidden_size, 2048);
+        assert_eq!(pipe.config.vocab_size, 32_000);
+        assert!(!pipe.config.tie_word_embeddings);
+        assert!(
+            pipe.store
+                .names
+                .iter()
+                .any(|n| n == "model.embed_tokens.weight"),
+            "HF-mapped embed tensor must be present in WeightStore"
+        );
+        assert!(
+            pipe.store.names.iter().any(|n| n == "lm_head.weight"),
+            "HF-mapped untied lm_head tensor must be present in WeightStore"
+        );
+        assert!(
+            pipe.store
+                .names
+                .iter()
+                .any(|n| n == "model.layers.0.self_attn.q_proj.weight"),
+            "HF-mapped block tensor must be present in WeightStore"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires models/TinyLlama-1.1B-Chat-v1.0-Q4_K_M-GGUF with GGUF + tokenizer files locally"]
+    fn generates_one_token_from_tinyllama_q4_k_m_gguf() {
+        let model_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("models/TinyLlama-1.1B-Chat-v1.0-Q4_K_M-GGUF");
+        if !model_dir
+            .join("tinyllama-1.1b-chat-v1.0-q4_k_m.gguf")
+            .exists()
+            || !model_dir.join("tokenizer.json").exists()
+            || !model_dir.join("tokenizer_config.json").exists()
+        {
+            eprintln!(
+                "[skip] TinyLlama Q4_K_M GGUF generation test requires .gguf, tokenizer.json, \
+                 and tokenizer_config.json in {}",
+                model_dir.display()
+            );
+            return;
+        }
+        let pipe = GenerationPipeline::from_model_dir_with_options(&model_dir, true)
+            .expect("TinyLlama Q4_K_M GGUF pipeline load");
+        let mut sink = crate::nn::llama::generator::CollectingTokenSink::default();
+        let text = pipe
+            .generate_raw("Hello", 1, &mut sink)
+            .expect("TinyLlama Q4_K_M GGUF one-token generation");
+        assert_eq!(sink.tokens.len(), 1);
+        assert!(sink.tokens[0].token_id < pipe.config.vocab_size as u32);
+        assert_eq!(text, sink.tokens[0].text);
+        eprintln!(
+            "[M11.D.4] TinyLlama Q4_K_M GGUF one-token generation: token_id={}, text=\"{}\"",
+            sink.tokens[0].token_id, text
+        );
     }
 }

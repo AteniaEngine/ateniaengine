@@ -16,13 +16,14 @@ pub mod builder_shared;
 pub mod config;
 pub mod gemma2;
 pub mod generator;
+pub mod gguf_weight_loading;
 pub mod numcert;
 pub mod phi3;
 pub mod pipeline;
 pub mod weight_loading;
 
 pub use builder::{build_llama, LlamaHandles, LlamaRuntime};
-pub use builder_shared::{build_llama_with_store, LlamaHandlesShared, BuildError};
+pub use builder_shared::{build_llama_with_store, BuildError, LlamaHandlesShared};
 pub use config::{ConfigError, LlamaConfig, RopeScaling};
 pub use generator::{
     generate_greedy, CollectingTokenSink, GenerateError, GeneratedToken,

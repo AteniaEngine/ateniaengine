@@ -66,6 +66,17 @@ pub const Q8_0_BLOCK_ELEMS: usize = 32;
 /// Q8_0 block size in bytes: 2-byte f16 scale + 32 × i8.
 pub const Q8_0_BLOCK_BYTES: usize = 2 + Q8_0_BLOCK_ELEMS;
 
+pub const Q4_K_BLOCK_ELEMS: usize = 256;
+pub const Q4_K_SCALE_BYTES: usize = 12;
+pub const Q4_K_QUANT_BYTES: usize = Q4_K_BLOCK_ELEMS / 2;
+pub const Q4_K_BLOCK_BYTES: usize = 2 + 2 + Q4_K_SCALE_BYTES + Q4_K_QUANT_BYTES;
+pub const Q6_K_BLOCK_ELEMS: usize = 256;
+pub const Q6_K_QL_BYTES: usize = Q6_K_BLOCK_ELEMS / 2;
+pub const Q6_K_QH_BYTES: usize = Q6_K_BLOCK_ELEMS / 4;
+pub const Q6_K_SCALE_BYTES: usize = Q6_K_BLOCK_ELEMS / 16;
+pub const Q6_K_BLOCK_BYTES: usize =
+    Q6_K_QL_BYTES + Q6_K_QH_BYTES + Q6_K_SCALE_BYTES + 2;
+
 /// Decode a tensor's data into a fresh `Vec<f32>` in row-major
 /// contiguous layout. Reopens the file and seeks to
 /// `reader.data_section_offset + descriptor.offset`.
@@ -117,6 +128,8 @@ pub fn decode_tensor(
         GgufTensorType::F32 => decode_f32(&mut buf, numel, &descriptor.name),
         GgufTensorType::F16 => decode_f16(&mut buf, numel, &descriptor.name),
         GgufTensorType::Q8_0 => decode_q8_0(&mut buf, numel, &descriptor.name),
+        GgufTensorType::Q4_K => decode_q4_k(&mut buf, numel, &descriptor.name),
+        GgufTensorType::Q6_K => decode_q6_k(&mut buf, numel, &descriptor.name),
         other => Err(GgufError::UnsupportedDType(format!(
             "GGUF decode '{}': tensor type {:?} (raw {}) is not implemented \
              in M11.D.2 (F16 + Q8_0 only). Q4_K_M and friends land in \
@@ -246,6 +259,138 @@ fn decode_q8_0(
     Ok(out)
 }
 
+fn decode_q4_k(
+    buf: &mut BufReader<File>,
+    numel: usize,
+    name: &str,
+) -> Result<Vec<f32>, GgufError> {
+    if numel % Q4_K_BLOCK_ELEMS != 0 {
+        return Err(GgufError::InvalidFormat(format!(
+            "GGUF decode '{name}': Q4_K numel {numel} is not a multiple of \
+             block size {Q4_K_BLOCK_ELEMS}; partial blocks are not defined \
+             under the GGUF spec"
+        )));
+    }
+    let n_blocks = numel / Q4_K_BLOCK_ELEMS;
+    let total_bytes = n_blocks * Q4_K_BLOCK_BYTES;
+    let mut bytes = vec![0u8; total_bytes];
+    buf.read_exact(&mut bytes).map_err(|e| {
+        GgufError::IoError(format!(
+            "GGUF decode '{name}': Q4_K read of {total_bytes} bytes \
+             ({n_blocks} blocks × {Q4_K_BLOCK_BYTES} B) failed: {e}"
+        ))
+    })?;
+
+    let mut out: Vec<f32> = Vec::with_capacity(numel);
+    for b in 0..n_blocks {
+        let block_off = b * Q4_K_BLOCK_BYTES;
+        let d = half::f16::from_bits(u16::from_le_bytes([
+            bytes[block_off],
+            bytes[block_off + 1],
+        ]))
+        .to_f32();
+        let dmin = half::f16::from_bits(u16::from_le_bytes([
+            bytes[block_off + 2],
+            bytes[block_off + 3],
+        ]))
+        .to_f32();
+        let scales = &bytes[block_off + 4..block_off + 4 + Q4_K_SCALE_BYTES];
+        let mut qs = block_off + 4 + Q4_K_SCALE_BYTES;
+        let mut is = 0usize;
+        for _ in (0..Q4_K_BLOCK_ELEMS).step_by(64) {
+            let (sc1, m1) = get_scale_min_k4(is, scales);
+            let d1 = d * (sc1 as f32);
+            let min1 = dmin * (m1 as f32);
+            let (sc2, m2) = get_scale_min_k4(is + 1, scales);
+            let d2 = d * (sc2 as f32);
+            let min2 = dmin * (m2 as f32);
+            for l in 0..32 {
+                out.push(d1 * ((bytes[qs + l] & 0x0F) as f32) - min1);
+            }
+            for l in 0..32 {
+                out.push(d2 * ((bytes[qs + l] >> 4) as f32) - min2);
+            }
+            qs += 32;
+            is += 2;
+        }
+    }
+    Ok(out)
+}
+
+fn get_scale_min_k4(j: usize, q: &[u8]) -> (u8, u8) {
+    if j < 4 {
+        (q[j] & 63, q[j + 4] & 63)
+    } else {
+        (
+            (q[j + 4] & 0x0F) | ((q[j - 4] >> 6) << 4),
+            (q[j + 4] >> 4) | ((q[j] >> 6) << 4),
+        )
+    }
+}
+
+fn decode_q6_k(
+    buf: &mut BufReader<File>,
+    numel: usize,
+    name: &str,
+) -> Result<Vec<f32>, GgufError> {
+    if numel % Q6_K_BLOCK_ELEMS != 0 {
+        return Err(GgufError::InvalidFormat(format!(
+            "GGUF decode '{name}': Q6_K numel {numel} is not a multiple of \
+             block size {Q6_K_BLOCK_ELEMS}; partial blocks are not defined \
+             under the GGUF spec"
+        )));
+    }
+    let n_blocks = numel / Q6_K_BLOCK_ELEMS;
+    let total_bytes = n_blocks * Q6_K_BLOCK_BYTES;
+    let mut bytes = vec![0u8; total_bytes];
+    buf.read_exact(&mut bytes).map_err(|e| {
+        GgufError::IoError(format!(
+            "GGUF decode '{name}': Q6_K read of {total_bytes} bytes \
+             ({n_blocks} blocks × {Q6_K_BLOCK_BYTES} B) failed: {e}"
+        ))
+    })?;
+
+    let mut out = vec![0.0_f32; numel];
+    for b in 0..n_blocks {
+        let block_off = b * Q6_K_BLOCK_BYTES;
+        let ql_off = block_off;
+        let qh_off = ql_off + Q6_K_QL_BYTES;
+        let sc_off = qh_off + Q6_K_QH_BYTES;
+        let d_off = sc_off + Q6_K_SCALE_BYTES;
+        let d = half::f16::from_bits(u16::from_le_bytes([bytes[d_off], bytes[d_off + 1]]))
+            .to_f32();
+        let base_out = b * Q6_K_BLOCK_ELEMS;
+        for n in (0..Q6_K_BLOCK_ELEMS).step_by(128) {
+            let ql = ql_off + (n / 128) * 64;
+            let qh = qh_off + (n / 128) * 32;
+            let sc = sc_off + (n / 128) * 8;
+            for l in 0..32 {
+                let is = l / 16;
+                let q1 = (((bytes[ql + l] & 0x0F)
+                    | (((bytes[qh + l] >> 0) & 0x03) << 4)) as i8)
+                    - 32;
+                let q2 = (((bytes[ql + l + 32] & 0x0F)
+                    | (((bytes[qh + l] >> 2) & 0x03) << 4)) as i8)
+                    - 32;
+                let q3 = (((bytes[ql + l] >> 4)
+                    | (((bytes[qh + l] >> 4) & 0x03) << 4)) as i8)
+                    - 32;
+                let q4 = (((bytes[ql + l + 32] >> 4)
+                    | (((bytes[qh + l] >> 6) & 0x03) << 4)) as i8)
+                    - 32;
+                out[base_out + n + l] = d * (bytes[sc + is] as i8 as f32) * (q1 as f32);
+                out[base_out + n + l + 32] =
+                    d * (bytes[sc + is + 2] as i8 as f32) * (q2 as f32);
+                out[base_out + n + l + 64] =
+                    d * (bytes[sc + is + 4] as i8 as f32) * (q3 as f32);
+                out[base_out + n + l + 96] =
+                    d * (bytes[sc + is + 6] as i8 as f32) * (q4 as f32);
+            }
+        }
+    }
+    Ok(out)
+}
+
 // ===== Tests ========================================================
 
 #[cfg(test)]
@@ -264,6 +409,39 @@ mod tests {
             bytes.push(q as u8);
         }
         assert_eq!(bytes.len(), Q8_0_BLOCK_BYTES);
+        bytes
+    }
+
+    fn set_scale_min_k4(j: usize, q: &mut [u8; Q4_K_SCALE_BYTES], d: u8, m: u8) {
+        assert!(d < 64);
+        assert!(m < 64);
+        if j < 4 {
+            q[j] = (q[j] & 0xC0) | d;
+            q[j + 4] = (q[j + 4] & 0xC0) | m;
+        } else {
+            q[j + 4] = (d & 0x0F) | ((m & 0x0F) << 4);
+            q[j - 4] = (q[j - 4] & 0x3F) | ((d >> 4) << 6);
+            q[j] = (q[j] & 0x3F) | ((m >> 4) << 6);
+        }
+    }
+
+    fn build_q4_k_block(d: f32, dmin: f32, scales_mins: &[(u8, u8); 8]) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(Q4_K_BLOCK_BYTES);
+        bytes.extend_from_slice(&half::f16::from_f32(d).to_bits().to_le_bytes());
+        bytes.extend_from_slice(&half::f16::from_f32(dmin).to_bits().to_le_bytes());
+        let mut scales = [0u8; Q4_K_SCALE_BYTES];
+        for (j, &(scale, min)) in scales_mins.iter().enumerate() {
+            set_scale_min_k4(j, &mut scales, scale, min);
+        }
+        bytes.extend_from_slice(&scales);
+        for j in 0..(Q4_K_BLOCK_ELEMS / 64) {
+            for l in 0..32 {
+                let low = ((l + j) & 0x0F) as u8;
+                let high = (15usize.wrapping_sub(l).wrapping_add(j) & 0x0F) as u8;
+                bytes.push(low | (high << 4));
+            }
+        }
+        assert_eq!(bytes.len(), Q4_K_BLOCK_BYTES);
         bytes
     }
 
@@ -459,31 +637,68 @@ mod tests {
         }
     }
 
-    /// **Unsupported tensor type** — Q4_K is not yet
-    /// implemented in M11.D.2; the decoder routes through
-    /// `UnsupportedDType` with a clear message naming the
-    /// type.
     #[test]
-    fn decode_unsupported_q4_k_routes_through_error() {
-        // Synthesise a 1-element Q4_K descriptor with no
-        // actual data — the dispatch fails before reading.
+    fn decode_q4_k_synthetic_block() {
+        let scales_mins = [
+            (1, 0),
+            (2, 1),
+            (3, 2),
+            (4, 3),
+            (5, 4),
+            (6, 5),
+            (7, 6),
+            (8, 7),
+        ];
+        let block = build_q4_k_block(0.5, 0.25, &scales_mins);
         let (reader, desc) = write_minimal_gguf_and_open(
             "tensor.q4_k",
             GgufTensorType::Q4_K,
             &[256],
-            &[],
-            "atenia_gguf_decode_q4_k_unsupported.gguf",
+            &block,
+            "atenia_gguf_decode_q4_k.gguf",
         );
-        let err = decode_tensor(&reader, &desc).expect_err("Q4_K must fail");
+        let out = decode_tensor(&reader, &desc).expect("decode");
+        let _ = std::fs::remove_file(&reader.file_path);
+        assert_eq!(out.len(), 256);
+        let mut idx = 0;
+        for j in 0..4 {
+            let (sc1, min1) = scales_mins[j * 2];
+            let (sc2, min2) = scales_mins[j * 2 + 1];
+            for l in 0..32 {
+                let q = ((l + j) & 0x0F) as f32;
+                let expected = 0.5 * (sc1 as f32) * q - 0.25 * (min1 as f32);
+                assert_eq!(out[idx], expected, "Q4_K low nibble block {j} lane {l}");
+                idx += 1;
+            }
+            for l in 0..32 {
+                let q = (15usize.wrapping_sub(l).wrapping_add(j) & 0x0F) as f32;
+                let expected = 0.5 * (sc2 as f32) * q - 0.25 * (min2 as f32);
+                assert_eq!(out[idx], expected, "Q4_K high nibble block {j} lane {l}");
+                idx += 1;
+            }
+        }
+    }
+
+    #[test]
+    fn decode_q4_k_rejects_non_multiple_numel() {
+        let block = build_q4_k_block(1.0, 0.0, &[(1, 0); 8]);
+        let (reader, desc) = write_minimal_gguf_and_open(
+            "tensor.q4_k.bad",
+            GgufTensorType::Q4_K,
+            &[255],
+            &block,
+            "atenia_gguf_decode_q4_k_bad_numel.gguf",
+        );
+        let err = decode_tensor(&reader, &desc).expect_err("must fail");
         let _ = std::fs::remove_file(&reader.file_path);
         match err {
-            GgufError::UnsupportedDType(msg) => {
+            GgufError::InvalidFormat(msg) => {
                 assert!(
-                    msg.contains("Q4_K"),
-                    "message should name the unsupported type: {msg}"
+                    msg.contains("Q4_K") && msg.contains("255") && msg.contains("256"),
+                    "error should mention Q4_K, the bad numel, and the block size: {msg}"
                 );
             }
-            other => panic!("expected UnsupportedDType, got {other:?}"),
+            other => panic!("expected InvalidFormat, got {other:?}"),
         }
     }
 
@@ -566,6 +781,40 @@ mod tests {
             out[0],
             max_abs,
             stride
+        );
+    }
+
+    #[test]
+    #[ignore = "requires models/TinyLlama-1.1B-Chat-v1.0-Q4_K_M-GGUF/tinyllama-1.1b-chat-v1.0-q4_k_m.gguf locally"]
+    fn decode_tinyllama_q4_k_m_real_tensor() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+            "models/TinyLlama-1.1B-Chat-v1.0-Q4_K_M-GGUF/tinyllama-1.1b-chat-v1.0-q4_k_m.gguf",
+        );
+        if !path.exists() {
+            panic!(
+                "TinyLlama Q4_K_M GGUF not found at {}; download the GGUF fixture first",
+                path.display()
+            );
+        }
+        let reader = GgufReader::read_from_path(&path).expect("GGUF parses");
+        let q4_tensor = reader
+            .tensors
+            .iter()
+            .find(|t| t.tensor_type == GgufTensorType::Q4_K)
+            .expect("at least one Q4_K tensor present")
+            .clone();
+        let numel: u64 = q4_tensor.dimensions.iter().product();
+        assert_eq!(
+            numel as usize % Q4_K_BLOCK_ELEMS,
+            0,
+            "Q4_K tensor numel must be block-aligned"
+        );
+        let out = decode_tensor(&reader, &q4_tensor).expect("Q4_K decode succeeds");
+        assert_eq!(out.len(), numel as usize);
+        assert!(out.iter().all(|v| v.is_finite()));
+        assert!(
+            out.iter().any(|v| *v != 0.0),
+            "decoded Q4_K tensor should not be all zeros"
         );
     }
 }
