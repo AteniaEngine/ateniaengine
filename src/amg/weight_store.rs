@@ -310,6 +310,10 @@ impl WeightStore {
                         fast_count += 1;
                         MATMUL_POLICY_BYTE_FAST
                     }
+                    MatmulMode::Quantized => {
+                        certified_count += 1;
+                        MATMUL_POLICY_BYTE_CERTIFIED
+                    }
                 };
                 gpu.set_matmul_policy_byte(Some(byte));
                 stamped += 1;
@@ -908,7 +912,6 @@ mod tests {
     ///     `cuda_matmul_inplace` is bit-exact with a CPU
     ///     reference matmul over the host-decoded BF16.
     #[test]
-    #[ignore = "requires CUDA driver (nvidia-smi)"]
     fn upload_layer_bf16_to_vram_uploads_two_params_and_matmul_matches_cpu() {
         use crate::cuda::cuda_available;
         use crate::cuda::matmul::cuda_matmul_inplace;
@@ -1024,7 +1027,11 @@ mod tests {
         use crate::tensor::disk_tier;
 
         let mut store = WeightStore::new();
-        let cache_dir = disk_tier::default_cache_dir();
+        let cache_dir = std::env::temp_dir().join(format!(
+            "atenia_weight_store_f32_roundtrip_{}_{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
         let data: Vec<f32> = (0..32).map(|i| (i as f32) * 0.25 - 4.0).collect();
         let handle = disk_tier::write_f32_tensor(&cache_dir, &data)
             .expect("write_f32_tensor failed");
@@ -1057,7 +1064,11 @@ mod tests {
         use crate::tensor::tensor::{bf16_bits_to_f32, f32_to_bf16_bits};
 
         let mut store = WeightStore::new();
-        let cache_dir = disk_tier::default_cache_dir();
+        let cache_dir = std::env::temp_dir().join(format!(
+            "atenia_weight_store_bf16_roundtrip_{}_{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
 
         // Source: a known F32 pattern, converted to BF16 bits.
         let f32_src: Vec<f32> = (0..16)

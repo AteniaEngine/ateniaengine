@@ -712,19 +712,18 @@ mod tests {
     ///   - the first element is non-zero (smoke against a
     ///     decoder that silently zeroes its output)
     ///
-    /// `#[ignore]` because it requires the 1.1 GB GGUF file
-    /// downloaded into `models/tinyllama-q8_0/`.
+    /// Skips itself when the local GGUF fixture is absent.
     #[test]
-    #[ignore = "requires models/tinyllama-q8_0/tinyllama-1.1b-chat-v1.0.Q8_0.gguf locally"]
     fn decode_tinyllama_token_embd() {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("models/tinyllama-q8_0/tinyllama-1.1b-chat-v1.0.Q8_0.gguf");
         if !path.exists() {
-            panic!(
-                "TinyLlama GGUF not found at {}; download via \
+            eprintln!(
+                "[skip] TinyLlama GGUF not found at {}; download via \
                  huggingface_hub `TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF`",
                 path.display()
             );
+            return;
         }
         let reader = GgufReader::read_from_path(&path).expect("GGUF parses");
         let embd = reader
@@ -785,16 +784,16 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires models/TinyLlama-1.1B-Chat-v1.0-Q4_K_M-GGUF/tinyllama-1.1b-chat-v1.0-q4_k_m.gguf locally"]
     fn decode_tinyllama_q4_k_m_real_tensor() {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
             "models/TinyLlama-1.1B-Chat-v1.0-Q4_K_M-GGUF/tinyllama-1.1b-chat-v1.0-q4_k_m.gguf",
         );
         if !path.exists() {
-            panic!(
-                "TinyLlama Q4_K_M GGUF not found at {}; download the GGUF fixture first",
+            eprintln!(
+                "[skip] TinyLlama Q4_K_M GGUF not found at {}; download the GGUF fixture first",
                 path.display()
             );
+            return;
         }
         let reader = GgufReader::read_from_path(&path).expect("GGUF parses");
         let q4_tensor = reader

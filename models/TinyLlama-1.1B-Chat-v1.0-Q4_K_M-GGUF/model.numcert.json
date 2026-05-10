@@ -34,7 +34,7 @@
 
   "verification": {
     "smoke_test": {
-      "command": "cargo test --lib tinyllama_q4_k_m_gguf -- --ignored --nocapture",
+      "command": "cargo test --lib tinyllama_q4_k_m_gguf -- --nocapture",
       "expected_behavior": "Model loads successfully, generates 5 tokens with atenia CLI"
     },
     "cli_test": {
@@ -42,9 +42,9 @@
       "expected_behavior": "Generates 5 tokens successfully"
     },
     "drift_diagnostics": {
-      "norm_test": "cargo test --test tinyllama_f64_validation_test tinyllama_q4_k_m_gguf_norm -- --ignored --nocapture",
+        "norm_test": "cargo test --test tinyllama_f64_validation_test tinyllama_q4_k_m_gguf_norm -- --ignored --nocapture",
       "expected_norm_drift": "0.0 (F16 tensor)",
-      "lm_head_test": "cargo test --test tinyllama_f64_validation_test tinyllama_q4_k_m_gguf_lm_head -- --ignored --nocapture",
+        "lm_head_test": "cargo test --test tinyllama_f64_validation_test tinyllama_q4_k_m_gguf_lm_head -- --ignored --nocapture",
       "expected_lm_head_drift": "~0.002 (Q4_K tensor samples)"
     }
   },

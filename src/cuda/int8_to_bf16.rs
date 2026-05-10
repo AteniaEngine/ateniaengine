@@ -354,7 +354,6 @@ mod tests {
     /// match the host-side dequant of the same `(q, scales)` pair.
     /// Skipped when `cuda_available()` returns false.
     #[test]
-    #[ignore = "requires CUDA — run with `cargo test --lib --ignored`"]
     fn round_trip_advances_counter_and_matches_host_dequant() {
         if !crate::cuda::cuda_available() {
             return;

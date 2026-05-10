@@ -55,7 +55,14 @@
   - Llama-3.2-1B Q4_K_M GGUF — smoke test ✅, norm drift 0.0 (F16)
   - SmolLM2-1.7B Q4_K_M GGUF — smoke test ✅, q_proj drift ~0.287 max_abs_diff
 
-- **`cargo test --lib`: 308/308 verde** (GGUF-specific tests + regression gates)
+- **`cargo test --lib`: 320/320 verde** after the post-review fix pass (CUDA + local GGUF smoke tests now run in the normal suite and auto-skip only when their local prerequisites are absent).
+
+### Post-review fixes
+
+- GGUF tensor metadata passed to the tier planner now reflects Atenia's resident storage dtype (BF16/F32), not the source quantization width. Q4_K_M/Q8_0 GGUF weights are decoded before residency, so treating them as `Int8` in the planner over-promised RAM/Disk capacity.
+- `model.numcert.json` manifests can now use `recommended_mode = "quantized"` and `per_tensor_policy.default = "quantized"` without being ignored as malformed. This is an explicit functional-certification mode, not an alias for ADR-004 strict or fast BF16-TC execution.
+- The old `#[ignore]` gates were removed from CUDA/GGUF unit tests. Tests that depend on local CUDA or GGUF fixtures now check prerequisites at runtime, so the dev box exercises them by default while non-GPU/non-fixture hosts still get a clean skip.
+- Parallel unit-test state was stabilised for disk-tier temp files, disk prefetch counters, and `ATENIA_M9_INT8` planner tests.
 
 ---
 
@@ -180,12 +187,12 @@ impl WeightMapper {
 
 | Gate                                  | Command                                                                              | Result      |
 | ------------------------------------- | ------------------------------------------------------------------------------------ | ----------- |
-| Library tests (single-thread)         | `cargo test --lib -- --test-threads=1`                                               | 308/308 ✅  |
-| GGUF reader tests                     | `cargo test --lib gguf_`                                                              | 24/0/3 ✅   |
-| TinyLlama Q8_0 GGUF smoke            | `cargo test --lib tinyllama_q8_0_gguf -- --ignored --nocapture`                       | ✅          |
-| Llama-3.2-1B GGUF norm test          | `cargo test --lib llama_3_2_1b_q4_k_m_gguf_norm -- --ignored --nocapture`           | ✅ drift 0.0|
-| SmolLM2-1.7B GGUF norm test          | `cargo test --lib smollm2_1_7b_q4_k_m_gguf_norm -- --ignored --nocapture`           | ✅ drift 0.0|
-| SmolLM2-1.7B GGUF q_proj test        | `cargo test --lib smollm2_1_7b_q4_k_m_gguf_q_proj -- --ignored --nocapture`         | ✅ drift 0.287|
+| Library tests                         | `cargo test --lib`                                                                    | 320/320 ✅, 0 ignored |
+| Legacy ignored lib gates              | `cargo test --lib -- --ignored --nocapture`                                           | 10/10 ✅ before de-ignore |
+| GGUF reader / decoder tests           | `cargo test --lib gguf_`                                                              | covered by lib suite ✅ |
+| TinyLlama Q8_0 GGUF smoke             | `cargo test --lib tinyllama_q8_0_gguf -- --nocapture`                                 | ✅          |
+| TinyLlama Q4_K_M GGUF smoke           | `cargo test --lib tinyllama_q4_k_m_gguf -- --nocapture`                               | ✅          |
+| M11.D GGUF drift diagnostics          | `$env:ATENIA_MODELS_ROOT="D:\models"; $env:ATENIA_TEST_DISK_TIER_BASE="D:\Atenia\test-cache"; cargo test --target-dir D:\Atenia\cargo-target-m11d --test tinyllama_f64_validation_test gguf -- --ignored --nocapture --test-threads=1` | 13/13 ✅ |
 | CLI GGUF smoke (TinyLlama Q4_K_M)    | `ATENIA_M9_INT8=1 ATENIA_M8_BF16_KERNEL=1 cargo run --release --bin atenia generate --model .../TinyLlama-1.1B-Chat-v1.0-Q4_K_M-GGUF --prompt "Hello" --max-tokens 5` | ✅ 5 tokens |
 | CLI GGUF smoke (Llama-3.2-1B)        | (same, Llama-3.2-1B model)                                                            | ✅ 5 tokens |
 | CLI GGUF smoke (SmolLM2-1.7B)        | (same, SmolLM2-1.7B model)                                                            | ✅ 5 tokens |
@@ -233,6 +240,7 @@ This closure is honest because:
 - It validates functional correctness through smoke tests
 - It documents drift measurements for operator awareness
 - It ships a complete GGUF pipeline for the most common production format (Q4_K_M)
+- Its heavy GGUF diagnostics run serially and can place Cargo build artifacts, test disk-tier cache, and model fixtures on a non-USB work disk (`D:\Atenia\...` plus `ATENIA_MODELS_ROOT=D:\models` on the dev box). The runtime disk tier itself used `Disk: 0` for the TinyLlama Q4/Q8 diagnostic pass because available RAM was sufficient after VRAM residency.
 
 ---
 

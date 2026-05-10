@@ -1920,7 +1920,7 @@ mod tests {
     /// M9.2 — `vram_int8_path_count()` reads the static counter
     /// without panicking. Without a CUDA-equipped host we can't
     /// drive the increment from a unit test; the counter advance
-    /// is exercised by the (`#[ignore]`d) M9.4 end-to-end test
+    /// is exercised by the M9.4 end-to-end test
     /// once it lands. This test pins the accessor's existence and
     /// the read-only contract.
     #[test]

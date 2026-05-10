@@ -48,6 +48,8 @@ use atenia_engine::v17::loader::safetensors_reader::SafetensorsReader;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Verbatim snapshot of `models/tinyllama-1.1b/config.json`.
 const EMBEDDED_TINYLLAMA_CONFIG: &str = r#"{
@@ -77,6 +79,92 @@ const EMBEDDED_TINYLLAMA_CONFIG: &str = r#"{
 
 fn fixture_path(name: &str) -> PathBuf {
     PathBuf::from("tests/fixtures/tinyllama_reference").join(name)
+}
+
+fn models_root() -> PathBuf {
+    env::var_os("ATENIA_MODELS_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("models"))
+}
+
+static DISK_TIER_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn unique_disk_tier_dir(label: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock after unix epoch")
+        .as_nanos();
+    let base = env::var_os("ATENIA_TEST_DISK_TIER_BASE")
+        .or_else(|| env::var_os("LOCALAPPDATA"))
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    base.join("Atenia").join("test-cache").join(format!(
+        "atenia_m11d_{label}_{}_{}",
+        std::process::id(),
+        nanos
+    ))
+}
+
+fn load_pipeline_with_isolated_disk_tier(
+    model_dir: &Path,
+    bf16_storage: bool,
+    label: &str,
+) -> GenerationPipeline {
+    let _guard = DISK_TIER_ENV_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("disk tier env lock poisoned");
+    let previous = env::var_os("ATENIA_DISK_TIER_DIR");
+    let cache_dir = unique_disk_tier_dir(label);
+    // SAFETY: Rust 2024 marks process environment mutation unsafe because
+    // concurrent readers/writers can race. This helper serializes all local
+    // GGUF pipeline env mutation with a process-wide mutex and restores the
+    // previous value before returning. The returned WeightStore keeps absolute
+    // disk handles, so the env var is only needed during load planning.
+    unsafe {
+        env::set_var("ATENIA_DISK_TIER_DIR", &cache_dir);
+    }
+    let loaded = GenerationPipeline::from_model_dir_with_options(model_dir, bf16_storage);
+    match previous {
+        Some(v) => unsafe {
+            env::set_var("ATENIA_DISK_TIER_DIR", v);
+        },
+        None => unsafe {
+            env::remove_var("ATENIA_DISK_TIER_DIR");
+        },
+    }
+    loaded.expect("load GGUF pipeline with isolated disk tier")
+}
+
+fn open_safetensors_for_tensor(
+    safetensors_or_index_path: &Path,
+    tensor_name: &str,
+) -> SafetensorsReader {
+    let actual_path = if safetensors_or_index_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(".index.json"))
+    {
+        let index_text = fs::read_to_string(safetensors_or_index_path).unwrap_or_else(|_| {
+            panic!(
+                "read safetensors index {}",
+                safetensors_or_index_path.display()
+            )
+        });
+        let index: serde_json::Value =
+            serde_json::from_str(&index_text).expect("parse safetensors index json");
+        let shard = index["weight_map"][tensor_name]
+            .as_str()
+            .unwrap_or_else(|| panic!("{tensor_name} in safetensors index"));
+        safetensors_or_index_path
+            .parent()
+            .expect("index path has parent")
+            .join(shard)
+    } else {
+        safetensors_or_index_path.to_path_buf()
+    };
+    SafetensorsReader::open(&actual_path)
+        .unwrap_or_else(|_| panic!("open safetensors {}", actual_path.display()))
 }
 
 fn load_f64_reference() -> Vec<f64> {
@@ -322,8 +410,14 @@ fn tinyllama_atenia_matches_f64_ground_truth() {
     let max_bf16_vs_f64 = bf16_vs_f64.iter().fold(0.0_f64, |a, &b| a.max(b));
 
     println!("\n=== Verdict ===");
-    println!("Atenia F32   max drift vs F64 truth: {:.6}", max_atenia_vs_f64);
-    println!("PyTorch BF16 max drift vs F64 truth: {:.6}", max_bf16_vs_f64);
+    println!(
+        "Atenia F32   max drift vs F64 truth: {:.6}",
+        max_atenia_vs_f64
+    );
+    println!(
+        "PyTorch BF16 max drift vs F64 truth: {:.6}",
+        max_bf16_vs_f64
+    );
 
     if max_atenia_vs_f64 < max_bf16_vs_f64 {
         let ratio = max_bf16_vs_f64 / max_atenia_vs_f64.max(1e-9);
@@ -351,10 +445,11 @@ fn tinyllama_atenia_matches_f64_ground_truth() {
 fn tinyllama_q4_k_m_gguf_reports_f64_drift() {
     println!("\n=== TinyLlama Q4_K_M GGUF Numerical Report vs F64 Ground Truth (M11.D.5) ===\n");
 
-    let model_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("models/TinyLlama-1.1B-Chat-v1.0-Q4_K_M-GGUF");
+    let model_dir = models_root().join("TinyLlama-1.1B-Chat-v1.0-Q4_K_M-GGUF");
     assert!(
-        model_dir.join("tinyllama-1.1b-chat-v1.0-q4_k_m.gguf").exists(),
+        model_dir
+            .join("tinyllama-1.1b-chat-v1.0-q4_k_m.gguf")
+            .exists(),
         "missing Q4_K_M GGUF fixture at {}",
         model_dir.display()
     );
@@ -362,8 +457,7 @@ fn tinyllama_q4_k_m_gguf_reports_f64_drift() {
     assert!(model_dir.join("tokenizer_config.json").exists());
 
     let load_start = std::time::Instant::now();
-    let pipe = GenerationPipeline::from_model_dir_with_options(&model_dir, true)
-        .expect("load TinyLlama Q4_K_M GGUF pipeline");
+    let pipe = load_pipeline_with_isolated_disk_tier(&model_dir, true, "tinyllama_q4_k_m");
     println!(
         "Loaded Q4_K_M GGUF pipeline in {:.2}s",
         load_start.elapsed().as_secs_f32()
@@ -391,7 +485,11 @@ fn tinyllama_q4_k_m_gguf_reports_f64_drift() {
 
     let atenia_logits = outputs[0].as_cpu_slice();
     let f64_ref = load_f64_reference();
-    assert_eq!(f64_ref.len(), atenia_logits.len(), "F64 fixture length mismatch");
+    assert_eq!(
+        f64_ref.len(),
+        atenia_logits.len(),
+        "F64 fixture length mismatch"
+    );
 
     let diffs: Vec<f64> = atenia_logits
         .iter()
@@ -441,19 +539,22 @@ fn tinyllama_q4_k_m_gguf_reports_f64_drift() {
 #[test]
 #[ignore = "requires TinyLlama Q8_0 GGUF fixture + tests/fixtures/tinyllama_reference/expected_logits_f64.json"]
 fn tinyllama_q8_0_gguf_reports_f64_drift() {
-    println!("\n=== TinyLlama Q8_0 GGUF Numerical Report vs F64 Ground Truth (M11.D.5 diagnostic) ===\n");
+    println!(
+        "\n=== TinyLlama Q8_0 GGUF Numerical Report vs F64 Ground Truth (M11.D.5 diagnostic) ===\n"
+    );
 
-    let model_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("models/tinyllama-q8_0");
+    let model_dir = models_root().join("tinyllama-q8_0");
     assert!(
-        model_dir.join("tinyllama-1.1b-chat-v1.0.Q8_0.gguf").exists(),
+        model_dir
+            .join("tinyllama-1.1b-chat-v1.0.Q8_0.gguf")
+            .exists(),
         "missing Q8_0 GGUF fixture at {}",
         model_dir.display()
     );
     assert!(model_dir.join("tokenizer.json").exists());
     assert!(model_dir.join("tokenizer_config.json").exists());
 
-    let pipe = GenerationPipeline::from_model_dir_with_options(&model_dir, true)
-        .expect("load TinyLlama Q8_0 GGUF pipeline");
+    let pipe = load_pipeline_with_isolated_disk_tier(&model_dir, true, "tinyllama_q8_0");
     let runtime = LlamaRuntime { batch: 1, seq: 4 };
     let mut gb = GraphBuilder::new();
     let token_input_id = gb.input();
@@ -473,7 +574,11 @@ fn tinyllama_q8_0_gguf_reports_f64_drift() {
     let outputs = graph.execute(vec![tokens]);
     let atenia_logits = outputs[0].as_cpu_slice();
     let f64_ref = load_f64_reference();
-    assert_eq!(f64_ref.len(), atenia_logits.len(), "F64 fixture length mismatch");
+    assert_eq!(
+        f64_ref.len(),
+        atenia_logits.len(),
+        "F64 fixture length mismatch"
+    );
 
     let diffs: Vec<f64> = atenia_logits
         .iter()
@@ -515,9 +620,10 @@ fn tinyllama_q8_0_gguf_reports_f64_drift() {
 #[test]
 #[ignore = "requires models/tinyllama-1.1b/model.safetensors and models/TinyLlama-1.1B-Chat-v1.0-Q4_K_M-GGUF locally"]
 fn tinyllama_q4_k_m_gguf_norm_matches_safetensors_base() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let safetensors_path = root.join("models/tinyllama-1.1b/model.safetensors");
-    let gguf_path = root.join("models/TinyLlama-1.1B-Chat-v1.0-Q4_K_M-GGUF/tinyllama-1.1b-chat-v1.0-q4_k_m.gguf");
+    let root = models_root();
+    let safetensors_path = root.join("tinyllama-1.1b/model.safetensors");
+    let gguf_path =
+        root.join("TinyLlama-1.1B-Chat-v1.0-Q4_K_M-GGUF/tinyllama-1.1b-chat-v1.0-q4_k_m.gguf");
 
     assert!(
         safetensors_path.exists(),
@@ -553,7 +659,10 @@ fn tinyllama_q4_k_m_gguf_norm_matches_safetensors_base() {
     println!("  max_diff  = {:.9}", max_diff);
     println!("  mean_diff = {:.9}", mean_diff);
     println!("  st[0..8]  = {:?}", &st[..8.min(st.len())]);
-    println!("  gg[0..8]  = {:?}", &gguf_values[..8.min(gguf_values.len())]);
+    println!(
+        "  gg[0..8]  = {:?}",
+        &gguf_values[..8.min(gguf_values.len())]
+    );
 
     assert!(
         max_diff < 0.5,
@@ -564,9 +673,9 @@ fn tinyllama_q4_k_m_gguf_norm_matches_safetensors_base() {
 #[test]
 #[ignore = "requires models/tinyllama-1.1b/model.safetensors and models/tinyllama-q8_0 GGUF locally"]
 fn tinyllama_q8_0_gguf_norm_matches_safetensors_base() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let safetensors_path = root.join("models/tinyllama-1.1b/model.safetensors");
-    let gguf_path = root.join("models/tinyllama-q8_0/tinyllama-1.1b-chat-v1.0.Q8_0.gguf");
+    let root = models_root();
+    let safetensors_path = root.join("tinyllama-1.1b/model.safetensors");
+    let gguf_path = root.join("tinyllama-q8_0/tinyllama-1.1b-chat-v1.0.Q8_0.gguf");
 
     assert!(
         safetensors_path.exists(),
@@ -602,7 +711,10 @@ fn tinyllama_q8_0_gguf_norm_matches_safetensors_base() {
     println!("  max_diff  = {:.9}", max_diff);
     println!("  mean_diff = {:.9}", mean_diff);
     println!("  st[0..8]  = {:?}", &st[..8.min(st.len())]);
-    println!("  gg[0..8]  = {:?}", &gguf_values[..8.min(gguf_values.len())]);
+    println!(
+        "  gg[0..8]  = {:?}",
+        &gguf_values[..8.min(gguf_values.len())]
+    );
 
     assert!(
         max_diff < 1e-3,
@@ -613,9 +725,10 @@ fn tinyllama_q8_0_gguf_norm_matches_safetensors_base() {
 #[test]
 #[ignore = "requires models/tinyllama-1.1b/model.safetensors and models/TinyLlama-1.1B-Chat-v1.0-Q4_K_M-GGUF locally"]
 fn tinyllama_q4_k_m_gguf_lm_head_sample_diagnostic() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let safetensors_path = root.join("models/tinyllama-1.1b/model.safetensors");
-    let gguf_path = root.join("models/TinyLlama-1.1B-Chat-v1.0-Q4_K_M-GGUF/tinyllama-1.1b-chat-v1.0-q4_k_m.gguf");
+    let root = models_root();
+    let safetensors_path = root.join("tinyllama-1.1b/model.safetensors");
+    let gguf_path =
+        root.join("TinyLlama-1.1B-Chat-v1.0-Q4_K_M-GGUF/tinyllama-1.1b-chat-v1.0-q4_k_m.gguf");
 
     let safetensors = SafetensorsReader::open(&safetensors_path).expect("open safetensors");
     let st_entry = safetensors
@@ -626,8 +739,10 @@ fn tinyllama_q4_k_m_gguf_lm_head_sample_diagnostic() {
     let gguf = GgufReader::read_from_path(&gguf_path).expect("open GGUF");
     let descriptor = gguf
         .tensor_by_name("output.weight")
-        .expect("output.weight in GGUF");
-    let gguf_values = decode_tensor(&gguf, descriptor).expect("decode GGUF output.weight");
+        .or_else(|| gguf.tensor_by_name("token_embd.weight"))
+        .expect("output.weight or tied token_embd.weight in GGUF");
+    let gguf_values =
+        decode_tensor(&gguf, descriptor).expect("decode GGUF lm_head / tied embedding");
 
     assert_eq!(st.len(), gguf_values.len(), "lm_head length mismatch");
 
@@ -659,9 +774,9 @@ fn tinyllama_q4_k_m_gguf_lm_head_sample_diagnostic() {
 #[test]
 #[ignore = "requires models/tinyllama-1.1b/model.safetensors and models/tinyllama-q8_0 GGUF locally"]
 fn tinyllama_q8_0_gguf_lm_head_matches_safetensors_transpose() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let safetensors_path = root.join("models/tinyllama-1.1b/model.safetensors");
-    let gguf_path = root.join("models/tinyllama-q8_0/tinyllama-1.1b-chat-v1.0.Q8_0.gguf");
+    let root = models_root();
+    let safetensors_path = root.join("tinyllama-1.1b/model.safetensors");
+    let gguf_path = root.join("tinyllama-q8_0/tinyllama-1.1b-chat-v1.0.Q8_0.gguf");
 
     let safetensors = SafetensorsReader::open(&safetensors_path).expect("open safetensors");
     let st_entry = safetensors
@@ -673,8 +788,10 @@ fn tinyllama_q8_0_gguf_lm_head_matches_safetensors_transpose() {
     let gguf = GgufReader::read_from_path(&gguf_path).expect("open GGUF");
     let descriptor = gguf
         .tensor_by_name("output.weight")
-        .expect("output.weight in GGUF");
-    let gguf_values = decode_tensor(&gguf, descriptor).expect("decode GGUF output.weight");
+        .or_else(|| gguf.tensor_by_name("token_embd.weight"))
+        .expect("output.weight or tied token_embd.weight in GGUF");
+    let gguf_values =
+        decode_tensor(&gguf, descriptor).expect("decode GGUF lm_head / tied embedding");
     assert_eq!(descriptor.dimensions.as_slice(), &[2_048, 32_000]);
     assert_eq!(st.len(), gguf_values.len(), "lm_head length mismatch");
 
@@ -755,9 +872,10 @@ fn max_mean_sample_diff(a: &[f32], b: &[f32], rows: usize, cols: usize) -> (f64,
 #[test]
 #[ignore = "requires models/tinyllama-1.1b/model.safetensors and models/TinyLlama-1.1B-Chat-v1.0-Q4_K_M-GGUF locally"]
 fn tinyllama_q4_k_m_gguf_qk_projection_layout_report() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let safetensors_path = root.join("models/tinyllama-1.1b/model.safetensors");
-    let gguf_path = root.join("models/TinyLlama-1.1B-Chat-v1.0-Q4_K_M-GGUF/tinyllama-1.1b-chat-v1.0-q4_k_m.gguf");
+    let root = models_root();
+    let safetensors_path = root.join("tinyllama-1.1b/model.safetensors");
+    let gguf_path =
+        root.join("TinyLlama-1.1B-Chat-v1.0-Q4_K_M-GGUF/tinyllama-1.1b-chat-v1.0-q4_k_m.gguf");
 
     let safetensors = SafetensorsReader::open(&safetensors_path).expect("open safetensors");
     let gguf = GgufReader::read_from_path(&gguf_path).expect("open GGUF");
@@ -777,7 +895,9 @@ fn tinyllama_q4_k_m_gguf_qk_projection_layout_report() {
         ),
     ] {
         let st_entry = safetensors.get(st_name).expect("safetensors projection");
-        let st = st_entry.to_vec_f32().expect("decode safetensors projection");
+        let st = st_entry
+            .to_vec_f32()
+            .expect("decode safetensors projection");
         assert_eq!(st_entry.shape, &[rows, cols]);
 
         let descriptor = gguf.tensor_by_name(gguf_name).expect("GGUF projection");
@@ -790,7 +910,10 @@ fn tinyllama_q4_k_m_gguf_qk_projection_layout_report() {
 
         println!("{st_name} vs {gguf_name} (Q4_K_M):");
         println!("  checked           = {checked}");
-        println!("  direct max/mean   = {:.9} / {:.9}", direct_max, direct_mean);
+        println!(
+            "  direct max/mean   = {:.9} / {:.9}",
+            direct_max, direct_mean
+        );
         println!("  permute max/mean  = {:.9} / {:.9}", perm_max, perm_mean);
     }
 }
@@ -798,9 +921,9 @@ fn tinyllama_q4_k_m_gguf_qk_projection_layout_report() {
 #[test]
 #[ignore = "requires models/tinyllama-1.1b/model.safetensors and models/tinyllama-q8_0 GGUF locally"]
 fn tinyllama_q8_0_gguf_qk_projection_layout_report() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let safetensors_path = root.join("models/tinyllama-1.1b/model.safetensors");
-    let gguf_path = root.join("models/tinyllama-q8_0/tinyllama-1.1b-chat-v1.0.Q8_0.gguf");
+    let root = models_root();
+    let safetensors_path = root.join("tinyllama-1.1b/model.safetensors");
+    let gguf_path = root.join("tinyllama-q8_0/tinyllama-1.1b-chat-v1.0.Q8_0.gguf");
 
     let safetensors = SafetensorsReader::open(&safetensors_path).expect("open safetensors");
     let gguf = GgufReader::read_from_path(&gguf_path).expect("open GGUF");
@@ -820,7 +943,9 @@ fn tinyllama_q8_0_gguf_qk_projection_layout_report() {
         ),
     ] {
         let st_entry = safetensors.get(st_name).expect("safetensors projection");
-        let st = st_entry.to_vec_f32().expect("decode safetensors projection");
+        let st = st_entry
+            .to_vec_f32()
+            .expect("decode safetensors projection");
         assert_eq!(st_entry.shape, &[rows, cols]);
 
         let descriptor = gguf.tensor_by_name(gguf_name).expect("GGUF projection");
@@ -833,7 +958,10 @@ fn tinyllama_q8_0_gguf_qk_projection_layout_report() {
 
         println!("{st_name} vs {gguf_name}:");
         println!("  checked           = {checked}");
-        println!("  direct max/mean   = {:.9} / {:.9}", direct_max, direct_mean);
+        println!(
+            "  direct max/mean   = {:.9} / {:.9}",
+            direct_max, direct_mean
+        );
         println!("  permute max/mean  = {:.9} / {:.9}", perm_max, perm_mean);
     }
 }
@@ -845,11 +973,16 @@ fn tinyllama_q8_0_gguf_qk_projection_layout_report() {
 #[test]
 #[ignore = "requires models/llama-3.2-1b-instruct/model.safetensors and models/Llama-3.2-1B-Instruct-Q4_K_M-GGUF locally"]
 fn llama_3_2_1b_q4_k_m_gguf_norm_matches_safetensors() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let safetensors_path = root.join("models/llama-3.2-1b-instruct/model.safetensors");
-    let gguf_path = root.join("models/Llama-3.2-1B-Instruct-Q4_K_M-GGUF/llama-3.2-1b-instruct-q4_k_m.gguf");
+    let root = models_root();
+    let safetensors_path = root.join("llama-3.2-1b-instruct/model.safetensors");
+    let gguf_path =
+        root.join("Llama-3.2-1B-Instruct-Q4_K_M-GGUF/llama-3.2-1b-instruct-q4_k_m.gguf");
 
-    assert!(safetensors_path.exists(), "missing {}", safetensors_path.display());
+    assert!(
+        safetensors_path.exists(),
+        "missing {}",
+        safetensors_path.display()
+    );
     assert!(gguf_path.exists(), "missing {}", gguf_path.display());
 
     let safetensors = SafetensorsReader::open(&safetensors_path).expect("open safetensors");
@@ -883,14 +1016,19 @@ fn llama_3_2_1b_q4_k_m_gguf_norm_matches_safetensors() {
 #[test]
 #[ignore = "requires models/phi-3.5-mini-instruct/model.safetensors.index.json and models/Phi-3.5-mini-instruct-Q4_K_M-GGUF locally"]
 fn phi_3_5_mini_q4_k_m_gguf_norm_matches_safetensors() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let safetensors_path = root.join("models/phi-3.5-mini-instruct/model.safetensors.index.json");
-    let gguf_path = root.join("models/Phi-3.5-mini-instruct-Q4_K_M-GGUF/phi-3.5-mini-instruct-q4_k_m.gguf");
+    let root = models_root();
+    let safetensors_path = root.join("phi-3.5-mini-instruct/model.safetensors.index.json");
+    let gguf_path =
+        root.join("Phi-3.5-mini-instruct-Q4_K_M-GGUF/phi-3.5-mini-instruct-q4_k_m.gguf");
 
-    assert!(safetensors_path.exists(), "missing {}", safetensors_path.display());
+    assert!(
+        safetensors_path.exists(),
+        "missing {}",
+        safetensors_path.display()
+    );
     assert!(gguf_path.exists(), "missing {}", gguf_path.display());
 
-    let safetensors = SafetensorsReader::open(&safetensors_path).expect("open safetensors index");
+    let safetensors = open_safetensors_for_tensor(&safetensors_path, "model.norm.weight");
     let st_entry = safetensors
         .get("model.norm.weight")
         .expect("model.norm.weight in safetensors");
@@ -921,11 +1059,15 @@ fn phi_3_5_mini_q4_k_m_gguf_norm_matches_safetensors() {
 #[test]
 #[ignore = "requires models/smollm2-1.7b-instruct/model.safetensors and models/SmolLM2-1.7B-Instruct-GGUF locally"]
 fn smollm2_1_7b_q4_k_m_gguf_norm_matches_safetensors() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let safetensors_path = root.join("models/smollm2-1.7b-instruct/model.safetensors");
-    let gguf_path = root.join("models/SmolLM2-1.7B-Instruct-GGUF/smollm2-1.7b-instruct-q4_k_m.gguf");
+    let root = models_root();
+    let safetensors_path = root.join("smollm2-1.7b-instruct/model.safetensors");
+    let gguf_path = root.join("SmolLM2-1.7B-Instruct-GGUF/smollm2-1.7b-instruct-q4_k_m.gguf");
 
-    assert!(safetensors_path.exists(), "missing {}", safetensors_path.display());
+    assert!(
+        safetensors_path.exists(),
+        "missing {}",
+        safetensors_path.display()
+    );
     assert!(gguf_path.exists(), "missing {}", gguf_path.display());
 
     let safetensors = SafetensorsReader::open(&safetensors_path).expect("open safetensors");
@@ -959,21 +1101,25 @@ fn smollm2_1_7b_q4_k_m_gguf_norm_matches_safetensors() {
 #[test]
 #[ignore = "requires models/llama-3.2-1b-instruct/model.safetensors and models/Llama-3.2-1B-Instruct-Q4_K_M-GGUF locally"]
 fn llama_3_2_1b_q4_k_m_gguf_lm_head_sample_diagnostic() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let safetensors_path = root.join("models/llama-3.2-1b-instruct/model.safetensors");
-    let gguf_path = root.join("models/Llama-3.2-1B-Instruct-Q4_K_M-GGUF/llama-3.2-1b-instruct-q4_k_m.gguf");
+    let root = models_root();
+    let safetensors_path = root.join("llama-3.2-1b-instruct/model.safetensors");
+    let gguf_path =
+        root.join("Llama-3.2-1B-Instruct-Q4_K_M-GGUF/llama-3.2-1b-instruct-q4_k_m.gguf");
 
     let safetensors = SafetensorsReader::open(&safetensors_path).expect("open safetensors");
     let st_entry = safetensors
         .get("lm_head.weight")
-        .expect("lm_head.weight in safetensors");
+        .or_else(|| safetensors.get("model.embed_tokens.weight"))
+        .expect("lm_head.weight or tied model.embed_tokens.weight in safetensors");
     let st = st_entry.to_vec_f32().expect("decode safetensors lm_head");
 
     let gguf = GgufReader::read_from_path(&gguf_path).expect("open GGUF");
     let descriptor = gguf
         .tensor_by_name("output.weight")
-        .expect("output.weight in GGUF");
-    let gguf_values = decode_tensor(&gguf, descriptor).expect("decode GGUF output.weight");
+        .or_else(|| gguf.tensor_by_name("token_embd.weight"))
+        .expect("output.weight or tied token_embd.weight in GGUF");
+    let gguf_values =
+        decode_tensor(&gguf, descriptor).expect("decode GGUF lm_head / tied embedding");
 
     assert_eq!(st.len(), gguf_values.len(), "lm_head length mismatch");
 
@@ -1005,9 +1151,9 @@ fn llama_3_2_1b_q4_k_m_gguf_lm_head_sample_diagnostic() {
 #[test]
 #[ignore = "requires models/smollm2-1.7b-instruct/model.safetensors and models/SmolLM2-1.7B-Instruct-GGUF locally"]
 fn smollm2_1_7b_q4_k_m_gguf_q_proj_sample_diagnostic() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let safetensors_path = root.join("models/smollm2-1.7b-instruct/model.safetensors");
-    let gguf_path = root.join("models/SmolLM2-1.7B-Instruct-GGUF/smollm2-1.7b-instruct-q4_k_m.gguf");
+    let root = models_root();
+    let safetensors_path = root.join("smollm2-1.7b-instruct/model.safetensors");
+    let gguf_path = root.join("SmolLM2-1.7B-Instruct-GGUF/smollm2-1.7b-instruct-q4_k_m.gguf");
 
     let safetensors = SafetensorsReader::open(&safetensors_path).expect("open safetensors");
     let st_entry = safetensors

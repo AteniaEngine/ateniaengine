@@ -33,7 +33,7 @@
 
   "verification": {
     "smoke_test": {
-      "command": "cargo test --lib tinyllama_q8_0_gguf -- --ignored --nocapture",
+      "command": "cargo test --lib tinyllama_q8_0_gguf -- --nocapture",
       "expected_behavior": "Model loads successfully, generates tokens"
     },
     "drift_diagnostics": {

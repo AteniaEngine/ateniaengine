@@ -339,6 +339,7 @@ fn build_gguf_name_map(
 fn gguf_tensor_metas(
     reader: &GgufReader,
     name_map: &std::collections::HashMap<String, String>,
+    bf16_storage: bool,
 ) -> Result<Vec<crate::gpu::tier_plan::TensorMeta>, PipelineError> {
     let mut metas = Vec::with_capacity(reader.tensors.len());
     for descriptor in &reader.tensors {
@@ -348,12 +349,12 @@ fn gguf_tensor_metas(
                 descriptor.name
             )))
         })?;
-        let dtype = match descriptor.tensor_type {
-            crate::v17::loader::gguf_reader::GgufTensorType::F32 => crate::tensor::DType::F32,
-            crate::v17::loader::gguf_reader::GgufTensorType::F16 => crate::tensor::DType::F16,
-            crate::v17::loader::gguf_reader::GgufTensorType::Q8_0 => crate::tensor::DType::Int8,
-            crate::v17::loader::gguf_reader::GgufTensorType::Q4_K => crate::tensor::DType::Int8,
-            crate::v17::loader::gguf_reader::GgufTensorType::Q6_K => crate::tensor::DType::Int8,
+        match descriptor.tensor_type {
+            crate::v17::loader::gguf_reader::GgufTensorType::F32
+            | crate::v17::loader::gguf_reader::GgufTensorType::F16
+            | crate::v17::loader::gguf_reader::GgufTensorType::Q8_0
+            | crate::v17::loader::gguf_reader::GgufTensorType::Q4_K
+            | crate::v17::loader::gguf_reader::GgufTensorType::Q6_K => {}
             other => {
                 return Err(PipelineError::Loader(LoaderError::UnsupportedDType(
                     format!(
@@ -362,6 +363,16 @@ fn gguf_tensor_metas(
                     ),
                 )));
             }
+        };
+        // GGUF quantized tensors are decoded into an F32 working buffer by
+        // `decode_tensor` before the residency write. The steady-state RAM/Disk
+        // footprint is therefore Atenia's storage dtype, not the source GGUF
+        // quantization width. Keeping Q4/Q8 as `Int8` here makes the tier
+        // planner over-pack memory even though no quantized residency exists.
+        let dtype = if bf16_storage {
+            crate::tensor::DType::BF16
+        } else {
+            crate::tensor::DType::F32
         };
         metas.push(crate::gpu::tier_plan::TensorMeta {
             name: hf_name.clone(),
@@ -436,6 +447,8 @@ impl GenerationPipeline {
                 m.source.display(),
                 if matches!(m.recommended_mode, numcert::MatmulMode::Fast) {
                     "fast"
+                } else if matches!(m.recommended_mode, numcert::MatmulMode::Quantized) {
+                    "quantized"
                 } else {
                     "certified"
                 },
@@ -449,6 +462,8 @@ impl GenerationPipeline {
                 m.source.display(),
                 if matches!(m.recommended_mode, numcert::MatmulMode::Fast) {
                     "fast"
+                } else if matches!(m.recommended_mode, numcert::MatmulMode::Quantized) {
+                    "quantized"
                 } else {
                     "certified"
                 },
@@ -692,7 +707,7 @@ impl GenerationPipeline {
 
             if let Some(reader) = gguf_reader.as_ref() {
                 let name_map = build_gguf_name_map(reader)?;
-                let metas = gguf_tensor_metas(reader, &name_map)?;
+                let metas = gguf_tensor_metas(reader, &name_map, bf16_storage)?;
                 let model_total_bytes = sum_model_bytes(&metas);
                 let m8_bf16_effective = m8_bf16_resolver(model_total_bytes);
                 let kernel_dtype = if m8_bf16_effective {
@@ -1182,7 +1197,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "requires models/tinyllama-q8_0 with GGUF + tokenizer.json locally"]
     fn loads_tinyllama_q8_0_gguf_pipeline_without_generation() {
         let model_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("models/tinyllama-q8_0");
         if !model_dir
@@ -1225,7 +1239,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires models/tinyllama-q8_0 with GGUF + tokenizer files locally"]
     fn generates_one_token_from_tinyllama_q8_0_gguf() {
         let model_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("models/tinyllama-q8_0");
         if !model_dir
@@ -1253,7 +1266,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires models/TinyLlama-1.1B-Chat-v1.0-Q4_K_M-GGUF with GGUF + tokenizer files locally"]
     fn loads_tinyllama_q4_k_m_gguf_pipeline_without_generation() {
         let model_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("models/TinyLlama-1.1B-Chat-v1.0-Q4_K_M-GGUF");
@@ -1297,7 +1309,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires models/TinyLlama-1.1B-Chat-v1.0-Q4_K_M-GGUF with GGUF + tokenizer files locally"]
     fn generates_one_token_from_tinyllama_q4_k_m_gguf() {
         let model_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("models/TinyLlama-1.1B-Chat-v1.0-Q4_K_M-GGUF");

@@ -54,6 +54,13 @@ pub enum MatmulMode {
     /// `cublasGemmEx(BF16, BF16, F32)`). Industry-standard drift
     /// profile; ADR-005 envelope.
     Fast,
+    /// Quantized checkpoint path (GGUF Q4_K_M / Q8_0 / similar).
+    /// This is a functional certification mode, not an ADR-004
+    /// strict numerical mode. Runtime matmul precision falls back
+    /// to the certified path; the distinction is carried so the
+    /// manifest can state that quantization drift is intrinsic
+    /// without being rejected as malformed.
+    Quantized,
 }
 
 /// **M10.3.1.1** — per-tensor precision policy parsed from
@@ -255,14 +262,14 @@ fn parse_manifest(bytes: &[u8], source: PathBuf) -> Result<NumcertManifest, Stri
     })
 }
 
-/// Convert the manifest's mode string (`"certified"` or
-/// `"fast"`) to the `MatmulMode` enum.
+/// Convert the manifest's mode string to the `MatmulMode` enum.
 fn parse_mode(value: &str) -> Result<MatmulMode, String> {
     match value {
         "certified" => Ok(MatmulMode::Certified),
         "fast" => Ok(MatmulMode::Fast),
+        "quantized" => Ok(MatmulMode::Quantized),
         other => Err(format!(
-            "unrecognised mode \"{other}\" (expected \"certified\" or \"fast\")"
+            "unrecognised mode \"{other}\" (expected \"certified\", \"fast\", or \"quantized\")"
         )),
     }
 }
@@ -481,6 +488,28 @@ mod tests {
         let m = parse_manifest(json, fake_source())
             .expect("manifest should parse");
         assert_eq!(m.recommended_mode, MatmulMode::Certified);
+    }
+
+    #[test]
+    fn parse_manifest_recognises_recommended_mode_quantized() {
+        let json = br#"{
+            "schema_version": "2.0.0",
+            "schema_variant": "gguf-functional",
+            "recommended_mode": "quantized",
+            "per_tensor_policy": {
+                "default": "quantized",
+                "overrides": []
+            }
+        }"#;
+        let m = parse_manifest(json, fake_source())
+            .expect("quantized GGUF manifest should parse");
+        assert_eq!(m.recommended_mode, MatmulMode::Quantized);
+        let p = m.per_tensor_policy.as_ref().expect("policy populated");
+        assert_eq!(p.default_mode, MatmulMode::Quantized);
+        assert_eq!(
+            m.resolve_for("model.layers.0.self_attn.q_proj.weight"),
+            MatmulMode::Quantized
+        );
     }
 
     #[test]

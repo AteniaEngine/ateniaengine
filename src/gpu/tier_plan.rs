@@ -613,6 +613,8 @@ mod tests {
     /// partial" rather than "layer 0 only".
     #[test]
     fn vram_overflow_falls_through_to_ram() {
+        let _g = M9_INT8_TEST_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var("ATENIA_M9_INT8"); }
         // Two Llama 2 13B-class layers.
         // Layer 0 footprint (F32, GPU-eligible only):
         //   - Q,K,V,O proj: 4 × (5120² × 4)        = 400 MiB
@@ -1160,6 +1162,8 @@ mod tests {
     /// must reproduce: ~35..=42 VRAM tensors.
     #[test]
     fn m8_3_f32_kernel_default_matches_m7_2_baseline() {
+        let _g = M9_INT8_TEST_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var("ATENIA_M9_INT8"); }
         let mut tensors = Vec::new();
         tensors.push(make_meta(
             "model.embed_tokens.weight",
@@ -1209,6 +1213,8 @@ mod tests {
     /// test asserts both: vram_bytes_assigned halves with BF16.
     #[test]
     fn m8_3_bf16_kernel_halves_vram_bytes_on_7b() {
+        let _g = M9_INT8_TEST_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var("ATENIA_M9_INT8"); }
         let mut tensors = Vec::new();
         tensors.push(make_meta(
             "model.embed_tokens.weight",

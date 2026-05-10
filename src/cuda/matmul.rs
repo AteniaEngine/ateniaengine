@@ -1770,7 +1770,6 @@ mod cuda_matmul_disk_streamed_tests {
     /// dispatcher integration test so the comparison "M8.4c
     /// resident vs M8.7.0 streamed" is direct.
     #[test]
-    #[ignore = "requires CUDA driver; run with `cargo test --lib m8_7_0 -- --ignored`"]
     fn m8_7_0_disk_streamed_bf16_matches_cpu_within_adr_004_gate() {
         if !cuda_available() {
             eprintln!("CUDA not available, skipping");

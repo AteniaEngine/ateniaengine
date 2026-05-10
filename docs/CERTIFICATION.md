@@ -57,7 +57,7 @@ A manifest is JSON with the following top-level fields. Reference manifests for 
     }
   },
 
-  "recommended_mode": "certified" | "fast",
+  "recommended_mode": "certified" | "fast" | "quantized",
   "recommended_mode_rationale": "Why this checkpoint is recommended for this mode",
 
   "per_tensor_policy": null,
@@ -101,10 +101,13 @@ Today (M10.3 v1) manifests are generated **manually** from the data the F64 fixt
 
 5. Pick `recommended_mode` based on:
    - Fast mode passes ADR-004 strict AND argmax 4/4 → `fast`
+   - GGUF / quantized checkpoints validated by functional smoke + documented drift → `quantized`
    - Otherwise → `certified`
    The rationale field explains the trade-off in plain language so an operator reading the manifest can override the recommendation knowingly.
 
-A future milestone (M11+) is expected to automate this: a `cargo run --bin atenia-certify --model <path>` subcommand that produces the manifest as a structured artefact instead of hand-editing JSON. The schema is stable enough today (`schema_version: "1.0.0"`) that automation is purely an ergonomics upgrade, not a contract change.
+`quantized` is a functional certification mode for GGUF-style checkpoints whose source format intrinsically loses precision. It is not an alias for ADR-004 `certified` execution or ADR-005 `fast` execution: the loader decodes GGUF tensors into Atenia's resident storage and validates the checkpoint through smoke tests plus explicit drift documentation.
+
+A future milestone is expected to automate this: a `cargo run --bin atenia-certify --model <path>` subcommand that produces the manifest as a structured artefact instead of hand-editing JSON. The schema is stable enough today (`schema_version: "1.0.0"` for safetensors/F64 manifests, `schema_version: "2.0.0"` with `schema_variant: "gguf-functional"` for GGUF manifests) that automation is primarily an ergonomics upgrade, not a contract change.
 
 ## How an operator verifies a manifest
 
@@ -126,12 +129,13 @@ A manifest is produced for a specific `(checkpoint, atenia_version)` pair. When 
 - **Same checkpoint, new Atenia version**: re-run the fixture and check the drift numbers; if the new version changes the kernel or the GEMM compute mode (e.g. M10.2.0's TF32 swap), the manifest needs to be updated to reflect the new envelope. The verification block must point to the new commit / version.
 - **Same Atenia version, new checkpoint**: a fine-tuned variant of an existing model is structurally a new checkpoint; the manifest of the base model does not transfer. Re-run the fixture from scratch.
 - **Atenia version where the fixture itself changed**: bump `f64_fixture_version`. The schema's `f64_fixture_version` field is precisely so a v2 fixture (e.g. a 10-model expansion in M11) can coexist with v1 manifests until they are regenerated.
+- **GGUF / quantized checkpoint**: use `schema_variant: "gguf-functional"` and `recommended_mode: "quantized"`. ADR-004 strict thresholds remain documented as context, but they are not the pass/fail gate for lossy quantized formats.
 
 The recommended distribution flow: the manifest is a sibling file to `model.safetensors` in the model directory. A model card (HuggingFace or otherwise) can publish the manifest as a downloadable artefact alongside the weights. Atenia's `models/` checkout convention (already used by the F64 fixture) makes this trivial to wire.
 
 ## What this does NOT promise (yet)
 
-- **Per-tensor policy dispatch** is reserved for M10.3+. The `per_tensor_policy` field is `null` in v1 manifests; the `_status` field documents what the future will do. Once landed, the dispatcher reads the manifest at load time and dispatches each matmul through the precision mode the manifest prescribes for that tensor.
+- **Per-tensor policy dispatch** is reserved for M10.3+ in v1 safetensors manifests. GGUF functional manifests may use `per_tensor_policy.default = "quantized"` to make the model-level quantized path explicit; this is not a promise of ADR-004 strict equivalence.
 - **Coverage beyond the 4-model fixture**: M10.3 v1 ships manifests for TinyLlama 1.1B, SmolLM2 1.7B, Qwen 2.5 1.5B, Llama 3.2 1B (the M4.6 family). Llama 2 7B and 13B Chat have end-to-end smoke evidence but no F64 reference (size). M11 expands to the top-10 model list with manifests for each.
 - **Statistical claims at scale**: each manifest is a 4-position end-to-end snapshot. Adversarial prompts or long-context sequences may surface drift profiles outside the fixture's coverage. The manifest's `recommended_mode_rationale` flags this where relevant (SmolLM2 and Llama 3.2 explicitly).
 

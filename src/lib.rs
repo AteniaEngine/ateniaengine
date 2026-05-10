@@ -279,7 +279,7 @@ fn init_parallel_runtime_entrypoint() {
     crate::cpu_features::init_parallel_runtime();
     let feats = crate::cpu_features::cpu_features();
     if !crate::apx_is_silent() {
-        println!(
+        eprintln!(
             "[APX] Parallel runtime initialized: {} threads | AVX2={} | AVX512={} | FMA={}",
             feats.threads, feats.avx2, feats.avx512f, feats.fma
         );
