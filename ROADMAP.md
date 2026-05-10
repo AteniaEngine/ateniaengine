@@ -149,6 +149,11 @@ Models that already run end-to-end on the engine. The full M11 certification pas
 | Llama 2 7B Chat        | ✅ Loader + inference + generation              | M6 / M8 end-to-end smoke; no F64 fixture (size)  |
 | Llama 2 13B Chat       | ✅ Loader + inference + generation (beyond-VRAM)| M4.7 / M7.3 / M8.7 / M9 smokes; no F64 fixture (size) |
 | Mistral 7B v0.3        | ✅ Loader (M4.7.1.c — 291 tensors / 3 shards / 14.5 GB BF16) | Loader-only; full inference path slated for M11 |
+| **GGUF quantized models (M11.D.5)** |                                                 |                                                  |
+| TinyLlama 1.1B Chat Q4_K_M GGUF | ✅ Loader + inference + generation (Q4_K_M) | Functional smoke test (5 tok); lm_head drift ~10.19 |
+| TinyLlama 1.1B Chat Q8_0 GGUF | ✅ Loader + inference + generation (Q8_0) | Functional smoke test (5 tok); drift ~2.28 |
+| Llama 3.2 1B Instruct Q4_K_M GGUF | ✅ Loader + inference + generation (Q4_K_M) | Functional smoke test (5 tok); norm drift 0.0 (F16) |
+| SmolLM2 1.7B Q4_K_M GGUF | ✅ Loader + inference + generation (Q4_K_M) | Functional smoke test (5 tok); q_proj drift ~0.287 |
 
 The four small models (TinyLlama, SmolLM2, Qwen 2.5 1.5B, Llama 3.2 1B) form the M4.6 / M4.7.2.e / M4.7.3.f / M4.7.4.f / M4.7.5.f / M4.8.f / M8.5 regression fixture and are exercised under every numerical-contract milestone. The two 13B-class checkpoints (Llama 2 7B and 13B) are validated end-to-end at the generation level (`atenia generate` produces coherent text, argmax bit-exact across milestone gates) but not under the F64 fixture due to peak-memory cost. Mistral 7B has loader parity but the full forward path is queued for M11.
 
