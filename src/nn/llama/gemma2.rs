@@ -414,18 +414,18 @@ where
 
     let bs = (runtime.batch * runtime.seq) as isize;
     let x_flat = gb.reshape(x_final, vec![bs, config.hidden_size as isize]);
-    let lm_head_input = if config.tie_word_embeddings {
-        gb.transpose_2d(embed_w)
+    let logits_flat_raw = if config.tie_word_embeddings {
+        gb.matmul_rhs_transposed(x_flat, embed_w)
     } else {
-        register(
+        let lm_head_input = register(
             gb,
             "lm_head.weight",
             vec![config.hidden_size, config.vocab_size],
             param_ids,
             param_names,
-        )?
+        )?;
+        gb.matmul(x_flat, lm_head_input)
     };
-    let logits_flat_raw = gb.matmul(x_flat, lm_head_input);
     // SoftCap(final_logit_softcapping) when the config carries
     // it. For Gemma 2 this is `Some(30.0)`; the cap is applied
     // before the reshape but the operation is shape-preserving
@@ -454,7 +454,9 @@ pub fn build_gemma2(
     runtime: &LlamaRuntime,
     token_input_id: usize,
 ) -> Gemma2Handles {
-    config.validate().expect("invalid LlamaConfig (Gemma 2 path)");
+    config
+        .validate()
+        .expect("invalid LlamaConfig (Gemma 2 path)");
 
     let mut param_ids: Vec<usize> = Vec::new();
     let mut param_names: Vec<String> = Vec::new();
@@ -540,7 +542,9 @@ pub fn build_gemma2_with_store(
     store: &WeightStore,
     kv_cache: Option<&KvCacheBuildSpec>,
 ) -> Result<LlamaHandlesShared, BuildError> {
-    config.validate().expect("invalid LlamaConfig (Gemma 2 path)");
+    config
+        .validate()
+        .expect("invalid LlamaConfig (Gemma 2 path)");
 
     let mut param_ids: Vec<usize> = Vec::new();
     let mut param_names: Vec<String> = Vec::new();
@@ -569,11 +573,12 @@ pub fn build_gemma2_with_store(
                         ids: &mut Vec<usize>,
                         names: &mut Vec<String>|
      -> Result<usize, BuildError> {
-        let p: &SharedParam = store.get_by_name(full_name).ok_or_else(|| {
-            BuildError::MissingParameter {
-                name: full_name.to_string(),
-            }
-        })?;
+        let p: &SharedParam =
+            store
+                .get_by_name(full_name)
+                .ok_or_else(|| BuildError::MissingParameter {
+                    name: full_name.to_string(),
+                })?;
         if p.shape() != expected_shape.as_slice() {
             return Err(BuildError::ParameterShapeMismatch {
                 name: full_name.to_string(),
@@ -700,9 +705,7 @@ pub fn gemma2_weight_mapper(
 
     let head_dim = config.effective_head_dim();
     let kv_groups = config.kv_groups();
-    let qpas = config
-        .query_pre_attn_scalar
-        .unwrap_or(head_dim as f32);
+    let qpas = config.query_pre_attn_scalar.unwrap_or(head_dim as f32);
     let attention_scale = 1.0_f32 / qpas.sqrt();
     let hidden_size = config.hidden_size;
 
@@ -874,9 +877,7 @@ mod tests {
         let config = tiny_gemma2_config();
         let head_dim = config.effective_head_dim();
         let kv_groups = config.kv_groups();
-        let qpas = config
-            .query_pre_attn_scalar
-            .unwrap_or(head_dim as f32);
+        let qpas = config.query_pre_attn_scalar.unwrap_or(head_dim as f32);
         let attn_scale = 1.0_f32 / qpas.sqrt();
         for name in [
             "model.norm.weight",
@@ -914,9 +915,7 @@ mod tests {
         let config = tiny_gemma2_config();
         let head_dim = config.effective_head_dim();
         let kv_groups = config.kv_groups();
-        let qpas = config
-            .query_pre_attn_scalar
-            .unwrap_or(head_dim as f32);
+        let qpas = config.query_pre_attn_scalar.unwrap_or(head_dim as f32);
         let attn_scale = 1.0_f32 / qpas.sqrt();
         let t = gemma2_transforms_for_name(
             "model.layers.3.self_attn.k_proj.weight",

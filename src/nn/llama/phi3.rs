@@ -104,9 +104,9 @@ pub fn split_fused_qkv(
     let q_end = q_rows;
     let k_end = q_rows + kv_rows;
     let v_end = q_rows + 2 * kv_rows;
-    let q = fused[0 .. q_end * in_features].to_vec();
-    let k = fused[q_end * in_features .. k_end * in_features].to_vec();
-    let v = fused[k_end * in_features .. v_end * in_features].to_vec();
+    let q = fused[0..q_end * in_features].to_vec();
+    let k = fused[q_end * in_features..k_end * in_features].to_vec();
+    let v = fused[k_end * in_features..v_end * in_features].to_vec();
     Ok((q, k, v))
 }
 
@@ -154,8 +154,8 @@ pub fn split_fused_gate_up(
     }
     let half = out_features / 2;
     let split_idx = half * in_features;
-    let gate = fused[0 .. split_idx].to_vec();
-    let up = fused[split_idx ..].to_vec();
+    let gate = fused[0..split_idx].to_vec();
+    let up = fused[split_idx..].to_vec();
     Ok((gate, up))
 }
 
@@ -165,8 +165,8 @@ pub fn split_fused_gate_up(
 
 use crate::amg::builder::GraphBuilder;
 use crate::amg::nodes::RopeScalingLongRope;
-use crate::nn::llama::config::{LlamaConfig, RopeScaling};
 use crate::nn::llama::builder::LlamaRuntime;
+use crate::nn::llama::config::{LlamaConfig, RopeScaling};
 use crate::tensor::Tensor;
 use crate::v17::loader::loader_errors::LoaderError;
 use crate::v17::loader::weight_mapper::{LoadTransform, WeightMapper};
@@ -271,8 +271,18 @@ fn build_transformer_block_phi3(
     let v_flat = gb.slice_last_dim(qkv_flat, k_end, v_end);
 
     // ---- 3. Multi-head reshape ----
-    let q_split = vec![batch as isize, seq as isize, n_heads_q as isize, head_dim as isize];
-    let kv_split = vec![batch as isize, seq as isize, n_heads_kv as isize, head_dim as isize];
+    let q_split = vec![
+        batch as isize,
+        seq as isize,
+        n_heads_q as isize,
+        head_dim as isize,
+    ];
+    let kv_split = vec![
+        batch as isize,
+        seq as isize,
+        n_heads_kv as isize,
+        head_dim as isize,
+    ];
     let q = gb.reshape(q_flat, q_split.clone());
     let k_unscaled = gb.reshape(k_flat, kv_split.clone());
     let v = gb.reshape(v_flat, kv_split);
@@ -483,18 +493,18 @@ pub fn build_phi3(
     let bs = (runtime.batch * runtime.seq) as isize;
     let x_flat = gb.reshape(x_final, vec![bs, config.hidden_size as isize]);
 
-    let lm_head_input = if config.tie_word_embeddings {
-        gb.transpose_2d(embed_w)
+    let logits_flat = if config.tie_word_embeddings {
+        gb.matmul_rhs_transposed(x_flat, embed_w)
     } else {
-        register_param(
+        let lm_head_input = register_param(
             gb,
             "lm_head.weight",
             vec![config.hidden_size, config.vocab_size],
             &mut param_ids,
             &mut param_names,
-        )
+        );
+        gb.matmul(x_flat, lm_head_input)
     };
-    let logits_flat = gb.matmul(x_flat, lm_head_input);
     let logits = gb.reshape(
         logits_flat,
         vec![
@@ -536,7 +546,10 @@ pub fn build_phi3_with_store(
     token_input_id: usize,
     store: &crate::amg::weight_store::WeightStore,
     kv_cache: Option<&crate::amg::kv_cache::KvCacheBuildSpec>,
-) -> Result<crate::nn::llama::builder_shared::LlamaHandlesShared, crate::nn::llama::builder_shared::BuildError> {
+) -> Result<
+    crate::nn::llama::builder_shared::LlamaHandlesShared,
+    crate::nn::llama::builder_shared::BuildError,
+> {
     use crate::amg::kv_cache::{KvCacheHandles, KvLayerHandle};
     use crate::amg::weight_store::SharedParam;
     use crate::nn::llama::builder_shared::{BuildError, LlamaHandlesShared};
@@ -557,9 +570,7 @@ pub fn build_phi3_with_store(
             *original_max_position_embeddings,
             *max_position_embeddings,
         ),
-        other => panic!(
-            "build_phi3_with_store requires rope_scaling = LongRope, got {other:?}"
-        ),
+        other => panic!("build_phi3_with_store requires rope_scaling = LongRope, got {other:?}"),
     };
 
     // Helper closures local to this builder. They mirror the
@@ -571,11 +582,12 @@ pub fn build_phi3_with_store(
                   param_ids: &mut Vec<usize>,
                   param_names: &mut Vec<String>|
      -> Result<usize, BuildError> {
-        let p: &SharedParam = store
-            .get_by_name(full_name)
-            .ok_or_else(|| BuildError::MissingParameter {
-                name: full_name.to_string(),
-            })?;
+        let p: &SharedParam =
+            store
+                .get_by_name(full_name)
+                .ok_or_else(|| BuildError::MissingParameter {
+                    name: full_name.to_string(),
+                })?;
         if p.shape() != expected_shape.as_slice() {
             return Err(BuildError::ParameterShapeMismatch {
                 name: full_name.to_string(),
@@ -623,10 +635,7 @@ pub fn build_phi3_with_store(
 
     // ---- Attention scale constant ----
     let attention_scale = 1.0_f32 / (head_dim as f32).sqrt();
-    let attention_scale_id = gb.parameter(Tensor::new_cpu(
-        vec![1, 1, 1, 1],
-        vec![attention_scale],
-    ));
+    let attention_scale_id = gb.parameter(Tensor::new_cpu(vec![1, 1, 1, 1], vec![attention_scale]));
 
     // ---- Embedding ----
     let embed_w = lookup(
@@ -675,8 +684,18 @@ pub fn build_phi3_with_store(
         let v_flat = gb.slice_last_dim(qkv_flat, k_end, v_end);
 
         // 3. Multi-head reshape
-        let q_split = vec![batch as isize, seq as isize, n_heads_q as isize, head_dim as isize];
-        let kv_split = vec![batch as isize, seq as isize, n_heads_kv as isize, head_dim as isize];
+        let q_split = vec![
+            batch as isize,
+            seq as isize,
+            n_heads_q as isize,
+            head_dim as isize,
+        ];
+        let kv_split = vec![
+            batch as isize,
+            seq as isize,
+            n_heads_kv as isize,
+            head_dim as isize,
+        ];
         let q = gb.reshape(q_flat, q_split.clone());
         let k_unscaled = gb.reshape(k_flat, kv_split.clone());
         let v = gb.reshape(v_flat, kv_split);
@@ -686,9 +705,19 @@ pub fn build_phi3_with_store(
 
         // 4. RoPE-LongRope with offset
         let q_rope = gb.rope_longrope_with_offset(
-            q, head_dim, config.rope_theta, longrope_scaling.clone(), position_offset);
+            q,
+            head_dim,
+            config.rope_theta,
+            longrope_scaling.clone(),
+            position_offset,
+        );
         let k_rope = gb.rope_longrope_with_offset(
-            k, head_dim, config.rope_theta, longrope_scaling.clone(), position_offset);
+            k,
+            head_dim,
+            config.rope_theta,
+            longrope_scaling.clone(),
+            position_offset,
+        );
 
         // 5. [b, s, h, d] → [b, h, s, d]
         let q_perm = gb.permute(q_rope, vec![0, 2, 1, 3]);
@@ -797,18 +826,18 @@ pub fn build_phi3_with_store(
 
     // ---- LM head ----
     let x_flat = gb.reshape(x_final, vec![bs, hidden as isize]);
-    let lm_head_input = if config.tie_word_embeddings {
-        gb.transpose_2d(embed_w)
+    let logits_flat = if config.tie_word_embeddings {
+        gb.matmul_rhs_transposed(x_flat, embed_w)
     } else {
-        lookup(
+        let lm_head_input = lookup(
             gb,
             "lm_head.weight",
             vec![hidden, config.vocab_size],
             &mut param_ids,
             &mut param_names,
-        )?
+        )?;
+        gb.matmul(x_flat, lm_head_input)
     };
-    let logits_flat = gb.matmul(x_flat, lm_head_input);
     let logits = gb.reshape(
         logits_flat,
         vec![batch as isize, seq as isize, config.vocab_size as isize],
@@ -838,16 +867,27 @@ pub fn build_with_store(
     token_input_id: usize,
     store: &crate::amg::weight_store::WeightStore,
     kv_cache: Option<&crate::amg::kv_cache::KvCacheBuildSpec>,
-) -> Result<crate::nn::llama::builder_shared::LlamaHandlesShared, crate::nn::llama::builder_shared::BuildError> {
+) -> Result<
+    crate::nn::llama::builder_shared::LlamaHandlesShared,
+    crate::nn::llama::builder_shared::BuildError,
+> {
     match config.model_type.as_deref() {
-        Some("phi3") => {
-            build_phi3_with_store(gb, config, runtime, token_input_id, store, kv_cache)
-        }
+        Some("phi3") => build_phi3_with_store(gb, config, runtime, token_input_id, store, kv_cache),
         Some("gemma2") => crate::nn::llama::gemma2::build_gemma2_with_store(
-            gb, config, runtime, token_input_id, store, kv_cache,
+            gb,
+            config,
+            runtime,
+            token_input_id,
+            store,
+            kv_cache,
         ),
         _ => crate::nn::llama::builder_shared::build_llama_with_store(
-            gb, config, runtime, token_input_id, store, kv_cache,
+            gb,
+            config,
+            runtime,
+            token_input_id,
+            store,
+            kv_cache,
         ),
     }
 }
@@ -923,14 +963,8 @@ mod tests {
         let fused: Vec<f32> = (0..out_features * in_features)
             .map(|i| i as f32 * 1e-4)
             .collect();
-        let (q, k, v) = split_fused_qkv(
-            &fused,
-            &[out_features, in_features],
-            n_q,
-            n_kv,
-            head_dim,
-        )
-        .expect("split_fused_qkv must accept the Phi-3.5 Mini shape");
+        let (q, k, v) = split_fused_qkv(&fused, &[out_features, in_features], n_q, n_kv, head_dim)
+            .expect("split_fused_qkv must accept the Phi-3.5 Mini shape");
         assert_eq!(q.len(), n_q * head_dim * in_features);
         assert_eq!(k.len(), n_kv * head_dim * in_features);
         assert_eq!(v.len(), n_kv * head_dim * in_features);
@@ -955,17 +989,9 @@ mod tests {
         let head_dim = 64usize;
         let in_features = 2048usize;
         let out_features = (n_q + 2 * n_kv) * head_dim;
-        let fused: Vec<f32> = (0..out_features * in_features)
-            .map(|i| i as f32)
-            .collect();
-        let (q, k, v) = split_fused_qkv(
-            &fused,
-            &[out_features, in_features],
-            n_q,
-            n_kv,
-            head_dim,
-        )
-        .expect("split should succeed");
+        let fused: Vec<f32> = (0..out_features * in_features).map(|i| i as f32).collect();
+        let (q, k, v) = split_fused_qkv(&fused, &[out_features, in_features], n_q, n_kv, head_dim)
+            .expect("split should succeed");
         assert_eq!(q.len(), 32 * 64 * 2048);
         assert_eq!(k.len(), 8 * 64 * 2048);
         assert_eq!(v.len(), 8 * 64 * 2048);
@@ -1006,8 +1032,8 @@ mod tests {
         let fused: Vec<f32> = (0..out_features * in_features)
             .map(|i| i as f32 * 1e-5)
             .collect();
-        let (gate, up) = split_fused_gate_up(&fused, &[out_features, in_features])
-            .expect("split must succeed");
+        let (gate, up) =
+            split_fused_gate_up(&fused, &[out_features, in_features]).expect("split must succeed");
         assert_eq!(gate.len(), intermediate * in_features);
         assert_eq!(up.len(), intermediate * in_features);
         assert_eq!(gate[0], fused[0]);
@@ -1019,8 +1045,7 @@ mod tests {
     #[test]
     fn split_gate_up_rejects_odd_out_features() {
         let fused: Vec<f32> = vec![0.0; 7 * 4];
-        let err = split_fused_gate_up(&fused, &[7, 4])
-            .expect_err("odd out_features must fail");
+        let err = split_fused_gate_up(&fused, &[7, 4]).expect_err("odd out_features must fail");
         assert!(err.contains("divisible by 2"), "got: {err}");
     }
 
@@ -1032,7 +1057,10 @@ mod tests {
     fn phi3_transform_dispatch_covers_known_names() {
         let h = 3072;
         // Embed: empty
-        assert_eq!(phi3_transforms_for_name("model.embed_tokens.weight", h), vec![]);
+        assert_eq!(
+            phi3_transforms_for_name("model.embed_tokens.weight", h),
+            vec![]
+        );
         // Layernorms: Reshape to [1, 1, hidden]
         let expect_norm = vec![LoadTransform::Reshape {
             target: vec![1, 1, h],
@@ -1046,10 +1074,7 @@ mod tests {
             expect_norm
         );
         assert_eq!(
-            phi3_transforms_for_name(
-                "model.layers.31.post_attention_layernorm.weight",
-                h
-            ),
+            phi3_transforms_for_name("model.layers.31.post_attention_layernorm.weight", h),
             expect_norm
         );
         // Fused weights + o_proj + down_proj + lm_head: single Transpose2D
@@ -1075,8 +1100,8 @@ mod tests {
     #[test]
     fn build_phi3_produces_expected_param_names() {
         use crate::amg::builder::GraphBuilder;
-        use crate::nn::llama::config::{LlamaConfig, RopeScaling};
         use crate::nn::llama::builder::LlamaRuntime;
+        use crate::nn::llama::config::{LlamaConfig, RopeScaling};
         let config = LlamaConfig {
             vocab_size: 32_064,
             hidden_size: 64,
@@ -1149,14 +1174,8 @@ mod tests {
         let fused: Vec<f32> = (0..out_features * in_features)
             .map(|i| (i as f32).sin())
             .collect();
-        let (q, k, v) = split_fused_qkv(
-            &fused,
-            &[out_features, in_features],
-            n_q,
-            n_kv,
-            head_dim,
-        )
-        .expect("split should succeed");
+        let (q, k, v) = split_fused_qkv(&fused, &[out_features, in_features], n_q, n_kv, head_dim)
+            .expect("split should succeed");
         let mut concatenated = q;
         concatenated.extend_from_slice(&k);
         concatenated.extend_from_slice(&v);

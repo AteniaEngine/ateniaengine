@@ -64,12 +64,12 @@
 //!     to S-1 see all `C` cached positions plus their own
 //!     prefix in the new chunk.
 
+use super::builder::{LlamaHandles, LlamaRuntime};
 use crate::amg::builder::GraphBuilder;
-use crate::amg::weight_store::{SharedParam, WeightStore};
 use crate::amg::kv_cache::{KvCacheBuildSpec, KvCacheHandles, KvLayerHandle};
+use crate::amg::weight_store::{SharedParam, WeightStore};
 use crate::nn::llama::config::LlamaConfig;
 use crate::tensor::Tensor;
-use super::builder::{LlamaHandles, LlamaRuntime};
 
 /// Output of [`build_llama_with_store`].
 ///
@@ -103,8 +103,14 @@ impl LlamaHandlesShared {
 /// `WeightStore` lookup ("parameter named X not in store").
 #[derive(Debug)]
 pub enum BuildError {
-    MissingParameter { name: String },
-    ParameterShapeMismatch { name: String, expected: Vec<usize>, got: Vec<usize> },
+    MissingParameter {
+        name: String,
+    },
+    ParameterShapeMismatch {
+        name: String,
+        expected: Vec<usize>,
+        got: Vec<usize>,
+    },
 }
 
 impl std::fmt::Display for BuildError {
@@ -135,8 +141,12 @@ fn register_param_from_store(
     param_ids: &mut Vec<usize>,
     param_names: &mut Vec<String>,
 ) -> Result<usize, BuildError> {
-    let p: &SharedParam = store.get_by_name(full_name)
-        .ok_or_else(|| BuildError::MissingParameter { name: full_name.to_string() })?;
+    let p: &SharedParam =
+        store
+            .get_by_name(full_name)
+            .ok_or_else(|| BuildError::MissingParameter {
+                name: full_name.to_string(),
+            })?;
     if p.shape() != expected_shape.as_slice() {
         return Err(BuildError::ParameterShapeMismatch {
             name: full_name.to_string(),
@@ -190,24 +200,41 @@ fn build_block_shared(
 
     // ---- 1. Input layernorm ----
     let input_ln_gamma = register_param_from_store(
-        gb, store,
+        gb,
+        store,
         &format!("{prefix}.input_layernorm.weight"),
         vec![1, 1, hidden],
-        param_ids, param_names,
+        param_ids,
+        param_names,
     )?;
     let h_normed = gb.rms_norm(x, config.rms_norm_eps);
     let h = gb.broadcast_mul(h_normed, input_ln_gamma);
 
     // ---- 2. Q/K/V projections ----
     let q_proj_w = register_param_from_store(
-        gb, store, &format!("{prefix}.self_attn.q_proj.weight"),
-        vec![hidden, hidden], param_ids, param_names)?;
+        gb,
+        store,
+        &format!("{prefix}.self_attn.q_proj.weight"),
+        vec![hidden, hidden],
+        param_ids,
+        param_names,
+    )?;
     let k_proj_w = register_param_from_store(
-        gb, store, &format!("{prefix}.self_attn.k_proj.weight"),
-        vec![hidden, hidden], param_ids, param_names)?;
+        gb,
+        store,
+        &format!("{prefix}.self_attn.k_proj.weight"),
+        vec![hidden, hidden],
+        param_ids,
+        param_names,
+    )?;
     let v_proj_w = register_param_from_store(
-        gb, store, &format!("{prefix}.self_attn.v_proj.weight"),
-        vec![hidden, hidden], param_ids, param_names)?;
+        gb,
+        store,
+        &format!("{prefix}.self_attn.v_proj.weight"),
+        vec![hidden, hidden],
+        param_ids,
+        param_names,
+    )?;
 
     let h_flat = gb.reshape(h, vec![bs, hidden as isize]);
     let q_flat_raw = gb.matmul(h_flat, q_proj_w);
@@ -217,14 +244,29 @@ fn build_block_shared(
     // ---- 2.b QKV biases (Qwen 2.5) ----
     let (q_flat, k_flat, v_flat) = if config.effective_attention_bias() {
         let q_proj_b = register_param_from_store(
-            gb, store, &format!("{prefix}.self_attn.q_proj.bias"),
-            vec![1, hidden], param_ids, param_names)?;
+            gb,
+            store,
+            &format!("{prefix}.self_attn.q_proj.bias"),
+            vec![1, hidden],
+            param_ids,
+            param_names,
+        )?;
         let k_proj_b = register_param_from_store(
-            gb, store, &format!("{prefix}.self_attn.k_proj.bias"),
-            vec![1, hidden], param_ids, param_names)?;
+            gb,
+            store,
+            &format!("{prefix}.self_attn.k_proj.bias"),
+            vec![1, hidden],
+            param_ids,
+            param_names,
+        )?;
         let v_proj_b = register_param_from_store(
-            gb, store, &format!("{prefix}.self_attn.v_proj.bias"),
-            vec![1, hidden], param_ids, param_names)?;
+            gb,
+            store,
+            &format!("{prefix}.self_attn.v_proj.bias"),
+            vec![1, hidden],
+            param_ids,
+            param_names,
+        )?;
         (
             gb.broadcast_add(q_flat_raw, q_proj_b),
             gb.broadcast_add(k_flat_raw, k_proj_b),
@@ -235,7 +277,12 @@ fn build_block_shared(
     };
 
     // ---- 3. Multi-head reshape ----
-    let split_shape = vec![batch as isize, seq as isize, n_heads as isize, head_dim as isize];
+    let split_shape = vec![
+        batch as isize,
+        seq as isize,
+        n_heads as isize,
+        head_dim as isize,
+    ];
     let q = gb.reshape(q_flat, split_shape.clone());
     let k = gb.reshape(k_flat, split_shape.clone());
     let v = gb.reshape(v_flat, split_shape);
@@ -253,15 +300,32 @@ fn build_block_shared(
             gb.rope_with_offset(k, head_dim, config.rope_theta, position_offset),
         ),
         Some(crate::nn::llama::RopeScaling::Llama3 {
-            factor, low_freq_factor, high_freq_factor,
+            factor,
+            low_freq_factor,
+            high_freq_factor,
             original_max_position_embeddings,
         }) => {
             let scaling = crate::amg::nodes::RopeScalingLlama3::new(
-                *factor, *low_freq_factor, *high_freq_factor,
-                *original_max_position_embeddings);
+                *factor,
+                *low_freq_factor,
+                *high_freq_factor,
+                *original_max_position_embeddings,
+            );
             (
-                gb.rope_scaled_with_offset(q, head_dim, config.rope_theta, scaling.clone(), position_offset),
-                gb.rope_scaled_with_offset(k, head_dim, config.rope_theta, scaling, position_offset),
+                gb.rope_scaled_with_offset(
+                    q,
+                    head_dim,
+                    config.rope_theta,
+                    scaling.clone(),
+                    position_offset,
+                ),
+                gb.rope_scaled_with_offset(
+                    k,
+                    head_dim,
+                    config.rope_theta,
+                    scaling,
+                    position_offset,
+                ),
             )
         }
         // **M11.B** — see `builder::build_llama` for the same
@@ -289,24 +353,23 @@ fn build_block_shared(
     // time; runtime overwrites them with the resident cache
     // before each forward) and Concat-axis=2 them with the
     // new K/V projections.
-    let (k_full, v_full, layer_handle): (usize, usize, Option<KvLayerHandle>) =
-        match kv_cache {
-            None => (new_k_perm, new_v_perm, None),
-            Some(spec) => {
-                let cache_shape = vec![batch, n_heads, spec.cached_len, head_dim];
-                let cache_k_id = register_local_zero_f32(gb, cache_shape.clone());
-                let cache_v_id = register_local_zero_f32(gb, cache_shape);
-                let k_full_id = gb.concat(cache_k_id, new_k_perm, 2);
-                let v_full_id = gb.concat(cache_v_id, new_v_perm, 2);
-                let handle = KvLayerHandle {
-                    cache_k_param_id: cache_k_id,
-                    cache_v_param_id: cache_v_id,
-                    k_full_node_id: k_full_id,
-                    v_full_node_id: v_full_id,
-                };
-                (k_full_id, v_full_id, Some(handle))
-            }
-        };
+    let (k_full, v_full, layer_handle): (usize, usize, Option<KvLayerHandle>) = match kv_cache {
+        None => (new_k_perm, new_v_perm, None),
+        Some(spec) => {
+            let cache_shape = vec![batch, n_heads, spec.cached_len, head_dim];
+            let cache_k_id = register_local_zero_f32(gb, cache_shape.clone());
+            let cache_v_id = register_local_zero_f32(gb, cache_shape);
+            let k_full_id = gb.concat(cache_k_id, new_k_perm, 2);
+            let v_full_id = gb.concat(cache_v_id, new_v_perm, 2);
+            let handle = KvLayerHandle {
+                cache_k_param_id: cache_k_id,
+                cache_v_param_id: cache_v_id,
+                k_full_node_id: k_full_id,
+                v_full_node_id: v_full_id,
+            };
+            (k_full_id, v_full_id, Some(handle))
+        }
+    };
 
     // ---- 7. Attention scores ----
     let k_full_t = gb.transpose_last_two(k_full);
@@ -319,8 +382,13 @@ fn build_block_shared(
     // ---- 8. Output projection ----
     let attn_out_flat = gb.reshape(attn_out_back, vec![bs, hidden as isize]);
     let o_proj_w = register_param_from_store(
-        gb, store, &format!("{prefix}.self_attn.o_proj.weight"),
-        vec![hidden, hidden], param_ids, param_names)?;
+        gb,
+        store,
+        &format!("{prefix}.self_attn.o_proj.weight"),
+        vec![hidden, hidden],
+        param_ids,
+        param_names,
+    )?;
     let attn_proj_flat = gb.matmul(attn_out_flat, o_proj_w);
     let attn_proj = gb.reshape(
         attn_proj_flat,
@@ -330,21 +398,41 @@ fn build_block_shared(
 
     // ---- 9. Post-attention layernorm ----
     let post_ln_gamma = register_param_from_store(
-        gb, store, &format!("{prefix}.post_attention_layernorm.weight"),
-        vec![1, 1, hidden], param_ids, param_names)?;
+        gb,
+        store,
+        &format!("{prefix}.post_attention_layernorm.weight"),
+        vec![1, 1, hidden],
+        param_ids,
+        param_names,
+    )?;
     let h2_normed = gb.rms_norm(x_residual_1, config.rms_norm_eps);
     let h2 = gb.broadcast_mul(h2_normed, post_ln_gamma);
 
     // ---- 10. SwiGLU FFN ----
     let gate_proj_w = register_param_from_store(
-        gb, store, &format!("{prefix}.mlp.gate_proj.weight"),
-        vec![hidden, intermediate], param_ids, param_names)?;
+        gb,
+        store,
+        &format!("{prefix}.mlp.gate_proj.weight"),
+        vec![hidden, intermediate],
+        param_ids,
+        param_names,
+    )?;
     let up_proj_w = register_param_from_store(
-        gb, store, &format!("{prefix}.mlp.up_proj.weight"),
-        vec![hidden, intermediate], param_ids, param_names)?;
+        gb,
+        store,
+        &format!("{prefix}.mlp.up_proj.weight"),
+        vec![hidden, intermediate],
+        param_ids,
+        param_names,
+    )?;
     let down_proj_w = register_param_from_store(
-        gb, store, &format!("{prefix}.mlp.down_proj.weight"),
-        vec![intermediate, hidden], param_ids, param_names)?;
+        gb,
+        store,
+        &format!("{prefix}.mlp.down_proj.weight"),
+        vec![intermediate, hidden],
+        param_ids,
+        param_names,
+    )?;
 
     let h2_flat = gb.reshape(h2, vec![bs, hidden as isize]);
     let gate_flat = gb.matmul(h2_flat, gate_proj_w);
@@ -411,26 +499,44 @@ pub fn build_llama_with_store(
 
     // ---- Embedding lookup ----
     let embed_w = register_param_from_store(
-        gb, store, "model.embed_tokens.weight",
+        gb,
+        store,
+        "model.embed_tokens.weight",
         vec![config.vocab_size, config.hidden_size],
-        &mut param_ids, &mut param_names,
+        &mut param_ids,
+        &mut param_names,
     )?;
     let mut x = gb.index_select(embed_w, token_input_id);
 
     // ---- Transformer blocks ----
     for layer_idx in 0..config.num_hidden_layers {
         x = build_block_shared(
-            gb, layer_idx, x, causal_mask_id, config, runtime, store, kv_cache,
-            &mut param_ids, &mut param_names,
-            if kv_cache.is_some() { Some(&mut kv_handles_inner) } else { None },
+            gb,
+            layer_idx,
+            x,
+            causal_mask_id,
+            config,
+            runtime,
+            store,
+            kv_cache,
+            &mut param_ids,
+            &mut param_names,
+            if kv_cache.is_some() {
+                Some(&mut kv_handles_inner)
+            } else {
+                None
+            },
         )?;
     }
 
     // ---- Final RMSNorm ----
     let final_ln_gamma = register_param_from_store(
-        gb, store, "model.norm.weight",
+        gb,
+        store,
+        "model.norm.weight",
         vec![1, 1, config.hidden_size],
-        &mut param_ids, &mut param_names,
+        &mut param_ids,
+        &mut param_names,
     )?;
     let x_normed = gb.rms_norm(x, config.rms_norm_eps);
     let x_final = gb.broadcast_mul(x_normed, final_ln_gamma);
@@ -438,22 +544,31 @@ pub fn build_llama_with_store(
     // ---- LM head ----
     let bs = (runtime.batch * runtime.seq) as isize;
     let x_flat = gb.reshape(x_final, vec![bs, config.hidden_size as isize]);
-    let lm_head_input = if config.tie_word_embeddings {
-        gb.transpose_2d(embed_w)
+    let logits_flat = if config.tie_word_embeddings {
+        gb.matmul_rhs_transposed(x_flat, embed_w)
     } else {
-        register_param_from_store(
-            gb, store, "lm_head.weight",
+        let lm_head_input = register_param_from_store(
+            gb,
+            store,
+            "lm_head.weight",
             vec![config.hidden_size, config.vocab_size],
-            &mut param_ids, &mut param_names,
-        )?
+            &mut param_ids,
+            &mut param_names,
+        )?;
+        gb.matmul(x_flat, lm_head_input)
     };
-    let logits_flat = gb.matmul(x_flat, lm_head_input);
     let logits = gb.reshape(
         logits_flat,
-        vec![runtime.batch as isize, runtime.seq as isize, config.vocab_size as isize],
+        vec![
+            runtime.batch as isize,
+            runtime.seq as isize,
+            config.vocab_size as isize,
+        ],
     );
 
-    let kv_handles = kv_cache.map(|_| KvCacheHandles { per_layer: kv_handles_inner });
+    let kv_handles = kv_cache.map(|_| KvCacheHandles {
+        per_layer: kv_handles_inner,
+    });
 
     Ok(LlamaHandlesShared {
         token_input_id,

@@ -347,7 +347,6 @@ pub fn build_llama(
 ) -> LlamaHandles {
     config.validate().expect("invalid LlamaConfig");
 
-
     let mut param_ids: Vec<usize> = Vec::new();
     let mut param_names: Vec<String> = Vec::new();
 
@@ -424,24 +423,23 @@ pub fn build_llama(
     let bs = (runtime.batch * runtime.seq) as isize;
     let x_flat = gb.reshape(x_final, vec![bs, config.hidden_size as isize]);
 
-    let lm_head_input = if config.tie_word_embeddings {
+    let logits_flat = if config.tie_word_embeddings {
         // Reuse `embed_w` as the transposed lm_head weight. After
         // Transpose2D the shape is `[hidden, vocab]` — exactly what a
         // separate `lm_head.weight` parameter would have after the
         // `LoadTransform::Transpose2D` applied at load time.
-        gb.transpose_2d(embed_w)
+        gb.matmul_rhs_transposed(x_flat, embed_w)
     } else {
         // Register a dedicated `lm_head.weight` Parameter.
-        register_param_named(
+        let lm_head_input = register_param_named(
             gb,
             "lm_head.weight",
             vec![config.hidden_size, config.vocab_size],
             &mut param_ids,
             &mut param_names,
-        )
+        );
+        gb.matmul(x_flat, lm_head_input)
     };
-
-    let logits_flat = gb.matmul(x_flat, lm_head_input);
     let logits = gb.reshape(
         logits_flat,
         vec![

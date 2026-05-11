@@ -69,7 +69,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::builder::{LlamaRuntime, build_llama};
+use super::builder::{build_llama, LlamaRuntime};
 use super::numcert;
 use super::phi3;
 use crate::amg::builder::GraphBuilder;
@@ -186,7 +186,7 @@ pub fn init_fast_mode_active(manifest: Option<&numcert::NumcertManifest>) -> boo
     resolved
 }
 use super::generator::{
-    GenerateError, GeneratedToken, GenerationConfig, TokenSink, generate_greedy,
+    generate_greedy, GenerateError, GeneratedToken, GenerationConfig, TokenSink,
 };
 
 /// Bundles everything needed to run inference against one
@@ -732,7 +732,7 @@ impl GenerationPipeline {
                     plan_input.total_ram_bytes,
                     &plan,
                 );
-                log_tier_plan(&plan);
+                log_tier_plan(&plan_input, &plan);
                 let (s, report) = mapper.load_gguf_with_residency_plan(
                     &mut scratch_graph,
                     reader,
@@ -743,7 +743,9 @@ impl GenerationPipeline {
                 )?;
                 // Allow rope_freqs as skipped tensor (RoPE scaling metadata, not a model weight)
                 let acceptable_skipped: Vec<&str> = vec!["rope_freqs"];
-                let unexpected_skipped: Vec<_> = report.skipped.iter()
+                let unexpected_skipped: Vec<_> = report
+                    .skipped
+                    .iter()
                     .filter(|s| !acceptable_skipped.iter().any(|a| s.contains(a)))
                     .cloned()
                     .collect();
@@ -785,7 +787,7 @@ impl GenerationPipeline {
                     plan_input.total_ram_bytes,
                     &plan,
                 );
-                log_tier_plan(&plan);
+                log_tier_plan(&plan_input, &plan);
                 let (s, _report) = sharded.load_into_with_residency_plan(
                     &mut scratch_graph,
                     &mapper,
@@ -832,7 +834,7 @@ impl GenerationPipeline {
                     plan_input.total_ram_bytes,
                     &plan,
                 );
-                log_tier_plan(&plan);
+                log_tier_plan(&plan_input, &plan);
                 let (s, _report) = mapper.load_into_with_residency_plan(
                     &mut scratch_graph,
                     &reader,
@@ -855,7 +857,9 @@ impl GenerationPipeline {
                 let report = mapper.load_gguf_into(&mut scratch_graph, reader, &name_map)?;
                 // Allow rope_freqs as skipped tensor (RoPE scaling metadata, not a model weight)
                 let acceptable_skipped: Vec<&str> = vec!["rope_freqs"];
-                let unexpected_skipped: Vec<_> = report.skipped.iter()
+                let unexpected_skipped: Vec<_> = report
+                    .skipped
+                    .iter()
                     .filter(|s| !acceptable_skipped.iter().any(|a| s.contains(a)))
                     .cloned()
                     .collect();
@@ -1154,11 +1158,79 @@ fn log_adaptive_headroom(
 /// **M6 replan sub-fase 3** — operator-facing log of the
 /// tier-aware load decision. Suppressed in `--silent` builds via
 /// `crate::apx_is_silent`.
-fn log_tier_plan(plan: &crate::gpu::tier_plan::TierPlan) {
+fn log_tier_plan(
+    input: &crate::gpu::tier_plan::TierPlanInput,
+    plan: &crate::gpu::tier_plan::TierPlan,
+) {
     if crate::apx_is_silent() {
         return;
     }
     let gib = |b: u64| (b as f64) / (1024.0_f64.powi(3));
+    let total_resident_if_vram: u64 = input
+        .tensors
+        .iter()
+        .map(|m| m.vram_cost_bytes(input.kernel_dtype))
+        .sum();
+    let gpu_eligible_count = input
+        .tensors
+        .iter()
+        .filter(|m| crate::gpu::tier_plan::is_gpu_eligible(m))
+        .count();
+    let gpu_eligible_source_bytes: u64 = input
+        .tensors
+        .iter()
+        .filter(|m| crate::gpu::tier_plan::is_gpu_eligible(m))
+        .map(|m| m.ram_cost_bytes())
+        .sum();
+    let gpu_eligible_resident_bytes: u64 = input
+        .tensors
+        .iter()
+        .filter(|m| crate::gpu::tier_plan::is_gpu_eligible(m))
+        .map(|m| m.vram_cost_bytes(input.kernel_dtype))
+        .sum();
+    let vram_budget = input
+        .free_vram_bytes
+        .saturating_sub(crate::gpu::tier_plan::VRAM_HEADROOM_BYTES);
+    let final_vram_budget = if plan.disk_bytes_assigned > 0 {
+        vram_budget.saturating_sub(crate::gpu::tier_plan::DISK_PIPELINE_STAGING_BYTES)
+    } else {
+        vram_budget
+    };
+
+    let mut ram_not_gpu_eligible = 0usize;
+    let mut ram_gpu_eligible_budget = 0usize;
+    let mut disk_not_gpu_eligible = 0usize;
+    let mut disk_gpu_eligible_budget = 0usize;
+
+    for meta in &input.tensors {
+        let Some(tier) = plan.get(&meta.name) else {
+            continue;
+        };
+        let eligible = crate::gpu::tier_plan::is_gpu_eligible(meta);
+        match (tier, eligible) {
+            (crate::gpu::tier_plan::Tier::Ram, false) => ram_not_gpu_eligible += 1,
+            (crate::gpu::tier_plan::Tier::Ram, true) => ram_gpu_eligible_budget += 1,
+            (crate::gpu::tier_plan::Tier::Disk, false) => disk_not_gpu_eligible += 1,
+            (crate::gpu::tier_plan::Tier::Disk, true) => disk_gpu_eligible_budget += 1,
+            _ => {}
+        }
+    }
+
+    eprintln!(
+        "[ATENIA] Tier planner inputs: source {:.2} GiB, all-resident estimate {:.2} GiB \
+         at {:?}, free VRAM {:.2} GiB, VRAM budget {:.2} GiB ({:.2} GiB after staging), \
+         GPU-eligible {} / {} tensors ({:.2} GiB source -> {:.2} GiB resident).",
+        gib(input.model_total_bytes),
+        gib(total_resident_if_vram),
+        input.kernel_dtype,
+        gib(input.free_vram_bytes),
+        gib(vram_budget),
+        gib(final_vram_budget),
+        gpu_eligible_count,
+        input.tensors.len(),
+        gib(gpu_eligible_source_bytes),
+        gib(gpu_eligible_resident_bytes),
+    );
     eprintln!("[ATENIA] Tier-aware loader plan:");
     eprintln!(
         "  VRAM: {} tensors ({:.2} GiB)",
@@ -1175,6 +1247,52 @@ fn log_tier_plan(plan: &crate::gpu::tier_plan::TierPlan) {
         plan.disk_count(),
         gib(plan.disk_bytes_assigned)
     );
+    eprintln!(
+        "  Reasons: RAM not_gpu_eligible={}, RAM vram_budget_exceeded={}, \
+         Disk not_gpu_eligible={}, Disk vram_or_ram_budget_exceeded={}",
+        ram_not_gpu_eligible,
+        ram_gpu_eligible_budget,
+        disk_not_gpu_eligible,
+        disk_gpu_eligible_budget,
+    );
+
+    if std::env::var("ATENIA_PLAN_TRACE").as_deref() == Ok("1") {
+        let mut ram_tensors: Vec<_> = input
+            .tensors
+            .iter()
+            .filter_map(|meta| {
+                let tier = plan.get(&meta.name)?;
+                if tier != crate::gpu::tier_plan::Tier::Ram {
+                    return None;
+                }
+                let reason = if crate::gpu::tier_plan::is_gpu_eligible(meta) {
+                    "vram_budget_exceeded"
+                } else {
+                    "not_gpu_eligible"
+                };
+                Some((
+                    meta.vram_cost_bytes(input.kernel_dtype),
+                    meta.ram_cost_bytes(),
+                    reason,
+                    meta,
+                ))
+            })
+            .collect();
+        ram_tensors.sort_by(|a, b| b.0.cmp(&a.0));
+
+        eprintln!("[ATENIA] PLAN_TRACE top RAM tensors:");
+        for (resident_bytes, source_bytes, reason, meta) in ram_tensors.into_iter().take(12) {
+            eprintln!(
+                "  RAM reason={} name={} dtype={:?} shape={:?} source={:.3} GiB resident_if_vram={:.3} GiB",
+                reason,
+                meta.name,
+                meta.dtype,
+                meta.shape,
+                gib(source_bytes),
+                gib(resident_bytes),
+            );
+        }
+    }
 }
 
 /// Internal sink wrapper that mirrors events to the user's

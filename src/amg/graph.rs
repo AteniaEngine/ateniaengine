@@ -1,39 +1,47 @@
-#[allow(unused_imports)]
-use crate::tensor::ops::*;
-use crate::apx3_9::op_router::{route, ExecTarget};
-use crate::apx4::gpu_dispatch::{dispatch_matmul as dispatch_matmul_gpu, ApxExecTarget as Apx4ExecTarget};
-use crate::apx4_5::dispatcher::dispatch_batch_matmul_cuda;
-use crate::apx4_3::GpuPlan;
-use crate::apx4_11::gpu_hooks;
-use crate::apx4_7::{PersistentPlan, FusionPlan};
-use crate::apx4_13::fusion_engine::FusedOp;
-use crate::apx5::kernel_planner::{KernelPlanner, KernelTarget};
-use crate::apx5::apx_5_3_planner::{Planner5_3, NodeExecInfo};
-use crate::apx5_4::{Sample, DeviceTarget};
-use crate::tensor::{StorageTransferError, Layout, Tensor, TensorStorage};
-use crate::cpu_features::cpu_features;
 use super::chunking::{chunk_tensor, merge_chunks};
 use super::nodes::{Node, NodeType};
 use super::scheduler::{build_execution_plan, ExecStep, ExecutionPlan};
 use crate::amg::grad_store::GradStore;
 use crate::amg::reactive::{ExecutionAbortReason, ReactiveExecutionContext};
+use crate::apx3_9::op_router::{route, ExecTarget};
+use crate::apx4::gpu_dispatch::{
+    dispatch_matmul as dispatch_matmul_gpu, ApxExecTarget as Apx4ExecTarget,
+};
+use crate::apx4_11::gpu_hooks;
+use crate::apx4_13::fusion_engine::FusedOp;
+use crate::apx4_3::GpuPlan;
+use crate::apx4_5::dispatcher::dispatch_batch_matmul_cuda;
+use crate::apx4_7::{FusionPlan, PersistentPlan};
+use crate::apx5::apx_5_3_planner::{NodeExecInfo, Planner5_3};
+use crate::apx5::kernel_planner::{KernelPlanner, KernelTarget};
+use crate::apx5_4::{DeviceTarget, Sample};
 use crate::autograd::{BackOp, BackwardTape};
-use crate::v16::guards::guard_action::GuardAction;
-use crate::v16::guards::guard_errors::GuardError;
-use rayon::prelude::*;
+use crate::cpu_features::cpu_features;
 use crate::nn::activations as nn_act;
 use crate::nn::linear as nn_linear;
-use std::time::Instant;
 use crate::nn::normalization as nn_norm;
 use crate::nn::rope as nn_rope;
 use crate::nn::softmax as nn_softmax;
 use crate::optim::adamw::AdamW;
+#[allow(unused_imports)]
+use crate::tensor::ops::*;
+use crate::tensor::{DType, Layout, StorageTransferError, Tensor, TensorStorage};
+use crate::v16::guards::guard_action::GuardAction;
+use crate::v16::guards::guard_errors::GuardError;
+use rayon::prelude::*;
+use std::collections::HashMap;
 #[cfg(debug_assertions)]
 use std::collections::HashSet;
+use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
 
 #[derive(Clone, Debug)]
 pub enum FusedOutput {
-    QKV { q: Tensor, k: Tensor, v: Tensor },
+    QKV {
+        q: Tensor,
+        k: Tensor,
+        v: Tensor,
+    },
     /// APX 4.17: output of fused Self-Attention (forward-only).
     SelfAttention {
         q: Tensor,
@@ -55,10 +63,14 @@ pub enum GraphMutationError {
 impl std::fmt::Display for GraphMutationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            GraphMutationError::NodeOutOfRange { node_id, len } =>
-                write!(f, "graph mutation: node id {node_id} out of range (graph has {len})"),
-            GraphMutationError::NotAParameter { node_id, node_type } =>
-                write!(f, "graph mutation: node {node_id} is not a Parameter (was {node_type:?})"),
+            GraphMutationError::NodeOutOfRange { node_id, len } => write!(
+                f,
+                "graph mutation: node id {node_id} out of range (graph has {len})"
+            ),
+            GraphMutationError::NotAParameter { node_id, node_type } => write!(
+                f,
+                "graph mutation: node {node_id} is not a Parameter (was {node_type:?})"
+            ),
         }
     }
 }
@@ -90,11 +102,76 @@ pub struct Graph {
 }
 
 impl Graph {
+    fn node_timing_label(&self, node_id: usize) -> String {
+        let node = &self.nodes[node_id];
+        match &node.node_type {
+            NodeType::MatMul => {
+                let a = node
+                    .inputs
+                    .get(0)
+                    .and_then(|&id| self.nodes[id].output.as_ref())
+                    .map(|t| format!("{:?}", t.shape))
+                    .unwrap_or_else(|| "?".to_string());
+                let b = node
+                    .inputs
+                    .get(1)
+                    .and_then(|&id| self.nodes[id].output.as_ref())
+                    .map(|t| format!("{:?}", t.shape))
+                    .unwrap_or_else(|| "?".to_string());
+                format!("MatMul {a}x{b}")
+            }
+            NodeType::MatMulRhsTransposed | NodeType::BatchMatMul => {
+                let a = node
+                    .inputs
+                    .get(0)
+                    .and_then(|&id| self.nodes[id].output.as_ref())
+                    .map(|t| format!("{:?}", t.shape))
+                    .unwrap_or_else(|| "?".to_string());
+                let b = node
+                    .inputs
+                    .get(1)
+                    .and_then(|&id| self.nodes[id].output.as_ref())
+                    .map(|t| format!("{:?}", t.shape))
+                    .unwrap_or_else(|| "?".to_string());
+                match &node.node_type {
+                    NodeType::MatMulRhsTransposed => format!("MatMulRhsTransposed {a}x{b}^T"),
+                    _ => format!("BatchMatMul {a}x{b}"),
+                }
+            }
+            NodeType::Transpose2D
+            | NodeType::TransposeLastTwo
+            | NodeType::Reshape { .. }
+            | NodeType::Permute { .. }
+            | NodeType::RmsNorm { .. }
+            | NodeType::Softmax
+            | NodeType::SoftCap { .. }
+            | NodeType::IndexSelect
+            | NodeType::BroadcastAdd
+            | NodeType::BroadcastMul
+            | NodeType::Add
+            | NodeType::Mul
+            | NodeType::SiLU
+            | NodeType::Activation(_) => {
+                let shape = node
+                    .inputs
+                    .get(0)
+                    .and_then(|&id| self.nodes[id].output.as_ref())
+                    .map(|t| format!("{:?}", t.shape))
+                    .unwrap_or_else(|| "?".to_string());
+                format!("{:?} input={shape}", node.node_type)
+            }
+            other => format!("{:?}", other),
+        }
+    }
+
     /// Returns true if the given node is the secondary Linear (K or V) of
     /// some FusedQKV pattern detected in the graph.
     pub fn is_qkv_secondary(&self, id: usize) -> bool {
         for fused in self.fused_ops.values() {
-            if let FusedOp::FusedQKV { q_id, k_id, v_id, .. } = fused {
+            if let FusedOp::FusedQKV {
+                q_id, k_id, v_id, ..
+            } = fused
+            {
                 if id == *k_id || id == *v_id {
                     return true;
                 }
@@ -211,9 +288,7 @@ impl Graph {
         // decides "what to do about it?", same pattern as the
         // M3-e.6 CPU veto.
         let verdict = match verdict {
-            Ok(GuardAction::Degrade)
-                if crate::amg::reactive::dual_memory_pressure(&conditions) =>
-            {
+            Ok(GuardAction::Degrade) if crate::amg::reactive::dual_memory_pressure(&conditions) => {
                 Ok(GuardAction::DeepDegrade)
             }
             other => other,
@@ -258,9 +333,7 @@ impl Graph {
                     .reactive_context
                     .as_ref()
                     .map(|ctx| ctx.cache_dir.clone())
-                    .unwrap_or_else(
-                        || crate::tensor::disk_tier::default_cache_dir(),
-                    );
+                    .unwrap_or_else(|| crate::tensor::disk_tier::default_cache_dir());
 
                 if let Some(ctx) = self.reactive_context.as_ref() {
                     ctx.record_deep_degrade_event();
@@ -282,16 +355,11 @@ impl Graph {
                 let migrate_result = self.deep_degrade_with_lru(&cache_dir);
 
                 if !crate::apx_is_silent() {
-                    let mem_frag =
-                        crate::amg::reactive::format_memory_fragment(&conditions);
-                    let gpu_frag =
-                        crate::amg::reactive::format_gpu_util_fragment(&conditions);
-                    let fg_frag =
-                        crate::amg::reactive::format_foreground_fragment(&conditions);
-                    let bat_frag =
-                        crate::amg::reactive::format_battery_fragment(&conditions);
-                    let lat_frag =
-                        crate::amg::reactive::format_latency_fragment(&conditions);
+                    let mem_frag = crate::amg::reactive::format_memory_fragment(&conditions);
+                    let gpu_frag = crate::amg::reactive::format_gpu_util_fragment(&conditions);
+                    let fg_frag = crate::amg::reactive::format_foreground_fragment(&conditions);
+                    let bat_frag = crate::amg::reactive::format_battery_fragment(&conditions);
+                    let lat_frag = crate::amg::reactive::format_latency_fragment(&conditions);
                     match &migrate_result {
                         Ok(report) => {
                             eprintln!(
@@ -384,14 +452,10 @@ impl Graph {
                         } else {
                             f32::NAN
                         };
-                        let gpu_frag =
-                            crate::amg::reactive::format_gpu_util_fragment(&conditions);
-                        let fg_frag =
-                            crate::amg::reactive::format_foreground_fragment(&conditions);
-                        let bat_frag =
-                            crate::amg::reactive::format_battery_fragment(&conditions);
-                        let lat_frag =
-                            crate::amg::reactive::format_latency_fragment(&conditions);
+                        let gpu_frag = crate::amg::reactive::format_gpu_util_fragment(&conditions);
+                        let fg_frag = crate::amg::reactive::format_foreground_fragment(&conditions);
+                        let bat_frag = crate::amg::reactive::format_battery_fragment(&conditions);
+                        let lat_frag = crate::amg::reactive::format_latency_fragment(&conditions);
                         eprintln!(
                             "[AMG Guard][t_ms={}] Degrade VETOED at node {} \
                              (external CPU pressure): memory_pressure={:.2}, \
@@ -421,8 +485,7 @@ impl Graph {
                 match self.migrate_all_cuda_to_cpu() {
                     Ok(report) => {
                         if !crate::apx_is_silent() {
-                            let mib = report.bytes_freed_estimate as f64
-                                / (1024.0 * 1024.0);
+                            let mib = report.bytes_freed_estimate as f64 / (1024.0 * 1024.0);
                             let gpu_frag =
                                 crate::amg::reactive::format_gpu_util_fragment(&conditions);
                             let fg_frag =
@@ -483,8 +546,7 @@ impl Graph {
                 Ok(())
             }
             Ok(GuardAction::Continue) => Ok(()),
-            Err(GuardError::IllegalAction(msg))
-            | Err(GuardError::InconsistentGuards(msg)) => {
+            Err(GuardError::IllegalAction(msg)) | Err(GuardError::InconsistentGuards(msg)) => {
                 let reason = ExecutionAbortReason::GuardEvaluationFailed {
                     at_node: node_id,
                     message: msg,
@@ -690,8 +752,7 @@ impl Graph {
         &mut self,
         node_ids: &[usize],
         cache_dir: &std::path::Path,
-    ) -> Result<crate::amg::reactive::SelectiveMigrationReport, StorageTransferError>
-    {
+    ) -> Result<crate::amg::reactive::SelectiveMigrationReport, StorageTransferError> {
         use crate::amg::reactive::SelectiveMigrationReport;
 
         let mut report = SelectiveMigrationReport::new();
@@ -781,9 +842,7 @@ impl Graph {
         let handle = match handle_result {
             Ok(h) => h,
             Err(e) => {
-                return MigrationStep::Failed(StorageTransferError::DiskWriteFailed(
-                    e.to_string(),
-                ));
+                return MigrationStep::Failed(StorageTransferError::DiskWriteFailed(e.to_string()));
             }
         };
 
@@ -914,8 +973,7 @@ impl Graph {
             // floor = 0, so we pick zero — defensive but
             // unlikely on real graphs (a forward of seq=4 has
             // hundreds of nodes).
-            let bottom_len =
-                ((snap.len() as f32) * SPILL_FRACTION).floor() as usize;
+            let bottom_len = ((snap.len() as f32) * SPILL_FRACTION).floor() as usize;
             if bottom_len == 0 {
                 return None;
             }
@@ -1021,6 +1079,72 @@ enum MigrationStep {
     Failed(StorageTransferError),
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct NodeTimingStats {
+    count: u64,
+    total_us: u128,
+    max_us: u128,
+}
+
+static NODE_TIMINGS: OnceLock<Mutex<HashMap<String, NodeTimingStats>>> = OnceLock::new();
+
+fn node_timing_enabled() -> bool {
+    std::env::var("ATENIA_NODE_TIMING").as_deref() == Ok("1")
+}
+
+fn node_timing_store() -> &'static Mutex<HashMap<String, NodeTimingStats>> {
+    NODE_TIMINGS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub fn reset_node_timings() {
+    if let Ok(mut timings) = node_timing_store().lock() {
+        timings.clear();
+    }
+}
+
+pub fn node_timing_report_lines(limit: usize) -> Vec<String> {
+    let Ok(timings) = node_timing_store().lock() else {
+        return Vec::new();
+    };
+    let mut rows: Vec<_> = timings
+        .iter()
+        .map(|(label, stats)| (label.clone(), *stats))
+        .collect();
+    rows.sort_by(|a, b| {
+        b.1.total_us
+            .cmp(&a.1.total_us)
+            .then_with(|| b.1.max_us.cmp(&a.1.max_us))
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    rows.into_iter()
+        .take(limit)
+        .map(|(label, stats)| {
+            let avg_us = if stats.count > 0 {
+                stats.total_us as f64 / stats.count as f64
+            } else {
+                0.0
+            };
+            format!(
+                "  {label}: count={} total={:.3}s avg={:.3}ms max={:.3}ms",
+                stats.count,
+                stats.total_us as f64 / 1_000_000.0,
+                avg_us / 1000.0,
+                stats.max_us as f64 / 1000.0,
+            )
+        })
+        .collect()
+}
+
+fn record_node_timing(label: &str, dt: std::time::Duration) {
+    let elapsed_us = dt.as_micros();
+    if let Ok(mut timings) = node_timing_store().lock() {
+        let stats = timings.entry(label.to_string()).or_default();
+        stats.count += 1;
+        stats.total_us += elapsed_us;
+        stats.max_us = stats.max_us.max(elapsed_us);
+    }
+}
+
 struct NodeTimingRecorder {
     start: std::time::Instant,
     node_id: usize,
@@ -1033,6 +1157,7 @@ struct NodeTimingRecorder {
     /// to update).
     lru: Option<std::sync::Arc<crate::amg::reactive::TouchOrder>>,
     record_hpge: bool,
+    node_timing_label: Option<String>,
 }
 
 impl Drop for NodeTimingRecorder {
@@ -1055,11 +1180,17 @@ impl Drop for NodeTimingRecorder {
                 self.node_count,
             );
         }
+        if let Some(label) = self.node_timing_label.as_deref() {
+            record_node_timing(label, dt);
+        }
     }
 }
 
 fn log_softmax_last_dim(x: &Tensor) -> Tensor {
-    assert!(x.shape.len() >= 1, "LogSoftmax requires tensors with rank >= 1");
+    assert!(
+        x.shape.len() >= 1,
+        "LogSoftmax requires tensors with rank >= 1"
+    );
     let ndim = x.shape.len();
     let cols = *x.shape.last().expect("log_softmax needs last dim");
     let rows = if ndim == 1 {
@@ -1068,13 +1199,7 @@ fn log_softmax_last_dim(x: &Tensor) -> Tensor {
         x.shape[..ndim - 1].iter().product()
     };
 
-    let mut out = Tensor::with_layout(
-        x.shape.clone(),
-        0.0,
-        x.device,
-        Layout::Contiguous,
-        x.dtype,
-    );
+    let mut out = Tensor::with_layout(x.shape.clone(), 0.0, x.device, Layout::Contiguous, x.dtype);
 
     let x_data = x.as_cpu_slice();
     let out_data = out.as_cpu_slice_mut();
@@ -1130,7 +1255,10 @@ fn gather_last_dim(data: &Tensor, indices: &Tensor) -> Tensor {
     let out_dst = out.as_cpu_slice_mut();
     for row in 0..data_rows {
         let idx = indices_src[row].round() as isize;
-        assert!(idx >= 0 && (idx as usize) < last_dim, "Gather index out of bounds");
+        assert!(
+            idx >= 0 && (idx as usize) < last_dim,
+            "Gather index out of bounds"
+        );
         let src = row * last_dim + idx as usize;
         out_dst[row] = data_src[src];
     }
@@ -1197,7 +1325,9 @@ impl Graph {
         tensor: crate::tensor::Tensor,
     ) -> Result<(), GraphMutationError> {
         let len = self.nodes.len();
-        let node = self.nodes.get_mut(node_id)
+        let node = self
+            .nodes
+            .get_mut(node_id)
             .ok_or(GraphMutationError::NodeOutOfRange { node_id, len })?;
         if !matches!(node.node_type, crate::amg::nodes::NodeType::Parameter) {
             return Err(GraphMutationError::NotAParameter {
@@ -1239,20 +1369,32 @@ impl Graph {
         // modify the graph nor its math; it only provides metadata so that
         // TLO can reorder independent nodes in HPGE.
         if !graph.nodes.is_empty() {
-            use crate::apx7::tlo::{LocalityHint, set_locality_hints};
+            use crate::apx7::tlo::{set_locality_hints, LocalityHint};
 
-            let mut hints = vec![LocalityHint { branch_id: 0, depth: 0 }; graph.nodes.len()];
+            let mut hints = vec![
+                LocalityHint {
+                    branch_id: 0,
+                    depth: 0
+                };
+                graph.nodes.len()
+            ];
             for i in 0..graph.nodes.len() {
                 let node = &graph.nodes[i];
                 if node.inputs.is_empty() {
-                    hints[i] = LocalityHint { branch_id: i, depth: 0 };
+                    hints[i] = LocalityHint {
+                        branch_id: i,
+                        depth: 0,
+                    };
                 } else {
                     let parent = node.inputs[0];
                     if parent < hints.len() {
                         hints[i].branch_id = hints[parent].branch_id;
                         hints[i].depth = hints[parent].depth.saturating_add(1);
                     } else {
-                        hints[i] = LocalityHint { branch_id: i, depth: 0 };
+                        hints[i] = LocalityHint {
+                            branch_id: i,
+                            depth: 0,
+                        };
                     }
                 }
             }
@@ -1307,6 +1449,7 @@ impl Graph {
                 | NodeType::Sub
                 | NodeType::Mul
                 | NodeType::MatMul
+                | NodeType::MatMulRhsTransposed
                 | NodeType::BatchMatMul
                 | NodeType::BroadcastAdd
                 | NodeType::BroadcastMul
@@ -1411,9 +1554,7 @@ impl Graph {
         }
 
         for (id, node) in self.nodes.iter().enumerate() {
-            if !reachable[id]
-                && !matches!(node.node_type, NodeType::Parameter)
-            {
+            if !reachable[id] && !matches!(node.node_type, NodeType::Parameter) {
                 return Err(format!(
                     "Node {id} ({:?}) is not reachable from any Input node",
                     node.node_type
@@ -1548,24 +1689,28 @@ impl Graph {
                     // APX 6.12: also derive the pure scheduling bias.
                     if crate::apx_mode_at_least("6.12") {
                         use crate::apx6_12::adaptive_scheduler::{
-                            AdaptiveScheduleBias,
-                            set_schedule_bias,
+                            set_schedule_bias, AdaptiveScheduleBias,
                         };
 
                         match global_decision {
-                            GlobalDecision::PreferQKV =>
-                                set_schedule_bias(AdaptiveScheduleBias::QKVHeavy),
-                            GlobalDecision::PreferFull =>
-                                set_schedule_bias(AdaptiveScheduleBias::AttentionHeavy),
-                            GlobalDecision::NoPreference =>
-                                set_schedule_bias(AdaptiveScheduleBias::None),
+                            GlobalDecision::PreferQKV => {
+                                set_schedule_bias(AdaptiveScheduleBias::QKVHeavy)
+                            }
+                            GlobalDecision::PreferFull => {
+                                set_schedule_bias(AdaptiveScheduleBias::AttentionHeavy)
+                            }
+                            GlobalDecision::NoPreference => {
+                                set_schedule_bias(AdaptiveScheduleBias::None)
+                            }
                         }
                     }
 
                     // APX 6.13: probabilistic "tempered" policy that replaces
                     // the 6.11 global policy, but still only affects planning hints.
                     if crate::apx_mode_at_least("6.13") {
-                        use crate::apx6_11::runtime_policy::{set_runtime_policy, FusionRuntimePolicy};
+                        use crate::apx6_11::runtime_policy::{
+                            set_runtime_policy, FusionRuntimePolicy,
+                        };
 
                         // APX 6.14: update the adaptive temperature before
                         // computing the tempered softmax. For now we use a
@@ -1588,8 +1733,8 @@ impl Graph {
 
                         match choice {
                             "full" => set_runtime_policy(FusionRuntimePolicy::PreferFull),
-                            "qkv"  => set_runtime_policy(FusionRuntimePolicy::PreferQKV),
-                            _       => set_runtime_policy(FusionRuntimePolicy::Baseline),
+                            "qkv" => set_runtime_policy(FusionRuntimePolicy::PreferQKV),
+                            _ => set_runtime_policy(FusionRuntimePolicy::Baseline),
                         }
                     }
 
@@ -1607,7 +1752,9 @@ impl Graph {
 
                         let temp = ApxTemperature::from_value(t_val);
 
-                        if let Ok(mut stab) = crate::apx6_15::stabilizer::global_stabilizer().write() {
+                        if let Ok(mut stab) =
+                            crate::apx6_15::stabilizer::global_stabilizer().write()
+                        {
                             let decision = sel.best_decision();
                             let _final = stab.stabilize(decision, &temp);
                         }
@@ -1635,8 +1782,7 @@ impl Graph {
     }
 
     pub fn last_output_id(&self) -> usize {
-        self
-            .nodes
+        self.nodes
             .iter()
             .rev()
             .find(|node| matches!(node.node_type, NodeType::Output))
@@ -1696,9 +1842,10 @@ impl Graph {
             // `Vec<Tensor>` (not `Result`). If a reactive context is
             // attached and a guard fires inside the chunk, surface it
             // as a panic rather than silently swallowing the abort.
-            self.run_plan(false)
-                .expect("execute_chunked: guard triggered inside chunk; \
-                         chunked execution does not yet support reactive_context");
+            self.run_plan(false).expect(
+                "execute_chunked: guard triggered inside chunk; \
+                         chunked execution does not yet support reactive_context",
+            );
 
             let mut chunk_outputs = self.collect_outputs();
             assert_eq!(
@@ -1738,10 +1885,7 @@ impl Graph {
         }
     }
 
-    pub(crate) fn run_plan(
-        &mut self,
-        record_tape: bool,
-    ) -> Result<(), ExecutionAbortReason> {
+    pub(crate) fn run_plan(&mut self, record_tape: bool) -> Result<(), ExecutionAbortReason> {
         let steps = self.plan.steps.clone();
         for step in steps {
             match step {
@@ -1771,19 +1915,21 @@ impl Graph {
         let is_610_or_higher = apx_mode.starts_with("6.10") || apx_mode > "6.10".to_string();
 
         match fused {
-            FusedOp::LinearSilu { x, w, b } => {
-                unsafe {
-                    crate::apx4_11::gpu_hooks::fused_linear_silu_gpu(
-                        x,
-                        w,
-                        b,
-                        id,
-                        self,
-                        record_tape,
-                    );
-                }
-            }
-            FusedOp::FusedQKV { x, wq, wk, wv, bq, bk, bv, q_id, k_id, v_id } => {
+            FusedOp::LinearSilu { x, w, b } => unsafe {
+                crate::apx4_11::gpu_hooks::fused_linear_silu_gpu(x, w, b, id, self, record_tape);
+            },
+            FusedOp::FusedQKV {
+                x,
+                wq,
+                wk,
+                wv,
+                bq,
+                bk,
+                bv,
+                q_id,
+                k_id,
+                v_id,
+            } => {
                 use std::time::Instant;
 
                 // Real forward (prototype) for Q/K/V sharing the same X.
@@ -1851,7 +1997,11 @@ impl Graph {
                         self.nodes[v_id].set_output(v_naive.clone());
                         self.fused_outputs.insert(
                             id,
-                            FusedOutput::QKV { q: q_naive, k: k_naive, v: v_naive },
+                            FusedOutput::QKV {
+                                q: q_naive,
+                                k: k_naive,
+                                v: v_naive,
+                            },
                         );
                     } else {
                         self.nodes[q_id].set_output(q_fused.clone());
@@ -1859,7 +2009,11 @@ impl Graph {
                         self.nodes[v_id].set_output(v_fused.clone());
                         self.fused_outputs.insert(
                             id,
-                            FusedOutput::QKV { q: q_fused, k: k_fused, v: v_fused },
+                            FusedOutput::QKV {
+                                q: q_fused,
+                                k: k_fused,
+                                v: v_fused,
+                            },
                         );
                     }
                 } else {
@@ -2016,7 +2170,19 @@ impl Graph {
                     });
                 }
             }
-            FusedOp::FusedSelfAttention { x, wq, wk, wv, bq, bk, bv, q, k, v, out_id: _ } => {
+            FusedOp::FusedSelfAttention {
+                x,
+                wq,
+                wk,
+                wv,
+                bq,
+                bk,
+                bv,
+                q,
+                k,
+                v,
+                out_id: _,
+            } => {
                 if crate::apx_debug_enabled() {
                     eprintln!("[APX 4.17] executing fused SelfAttention at node {}", id);
                 }
@@ -2113,7 +2279,7 @@ impl Graph {
 
                     if let Some(wproj_t) = wproj_t {
                         use crate::amg::fusions::execute_fused_attention_full;
-                        use crate::apx6_10::{FusionProfile, global_fusion_selector};
+                        use crate::apx6_10::{global_fusion_selector, FusionProfile};
 
                         let t_full = Instant::now();
                         let _y_full = execute_fused_attention_full(
@@ -2211,18 +2377,13 @@ impl Graph {
     /// yet been resolved. That matches the M4.7.6.c assumption that
     /// `exec_gpu_segment` only fires when the segment is start-of-
     /// stream and its parameter operands are already loaded.
-    fn segment_has_bf16_or_disk_operands(
-        &self,
-        seg: &crate::apx4_3::GpuSegment,
-    ) -> bool {
+    fn segment_has_bf16_or_disk_operands(&self, seg: &crate::apx4_3::GpuSegment) -> bool {
         for id in seg.start..=seg.end {
             let node = &self.nodes[id];
             for &input_id in &node.inputs {
                 if let Some(t) = self.nodes[input_id].output.as_ref() {
                     match &t.storage {
-                        TensorStorage::Cuda(g)
-                            if g.dtype() != crate::tensor::DType::F32 =>
-                        {
+                        TensorStorage::Cuda(g) if g.dtype() != crate::tensor::DType::F32 => {
                             return true;
                         }
                         TensorStorage::Disk(_) => return true,
@@ -2277,8 +2438,7 @@ impl Graph {
                 None => continue,
             };
             if let TensorStorage::Disk(handle) = &b_tensor.storage {
-                if handle.dtype()
-                    == crate::tensor::disk_tier::DiskDtype::BF16
+                if handle.dtype() == crate::tensor::disk_tier::DiskDtype::BF16
                     && handle.numel().saturating_mul(2)
                         <= crate::cuda::disk_prefetch::MAX_PREFETCH_BYTES
                 {
@@ -2306,7 +2466,12 @@ impl Graph {
                 NodeType::Linear => "Linear",
                 _ => "Other",
             };
-            return crate::apx8::hybrid_dispatcher::HybridDispatcher::dispatch(self, node_id, op, record_tape);
+            return crate::apx8::hybrid_dispatcher::HybridDispatcher::dispatch(
+                self,
+                node_id,
+                op,
+                record_tape,
+            );
         }
 
         self.execute_single_inner(node_id, record_tape);
@@ -2359,8 +2524,7 @@ impl Graph {
         if crate::apx_debug_enabled() && !crate::apx_is_silent() {
             eprintln!(
                 "[APX4.9 DEBUG] Executing FusedLinearActivationChain node_id={} | inputs={:?}",
-                node_id,
-                self.nodes[node_id].inputs
+                node_id, self.nodes[node_id].inputs
             );
         }
 
@@ -2510,9 +2674,8 @@ impl Graph {
         // `a_last` is the input to the second linear — also the output
         // of the last activation. Needed by backward for `grad_W2`.
         let a_last_for_capture = if record_tape {
-            h.ensure_cpu().expect(
-                "FusedLinearActivationChain: a_last ensure_cpu before BackOp capture",
-            );
+            h.ensure_cpu()
+                .expect("FusedLinearActivationChain: a_last ensure_cpu before BackOp capture");
             Some(h.clone())
         } else {
             None
@@ -2550,8 +2713,8 @@ impl Graph {
         if record_tape {
             let acts_capture: Vec<super::nodes::ActType> = acts.clone();
             let pre_act_capture: Vec<Tensor> = pre_act_chain;
-            let a_last_capture: Tensor = a_last_for_capture
-                .expect("record_tape implies a_last was captured");
+            let a_last_capture: Tensor =
+                a_last_for_capture.expect("record_tape implies a_last was captured");
             let op_inputs = inputs.clone();
 
             self.tape.push(BackOp {
@@ -2560,10 +2723,7 @@ impl Graph {
                 backward: Box::new(move |store, forward_inputs, out_grad| {
                     // Pointwise activation derivatives. Inlined to
                     // keep the closure self-contained.
-                    fn act_derivative(
-                        act: &super::nodes::ActType,
-                        x_slice: &[f32],
-                    ) -> Vec<f32> {
+                    fn act_derivative(act: &super::nodes::ActType, x_slice: &[f32]) -> Vec<f32> {
                         match act {
                             super::nodes::ActType::ReLU => x_slice
                                 .iter()
@@ -2584,8 +2744,7 @@ impl Graph {
                                     let inner = c * (v + 0.044715_f32 * x3);
                                     let t = inner.tanh();
                                     let sech2 = 1.0 - t * t;
-                                    let d_inner =
-                                        c * (1.0 + 3.0 * 0.044715_f32 * v * v);
+                                    let d_inner = c * (1.0 + 3.0 * 0.044715_f32 * v * v);
                                     0.5 * (1.0 + t) + 0.5 * v * sech2 * d_inner
                                 })
                                 .collect(),
@@ -2606,9 +2765,9 @@ impl Graph {
                     // grad_W2 = a_last^T @ grad_out
                     let a_last_t = transpose_2d(&a_last_capture);
                     let mut grad_w2 = nn_linear::matmul(&a_last_t, out_grad);
-                    grad_w2.ensure_cpu().expect(
-                        "FusedLinearActivationChain backward: grad_W2 ensure_cpu failed",
-                    );
+                    grad_w2
+                        .ensure_cpu()
+                        .expect("FusedLinearActivationChain backward: grad_W2 ensure_cpu failed");
                     add_to_grad_slice(store, w2_id, grad_w2.as_cpu_slice());
 
                     // grad_a_last = grad_out @ W2^T
@@ -2623,10 +2782,7 @@ impl Graph {
                     // the first linear, before any activation).
                     for i in (0..acts_capture.len()).rev() {
                         let input_to_act = &pre_act_capture[i];
-                        let d = act_derivative(
-                            &acts_capture[i],
-                            input_to_act.as_cpu_slice(),
-                        );
+                        let d = act_derivative(&acts_capture[i], input_to_act.as_cpu_slice());
                         let grad_a_slice = grad_a.as_cpu_slice();
                         debug_assert_eq!(
                             d.len(),
@@ -2656,17 +2812,17 @@ impl Graph {
                     // grad_W1 = x^T @ grad_y1
                     let x_t = transpose_2d(x);
                     let mut grad_w1 = nn_linear::matmul(&x_t, &grad_y1);
-                    grad_w1.ensure_cpu().expect(
-                        "FusedLinearActivationChain backward: grad_W1 ensure_cpu failed",
-                    );
+                    grad_w1
+                        .ensure_cpu()
+                        .expect("FusedLinearActivationChain backward: grad_W1 ensure_cpu failed");
                     add_to_grad_slice(store, w1_id, grad_w1.as_cpu_slice());
 
                     // grad_x = grad_y1 @ W1^T
                     let w1_t = transpose_2d(w1);
                     let mut grad_x = nn_linear::matmul(&grad_y1, &w1_t);
-                    grad_x.ensure_cpu().expect(
-                        "FusedLinearActivationChain backward: grad_x ensure_cpu failed",
-                    );
+                    grad_x
+                        .ensure_cpu()
+                        .expect("FusedLinearActivationChain backward: grad_x ensure_cpu failed");
                     add_to_grad_slice(store, x_id, grad_x.as_cpu_slice());
                 }),
             });
@@ -2674,6 +2830,11 @@ impl Graph {
     }
 
     pub(crate) fn execute_single_inner(&mut self, node_id: usize, record_tape: bool) {
+        let node_timing_label = if node_timing_enabled() {
+            Some(self.node_timing_label(node_id))
+        } else {
+            None
+        };
         // M3-e.10: single timer covers every exit path via Drop. See
         // the `NodeTimingRecorder` docstring for the unification
         // rationale. Pre-M3-e.10 the hpge timing lived as three
@@ -2690,6 +2851,7 @@ impl Graph {
                 .map(|c| std::sync::Arc::clone(&c.signal_bus)),
             lru: self.reactive_context.as_ref().map(|c| c.lru_touch_order()),
             record_hpge: crate::apx_mode_at_least("7.6"),
+            node_timing_label,
         };
 
         // Backward tape invariants for the fused dispatch paths below:
@@ -2820,12 +2982,8 @@ impl Graph {
                     // with streamed BF16 GPU dispatches; F32 RAM
                     // matmuls are now in the minority and can
                     // safely take the AVX2 fallback.
-                    let m8_7_enabled = std::env::var("ATENIA_M8_7_ENABLED")
-                        .as_deref()
-                        == Ok("1");
-                    if !self.segment_has_bf16_or_disk_operands(&seg)
-                        && !m8_7_enabled
-                    {
+                    let m8_7_enabled = std::env::var("ATENIA_M8_7_ENABLED").as_deref() == Ok("1");
+                    if !self.segment_has_bf16_or_disk_operands(&seg) && !m8_7_enabled {
                         self.exec_gpu_segment(&seg);
                         // Timing handled by `NodeTimingRecorder` at function exit (M3-e.10).
                         return;
@@ -2842,8 +3000,7 @@ impl Graph {
             .gpu_plan
             .as_ref()
             .map(|plan| {
-                plan
-                    .segments
+                plan.segments
                     .iter()
                     .any(|s| s.start <= node_id && node_id <= s.end)
             })
@@ -2859,8 +3016,7 @@ impl Graph {
 
         // APX 5.1 / 5.2: kernel planner (for now, logs + CPU/GPU decision
         // used for MatMul in APX 5.2).
-        let shape_hint: Vec<usize> = self
-            .nodes[node_id]
+        let shape_hint: Vec<usize> = self.nodes[node_id]
             .inputs
             .get(0)
             .and_then(|&inp_id| self.nodes[inp_id].output.as_ref())
@@ -2885,10 +3041,7 @@ impl Graph {
         if crate::apx_debug_enabled() {
             eprintln!(
                 "[APX 5] Kernel for node_id={} ({:?}) = {:?} ({})",
-                node_id,
-                node_type,
-                plan.target,
-                plan.reason,
+                node_id, node_type, plan.target, plan.reason,
             );
         }
 
@@ -2909,15 +3062,12 @@ impl Graph {
         if is_5x {
             // APX 5.3: try to use real Tensor information when available to
             // enrich NodeExecInfo.
-            let tensor_opt = self.nodes[node_id]
-                .output
-                .as_ref()
-                .or_else(|| {
-                    self.nodes[node_id]
-                        .inputs
-                        .get(0)
-                        .and_then(|&inp_id| self.nodes[inp_id].output.as_ref())
-                });
+            let tensor_opt = self.nodes[node_id].output.as_ref().or_else(|| {
+                self.nodes[node_id]
+                    .inputs
+                    .get(0)
+                    .and_then(|&inp_id| self.nodes[inp_id].output.as_ref())
+            });
 
             let (dtype_str, contiguous, estimated_bytes) = if let Some(t) = tensor_opt {
                 (
@@ -2928,11 +3078,7 @@ impl Graph {
             } else {
                 // Approximate fallback if no tensor is available yet.
                 let num_elems: usize = shape_hint.iter().product();
-                (
-                    "f32".to_string(),
-                    true,
-                    num_elems.saturating_mul(4),
-                )
+                ("f32".to_string(), true, num_elems.saturating_mul(4))
             };
 
             let num_elems: usize = shape_hint.iter().product();
@@ -2980,10 +3126,7 @@ impl Graph {
             // prefetch) based on AdaptiveScheduleBias. Does not touch the
             // math nor the backward tape.
             if crate::apx_mode_at_least("6.12") {
-                use crate::apx6_12::adaptive_scheduler::{
-                    AdaptiveScheduleBias,
-                    get_schedule_bias,
-                };
+                use crate::apx6_12::adaptive_scheduler::{get_schedule_bias, AdaptiveScheduleBias};
 
                 match get_schedule_bias() {
                     AdaptiveScheduleBias::None => {}
@@ -3050,12 +3193,10 @@ impl Graph {
                     // unless we materialise it back here. The
                     // M4.7.4.d Disk arm of `ensure_cpu` handles
                     // both DiskDtype::F32 and DiskDtype::BF16.
-                    a.ensure_cpu().expect(
-                        "Add: Disk/BF16/Cuda → Cpu materialisation failed for A",
-                    );
-                    b.ensure_cpu().expect(
-                        "Add: Disk/BF16/Cuda → Cpu materialisation failed for B",
-                    );
+                    a.ensure_cpu()
+                        .expect("Add: Disk/BF16/Cuda → Cpu materialisation failed for A");
+                    b.ensure_cpu()
+                        .expect("Add: Disk/BF16/Cuda → Cpu materialisation failed for B");
                     self.nodes[node_id].set_output(a.add(&b));
 
                     if record_tape {
@@ -3088,17 +3229,12 @@ impl Graph {
                     // pattern): a parameter that landed on Disk
                     // or BF16 must be materialised before we
                     // touch the raw f32 storage.
-                    a.ensure_cpu().expect(
-                        "Concat: Disk/BF16/Cuda → Cpu materialisation failed for A",
-                    );
-                    b.ensure_cpu().expect(
-                        "Concat: Disk/BF16/Cuda → Cpu materialisation failed for B",
-                    );
+                    a.ensure_cpu()
+                        .expect("Concat: Disk/BF16/Cuda → Cpu materialisation failed for A");
+                    b.ensure_cpu()
+                        .expect("Concat: Disk/BF16/Cuda → Cpu materialisation failed for B");
                     if a.shape.len() != b.shape.len() {
-                        panic!(
-                            "Concat: rank mismatch ({:?} vs {:?})",
-                            a.shape, b.shape
-                        );
+                        panic!("Concat: rank mismatch ({:?} vs {:?})", a.shape, b.shape);
                     }
                     if axis >= a.shape.len() {
                         panic!(
@@ -3137,9 +3273,9 @@ impl Graph {
                     for i in 0..outer {
                         // a slab: i * axis_a * inner .. (i+1) * axis_a * inner
                         let a_off = i * axis_a * inner;
-                        out.extend_from_slice(&a_data[a_off .. a_off + axis_a * inner]);
+                        out.extend_from_slice(&a_data[a_off..a_off + axis_a * inner]);
                         let b_off = i * axis_b * inner;
-                        out.extend_from_slice(&b_data[b_off .. b_off + axis_b * inner]);
+                        out.extend_from_slice(&b_data[b_off..b_off + axis_b * inner]);
                     }
 
                     self.nodes[node_id].set_output(crate::tensor::Tensor::new_cpu(out_shape, out));
@@ -3160,9 +3296,8 @@ impl Graph {
                     // upstream may have placed the input on Cuda /
                     // BF16 / Disk. Materialise to Cpu(F32) before
                     // slicing.
-                    x.ensure_cpu().expect(
-                        "SliceLastDim: Disk/BF16/Cuda → Cpu materialisation failed",
-                    );
+                    x.ensure_cpu()
+                        .expect("SliceLastDim: Disk/BF16/Cuda → Cpu materialisation failed");
                     if x.shape.is_empty() {
                         panic!(
                             "SliceLastDim: input must have rank >= 1, got shape {:?}",
@@ -3171,9 +3306,7 @@ impl Graph {
                     }
                     let last_dim = *x.shape.last().expect("rank >= 1 above");
                     if start >= end {
-                        panic!(
-                            "SliceLastDim: start ({start}) must be < end ({end})"
-                        );
+                        panic!("SliceLastDim: start ({start}) must be < end ({end})");
                     }
                     if end > last_dim {
                         panic!(
@@ -3183,12 +3316,12 @@ impl Graph {
                         );
                     }
                     let new_last = end - start;
-                    let outer_count: usize = x.shape[.. x.shape.len() - 1].iter().product();
+                    let outer_count: usize = x.shape[..x.shape.len() - 1].iter().product();
                     let in_data = x.as_cpu_slice();
                     let mut out_data: Vec<f32> = Vec::with_capacity(outer_count * new_last);
-                    for i in 0 .. outer_count {
+                    for i in 0..outer_count {
                         let base = i * last_dim;
-                        out_data.extend_from_slice(&in_data[base + start .. base + end]);
+                        out_data.extend_from_slice(&in_data[base + start..base + end]);
                     }
                     let mut out_shape = x.shape.clone();
                     let last = out_shape.len() - 1;
@@ -3209,17 +3342,14 @@ impl Graph {
                 }
                 let x_opt = self.nodes[inputs[0]].output.as_ref();
                 if let Some(mut x) = x_opt.cloned() {
-                    x.ensure_cpu().expect(
-                        "SoftCap: Disk/BF16/Cuda → Cpu materialisation failed",
-                    );
+                    x.ensure_cpu()
+                        .expect("SoftCap: Disk/BF16/Cuda → Cpu materialisation failed");
                     let cap = f32::from_bits(cap_bits);
                     // Defensive: builder enforces cap > 0.0,
                     // but this guards against a hand-constructed
                     // node bypassing the builder.
                     if !(cap > 0.0) || !cap.is_finite() {
-                        panic!(
-                            "SoftCap: cap must be a finite positive f32, got {cap}"
-                        );
+                        panic!("SoftCap: cap must be a finite positive f32, got {cap}");
                     }
                     let inv_cap = 1.0_f32 / cap;
                     let in_data = x.as_cpu_slice();
@@ -3273,12 +3403,10 @@ impl Graph {
                 // M4.7.5.e: defensive decode-on-access on the
                 // Tensor::sub host-only path. Same rationale as
                 // the Add arm above.
-                a.ensure_cpu().expect(
-                    "Sub: Disk/BF16/Cuda → Cpu materialisation failed for A",
-                );
-                b.ensure_cpu().expect(
-                    "Sub: Disk/BF16/Cuda → Cpu materialisation failed for B",
-                );
+                a.ensure_cpu()
+                    .expect("Sub: Disk/BF16/Cuda → Cpu materialisation failed for A");
+                b.ensure_cpu()
+                    .expect("Sub: Disk/BF16/Cuda → Cpu materialisation failed for B");
 
                 self.nodes[node_id].set_output(a.sub(&b));
 
@@ -3291,7 +3419,8 @@ impl Graph {
                         backward: Box::new(move |store, _forward_inputs, out_grad| {
                             add_to_grad_slice(store, ids[0], out_grad.as_cpu_slice());
 
-                            let neg: Vec<f32> = out_grad.as_cpu_slice().iter().map(|v| -*v).collect();
+                            let neg: Vec<f32> =
+                                out_grad.as_cpu_slice().iter().map(|v| -*v).collect();
                             add_to_grad_slice(store, ids[1], &neg);
                         }),
                     });
@@ -3313,12 +3442,10 @@ impl Graph {
 
                     // M4.7.5.e: defensive decode-on-access on the
                     // Tensor::mul host-only path.
-                    a.ensure_cpu().expect(
-                        "Mul: Disk/BF16/Cuda → Cpu materialisation failed for A",
-                    );
-                    b.ensure_cpu().expect(
-                        "Mul: Disk/BF16/Cuda → Cpu materialisation failed for B",
-                    );
+                    a.ensure_cpu()
+                        .expect("Mul: Disk/BF16/Cuda → Cpu materialisation failed for A");
+                    b.ensure_cpu()
+                        .expect("Mul: Disk/BF16/Cuda → Cpu materialisation failed for B");
 
                     self.nodes[node_id].set_output(a.mul(&b));
 
@@ -3421,8 +3548,7 @@ impl Graph {
                                 // ensures correctness even when the
                                 // caller threads multiple disk-
                                 // streamed matmuls back-to-back.
-                                let next_handle =
-                                    self.find_next_disk_bf16_handle_after(node_id);
+                                let next_handle = self.find_next_disk_bf16_handle_after(node_id);
                                 if crate::cuda::matmul::cuda_matmul_disk_streamed_bf16(
                                     &a_decoded,
                                     &b,
@@ -3480,13 +3606,7 @@ impl Graph {
                         ),
                     }
                 } else {
-                    Tensor::with_layout(
-                        vec![m, n],
-                        0.0,
-                        a.device,
-                        Layout::Contiguous,
-                        a.dtype,
-                    )
+                    Tensor::with_layout(vec![m, n], 0.0, a.device, Layout::Contiguous, a.dtype)
                 };
 
                 // APX 5.4: timing measurement for MatMul (CPU/GPU) for
@@ -3590,7 +3710,15 @@ impl Graph {
                                 kernel_dispatch::dispatch_matmul as dispatch_matmul_apx3_8,
                             };
                             let ctx = DeviceContext::new(crate::tensor::Device::CPU);
-                            dispatch_matmul_apx3_8(a.as_cpu_slice(), b.as_cpu_slice(), out.as_cpu_slice_mut(), m, k, n, &ctx);
+                            dispatch_matmul_apx3_8(
+                                a.as_cpu_slice(),
+                                b.as_cpu_slice(),
+                                out.as_cpu_slice_mut(),
+                                m,
+                                k,
+                                n,
+                                &ctx,
+                            );
                         }
                         KernelKind::Tiled63B | KernelKind::Micro64 => {
                             // Reuse the CPU dispatcher that already integrates 6.3B,
@@ -3714,7 +3842,8 @@ impl Graph {
                 // otherwise we use the usual APX 4 dispatcher with CPU/GPU/Auto.
                 let is_62_or_higher = apx_mode.starts_with("6.2") || apx_mode > "6.2".to_string();
 
-                let target = if is_62_or_higher && matches!(plan.target, KernelTarget::CpuFastAvx2) {
+                let target = if is_62_or_higher && matches!(plan.target, KernelTarget::CpuFastAvx2)
+                {
                     // Optional AVX2 path. The APX 6.2 dispatcher is responsible
                     // for safely falling back to the APX 3.8 dispatcher when
                     // AVX2 is not available.
@@ -3819,6 +3948,34 @@ impl Graph {
                     });
                 }
             }
+            NodeType::MatMulRhsTransposed => {
+                let a_id = self.nodes[node_id].inputs[0];
+                let b_id = self.nodes[node_id].inputs[1];
+
+                let mut a = self.nodes[a_id]
+                    .output
+                    .as_ref()
+                    .expect("MatMulRhsTransposed missing input A")
+                    .clone();
+                let mut b = self.nodes[b_id]
+                    .output
+                    .as_ref()
+                    .expect("MatMulRhsTransposed missing input B")
+                    .clone();
+
+                a.ensure_cpu()
+                    .expect("MatMulRhsTransposed: lhs materialisation failed");
+                if matches!(
+                    b.storage,
+                    TensorStorage::Cuda(_) | TensorStorage::Disk(_) | TensorStorage::CpuInt8 { .. }
+                ) {
+                    b.ensure_cpu()
+                        .expect("MatMulRhsTransposed: rhs materialisation failed");
+                }
+
+                let out = matmul_rhs_transposed(&a, &b);
+                self.nodes[node_id].set_output(out);
+            }
             NodeType::Transpose2D => {
                 let src = self.nodes[node_id].inputs[0];
                 let mut x = self.nodes[src]
@@ -3832,9 +3989,8 @@ impl Graph {
                 // active that param is `CpuBf16`; decode-on-access
                 // before delegating to the F32-only `transpose_2d`
                 // helper.
-                x.ensure_cpu().expect(
-                    "Transpose2D: BF16/Cuda/Disk → Cpu materialisation failed",
-                );
+                x.ensure_cpu()
+                    .expect("Transpose2D: BF16/Cuda/Disk → Cpu materialisation failed");
                 let out = transpose_2d(&x);
                 self.nodes[node_id].set_output(out.clone());
 
@@ -3857,24 +4013,35 @@ impl Graph {
             }
             NodeType::IndexSelect => {
                 let inputs = self.nodes[node_id].inputs.clone();
-                assert_eq!(inputs.len(), 2, "IndexSelect expects table and indices inputs");
+                assert_eq!(
+                    inputs.len(),
+                    2,
+                    "IndexSelect expects table and indices inputs"
+                );
 
-                let table = self.nodes[inputs[0]]
+                let mut table = self.nodes[inputs[0]]
                     .output
                     .as_ref()
                     .expect("IndexSelect missing table")
                     .clone();
-                let indices = self.nodes[inputs[1]]
+                let mut indices = self.nodes[inputs[1]]
                     .output
                     .as_ref()
                     .expect("IndexSelect missing indices")
                     .clone();
 
                 // M4.7.2.c: decode-on-access for BF16 embedding tables.
-                let mut table = table;
-                table.ensure_cpu().expect(
-                    "IndexSelect: BF16/Cuda/Disk → Cpu materialisation failed for table",
-                );
+                indices
+                    .ensure_cpu()
+                    .expect("IndexSelect: indices materialisation failed");
+                if matches!(
+                    table.storage,
+                    TensorStorage::Cuda(_) | TensorStorage::Disk(_) | TensorStorage::CpuInt8 { .. }
+                ) {
+                    table.ensure_cpu().expect(
+                        "IndexSelect: BF16/Cuda/Disk → Cpu materialisation failed for table",
+                    );
+                }
 
                 let out = index_select_rows(&table, &indices);
                 self.nodes[node_id].set_output(out.clone());
@@ -3888,12 +4055,14 @@ impl Graph {
                         backward: Box::new(move |store, forward_inputs, out_grad| {
                             let table = forward_inputs[0];
                             let indices = forward_inputs[1];
-                            let cols = *table
-                                .shape
-                                .get(1)
-                                .expect("IndexSelect table must be 2D");
+                            let cols = *table.shape.get(1).expect("IndexSelect table must be 2D");
                             let mut grad_table = vec![0.0; table.numel()];
-                            scatter_add_rows(&mut grad_table, indices, out_grad.as_cpu_slice(), cols);
+                            scatter_add_rows(
+                                &mut grad_table,
+                                indices,
+                                out_grad.as_cpu_slice(),
+                                cols,
+                            );
                             add_to_grad_slice(store, ids[0], &grad_table);
                             // No gradient for indices (integer gather)
                         }),
@@ -3913,9 +4082,8 @@ impl Graph {
                     // M4.7.3.d: defensive decode-on-access. `reshape_tensor`
                     // ultimately reads via `as_cpu_slice` to build the new
                     // contiguous buffer.
-                    x.ensure_cpu().expect(
-                        "Reshape: BF16/Cuda/Disk → Cpu materialisation failed",
-                    );
+                    x.ensure_cpu()
+                        .expect("Reshape: BF16/Cuda/Disk → Cpu materialisation failed");
                     let out = reshape_tensor(&x, &target);
                     self.nodes[node_id].set_output(out.clone());
 
@@ -3932,7 +4100,11 @@ impl Graph {
                                      (this indicates a CUDA driver issue during backward; \
                                      see StorageTransferError variants)",
                                 );
-                                add_to_grad_slice(store, op_inputs[0], reshaped_back.as_cpu_slice());
+                                add_to_grad_slice(
+                                    store,
+                                    op_inputs[0],
+                                    reshaped_back.as_cpu_slice(),
+                                );
                             }),
                         });
                     }
@@ -3947,9 +4119,8 @@ impl Graph {
                 if let Some(mut x) = self.nodes[src].output.clone() {
                     // M4.7.3.d: defensive decode-on-access for the Cpu-only
                     // `permute` helper.
-                    x.ensure_cpu().expect(
-                        "Permute: BF16/Cuda/Disk → Cpu materialisation failed",
-                    );
+                    x.ensure_cpu()
+                        .expect("Permute: BF16/Cuda/Disk → Cpu materialisation failed");
                     let perm_clone: Vec<usize> = perm.clone();
                     let out = permute(&x, &perm_clone);
                     self.nodes[node_id].set_output(out);
@@ -3977,9 +4148,8 @@ impl Graph {
                     .clone();
                 // M4.7.3.d: defensive decode-on-access for the Cpu-only
                 // `transpose_last_two` helper.
-                x.ensure_cpu().expect(
-                    "TransposeLastTwo: BF16/Cuda/Disk → Cpu materialisation failed",
-                );
+                x.ensure_cpu()
+                    .expect("TransposeLastTwo: BF16/Cuda/Disk → Cpu materialisation failed");
                 let out = transpose_last_two(&x);
                 self.nodes[node_id].set_output(out.clone());
 
@@ -4079,13 +4249,7 @@ impl Graph {
                         ),
                     }
                 } else {
-                    Tensor::with_layout(
-                        output_shape,
-                        0.0,
-                        a.device,
-                        Layout::Contiguous,
-                        a.dtype,
-                    )
+                    Tensor::with_layout(output_shape, 0.0, a.device, Layout::Contiguous, a.dtype)
                 };
 
                 // APX 5.4: timing measurement for BatchMatMul (CPU/GPU) for
@@ -4191,25 +4355,19 @@ impl Graph {
                         // it fails or CUDA is not available, keep the previous
                         // CPU path as fallback.
                         if crate::cuda::cuda_available() {
-                            dispatch_batch_matmul_cuda(
-                                &a,
-                                &b,
-                                &mut out,
-                                batch,
-                                m,
-                                k,
-                                n,
-                            );
+                            dispatch_batch_matmul_cuda(&a, &b, &mut out, batch, m, k, n);
                             device_chosen = DeviceTarget::GPU;
                         } else {
                             let cpu_out = batch_matmul(&a, &b);
-                            out.as_cpu_slice_mut().copy_from_slice(cpu_out.as_cpu_slice());
+                            out.as_cpu_slice_mut()
+                                .copy_from_slice(cpu_out.as_cpu_slice());
                             device_chosen = DeviceTarget::CPU;
                         }
                     }
                     Apx4ExecTarget::CPU | Apx4ExecTarget::Auto => {
                         let cpu_out = batch_matmul(&a, &b);
-                        out.as_cpu_slice_mut().copy_from_slice(cpu_out.as_cpu_slice());
+                        out.as_cpu_slice_mut()
+                            .copy_from_slice(cpu_out.as_cpu_slice());
                         device_chosen = DeviceTarget::CPU;
                     }
                 }
@@ -4273,12 +4431,10 @@ impl Graph {
                     .clone();
                 // M4.7.2.c: decode-on-access for BF16 gamma / scale
                 // parameters. Llama RmsNorm γ flows through this op.
-                a.ensure_cpu().expect(
-                    "BroadcastMul: BF16/Cuda/Disk → Cpu materialisation failed for A",
-                );
-                b.ensure_cpu().expect(
-                    "BroadcastMul: BF16/Cuda/Disk → Cpu materialisation failed for B",
-                );
+                a.ensure_cpu()
+                    .expect("BroadcastMul: BF16/Cuda/Disk → Cpu materialisation failed for A");
+                b.ensure_cpu()
+                    .expect("BroadcastMul: BF16/Cuda/Disk → Cpu materialisation failed for B");
                 let out = broadcast_mul(&a, &b);
                 self.nodes[node_id].set_output(out.clone());
 
@@ -4297,10 +4453,8 @@ impl Graph {
                         inputs: op_inputs.clone(),
                         output: node_id,
                         backward: Box::new(move |store, _forward_inputs, out_grad| {
-                            let grad_a =
-                                mul_broadcast_grad(out_grad, &b_for_back, &shape_a);
-                            let grad_b =
-                                mul_broadcast_grad(out_grad, &a_for_back, &shape_b);
+                            let grad_a = mul_broadcast_grad(out_grad, &b_for_back, &shape_a);
+                            let grad_b = mul_broadcast_grad(out_grad, &a_for_back, &shape_b);
                             add_to_grad_slice(store, op_inputs[0], &grad_a);
                             add_to_grad_slice(store, op_inputs[1], &grad_b);
                         }),
@@ -4324,12 +4478,10 @@ impl Graph {
                 // parameters. Qwen QKV bias flows through this op,
                 // and the Llama causal mask is a pre-baked Parameter
                 // on path A.
-                a.ensure_cpu().expect(
-                    "BroadcastAdd: BF16/Cuda/Disk → Cpu materialisation failed for A",
-                );
-                b.ensure_cpu().expect(
-                    "BroadcastAdd: BF16/Cuda/Disk → Cpu materialisation failed for B",
-                );
+                a.ensure_cpu()
+                    .expect("BroadcastAdd: BF16/Cuda/Disk → Cpu materialisation failed for A");
+                b.ensure_cpu()
+                    .expect("BroadcastAdd: BF16/Cuda/Disk → Cpu materialisation failed for B");
                 let out = broadcast_add(&a, &b);
                 self.nodes[node_id].set_output(out.clone());
 
@@ -4360,9 +4512,8 @@ impl Graph {
                     .clone();
                 // M4.7.3.d: defensive decode-on-access for the Cpu-only
                 // `log_softmax_last_dim` kernel.
-                x.ensure_cpu().expect(
-                    "LogSoftmax: BF16/Cuda/Disk → Cpu materialisation failed",
-                );
+                x.ensure_cpu()
+                    .expect("LogSoftmax: BF16/Cuda/Disk → Cpu materialisation failed");
 
                 let out = log_softmax_last_dim(&x);
                 let out_clone = out.clone();
@@ -4376,15 +4527,11 @@ impl Graph {
                         inputs: op_inputs.clone(),
                         output: node_id,
                         backward: Box::new(move |store, _forward_inputs, out_grad| {
-                            let cols = *output_shape
-                                .last()
-                                .expect("LogSoftmax requires rank >= 1");
+                            let cols = *output_shape.last().expect("LogSoftmax requires rank >= 1");
                             let rows = if output_shape.len() == 1 {
                                 1
                             } else {
-                                output_shape[..output_shape.len() - 1]
-                                    .iter()
-                                    .product()
+                                output_shape[..output_shape.len() - 1].iter().product()
                             };
                             let out_grad_slice = out_grad.as_cpu_slice();
                             let mut grad_x = vec![0.0; out_grad.numel()];
@@ -4420,12 +4567,11 @@ impl Graph {
                     .clone();
                 // M4.7.3.d: defensive decode-on-access for the Cpu-only
                 // `gather_last_dim` kernel.
-                data.ensure_cpu().expect(
-                    "Gather: BF16/Cuda/Disk → Cpu materialisation failed for data",
-                );
-                indices.ensure_cpu().expect(
-                    "Gather: BF16/Cuda/Disk → Cpu materialisation failed for indices",
-                );
+                data.ensure_cpu()
+                    .expect("Gather: BF16/Cuda/Disk → Cpu materialisation failed for data");
+                indices
+                    .ensure_cpu()
+                    .expect("Gather: BF16/Cuda/Disk → Cpu materialisation failed for indices");
 
                 let out = gather_last_dim(&data, &indices);
                 self.nodes[node_id].set_output(out);
@@ -4438,16 +4584,18 @@ impl Graph {
                         inputs: op_inputs.clone(),
                         output: node_id,
                         backward: Box::new(move |store, _forward_inputs, out_grad| {
-                            let last_dim = *data_shape
-                                .last()
-                                .expect("Gather data must have rank >= 1");
+                            let last_dim =
+                                *data_shape.last().expect("Gather data must have rank >= 1");
                             let rows = indices_values.len();
                             assert_eq!(rows, out_grad.numel(), "Gather grad mismatch");
                             let mut grad_data = vec![0.0; data_shape.iter().product()];
                             let out_grad_slice = out_grad.as_cpu_slice();
                             for row in 0..rows {
                                 let idx = indices_values[row].round() as isize;
-                                assert!(idx >= 0 && (idx as usize) < last_dim, "Gather index out of bounds");
+                                assert!(
+                                    idx >= 0 && (idx as usize) < last_dim,
+                                    "Gather index out of bounds"
+                                );
                                 let dst = row * last_dim + idx as usize;
                                 grad_data[dst] += out_grad_slice[row];
                             }
@@ -4458,7 +4606,11 @@ impl Graph {
             }
             NodeType::CrossEntropyLoss => {
                 let inputs = self.nodes[node_id].inputs.clone();
-                assert_eq!(inputs.len(), 2, "CrossEntropyLoss expects log_probs and targets");
+                assert_eq!(
+                    inputs.len(),
+                    2,
+                    "CrossEntropyLoss expects log_probs and targets"
+                );
 
                 let mut log_probs = self.nodes[inputs[0]]
                     .output
@@ -4484,11 +4636,7 @@ impl Graph {
                     .last()
                     .expect("CrossEntropyLoss log probs require rank >= 1");
                 let rows = log_probs.numel() / last_dim;
-                assert_eq!(
-                    targets.numel(),
-                    rows,
-                    "CrossEntropyLoss targets mismatch"
-                );
+                assert_eq!(targets.numel(), rows, "CrossEntropyLoss targets mismatch");
 
                 let targets_slice = targets.as_cpu_slice();
                 let log_probs_slice = log_probs.as_cpu_slice();
@@ -4496,7 +4644,10 @@ impl Graph {
                 let mut target_indices = Vec::with_capacity(rows);
                 for row in 0..rows {
                     let idx = targets_slice[row].round() as isize;
-                    assert!(idx >= 0 && (idx as usize) < last_dim, "CrossEntropyLoss target out of bounds");
+                    assert!(
+                        idx >= 0 && (idx as usize) < last_dim,
+                        "CrossEntropyLoss target out of bounds"
+                    );
                     let idx_usize = idx as usize;
                     target_indices.push(idx_usize);
                     let pos = row * last_dim + idx_usize;
@@ -4580,16 +4731,13 @@ impl Graph {
                 // BF16 weights and any future Cuda residency on x or w
                 // would panic without these guards. No-op when storage
                 // is already Cpu.
-                x.ensure_cpu().expect(
-                    "Linear: BF16/Cuda/Disk → Cpu materialisation failed for x",
-                );
-                w.ensure_cpu().expect(
-                    "Linear: BF16/Cuda/Disk → Cpu materialisation failed for weight",
-                );
+                x.ensure_cpu()
+                    .expect("Linear: BF16/Cuda/Disk → Cpu materialisation failed for x");
+                w.ensure_cpu()
+                    .expect("Linear: BF16/Cuda/Disk → Cpu materialisation failed for weight");
                 if let Some(ref mut bias) = b_opt {
-                    bias.ensure_cpu().expect(
-                        "Linear: BF16/Cuda/Disk → Cpu materialisation failed for bias",
-                    );
+                    bias.ensure_cpu()
+                        .expect("Linear: BF16/Cuda/Disk → Cpu materialisation failed for bias");
                 }
 
                 // APX 5.4: optional timing measurement for adaptive Linear statistics.
@@ -4616,12 +4764,7 @@ impl Graph {
                             if let KernelTarget::Gpu = plan.target {
                                 let mut tmp = Tensor::zeros_new(&[m, n], x.device);
 
-                                if gpu_hooks::try_gpu_linear(
-                                    &x,
-                                    &w,
-                                    b_opt.as_ref(),
-                                    &mut tmp,
-                                ) {
+                                if gpu_hooks::try_gpu_linear(&x, &w, b_opt.as_ref(), &mut tmp) {
                                     // Register a Linear sample only if 5.4 mode is active.
                                     if let (true, Some(t0)) = (is_54_local, start_time) {
                                         let duration_us = t0.elapsed().as_micros() as u64;
@@ -4804,9 +4947,8 @@ impl Graph {
                     .clone();
                 // M4.7.3.d: defensive decode-on-access for Cpu-only
                 // `nn_act` kernels (ReLU/SiLU/GELU).
-                x.ensure_cpu().expect(
-                    "Activation: BF16/Cuda/Disk → Cpu materialisation failed",
-                );
+                x.ensure_cpu()
+                    .expect("Activation: BF16/Cuda/Disk → Cpu materialisation failed");
 
                 let out = match act {
                     crate::amg::nodes::ActType::ReLU => nn_act::relu(&x),
@@ -4911,9 +5053,8 @@ impl Graph {
                     // M4.7.3.d: defensive decode-on-access. `nn_norm::rms_norm`
                     // is a Cpu-only F32 kernel; BF16/Disk/Cuda would panic
                     // inside `as_cpu_slice`. No-op when storage is already Cpu.
-                    x.ensure_cpu().expect(
-                        "RmsNorm: BF16/Cuda/Disk → Cpu materialisation failed",
-                    );
+                    x.ensure_cpu()
+                        .expect("RmsNorm: BF16/Cuda/Disk → Cpu materialisation failed");
                     let out = nn_norm::rms_norm(&x, eps);
                     self.nodes[node_id].set_output(out);
                 }
@@ -4929,9 +5070,8 @@ impl Graph {
                 if let Some(mut x) = x_opt.cloned() {
                     // M4.7.3.d: defensive decode-on-access for the Cpu-only
                     // `nn_act::silu` kernel.
-                    x.ensure_cpu().expect(
-                        "SiLU: BF16/Cuda/Disk → Cpu materialisation failed",
-                    );
+                    x.ensure_cpu()
+                        .expect("SiLU: BF16/Cuda/Disk → Cpu materialisation failed");
                     let out = nn_act::silu(&x);
                     self.nodes[node_id].set_output(out);
 
@@ -4970,9 +5110,8 @@ impl Graph {
                 if let Some(mut x) = x_opt.cloned() {
                     // M4.7.3.d: defensive decode-on-access for the Cpu-only
                     // `nn_softmax::softmax_last_dim` kernel.
-                    x.ensure_cpu().expect(
-                        "Softmax: BF16/Cuda/Disk → Cpu materialisation failed",
-                    );
+                    x.ensure_cpu()
+                        .expect("Softmax: BF16/Cuda/Disk → Cpu materialisation failed");
                     let out = nn_softmax::softmax_last_dim(&x);
                     self.nodes[node_id].set_output(out);
 
@@ -4992,7 +5131,10 @@ impl Graph {
                             output: node_id,
                             backward: Box::new(move |store, _forward_inputs, out_grad| {
                                 if cpu_features().avx2 {
-                                    let mut grad_x = nn_softmax::softmax_backward_parallel(&softmax_out, out_grad);
+                                    let mut grad_x = nn_softmax::softmax_backward_parallel(
+                                        &softmax_out,
+                                        out_grad,
+                                    );
                                     grad_x.ensure_cpu().expect(
                                         "backward intermediate: GPU->CPU transfer failed \
                                          (this indicates a CUDA driver issue during backward; \
@@ -5006,9 +5148,7 @@ impl Graph {
                                     let rows = if serial_shape.len() == 1 {
                                         1
                                     } else {
-                                        serial_shape[..serial_shape.len() - 1]
-                                            .iter()
-                                            .product()
+                                        serial_shape[..serial_shape.len() - 1].iter().product()
                                     };
                                     let out_grad_slice = out_grad.as_cpu_slice();
                                     let mut grad_x = vec![0.0; out_grad.numel()];
@@ -5033,7 +5173,12 @@ impl Graph {
                     }
                 }
             }
-            NodeType::RoPE { head_dim, base_freq, scaling, position_offset } => {
+            NodeType::RoPE {
+                head_dim,
+                base_freq,
+                scaling,
+                position_offset,
+            } => {
                 let inputs = self.nodes[node_id].inputs.clone();
                 if inputs.len() != 1 {
                     // Inconsistent graph (e.g., artificial trace tests):
@@ -5111,9 +5256,8 @@ impl Graph {
                 if let Some(mut x) = x_opt.cloned() {
                     // M4.7.3.d: defensive decode-on-access for the Cpu-only
                     // `nn_rope::apply_rope_with_inv_freqs` kernel.
-                    x.ensure_cpu().expect(
-                        "RoPE: BF16/Cuda/Disk → Cpu materialisation failed",
-                    );
+                    x.ensure_cpu()
+                        .expect("RoPE: BF16/Cuda/Disk → Cpu materialisation failed");
                     // M5.c.2.c — when `position_offset == 0` we route through
                     // the original kernel for byte-identical numerics with
                     // the M4.6 / M4.7 / M4.8 fixtures. Non-zero offsets go
@@ -5124,7 +5268,10 @@ impl Graph {
                         nn_rope::apply_rope_with_inv_freqs(&x, head_dim, &inv_freqs)
                     } else {
                         nn_rope::apply_rope_with_offset_inv_freqs(
-                            &x, head_dim, &inv_freqs, position_offset,
+                            &x,
+                            head_dim,
+                            &inv_freqs,
+                            position_offset,
                         )
                     };
                     self.nodes[node_id].set_output(out);
@@ -5187,21 +5334,20 @@ impl Graph {
                         .clone()
                         .expect("Conv2D: bias tensor missing");
                     // M4.7.3.d: defensive decode-on-access.
-                    b.ensure_cpu().expect(
-                        "Conv2D: BF16/Cuda/Disk → Cpu materialisation failed for bias",
-                    );
+                    b.ensure_cpu()
+                        .expect("Conv2D: BF16/Cuda/Disk → Cpu materialisation failed for bias");
                     Some(b)
                 } else {
                     None
                 };
                 // M4.7.3.d: defensive decode-on-access for the Cpu-only
                 // `execute_conv2d` kernel.
-                input_t.ensure_cpu().expect(
-                    "Conv2D: BF16/Cuda/Disk → Cpu materialisation failed for input",
-                );
-                weight_t.ensure_cpu().expect(
-                    "Conv2D: BF16/Cuda/Disk → Cpu materialisation failed for weight",
-                );
+                input_t
+                    .ensure_cpu()
+                    .expect("Conv2D: BF16/Cuda/Disk → Cpu materialisation failed for input");
+                weight_t
+                    .ensure_cpu()
+                    .expect("Conv2D: BF16/Cuda/Disk → Cpu materialisation failed for weight");
                 let out = crate::amg::ops::conv2d::execute_conv2d(
                     &input_t,
                     &weight_t,
@@ -5233,8 +5379,7 @@ impl Graph {
                             );
                             add_to_grad_slice(store, op_inputs[0], &grads.grad_input);
                             add_to_grad_slice(store, op_inputs[1], &grads.grad_weight);
-                            if let (Some(gb), Some(&bias_id)) =
-                                (grads.grad_bias, op_inputs.get(2))
+                            if let (Some(gb), Some(&bias_id)) = (grads.grad_bias, op_inputs.get(2))
                             {
                                 add_to_grad_slice(store, bias_id, &gb);
                             }
@@ -5250,9 +5395,9 @@ impl Graph {
                     .expect("MaxPool2D: input tensor missing");
                 // M4.7.3.d: defensive decode-on-access for the Cpu-only
                 // `execute_maxpool2d` kernel.
-                input_t.ensure_cpu().expect(
-                    "MaxPool2D: BF16/Cuda/Disk → Cpu materialisation failed for input",
-                );
+                input_t
+                    .ensure_cpu()
+                    .expect("MaxPool2D: BF16/Cuda/Disk → Cpu materialisation failed for input");
                 let out = crate::amg::ops::maxpool2d::execute_maxpool2d(&input_t, &cfg);
                 self.nodes[node_id].set_output(out);
 
@@ -5264,12 +5409,11 @@ impl Graph {
                         output: node_id,
                         backward: Box::new(move |store, forward_inputs, out_grad| {
                             let input_t = forward_inputs[0];
-                            let grad_input =
-                                crate::amg::ops::maxpool2d::execute_maxpool2d_backward(
-                                    input_t,
-                                    out_grad,
-                                    &cfg_captured,
-                                );
+                            let grad_input = crate::amg::ops::maxpool2d::execute_maxpool2d_backward(
+                                input_t,
+                                out_grad,
+                                &cfg_captured,
+                            );
                             add_to_grad_slice(store, op_inputs[0], &grad_input);
                         }),
                     });
@@ -5322,10 +5466,7 @@ impl Graph {
     /// that the closures — which consume tensors through `as_cpu_slice`
     /// and friends — never encounter a GPU-resident input. Any transfer
     /// failure is returned as [`StorageTransferError`] rather than panicking.
-    pub fn backward_checked(
-        &mut self,
-        loss_node_id: usize,
-    ) -> Result<(), StorageTransferError> {
+    pub fn backward_checked(&mut self, loss_node_id: usize) -> Result<(), StorageTransferError> {
         // Reset gradient store for this backward pass.
         self.grad_store = GradStore::new();
 
@@ -5344,8 +5485,7 @@ impl Graph {
             .output
             .as_ref()
             .expect("Loss node missing output");
-        self.grad_store
-            .set(loss_node_id, vec![1.0; loss.numel()]);
+        self.grad_store.set(loss_node_id, vec![1.0; loss.numel()]);
 
         // Build topological levels starting from the loss and run per-level parallel backward.
         let levels = self.build_backward_levels(loss_node_id);
@@ -5414,8 +5554,7 @@ impl Graph {
             .output
             .as_ref()
             .expect("Loss node missing output");
-        self.grad_store
-            .set(loss_node_id, vec![1.0; loss.numel()]);
+        self.grad_store.set(loss_node_id, vec![1.0; loss.numel()]);
 
         // Build topological levels starting from the loss and run backward sequentially.
         let levels = self.build_backward_levels(loss_node_id);
@@ -5524,8 +5663,7 @@ impl Graph {
     }
 
     fn collect_outputs(&self) -> Vec<Tensor> {
-        self
-            .nodes
+        self.nodes
             .iter()
             .filter_map(|node| match node.node_type {
                 NodeType::Output => node.output.clone(),
@@ -5553,10 +5691,10 @@ impl Graph {
         for &pid in param_ids {
             assert!(pid < len, "parameter id {pid} out of bounds");
             let node = unsafe { &mut *base_ptr.add(pid) };
-            let tensor_ptr = node
-                .output
-                .as_mut()
-                .expect("parameter node missing tensor output") as *mut Tensor;
+            let tensor_ptr =
+                node.output
+                    .as_mut()
+                    .expect("parameter node missing tensor output") as *mut Tensor;
             tensors.push(unsafe { &mut *tensor_ptr });
         }
         tensors
@@ -5690,13 +5828,72 @@ fn transpose_2d(t: &Tensor) -> Tensor {
         }
     }
     let new_shape = vec![cols, rows];
-    Tensor::new_cpu_with_layout(
-        new_shape,
-        data,
-        t.device,
-        t.dtype,
-        Layout::Contiguous,
-    )
+    Tensor::new_cpu_with_layout(new_shape, data, t.device, t.dtype, Layout::Contiguous)
+}
+
+fn matmul_rhs_transposed(a: &Tensor, b: &Tensor) -> Tensor {
+    assert_eq!(a.shape.len(), 2, "MatMulRhsTransposed expects 2D lhs");
+    assert_eq!(b.shape.len(), 2, "MatMulRhsTransposed expects 2D rhs");
+    let m = a.shape[0];
+    let k = a.shape[1];
+    let n = b.shape[0];
+    assert_eq!(
+        b.shape[1], k,
+        "MatMulRhsTransposed inner dimension mismatch"
+    );
+
+    let a_data = a.as_cpu_slice();
+    let mut data = vec![0.0_f32; m * n];
+
+    match &b.storage {
+        TensorStorage::Cpu(v) => {
+            matmul_rhs_transposed_f32(a_data, v, &mut data, n, k);
+        }
+        TensorStorage::CpuShared(arc) => {
+            matmul_rhs_transposed_f32(a_data, arc.as_slice(), &mut data, n, k);
+        }
+        TensorStorage::CpuBf16(bits) => {
+            matmul_rhs_transposed_bf16(a_data, bits, &mut data, n, k);
+        }
+        TensorStorage::CpuBf16Shared(arc) => {
+            matmul_rhs_transposed_bf16(a_data, arc.as_slice(), &mut data, n, k);
+        }
+        _ => {
+            let b_data = b.copy_to_cpu_vec();
+            matmul_rhs_transposed_f32(a_data, &b_data, &mut data, n, k);
+        }
+    }
+
+    Tensor::new_cpu_with_layout(vec![m, n], data, a.device, DType::F32, Layout::Contiguous)
+}
+
+fn matmul_rhs_transposed_f32(a: &[f32], b: &[f32], out: &mut [f32], n: usize, k: usize) {
+    out.par_iter_mut().enumerate().for_each(|(idx, slot)| {
+        let row = idx / n;
+        let col = idx % n;
+        let a_row = &a[row * k..(row + 1) * k];
+        let b_row = &b[col * k..(col + 1) * k];
+        let mut sum = 0.0_f32;
+        for kk in 0..k {
+            sum += a_row[kk] * b_row[kk];
+        }
+        *slot = sum;
+    });
+}
+
+fn matmul_rhs_transposed_bf16(a: &[f32], b_bits: &[u16], out: &mut [f32], n: usize, k: usize) {
+    out.par_iter_mut().enumerate().for_each(|(idx, slot)| {
+        let row = idx / n;
+        let col = idx % n;
+        let a_row = &a[row * k..(row + 1) * k];
+        let b_row = &b_bits[col * k..(col + 1) * k];
+        let mut sum = 0.0_f32;
+        for kk in 0..k {
+            let rhs = f32::from_bits((b_row[kk] as u32) << 16);
+            sum += a_row[kk] * rhs;
+        }
+        *slot = sum;
+    });
 }
 
 fn sum_rows(t: &Tensor) -> Vec<f32> {
@@ -5738,7 +5935,11 @@ fn reshape_tensor(x: &Tensor, target: &Vec<isize>) -> Tensor {
         let inferred_dim = total / known.max(1);
         new_shape[idx] = inferred_dim;
     }
-    assert_eq!(new_shape.iter().product::<usize>(), total, "reshape must preserve elements");
+    assert_eq!(
+        new_shape.iter().product::<usize>(),
+        total,
+        "reshape must preserve elements"
+    );
     Tensor::new_cpu_with_layout(
         new_shape,
         x.copy_to_cpu_vec(),
@@ -5760,7 +5961,13 @@ fn transpose_last_two(x: &Tensor) -> Tensor {
     let mut new_shape = x.shape.clone();
     let rank = new_shape.len();
     new_shape.swap(rank - 1, rank - 2);
-    let mut out = Tensor::with_layout(new_shape.clone(), 0.0, x.device, Layout::Contiguous, x.dtype);
+    let mut out = Tensor::with_layout(
+        new_shape.clone(),
+        0.0,
+        x.device,
+        Layout::Contiguous,
+        x.dtype,
+    );
     let outer: usize = new_shape[..rank - 2].iter().product();
     let rows = new_shape[rank - 2];
     let cols = new_shape[rank - 1];
@@ -5798,7 +6005,13 @@ fn batch_matmul(a: &Tensor, b: &Tensor) -> Tensor {
     let (batch, m, k, n, output_shape) = if rank == 3 {
         assert_eq!(a.shape[0], b.shape[0], "BatchMatMul dim 0 mismatch");
         assert_eq!(a.shape[2], b.shape[1], "BatchMatMul inner dim mismatch");
-        (a.shape[0], a.shape[1], a.shape[2], b.shape[2], vec![a.shape[0], a.shape[1], b.shape[2]])
+        (
+            a.shape[0],
+            a.shape[1],
+            a.shape[2],
+            b.shape[2],
+            vec![a.shape[0], a.shape[1], b.shape[2]],
+        )
     } else {
         assert_eq!(a.shape[0], b.shape[0], "BatchMatMul4D dim 0 mismatch");
         assert_eq!(a.shape[1], b.shape[1], "BatchMatMul4D dim 1 mismatch");
@@ -5813,13 +6026,7 @@ fn batch_matmul(a: &Tensor, b: &Tensor) -> Tensor {
         )
     };
 
-    let mut out = Tensor::with_layout(
-        output_shape,
-        0.0,
-        a.device,
-        Layout::Contiguous,
-        a.dtype,
-    );
+    let mut out = Tensor::with_layout(output_shape, 0.0, a.device, Layout::Contiguous, a.dtype);
 
     crate::matmul_dispatcher::batch_matmul_dispatch(
         a.as_cpu_slice(),
@@ -5848,12 +6055,7 @@ fn batch_matmul_backward(a: &Tensor, b: &Tensor, out_grad: &Tensor) -> (Vec<f32>
     let (batch, m, k, n) = if rank == 3 {
         (a.shape[0], a.shape[1], a.shape[2], b.shape[2])
     } else {
-        (
-            a.shape[0] * a.shape[1],
-            a.shape[2],
-            a.shape[3],
-            b.shape[3],
-        )
+        (a.shape[0] * a.shape[1], a.shape[2], a.shape[3], b.shape[3])
     };
     let a_slice = a.as_cpu_slice();
     let b_slice = b.as_cpu_slice();
@@ -5891,7 +6093,11 @@ fn batch_matmul_backward(a: &Tensor, b: &Tensor, out_grad: &Tensor) -> (Vec<f32>
 }
 
 fn broadcast_add(a: &Tensor, b: &Tensor) -> Tensor {
-    assert_eq!(a.shape.len(), b.shape.len(), "BroadcastAdd ranks must match");
+    assert_eq!(
+        a.shape.len(),
+        b.shape.len(),
+        "BroadcastAdd ranks must match"
+    );
     let mut out = a.clone();
     add_broadcast_inplace(&mut out, b);
     out
@@ -5924,11 +6130,7 @@ fn add_broadcast_inplace(out: &mut Tensor, other: &Tensor) {
 /// to. Used twice per BroadcastMul backward pass (once with `other=b`
 /// and `target_shape=a.shape` to compute grad_a, once with `other=a`
 /// and `target_shape=b.shape` to compute grad_b).
-fn mul_broadcast_grad(
-    out_grad: &Tensor,
-    other: &Tensor,
-    target_shape: &[usize],
-) -> Vec<f32> {
+fn mul_broadcast_grad(out_grad: &Tensor, other: &Tensor, target_shape: &[usize]) -> Vec<f32> {
     let mut grad = vec![0.0; target_shape.iter().product()];
     let rank = target_shape.len();
     debug_assert_eq!(out_grad.shape.len(), rank);
@@ -5955,7 +6157,11 @@ fn mul_broadcast_grad(
 }
 
 fn broadcast_mul(a: &Tensor, b: &Tensor) -> Tensor {
-    assert_eq!(a.shape.len(), b.shape.len(), "BroadcastMul ranks must match");
+    assert_eq!(
+        a.shape.len(),
+        b.shape.len(),
+        "BroadcastMul ranks must match"
+    );
     let mut out = a.clone();
     mul_broadcast_inplace(&mut out, b);
     out
@@ -6029,28 +6235,74 @@ fn index_select_rows(table: &Tensor, indices: &Tensor) -> Tensor {
 
     let mut out_shape = indices.shape.clone();
     out_shape.push(cols);
-    let mut out = Tensor::with_layout(
-        out_shape,
-        0.0,
-        table.device,
-        Layout::Contiguous,
-        table.dtype,
-    );
+    let mut out = Tensor::with_layout(out_shape, 0.0, table.device, Layout::Contiguous, DType::F32);
 
     let indices_slice = indices.as_cpu_slice();
-    let table_slice = table.as_cpu_slice();
     let out_slice = out.as_cpu_slice_mut();
-    for (slot, &raw_idx) in indices_slice.iter().enumerate() {
-        let idx = raw_idx.round() as isize;
-        assert!(idx >= 0 && (idx as usize) < rows, "IndexSelect index out of bounds");
-        let idx = idx as usize;
-        let src_start = idx * cols;
-        let dst_start = slot * cols;
-        out_slice[dst_start..dst_start + cols]
-            .copy_from_slice(&table_slice[src_start..src_start + cols]);
+
+    match &table.storage {
+        TensorStorage::Cpu(v) => {
+            index_select_rows_f32(v, rows, cols, indices_slice, out_slice);
+        }
+        TensorStorage::CpuShared(arc) => {
+            index_select_rows_f32(arc.as_slice(), rows, cols, indices_slice, out_slice);
+        }
+        TensorStorage::CpuBf16(bits) => {
+            index_select_rows_bf16(bits, rows, cols, indices_slice, out_slice);
+        }
+        TensorStorage::CpuBf16Shared(arc) => {
+            index_select_rows_bf16(arc.as_slice(), rows, cols, indices_slice, out_slice);
+        }
+        _ => {
+            let table_slice = table.as_cpu_slice();
+            index_select_rows_f32(table_slice, rows, cols, indices_slice, out_slice);
+        }
     }
 
     out
+}
+
+fn index_select_rows_f32(
+    table: &[f32],
+    rows: usize,
+    cols: usize,
+    indices: &[f32],
+    out: &mut [f32],
+) {
+    for (slot, &raw_idx) in indices.iter().enumerate() {
+        let idx = checked_index_select_row(raw_idx, rows);
+        let src_start = idx * cols;
+        let dst_start = slot * cols;
+        out[dst_start..dst_start + cols].copy_from_slice(&table[src_start..src_start + cols]);
+    }
+}
+
+fn index_select_rows_bf16(
+    table_bits: &[u16],
+    rows: usize,
+    cols: usize,
+    indices: &[f32],
+    out: &mut [f32],
+) {
+    out.par_chunks_mut(cols)
+        .zip(indices.par_iter())
+        .for_each(|(dst, &raw_idx)| {
+            let idx = checked_index_select_row(raw_idx, rows);
+            let src_start = idx * cols;
+            let src = &table_bits[src_start..src_start + cols];
+            for (slot, &bits) in dst.iter_mut().zip(src.iter()) {
+                *slot = f32::from_bits((bits as u32) << 16);
+            }
+        });
+}
+
+fn checked_index_select_row(raw_idx: f32, rows: usize) -> usize {
+    let idx = raw_idx.round() as isize;
+    assert!(
+        idx >= 0 && (idx as usize) < rows,
+        "IndexSelect index out of bounds"
+    );
+    idx as usize
 }
 
 fn scatter_add_rows(grad_table: &mut [f32], indices: &Tensor, grad_out: &[f32], cols: usize) {

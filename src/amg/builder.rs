@@ -1,11 +1,11 @@
 //! Graph builder utilities for assembling Atenia Model Graphs.
 
-use super::nodes::{Node, NodeType, ActType};
+use super::nodes::{ActType, Node, NodeType};
 use super::scheduler::build_execution_plan;
-use crate::tensor::Tensor;
+use crate::apx4_7::{FusionPlan, PersistentPlan};
 use crate::apx4_8::pattern::detect_and_fuse_linear_activation;
 use crate::apx4_9::patterns::fuse_linear_activation_linear;
-use crate::apx4_7::{PersistentPlan, FusionPlan};
+use crate::tensor::Tensor;
 
 pub struct GraphBuilder {
     pub nodes: Vec<Node>,
@@ -50,6 +50,12 @@ impl GraphBuilder {
 
     pub fn matmul(&mut self, a: usize, b: usize) -> usize {
         self.add_node(NodeType::MatMul, vec![a, b])
+    }
+
+    /// Matrix multiply against the transpose of `b` without building a
+    /// `Transpose2D` tensor first: `[m, k] x [n, k]^T -> [m, n]`.
+    pub fn matmul_rhs_transposed(&mut self, a: usize, b: usize) -> usize {
+        self.add_node(NodeType::MatMulRhsTransposed, vec![a, b])
     }
 
     /// Gather rows from a parameter tensor using index tensor.
@@ -130,7 +136,12 @@ impl GraphBuilder {
     /// `eps` is the per-model stabilizer (1e-5 for Llama family,
     /// 1e-6 for Qwen 2.5).
     pub fn rms_norm(&mut self, x_id: usize, eps: f32) -> usize {
-        self.add_node(NodeType::RmsNorm { eps_bits: eps.to_bits() }, vec![x_id])
+        self.add_node(
+            NodeType::RmsNorm {
+                eps_bits: eps.to_bits(),
+            },
+            vec![x_id],
+        )
     }
 
     /// ReLU activation.
@@ -302,10 +313,7 @@ impl GraphBuilder {
             start < end,
             "GraphBuilder::slice_last_dim: start ({start}) must be < end ({end})"
         );
-        self.add_node(
-            NodeType::SliceLastDim { start, end },
-            vec![x_id],
-        )
+        self.add_node(NodeType::SliceLastDim { start, end }, vec![x_id])
     }
 
     /// **M11.C step 2** — construct a `NodeType::SoftCap` node:
@@ -330,7 +338,9 @@ impl GraphBuilder {
             "GraphBuilder::soft_cap: cap must be a finite positive f32, got {cap}"
         );
         self.add_node(
-            NodeType::SoftCap { cap_bits: cap.to_bits() },
+            NodeType::SoftCap {
+                cap_bits: cap.to_bits(),
+            },
             vec![x_id],
         )
     }
@@ -371,6 +381,51 @@ mod m11_b_step2_tests {
     use crate::amg::nodes::{NodeRopeScaling, NodeType, RopeScalingLongRope};
     use crate::tensor::Tensor;
 
+    #[test]
+    fn matmul_rhs_transposed_matches_explicit_tied_head_math() {
+        let mut gb = GraphBuilder::new();
+        let x = gb.input();
+        let embedding = gb.parameter(Tensor::new_cpu(
+            vec![3, 2],
+            vec![
+                1.0, 2.0, //
+                3.0, 4.0, //
+                5.0, 6.0,
+            ],
+        ));
+        let logits = gb.matmul_rhs_transposed(x, embedding);
+        gb.output(logits);
+
+        let mut graph = gb.build();
+        let outs = graph.execute(vec![Tensor::new_cpu(vec![2, 2], vec![2.0, 10.0, 1.0, 1.0])]);
+        let out = &outs[0];
+        assert_eq!(out.shape, vec![2, 3]);
+        assert_eq!(out.as_cpu_slice(), &[22.0, 46.0, 70.0, 3.0, 7.0, 11.0]);
+    }
+
+    #[test]
+    fn index_select_decodes_only_selected_bf16_rows() {
+        let mut gb = GraphBuilder::new();
+        let indices = gb.input();
+        let bits: Vec<u16> = [
+            1.0_f32, 2.0, 3.0, //
+            4.0, 5.0, 6.0, //
+            7.0, 8.0, 9.0,
+        ]
+        .iter()
+        .map(|v| (v.to_bits() >> 16) as u16)
+        .collect();
+        let table = gb.parameter(Tensor::new_cpu_bf16(vec![3, 3], bits));
+        let selected = gb.index_select(table, indices);
+        gb.output(selected);
+
+        let mut graph = gb.build();
+        let outs = graph.execute(vec![Tensor::new_cpu(vec![2], vec![2.0, 0.0])]);
+        let out = &outs[0];
+        assert_eq!(out.shape, vec![2, 3]);
+        assert_eq!(out.as_cpu_slice(), &[7.0, 8.0, 9.0, 1.0, 2.0, 3.0]);
+    }
+
     /// LongRope-bearing node carries the right variant. Round-trip
     /// the factor vectors through `to_bits` / `from_bits` and
     /// confirm bit-exact recovery.
@@ -390,7 +445,15 @@ mod m11_b_step2_tests {
         let nodes = &gb.nodes;
         let rope_node = nodes
             .iter()
-            .find(|n| matches!(n.node_type, NodeType::RoPE { scaling: Some(_), .. }))
+            .find(|n| {
+                matches!(
+                    n.node_type,
+                    NodeType::RoPE {
+                        scaling: Some(_),
+                        ..
+                    }
+                )
+            })
             .expect("RoPE node with scaling must be present");
         match &rope_node.node_type {
             NodeType::RoPE {
@@ -437,9 +500,7 @@ mod m11_b_step2_tests {
                 scaling: Some(NodeRopeScaling::Llama3(_)),
                 ..
             } => {}
-            other => panic!(
-                "rope_scaled must carry NodeRopeScaling::Llama3, got {other:?}"
-            ),
+            other => panic!("rope_scaled must carry NodeRopeScaling::Llama3, got {other:?}"),
         }
     }
 
@@ -524,10 +585,7 @@ mod m11_b_step3_5_tests {
         // Row 2 starts at index 16: [16, 17, 18]
         // Row 3 starts at index 24: [24, 25, 26]
         let expected: Vec<f32> = vec![
-            0.0, 1.0, 2.0,
-            8.0, 9.0, 10.0,
-            16.0, 17.0, 18.0,
-            24.0, 25.0, 26.0,
+            0.0, 1.0, 2.0, 8.0, 9.0, 10.0, 16.0, 17.0, 18.0, 24.0, 25.0, 26.0,
         ];
         assert_eq!(out, expected);
     }
@@ -542,9 +600,7 @@ mod m11_b_step3_5_tests {
         // Row 0: indices 3..8 of input row 0 = [3, 4, 5, 6, 7]
         // Row 3: indices 3..8 of input row 3 = [27, 28, 29, 30, 31]
         let expected: Vec<f32> = vec![
-            3.0, 4.0, 5.0, 6.0, 7.0,
-            11.0, 12.0, 13.0, 14.0, 15.0,
-            19.0, 20.0, 21.0, 22.0, 23.0,
+            3.0, 4.0, 5.0, 6.0, 7.0, 11.0, 12.0, 13.0, 14.0, 15.0, 19.0, 20.0, 21.0, 22.0, 23.0,
             27.0, 28.0, 29.0, 30.0, 31.0,
         ];
         assert_eq!(out, expected);
@@ -696,9 +752,9 @@ mod m11_c_step2_tests {
     #[test]
     fn soft_cap_saturates_finite_no_nan() {
         let extreme: Vec<f32> = vec![
-            1_000.0,        // 20× cap
+            1_000.0, // 20× cap
             -1_000.0,
-            1.0e6,          // 20000× cap
+            1.0e6, // 20000× cap
             -1.0e6,
             f32::MAX / 2.0, // ~1.7e38, still finite when divided
             -f32::MAX / 2.0,

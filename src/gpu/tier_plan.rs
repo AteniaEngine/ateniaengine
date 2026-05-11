@@ -119,7 +119,7 @@ impl TensorMeta {
     /// `BF16` is the only non-F32 supported value (`F16` and
     /// the int dtypes still map to `numel × 4` because no
     /// resident matmul exists for them in M8).
-    fn vram_cost_bytes(&self, kernel_dtype: DType) -> u64 {
+    pub fn vram_cost_bytes(&self, kernel_dtype: DType) -> u64 {
         // **M9.2 — INT8 W8A16 path, HONEST cost (post-smoke fix)**.
         //
         // What M9.2 actually does in VRAM, today:
@@ -177,7 +177,7 @@ impl TensorMeta {
     /// Host RAM cost in the source dtype. Used both for the
     /// `Tier::Ram` and `Tier::Disk` budget calculations (Disk
     /// stores the same byte layout).
-    fn ram_cost_bytes(&self) -> u64 {
+    pub fn ram_cost_bytes(&self) -> u64 {
         self.numel() * (self.dtype.size_in_bytes() as u64)
     }
 }
@@ -280,7 +280,7 @@ impl TierPlan {
     }
 }
 
-const VRAM_HEADROOM_BYTES: u64 = 1024 * 1024 * 1024;
+pub const VRAM_HEADROOM_BYTES: u64 = 1024 * 1024 * 1024;
 /// **M8.7 prerequisite** — staging buffers reserved at the top of the
 /// VRAM budget when the plan would otherwise put any tensor on Disk.
 ///
@@ -323,9 +323,7 @@ const ADAPTIVE_TRIGGER_DEN: u64 = 10;
 ///   `RAM_HEADROOM_BASE_BYTES + extra`.
 /// - Otherwise the headroom stays at the base value.
 pub fn adaptive_ram_headroom(model_total_bytes: u64, free_ram_bytes: u64) -> (u64, u64) {
-    let threshold = free_ram_bytes
-        .saturating_mul(ADAPTIVE_TRIGGER_NUM)
-        / ADAPTIVE_TRIGGER_DEN;
+    let threshold = free_ram_bytes.saturating_mul(ADAPTIVE_TRIGGER_NUM) / ADAPTIVE_TRIGGER_DEN;
     if model_total_bytes > threshold {
         let extra = model_total_bytes - threshold;
         (RAM_HEADROOM_BASE_BYTES + extra, extra)
@@ -338,7 +336,7 @@ pub fn adaptive_ram_headroom(model_total_bytes: u64, free_ram_bytes: u64) -> (u6
 /// tensor is a Llama-family attention/FFN projection weight that
 /// the M6 step 4d mixed-residency dispatch path can consume from
 /// VRAM. See module docs for the full rationale.
-fn is_gpu_eligible(meta: &TensorMeta) -> bool {
+pub fn is_gpu_eligible(meta: &TensorMeta) -> bool {
     meta.shape.len() >= 2 && meta.name.ends_with("_proj.weight")
 }
 
@@ -411,7 +409,8 @@ fn resolve_ram_headroom(model_total_bytes: u64, free_ram_bytes: u64) -> (u64, u6
                     "[ATENIA] RAM headroom override: {} GiB \
                      (ATENIA_RAM_HEADROOM_OVERRIDE_GIB={}, adaptive M7.2 bypassed — \
                      operator assumes BSOD risk if model exceeds free RAM after this floor)",
-                    gib, v.trim(),
+                    gib,
+                    v.trim(),
                 );
             }
             return (headroom_bytes, 0);
@@ -501,8 +500,7 @@ fn plan_inner(input: &TierPlanInput, vram_budget_bytes: u64) -> TierPlan {
     // `ATENIA_RAM_HEADROOM_OVERRIDE_GIB` first; if set, the M7.2
     // computation below is bypassed entirely. This change makes
     // the default path correct so the override becomes optional.
-    let (ram_headroom, overflow) =
-        resolve_ram_headroom(ram_pressure_bytes, input.free_ram_bytes);
+    let (ram_headroom, overflow) = resolve_ram_headroom(ram_pressure_bytes, input.free_ram_bytes);
 
     // ---- Pass 2: real bin-packing with the corrected headroom. -----
     let mut vram_remaining = vram_budget_bytes;
@@ -559,18 +557,59 @@ mod tests {
     /// Llama-family layer template — 4 attention proj + 3 FFN
     /// proj + 2 norms. Matches the HuggingFace naming convention
     /// used by Llama 2, Llama 3, Qwen 2.5, TinyLlama, SmolLM2.
-    fn llama_layer(layer_idx: usize, hidden: usize, intermediate: usize, dtype: DType) -> Vec<TensorMeta> {
+    fn llama_layer(
+        layer_idx: usize,
+        hidden: usize,
+        intermediate: usize,
+        dtype: DType,
+    ) -> Vec<TensorMeta> {
         let prefix = format!("model.layers.{}.", layer_idx);
         vec![
-            make_meta(&format!("{}self_attn.q_proj.weight", prefix), vec![hidden, hidden], dtype),
-            make_meta(&format!("{}self_attn.k_proj.weight", prefix), vec![hidden, hidden], dtype),
-            make_meta(&format!("{}self_attn.v_proj.weight", prefix), vec![hidden, hidden], dtype),
-            make_meta(&format!("{}self_attn.o_proj.weight", prefix), vec![hidden, hidden], dtype),
-            make_meta(&format!("{}mlp.gate_proj.weight", prefix), vec![intermediate, hidden], dtype),
-            make_meta(&format!("{}mlp.up_proj.weight", prefix), vec![intermediate, hidden], dtype),
-            make_meta(&format!("{}mlp.down_proj.weight", prefix), vec![hidden, intermediate], dtype),
-            make_meta(&format!("{}input_layernorm.weight", prefix), vec![hidden], dtype),
-            make_meta(&format!("{}post_attention_layernorm.weight", prefix), vec![hidden], dtype),
+            make_meta(
+                &format!("{}self_attn.q_proj.weight", prefix),
+                vec![hidden, hidden],
+                dtype,
+            ),
+            make_meta(
+                &format!("{}self_attn.k_proj.weight", prefix),
+                vec![hidden, hidden],
+                dtype,
+            ),
+            make_meta(
+                &format!("{}self_attn.v_proj.weight", prefix),
+                vec![hidden, hidden],
+                dtype,
+            ),
+            make_meta(
+                &format!("{}self_attn.o_proj.weight", prefix),
+                vec![hidden, hidden],
+                dtype,
+            ),
+            make_meta(
+                &format!("{}mlp.gate_proj.weight", prefix),
+                vec![intermediate, hidden],
+                dtype,
+            ),
+            make_meta(
+                &format!("{}mlp.up_proj.weight", prefix),
+                vec![intermediate, hidden],
+                dtype,
+            ),
+            make_meta(
+                &format!("{}mlp.down_proj.weight", prefix),
+                vec![hidden, intermediate],
+                dtype,
+            ),
+            make_meta(
+                &format!("{}input_layernorm.weight", prefix),
+                vec![hidden],
+                dtype,
+            ),
+            make_meta(
+                &format!("{}post_attention_layernorm.weight", prefix),
+                vec![hidden],
+                dtype,
+            ),
         ]
     }
 
@@ -593,17 +632,37 @@ mod tests {
 
         // 7 _proj.weight tensors → Vram. 2 layernorm.weight tensors
         // (1D shape) → Ram via the rank-≥-2 filter.
-        assert_eq!(p.count(Tier::Vram), 7,
-            "expected 7 proj weights on Vram, got {}", p.count(Tier::Vram));
-        assert_eq!(p.count(Tier::Ram), 2,
-            "expected 2 norm weights on Ram, got {}", p.count(Tier::Ram));
+        assert_eq!(
+            p.count(Tier::Vram),
+            7,
+            "expected 7 proj weights on Vram, got {}",
+            p.count(Tier::Vram)
+        );
+        assert_eq!(
+            p.count(Tier::Ram),
+            2,
+            "expected 2 norm weights on Ram, got {}",
+            p.count(Tier::Ram)
+        );
         assert_eq!(p.count(Tier::Disk), 0);
 
         // Spot-check by name.
-        assert_eq!(p.get("model.layers.0.self_attn.q_proj.weight"), Some(Tier::Vram));
-        assert_eq!(p.get("model.layers.0.mlp.down_proj.weight"), Some(Tier::Vram));
-        assert_eq!(p.get("model.layers.0.input_layernorm.weight"), Some(Tier::Ram));
-        assert_eq!(p.get("model.layers.0.post_attention_layernorm.weight"), Some(Tier::Ram));
+        assert_eq!(
+            p.get("model.layers.0.self_attn.q_proj.weight"),
+            Some(Tier::Vram)
+        );
+        assert_eq!(
+            p.get("model.layers.0.mlp.down_proj.weight"),
+            Some(Tier::Vram)
+        );
+        assert_eq!(
+            p.get("model.layers.0.input_layernorm.weight"),
+            Some(Tier::Ram)
+        );
+        assert_eq!(
+            p.get("model.layers.0.post_attention_layernorm.weight"),
+            Some(Tier::Ram)
+        );
     }
 
     /// 2. VRAM llena → overflow a RAM. Greedy bin packing keeps
@@ -614,7 +673,9 @@ mod tests {
     #[test]
     fn vram_overflow_falls_through_to_ram() {
         let _g = M9_INT8_TEST_LOCK.lock().unwrap();
-        unsafe { std::env::remove_var("ATENIA_M9_INT8"); }
+        unsafe {
+            std::env::remove_var("ATENIA_M9_INT8");
+        }
         // Two Llama 2 13B-class layers.
         // Layer 0 footprint (F32, GPU-eligible only):
         //   - Q,K,V,O proj: 4 × (5120² × 4)        = 400 MiB
@@ -643,7 +704,8 @@ mod tests {
 
         // 7 (layer 0) + 3 (layer 1 Q,K,V) = 10 Vram assignments.
         assert_eq!(
-            p.count(Tier::Vram), 10,
+            p.count(Tier::Vram),
+            10,
             "greedy continues past layer boundary; expected 10 Vram, got {}",
             p.count(Tier::Vram)
         );
@@ -653,14 +715,32 @@ mod tests {
         assert_eq!(p.count(Tier::Disk), 0);
 
         // Spot-checks: layer 0 fully VRAM, layer 1 mixed.
-        assert_eq!(p.get("model.layers.0.self_attn.q_proj.weight"), Some(Tier::Vram));
-        assert_eq!(p.get("model.layers.0.mlp.down_proj.weight"), Some(Tier::Vram));
-        assert_eq!(p.get("model.layers.1.self_attn.q_proj.weight"), Some(Tier::Vram));
-        assert_eq!(p.get("model.layers.1.self_attn.v_proj.weight"), Some(Tier::Vram));
+        assert_eq!(
+            p.get("model.layers.0.self_attn.q_proj.weight"),
+            Some(Tier::Vram)
+        );
+        assert_eq!(
+            p.get("model.layers.0.mlp.down_proj.weight"),
+            Some(Tier::Vram)
+        );
+        assert_eq!(
+            p.get("model.layers.1.self_attn.q_proj.weight"),
+            Some(Tier::Vram)
+        );
+        assert_eq!(
+            p.get("model.layers.1.self_attn.v_proj.weight"),
+            Some(Tier::Vram)
+        );
         // O is the 4th attn proj — overflowed because Q,K,V already
         // consumed the ~326 MiB residual.
-        assert_eq!(p.get("model.layers.1.self_attn.o_proj.weight"), Some(Tier::Ram));
-        assert_eq!(p.get("model.layers.1.mlp.gate_proj.weight"), Some(Tier::Ram));
+        assert_eq!(
+            p.get("model.layers.1.self_attn.o_proj.weight"),
+            Some(Tier::Ram)
+        );
+        assert_eq!(
+            p.get("model.layers.1.mlp.gate_proj.weight"),
+            Some(Tier::Ram)
+        );
     }
 
     /// 3. RAM también llena → overflow a Disk.
@@ -683,10 +763,15 @@ mod tests {
         };
         let p = plan(&input);
 
-        assert_eq!(p.count(Tier::Vram), 0,
-            "no VRAM available, expected 0 Vram assignments");
-        assert!(p.count(Tier::Disk) > 0,
-            "with 0.5 GiB RAM usable, some tensors must overflow to Disk");
+        assert_eq!(
+            p.count(Tier::Vram),
+            0,
+            "no VRAM available, expected 0 Vram assignments"
+        );
+        assert!(
+            p.count(Tier::Disk) > 0,
+            "with 0.5 GiB RAM usable, some tensors must overflow to Disk"
+        );
         // Total tensors must equal the input length.
         assert_eq!(p.len(), 9);
         assert_eq!(
@@ -705,9 +790,21 @@ mod tests {
         // _proj.weight tensors should land on Vram.
         let tensors = vec![
             make_meta("model.embed_tokens.weight", vec![32000, 4096], DType::BF16),
-            make_meta("model.layers.0.input_layernorm.weight", vec![4096], DType::BF16),
-            make_meta("model.layers.0.self_attn.q_proj.weight", vec![4096, 4096], DType::BF16),
-            make_meta("model.layers.0.post_attention_layernorm.weight", vec![4096], DType::BF16),
+            make_meta(
+                "model.layers.0.input_layernorm.weight",
+                vec![4096],
+                DType::BF16,
+            ),
+            make_meta(
+                "model.layers.0.self_attn.q_proj.weight",
+                vec![4096, 4096],
+                DType::BF16,
+            ),
+            make_meta(
+                "model.layers.0.post_attention_layernorm.weight",
+                vec![4096],
+                DType::BF16,
+            ),
             make_meta("model.norm.weight", vec![4096], DType::BF16),
             make_meta("lm_head.weight", vec![32000, 4096], DType::BF16),
         ];
@@ -723,12 +820,21 @@ mod tests {
         let p = plan(&input);
 
         // Only the _proj.weight tensor on Vram.
-        assert_eq!(p.get("model.layers.0.self_attn.q_proj.weight"), Some(Tier::Vram));
+        assert_eq!(
+            p.get("model.layers.0.self_attn.q_proj.weight"),
+            Some(Tier::Vram)
+        );
         assert_eq!(p.get("model.embed_tokens.weight"), Some(Tier::Ram));
         assert_eq!(p.get("lm_head.weight"), Some(Tier::Ram));
         assert_eq!(p.get("model.norm.weight"), Some(Tier::Ram));
-        assert_eq!(p.get("model.layers.0.input_layernorm.weight"), Some(Tier::Ram));
-        assert_eq!(p.get("model.layers.0.post_attention_layernorm.weight"), Some(Tier::Ram));
+        assert_eq!(
+            p.get("model.layers.0.input_layernorm.weight"),
+            Some(Tier::Ram)
+        );
+        assert_eq!(
+            p.get("model.layers.0.post_attention_layernorm.weight"),
+            Some(Tier::Ram)
+        );
 
         assert_eq!(p.count(Tier::Vram), 1);
         assert_eq!(p.count(Tier::Ram), 5);
@@ -745,7 +851,11 @@ mod tests {
         let mut tensors = Vec::new();
 
         // Embed tokens (BF16 32000 × 5120 = 327 MB).
-        tensors.push(make_meta("model.embed_tokens.weight", vec![32000, 5120], DType::BF16));
+        tensors.push(make_meta(
+            "model.embed_tokens.weight",
+            vec![32000, 5120],
+            DType::BF16,
+        ));
 
         // 40 transformer layers, Llama 2 13B shape.
         for i in 0..40 {
@@ -789,9 +899,12 @@ mod tests {
         // Disk count: 0 (32 GiB RAM has plenty of room for the
         // remaining ~12 GiB of BF16 storage after the 8 GiB
         // headroom is reserved).
-        assert_eq!(p.count(Tier::Disk), 0,
+        assert_eq!(
+            p.count(Tier::Disk),
+            0,
             "expected 0 Disk assignments with abundant RAM, got {}",
-            p.count(Tier::Disk));
+            p.count(Tier::Disk)
+        );
 
         // Ram count = total - vram.
         assert_eq!(p.count(Tier::Ram), 363 - vram_count);
@@ -943,7 +1056,8 @@ mod tests {
         );
         assert_eq!(p.ram_headroom_overflow_bytes, 0);
         assert_eq!(
-            p.count(Tier::Disk), 0,
+            p.count(Tier::Disk),
+            0,
             "expected 0 Disk assignments for 7B/32GiB (M6 behaviour preserved)"
         );
     }
@@ -977,7 +1091,8 @@ mod tests {
         );
         // RAM budget saturated — every tensor must land on Disk.
         assert_eq!(
-            p.count(Tier::Disk), total_count,
+            p.count(Tier::Disk),
+            total_count,
             "expected all {} tensors on Disk (RAM budget saturated to 0), got {}",
             total_count,
             p.count(Tier::Disk)
@@ -1163,7 +1278,9 @@ mod tests {
     #[test]
     fn m8_3_f32_kernel_default_matches_m7_2_baseline() {
         let _g = M9_INT8_TEST_LOCK.lock().unwrap();
-        unsafe { std::env::remove_var("ATENIA_M9_INT8"); }
+        unsafe {
+            std::env::remove_var("ATENIA_M9_INT8");
+        }
         let mut tensors = Vec::new();
         tensors.push(make_meta(
             "model.embed_tokens.weight",
@@ -1214,7 +1331,9 @@ mod tests {
     #[test]
     fn m8_3_bf16_kernel_halves_vram_bytes_on_7b() {
         let _g = M9_INT8_TEST_LOCK.lock().unwrap();
-        unsafe { std::env::remove_var("ATENIA_M9_INT8"); }
+        unsafe {
+            std::env::remove_var("ATENIA_M9_INT8");
+        }
         let mut tensors = Vec::new();
         tensors.push(make_meta(
             "model.embed_tokens.weight",
@@ -1326,7 +1445,8 @@ mod tests {
             p_f32.ram_headroom_bytes, p_bf16.ram_headroom_bytes
         );
         assert_eq!(
-            p_f32.ram_headroom_overflow_bytes, p_bf16.ram_headroom_overflow_bytes
+            p_f32.ram_headroom_overflow_bytes,
+            p_bf16.ram_headroom_overflow_bytes
         );
     }
 
@@ -1380,9 +1500,7 @@ mod tests {
         };
 
         // Reference: M8 baseline budget (no staging reservation).
-        let baseline_budget = input
-            .free_vram_bytes
-            .saturating_sub(VRAM_HEADROOM_BYTES);
+        let baseline_budget = input.free_vram_bytes.saturating_sub(VRAM_HEADROOM_BYTES);
         let p_baseline = plan_inner(&input, baseline_budget);
 
         // Sanity: the dry-run scenario actually overflows to Disk —
@@ -1467,10 +1585,8 @@ mod tests {
         // actual placement counts so the M8.7 follow-up can confirm
         // the staging reservation displaces the expected number of
         // tensors on the production 13B configuration.
-        let baseline_vram_gib =
-            p_baseline.vram_bytes_assigned as f64 / (1024.0_f64.powi(3));
-        let staged_vram_gib =
-            p.vram_bytes_assigned as f64 / (1024.0_f64.powi(3));
+        let baseline_vram_gib = p_baseline.vram_bytes_assigned as f64 / (1024.0_f64.powi(3));
+        let staged_vram_gib = p.vram_bytes_assigned as f64 / (1024.0_f64.powi(3));
         eprintln!(
             "[M8.7-prereq 13B/26GiB-RAM/8GiB-VRAM] \
              baseline: vram={} ({:.2} GiB)  ram={}  disk={}",
@@ -1509,9 +1625,7 @@ mod tests {
             kernel_dtype: DType::BF16,
         };
 
-        let baseline_budget = input
-            .free_vram_bytes
-            .saturating_sub(VRAM_HEADROOM_BYTES);
+        let baseline_budget = input.free_vram_bytes.saturating_sub(VRAM_HEADROOM_BYTES);
         let p_baseline = plan_inner(&input, baseline_budget);
 
         // Sanity: no Disk overflow on this configuration.
@@ -1566,7 +1680,9 @@ mod tests {
         );
 
         // Flag off: BF16 cost is `numel × 2` for both.
-        unsafe { std::env::remove_var("ATENIA_M9_INT8"); }
+        unsafe {
+            std::env::remove_var("ATENIA_M9_INT8");
+        }
         assert_eq!(proj.vram_cost_bytes(DType::BF16), proj.numel() * 2);
         assert_eq!(norm.vram_cost_bytes(DType::BF16), norm.numel() * 2);
 
@@ -1574,12 +1690,22 @@ mod tests {
         // because BF16 is what actually lives in VRAM after the
         // dequant kernel (see vram_cost_bytes docstring); norms
         // also at `numel × 2`. Both unchanged from flag-off.
-        unsafe { std::env::set_var("ATENIA_M9_INT8", "1"); }
-        assert_eq!(proj.vram_cost_bytes(DType::BF16), proj.numel() * 2,
-            "M9.2: BF16 lives in VRAM after dequant; cost is numel × 2");
-        assert_eq!(norm.vram_cost_bytes(DType::BF16), norm.numel() * 2,
-            "norms are not in the predicate; unchanged");
-        unsafe { std::env::remove_var("ATENIA_M9_INT8"); }
+        unsafe {
+            std::env::set_var("ATENIA_M9_INT8", "1");
+        }
+        assert_eq!(
+            proj.vram_cost_bytes(DType::BF16),
+            proj.numel() * 2,
+            "M9.2: BF16 lives in VRAM after dequant; cost is numel × 2"
+        );
+        assert_eq!(
+            norm.vram_cost_bytes(DType::BF16),
+            norm.numel() * 2,
+            "norms are not in the predicate; unchanged"
+        );
+        unsafe {
+            std::env::remove_var("ATENIA_M9_INT8");
+        }
     }
 
     /// **M9.2 honest contract** — Llama 2 13B realistic plan
@@ -1604,7 +1730,9 @@ mod tests {
     #[test]
     fn m9_2_honest_int8_13b_plan_matches_bf16_capacity() {
         let _g = M9_INT8_TEST_LOCK.lock().unwrap();
-        unsafe { std::env::set_var("ATENIA_M9_INT8", "1"); }
+        unsafe {
+            std::env::set_var("ATENIA_M9_INT8", "1");
+        }
 
         let tensors = synth_13b_model();
         let model_total = sum_model_bytes(&tensors);
@@ -1618,7 +1746,9 @@ mod tests {
         };
         let p = plan(&input);
 
-        unsafe { std::env::remove_var("ATENIA_M9_INT8"); }
+        unsafe {
+            std::env::remove_var("ATENIA_M9_INT8");
+        }
 
         // 363 = 280 proj + 80 norms + embed + final_norm + lm_head.
         assert_eq!(p.len(), 363);
@@ -1666,12 +1796,18 @@ mod tests {
             DType::BF16,
         );
 
-        unsafe { std::env::remove_var("ATENIA_M9_INT8"); }
+        unsafe {
+            std::env::remove_var("ATENIA_M9_INT8");
+        }
         let off = proj.vram_cost_bytes(DType::BF16);
 
-        unsafe { std::env::set_var("ATENIA_M9_INT8", "1"); }
+        unsafe {
+            std::env::set_var("ATENIA_M9_INT8", "1");
+        }
         let on = proj.vram_cost_bytes(DType::BF16);
-        unsafe { std::env::remove_var("ATENIA_M9_INT8"); }
+        unsafe {
+            std::env::remove_var("ATENIA_M9_INT8");
+        }
 
         assert_eq!(
             on, off,
@@ -1700,23 +1836,39 @@ mod tests {
 
         // Adaptive baseline: 13B-class model on a 32 GiB-free box
         // triggers ~9.6 GiB extra → headroom 17.6 GiB total.
-        unsafe { std::env::remove_var("ATENIA_RAM_HEADROOM_OVERRIDE_GIB"); }
+        unsafe {
+            std::env::remove_var("ATENIA_RAM_HEADROOM_OVERRIDE_GIB");
+        }
         let (h_adaptive, o_adaptive) = resolve_ram_headroom(24 * gib, 32 * gib);
-        assert!(o_adaptive > 0, "adaptive trigger should fire on this model/free pair");
+        assert!(
+            o_adaptive > 0,
+            "adaptive trigger should fire on this model/free pair"
+        );
         assert!(h_adaptive >= RAM_HEADROOM_BASE_BYTES + o_adaptive);
 
         // Override: fixed 8 GiB, adaptive bypassed.
-        unsafe { std::env::set_var("ATENIA_RAM_HEADROOM_OVERRIDE_GIB", "8"); }
+        unsafe {
+            std::env::set_var("ATENIA_RAM_HEADROOM_OVERRIDE_GIB", "8");
+        }
         let (h_override, o_override) = resolve_ram_headroom(24 * gib, 32 * gib);
-        assert_eq!(h_override, 8 * gib,
-            "override = 8 GiB must produce headroom of exactly 8 GiB");
-        assert_eq!(o_override, 0,
-            "override path reports overflow = 0 (adaptive did not run)");
-        assert!(h_override < h_adaptive,
+        assert_eq!(
+            h_override,
+            8 * gib,
+            "override = 8 GiB must produce headroom of exactly 8 GiB"
+        );
+        assert_eq!(
+            o_override, 0,
+            "override path reports overflow = 0 (adaptive did not run)"
+        );
+        assert!(
+            h_override < h_adaptive,
             "override must produce a smaller headroom than the adaptive default \
-             on this model (otherwise the override is pointless)");
+             on this model (otherwise the override is pointless)"
+        );
 
-        unsafe { std::env::remove_var("ATENIA_RAM_HEADROOM_OVERRIDE_GIB"); }
+        unsafe {
+            std::env::remove_var("ATENIA_RAM_HEADROOM_OVERRIDE_GIB");
+        }
     }
 
     /// **M9.6** — unparseable override falls back to adaptive rule
@@ -1727,13 +1879,19 @@ mod tests {
         let _g = M9_6_HEADROOM_LOCK.lock().unwrap();
         let gib = 1024u64 * 1024 * 1024;
 
-        unsafe { std::env::set_var("ATENIA_RAM_HEADROOM_OVERRIDE_GIB", "not_a_number"); }
+        unsafe {
+            std::env::set_var("ATENIA_RAM_HEADROOM_OVERRIDE_GIB", "not_a_number");
+        }
         let (h, _) = resolve_ram_headroom(24 * gib, 32 * gib);
-        unsafe { std::env::remove_var("ATENIA_RAM_HEADROOM_OVERRIDE_GIB"); }
+        unsafe {
+            std::env::remove_var("ATENIA_RAM_HEADROOM_OVERRIDE_GIB");
+        }
 
         let (h_adaptive, _) = adaptive_ram_headroom(24 * gib, 32 * gib);
-        assert_eq!(h, h_adaptive,
-            "unparseable override must fall back to M7.2 adaptive headroom");
+        assert_eq!(
+            h, h_adaptive,
+            "unparseable override must fall back to M7.2 adaptive headroom"
+        );
     }
 
     /// **M9.6** — override = 0 GiB is *legal* (operator wants no
@@ -1745,9 +1903,13 @@ mod tests {
         let _g = M9_6_HEADROOM_LOCK.lock().unwrap();
         let gib = 1024u64 * 1024 * 1024;
 
-        unsafe { std::env::set_var("ATENIA_RAM_HEADROOM_OVERRIDE_GIB", "0"); }
+        unsafe {
+            std::env::set_var("ATENIA_RAM_HEADROOM_OVERRIDE_GIB", "0");
+        }
         let (h, o) = resolve_ram_headroom(24 * gib, 32 * gib);
-        unsafe { std::env::remove_var("ATENIA_RAM_HEADROOM_OVERRIDE_GIB"); }
+        unsafe {
+            std::env::remove_var("ATENIA_RAM_HEADROOM_OVERRIDE_GIB");
+        }
 
         assert_eq!(h, 0);
         assert_eq!(o, 0);
@@ -1761,7 +1923,9 @@ mod tests {
     #[test]
     fn m9_2_without_flag_cost_unchanged() {
         let _g = M9_INT8_TEST_LOCK.lock().unwrap();
-        unsafe { std::env::remove_var("ATENIA_M9_INT8"); }
+        unsafe {
+            std::env::remove_var("ATENIA_M9_INT8");
+        }
 
         let m = make_meta(
             "model.layers.0.self_attn.q_proj.weight",

@@ -64,7 +64,11 @@ impl MaxPool2DConfig {
         stride: (usize, usize),
         padding: (usize, usize),
     ) -> Self {
-        Self { kernel, stride, padding }
+        Self {
+            kernel,
+            stride,
+            padding,
+        }
     }
 
     /// Convenience constructor for the common non-overlapping case:
@@ -86,6 +90,9 @@ pub enum NodeType {
     Sub,
     Mul,
     MatMul,
+    /// Matrix multiply where the RHS is consumed as if transposed without
+    /// materialising that transpose: `[m, k] x [n, k]^T -> [m, n]`.
+    MatMulRhsTransposed,
     Transpose2D,
     /// Permute (general transpose) — reorders tensor dimensions
     /// according to `perm`.
@@ -110,9 +117,13 @@ pub enum NodeType {
     /// ## Backward
     /// Uses the inverse permutation: `inv[perm[i]] = i`. NOT
     /// self-inverse like `Transpose2D`.
-    Permute { perm: Vec<usize> },
+    Permute {
+        perm: Vec<usize>,
+    },
     IndexSelect,
-    Reshape { target: Vec<isize> },
+    Reshape {
+        target: Vec<isize>,
+    },
     TransposeLastTwo,
     BatchMatMul,
     BroadcastAdd,
@@ -150,7 +161,9 @@ pub enum NodeType {
     ///   the variant remains `Eq`-derivable, mirroring the RoPE
     ///   `base_freq` convention. Use [`Self::rms_norm_eps`] to
     ///   recover the `f32` value.
-    RmsNorm { eps_bits: u32 },
+    RmsNorm {
+        eps_bits: u32,
+    },
     SiLU,
     Softmax,
     /// Rotary Positional Embedding (half-split layout).
@@ -232,7 +245,9 @@ pub enum NodeType {
     /// training-time gradient split lives in the autograd
     /// tape extension that lands with the next training-mode
     /// milestone).
-    Concat { axis: usize },
+    Concat {
+        axis: usize,
+    },
     /// **M11.B step 3.5** — take a contiguous slice of the input
     /// tensor's **last** axis. Inputs: `[x]`. The output keeps
     /// every leading dimension intact and replaces the last
@@ -430,12 +445,18 @@ impl RopeScalingLongRope {
     /// forward pass (executor) or once per build (validation), so
     /// the allocation cost is negligible.
     pub fn short_factor(&self) -> Vec<f32> {
-        self.short_factor_bits.iter().map(|b| f32::from_bits(*b)).collect()
+        self.short_factor_bits
+            .iter()
+            .map(|b| f32::from_bits(*b))
+            .collect()
     }
 
     /// Recover the long-path per-dimension factors as `Vec<f32>`.
     pub fn long_factor(&self) -> Vec<f32> {
-        self.long_factor_bits.iter().map(|b| f32::from_bits(*b)).collect()
+        self.long_factor_bits
+            .iter()
+            .map(|b| f32::from_bits(*b))
+            .collect()
     }
 }
 
