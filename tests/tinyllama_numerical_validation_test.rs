@@ -19,9 +19,7 @@
 //! forward of ~70 s; release should drop that into the low seconds.
 
 use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::nn::llama::{
-    build_llama, llama_weight_mapper, LlamaConfig, LlamaRuntime,
-};
+use atenia_engine::nn::llama::{LlamaConfig, LlamaRuntime, build_llama, llama_weight_mapper};
 use atenia_engine::tensor::Tensor;
 use atenia_engine::v17::loader::safetensors_reader::SafetensorsReader;
 use std::env;
@@ -86,8 +84,7 @@ fn tinyllama_logits_match_pytorch_reference() {
         .map(|v| v.as_f64().expect("logit must be float") as f32)
         .collect();
 
-    let pytorch_predicted_id =
-        expected_json["predicted_token_id"].as_u64().unwrap() as usize;
+    let pytorch_predicted_id = expected_json["predicted_token_id"].as_u64().unwrap() as usize;
     let pytorch_max_abs = expected_json["max_abs"].as_f64().unwrap() as f32;
     let pytorch_mean_abs = expected_json["mean_abs"].as_f64().unwrap() as f32;
 
@@ -104,7 +101,10 @@ fn tinyllama_logits_match_pytorch_reference() {
 
     let config = LlamaConfig::from_json_str(EMBEDDED_CONFIG)
         .expect("failed to parse embedded TinyLlama config");
-    let runtime = LlamaRuntime { batch: 1, seq: seq_len };
+    let runtime = LlamaRuntime {
+        batch: 1,
+        seq: seq_len,
+    };
 
     let mut gb = GraphBuilder::new();
     let token_input_id = gb.input();
@@ -153,11 +153,7 @@ fn tinyllama_logits_match_pytorch_reference() {
     let mut count_over_1 = 0_usize;
     let mut argmax_idx_of_worst = 0_usize;
 
-    for (i, (got, expected)) in atenia_logits
-        .iter()
-        .zip(expected_logits.iter())
-        .enumerate()
-    {
+    for (i, (got, expected)) in atenia_logits.iter().zip(expected_logits.iter()).enumerate() {
         let abs_diff = (got - expected).abs();
         let rel_diff = if expected.abs() > 1e-6 {
             abs_diff / expected.abs()
@@ -189,8 +185,7 @@ fn tinyllama_logits_match_pytorch_reference() {
         .iter()
         .map(|v| v.abs())
         .fold(0.0_f32, f32::max);
-    let atenia_mean_abs: f32 =
-        atenia_logits.iter().map(|v| v.abs()).sum::<f32>() / n as f32;
+    let atenia_mean_abs: f32 = atenia_logits.iter().map(|v| v.abs()).sum::<f32>() / n as f32;
 
     println!("\nGlobal stats:");
     println!(
@@ -234,28 +229,26 @@ fn tinyllama_logits_match_pytorch_reference() {
     let last_pos_start = (seq_len - 1) * config.vocab_size;
     let last_pos_end = last_pos_start + config.vocab_size;
     let atenia_last = &atenia_logits[last_pos_start..last_pos_end];
-    let (atenia_pred_id, atenia_pred_logit) = atenia_last
-        .iter()
-        .enumerate()
-        .fold(
-            (0_usize, f32::NEG_INFINITY),
-            |(bi, bv), (i, &v)| if v > bv { (i, v) } else { (bi, bv) },
-        );
+    let (atenia_pred_id, atenia_pred_logit) =
+        atenia_last
+            .iter()
+            .enumerate()
+            .fold((0_usize, f32::NEG_INFINITY), |(bi, bv), (i, &v)| {
+                if v > bv { (i, v) } else { (bi, bv) }
+            });
     let pytorch_logit_for_atenia_pick = expected_logits[last_pos_start + atenia_pred_id];
     let atenia_logit_for_pytorch_pick = atenia_last[pytorch_predicted_id];
     println!("\nArgmax of last-position logits:");
     println!(
         "  PyTorch:  id={:5} logit={:.4}",
-        pytorch_predicted_id, expected_logits[last_pos_start + pytorch_predicted_id]
+        pytorch_predicted_id,
+        expected_logits[last_pos_start + pytorch_predicted_id]
     );
     println!(
         "  Atenia:   id={:5} logit={:.4}",
         atenia_pred_id, atenia_pred_logit
     );
-    println!(
-        "  Match:    {}",
-        atenia_pred_id == pytorch_predicted_id
-    );
+    println!("  Match:    {}", atenia_pred_id == pytorch_predicted_id);
     println!(
         "  PyTorch logit at Atenia's pick:  {:.4}",
         pytorch_logit_for_atenia_pick

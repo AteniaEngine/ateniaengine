@@ -1,9 +1,6 @@
 use atenia_engine::gpu::{
-    nvrtc::NvrtcCompiler,
-    loader::CudaLoader,
-    memory::GpuMemoryEngine,
+    launcher::GpuLauncher, loader::CudaLoader, memory::GpuMemoryEngine, nvrtc::NvrtcCompiler,
     runtime::GpuRuntime,
-    launcher::GpuLauncher,
 };
 
 use std::ffi::c_void;
@@ -71,9 +68,7 @@ fn test_launch_add_one() {
         return;
     }
 
-    let mut args = vec![
-        &gpu_ptr.ptr as *const u64 as *mut c_void,
-    ];
+    let mut args = vec![&gpu_ptr.ptr as *const u64 as *mut c_void];
 
     if launcher
         .launch(&rt, &func, (1, 1, 1), (n as u32, 1, 1), 0, &mut args)

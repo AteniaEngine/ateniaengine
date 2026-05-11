@@ -2,8 +2,13 @@ use std::collections::HashMap;
 
 use crate::v13::checkpoint::{WarmStartAction, WarmStartPlan};
 use crate::v13::learning_explanation::DecisionExplanation;
-use crate::v13::learning_factors::{DecisionFactor, DecisionFactorKind, StructuredDecisionExplanation};
-use crate::v13::learning_snapshot::{BackendKind, LearningContextSnapshot, LearningEntrySnapshot, LearningSnapshot, LearningStatsSnapshot, LearningSummary};
+use crate::v13::learning_factors::{
+    DecisionFactor, DecisionFactorKind, StructuredDecisionExplanation,
+};
+use crate::v13::learning_snapshot::{
+    BackendKind, LearningContextSnapshot, LearningEntrySnapshot, LearningSnapshot,
+    LearningStatsSnapshot, LearningSummary,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum BackendChoice {
@@ -139,11 +144,7 @@ impl SelfTrainer {
         self.table.insert((bucket, backend), stats);
     }
 
-    pub fn stats_for(
-        &self,
-        ctx: ExecutionContext,
-        backend: BackendChoice,
-    ) -> Option<ChoiceStats> {
+    pub fn stats_for(&self, ctx: ExecutionContext, backend: BackendChoice) -> Option<ChoiceStats> {
         let bucket = bucket_from_ctx(ctx);
         self.table.get(&(bucket, backend)).cloned()
     }
@@ -340,9 +341,7 @@ impl SelfTrainer {
                 };
                 format!(
                     "GPU was selected because this context has been observed {} times, with {} successful executions and {}. Historical performance favors GPU execution under similar memory conditions.",
-                    episodes,
-                    successes,
-                    stability,
+                    episodes, successes, stability,
                 )
             }
             BackendKind::Cpu => {
@@ -353,8 +352,7 @@ impl SelfTrainer {
                 };
                 format!(
                     "CPU was selected because {}. Historical data indicates CPU is more reliable under the current memory pressure, based on {} observations.",
-                    instability_phrase,
-                    episodes,
+                    instability_phrase, episodes,
                 )
             }
         };
@@ -419,8 +417,20 @@ impl SelfTrainer {
 
         let observation_weight_raw = episodes as f32 / 50.0;
 
-        let drift_weight = if drift_weight_raw > 1.0 { 1.0 } else if drift_weight_raw < 0.0 { 0.0 } else { drift_weight_raw };
-        let observation_weight = if observation_weight_raw > 1.0 { 1.0 } else if observation_weight_raw < 0.0 { 0.0 } else { observation_weight_raw };
+        let drift_weight = if drift_weight_raw > 1.0 {
+            1.0
+        } else if drift_weight_raw < 0.0 {
+            0.0
+        } else {
+            drift_weight_raw
+        };
+        let observation_weight = if observation_weight_raw > 1.0 {
+            1.0
+        } else if observation_weight_raw < 0.0 {
+            0.0
+        } else {
+            observation_weight_raw
+        };
         let memory_stability_weight = 1.0 - drift_weight;
 
         let success_factor = DecisionFactor::new(
@@ -428,7 +438,11 @@ impl SelfTrainer {
             success_weight,
             format!(
                 "Historical success rate for this context is {:.2} ({} successes over {} episodes).",
-                if episodes == 0 { 0.0 } else { successes as f32 / episodes as f32 },
+                if episodes == 0 {
+                    0.0
+                } else {
+                    successes as f32 / episodes as f32
+                },
                 successes,
                 episodes,
             ),
@@ -440,8 +454,7 @@ impl SelfTrainer {
             if drift_events > 0 {
                 format!(
                     "Drift was observed {} times out of {} episodes, indicating potential instability.",
-                    drift_events,
-                    episodes,
+                    drift_events, episodes,
                 )
             } else {
                 "No drift has been observed for this context.".to_string()
@@ -463,7 +476,8 @@ impl SelfTrainer {
             if drift_events == 0 {
                 "Observed executions were stable under the current memory pressure.".to_string()
             } else {
-                "Some instability was observed under the current memory pressure due to drift.".to_string()
+                "Some instability was observed under the current memory pressure due to drift."
+                    .to_string()
             },
         );
 

@@ -27,7 +27,7 @@ pub struct NodeExecInfo {
     pub shape: Vec<usize>,
     pub dtype: String,
     pub contiguous: bool,
-    pub device_52: String,   // "CPU" or "GPU" according to APX 5.2 decision
+    pub device_52: String, // "CPU" or "GPU" according to APX 5.2 decision
     pub estimated_bytes: usize,
     pub estimated_flops: usize,
     pub vram_free: usize,
@@ -99,10 +99,7 @@ impl Planner5_3 {
                 plan.layout = LayoutDecision::Original;
             } else {
                 // Medium/large MatMul.
-                if num_elems >= large_threshold
-                    && info.dtype == "F32"
-                    && info.contiguous
-                {
+                if num_elems >= large_threshold && info.dtype == "F32" && info.contiguous {
                     // Good future GPU candidate: we mark it in the plan,
                     // although today the real CPU/GPU decision is made by
                     // APX 5.2.

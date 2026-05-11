@@ -17,8 +17,7 @@ impl ApxGpuContext {
     }
 }
 
-pub static GPU_CONTEXT: Lazy<Mutex<ApxGpuContext>> =
-    Lazy::new(|| Mutex::new(ApxGpuContext::new()));
+pub static GPU_CONTEXT: Lazy<Mutex<ApxGpuContext>> = Lazy::new(|| Mutex::new(ApxGpuContext::new()));
 
 pub fn gpu_available() -> bool {
     GPU_CONTEXT.lock().unwrap().available

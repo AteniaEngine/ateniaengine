@@ -382,10 +382,7 @@ impl GgufReader {
     /// arithmetic overflow on offset / alignment computation.
     pub fn read_from_path(path: &Path) -> Result<Self, GgufError> {
         let file = File::open(path).map_err(|e| {
-            GgufError::IoError(format!(
-                "GGUF: failed to open '{}': {e}",
-                path.display()
-            ))
+            GgufError::IoError(format!("GGUF: failed to open '{}': {e}", path.display()))
         })?;
         // BufReader so the per-byte / per-u32 parsing does not
         // touch the syscall layer for every primitive read.
@@ -433,8 +430,7 @@ impl GgufReader {
         }
 
         // ---- Tensor info section ----
-        let mut tensors: Vec<TensorDescriptor> =
-            Vec::with_capacity(tensor_count as usize);
+        let mut tensors: Vec<TensorDescriptor> = Vec::with_capacity(tensor_count as usize);
         for t_idx in 0..tensor_count {
             let name = cursor.read_gguf_string().map_err(|e| {
                 GgufError::InvalidFormat(format!(
@@ -488,14 +484,12 @@ impl GgufReader {
             .filter(|a| *a > 0)
             .unwrap_or(DEFAULT_ALIGNMENT);
         let pos_after_descriptors = cursor.position();
-        let data_section_offset = align_up(pos_after_descriptors, alignment).ok_or_else(
-            || {
-                GgufError::InvalidFormat(format!(
-                    "GGUF: arithmetic overflow computing aligned data offset \
+        let data_section_offset = align_up(pos_after_descriptors, alignment).ok_or_else(|| {
+            GgufError::InvalidFormat(format!(
+                "GGUF: arithmetic overflow computing aligned data offset \
                      (post-descriptor pos {pos_after_descriptors}, alignment {alignment})"
-                ))
-            },
-        )?;
+            ))
+        })?;
 
         Ok(GgufReader {
             version,
@@ -617,9 +611,8 @@ impl<'a> Cursor<'a> {
         }
         let mut buf = vec![0u8; len as usize];
         self.read_exact(&mut buf)?;
-        String::from_utf8(buf).map_err(|e| {
-            GgufError::InvalidFormat(format!("GGUF: string is not valid UTF-8: {e}"))
-        })
+        String::from_utf8(buf)
+            .map_err(|e| GgufError::InvalidFormat(format!("GGUF: string is not valid UTF-8: {e}")))
     }
 }
 
@@ -708,7 +701,10 @@ mod tests {
         let err = MetadataType::from_u32(99).expect_err("99 must fail");
         match err {
             GgufError::InvalidFormat(msg) => {
-                assert!(msg.contains("99"), "message should mention the value: {msg}");
+                assert!(
+                    msg.contains("99"),
+                    "message should mention the value: {msg}"
+                );
                 assert!(msg.contains("0..=12"));
             }
             other => panic!("expected InvalidFormat, got {other:?}"),
@@ -791,11 +787,7 @@ mod tests {
             "TinyLlama-Q8_0 must store token_embd as Q8_0"
         );
         // Two-dimensional, [vocab, hidden] in GGUF order.
-        assert_eq!(
-            embd.dimensions.len(),
-            2,
-            "embedding tensor must be rank-2"
-        );
+        assert_eq!(embd.dimensions.len(), 2, "embedding tensor must be rank-2");
         // Data section start is aligned.
         assert_eq!(
             r.data_section_offset % r.alignment,

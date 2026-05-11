@@ -2,17 +2,17 @@
 // Virtual SM model that integrates warps, pipeline, OOW scheduler, dual-issue,
 // virtual memory, and tensor core. Fully symbolic and CPU-only.
 
+use crate::apx9::vgpu_dual_issue::VGPUDualIssue;
+use crate::apx9::vgpu_instr::VGPUInstr;
+use crate::apx9::vgpu_memory::VGpuMemory;
+use crate::apx9::vgpu_oows::VGPUOOWarpScheduler;
+use crate::apx9::vgpu_pipeline::VGPUPipeline;
+use crate::apx9::vgpu_scoreboard::VGPUScoreboard;
+use crate::apx9::vgpu_tensor_core::VGPUTensorCore;
 use crate::apx9::vgpu_warp::VGPUWarp;
 use crate::apx9::vgpu_warp_scheduler::VGPUWarpScheduler;
-use crate::apx9::vgpu_scoreboard::VGPUScoreboard;
-use crate::apx9::vgpu_oows::VGPUOOWarpScheduler;
-use crate::apx9::vgpu_dual_issue::VGPUDualIssue;
-use crate::apx9::vgpu_pipeline::VGPUPipeline;
-use crate::apx9::vgpu_memory::VGpuMemory;
-use crate::apx9::vgpu_tensor_core::VGPUTensorCore;
-use crate::apx9::vgpu_instr::VGPUInstr;
 use crate::apx9::vgpu_warp_scheduler::{VGPUWarpCtx, WarpState};
-use crate::tensor::{Tensor, Device, DType};
+use crate::tensor::{DType, Device, Tensor};
 
 /// Symbolic aliases so the SM API reads close to the paper design.
 pub type VirtualWarp = VGPUWarp;
@@ -48,7 +48,12 @@ pub struct VirtualSM {
 impl VirtualSM {
     /// Build a simple virtual SM with `num_warps` warps and a symbolic program.
     /// Does not interpret real PTX: only uses VGPUInstr for integration tests.
-    pub fn new(program: Vec<VGPUInstr>, num_warps: usize, warp_size: usize, global_mem_size: usize) -> Self {
+    pub fn new(
+        program: Vec<VGPUInstr>,
+        num_warps: usize,
+        warp_size: usize,
+        global_mem_size: usize,
+    ) -> Self {
         let mut warps = Vec::new();
         for w in 0..num_warps {
             let base_tid = w * warp_size;
@@ -60,7 +65,11 @@ impl VirtualSM {
             .iter()
             .cloned()
             .enumerate()
-            .map(|(i, w)| VGPUWarpCtx { warp_id: i, warp: w, state: WarpState::Ready })
+            .map(|(i, w)| VGPUWarpCtx {
+                warp_id: i,
+                warp: w,
+                state: WarpState::Ready,
+            })
             .collect();
 
         Self {

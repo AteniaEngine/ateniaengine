@@ -1,11 +1,8 @@
-use crate::gpu::{
-    nvrtc::NvrtcCompiler,
-    loader::CudaLoader,
-    runtime::GpuRuntime,
-    memory::GpuPtr,
-    launcher::GpuLauncher,
-};
 use crate::gpu::loader::CudaLoaderError;
+use crate::gpu::{
+    launcher::GpuLauncher, loader::CudaLoader, memory::GpuPtr, nvrtc::NvrtcCompiler,
+    runtime::GpuRuntime,
+};
 
 use std::ffi::c_void;
 
@@ -27,7 +24,9 @@ impl VecMulOp {
         }
         "#;
 
-        let ptx = compiler.compile(src, "vec_mul_kernel", "compute_89").unwrap();
+        let ptx = compiler
+            .compile(src, "vec_mul_kernel", "compute_89")
+            .unwrap();
         let module = match loader.load_module_from_ptx(&ptx.ptx) {
             Ok(m) => m,
             Err(CudaLoaderError::CpuFallback) => {

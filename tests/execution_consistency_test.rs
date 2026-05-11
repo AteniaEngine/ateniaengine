@@ -2,12 +2,12 @@
 
 use atenia_engine::v17;
 
-use v17::snapshot::execution_snapshot::ExecutionSnapshot;
-use v17::snapshot::snapshot_hash::hash_str;
 use v17::consistency::consistency_checker::ConsistencyChecker;
 use v17::consistency::consistency_errors::ConsistencyError;
 use v17::consistency::drift_report::DriftSeverity;
 use v17::consistency::execution_baseline::ExecutionBaseline;
+use v17::snapshot::execution_snapshot::ExecutionSnapshot;
+use v17::snapshot::snapshot_hash::hash_str;
 
 fn make_snapshot(backend: &str, output: &str, profile: &str) -> ExecutionSnapshot {
     ExecutionSnapshot {
@@ -46,10 +46,12 @@ fn allowed_backend_change_yields_non_critical_drift() {
 
     let report = ConsistencyChecker::compare(&baseline, &current).expect("report");
     assert!(matches!(report.severity, DriftSeverity::MinorDrift));
-    assert!(report
-        .differences
-        .iter()
-        .any(|d| d.contains("backend changed")));
+    assert!(
+        report
+            .differences
+            .iter()
+            .any(|d| d.contains("backend changed"))
+    );
 }
 
 #[test]
@@ -63,10 +65,12 @@ fn unexpected_execution_change_yields_critical_drift() {
 
     let report = ConsistencyChecker::compare(&baseline, &current).expect("report");
     assert!(matches!(report.severity, DriftSeverity::CriticalDrift));
-    assert!(report
-        .differences
-        .iter()
-        .any(|d| d.contains("output signature differs")));
+    assert!(
+        report
+            .differences
+            .iter()
+            .any(|d| d.contains("output signature differs"))
+    );
 }
 
 #[test]

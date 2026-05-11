@@ -55,13 +55,7 @@ pub fn cuda_fused_linear_silu(
 
         let rc = unsafe {
             launch_fused_linear_silu_f32_device_ptrs(
-                d_x,
-                d_w,
-                d_b,
-                d_out,
-                m as c_int,
-                k as c_int,
-                n as c_int,
+                d_x, d_w, d_b, d_out, m as c_int, k as c_int, n as c_int,
             )
         };
 

@@ -28,7 +28,7 @@ impl VramAdapter for FakeVramAdapter {
             Err(_) => {
                 return Err(MoveError::BackendUnavailable(
                     "Failed to lock FakeVramAdapter storage".to_string(),
-                ))
+                ));
             }
         };
         guard.insert(id.to_string(), data.to_vec());
@@ -41,7 +41,7 @@ impl VramAdapter for FakeVramAdapter {
             Err(_) => {
                 return Err(MoveError::BackendUnavailable(
                     "Failed to lock FakeVramAdapter storage".to_string(),
-                ))
+                ));
             }
         };
         match guard.get(id) {
@@ -58,7 +58,7 @@ impl VramAdapter for FakeVramAdapter {
             Err(_) => {
                 return Err(MoveError::BackendUnavailable(
                     "Failed to lock FakeVramAdapter storage".to_string(),
-                ))
+                ));
             }
         };
         guard.remove(id);
@@ -186,7 +186,10 @@ fn ssd_to_vram_via_fake_adapter() {
     assert_eq!(mgr.get_tier(id), Some(MemoryTier::Vram));
     match mgr.backing_for_test(id) {
         Some(StorageBacking::VramHandle { .. }) => {}
-        other => panic!("Expected VramHandle backing after SSD->VRAM, got {:?}", other),
+        other => panic!(
+            "Expected VramHandle backing after SSD->VRAM, got {:?}",
+            other
+        ),
     }
 
     // VRAM -> RAM
@@ -245,7 +248,10 @@ fn vram_unavailable_degrades_to_ram() {
 
     let plan = match mgr.plan_move(id, MemoryTier::Vram, &snapshot) {
         Ok(p) => p,
-        Err(e) => panic!("plan_move to VRAM should not fail even if VRAM is unavailable: {:?}", e),
+        Err(e) => panic!(
+            "plan_move to VRAM should not fail even if VRAM is unavailable: {:?}",
+            e
+        ),
     };
 
     // Plan should degrade to RAM.
@@ -253,7 +259,10 @@ fn vram_unavailable_degrades_to_ram() {
     assert!(plan.reason.contains("VRAM unavailable"));
 
     if let Err(e) = mgr.apply_move(id, &plan) {
-        panic!("apply_move should succeed even when VRAM is unavailable: {:?}", e);
+        panic!(
+            "apply_move should succeed even when VRAM is unavailable: {:?}",
+            e
+        );
     }
 
     // Tensor should remain in RAM with RAM backing.
@@ -262,7 +271,10 @@ fn vram_unavailable_degrades_to_ram() {
         Some(StorageBacking::Ram(bytes)) => {
             assert_eq!(bytes, &data);
         }
-        other => panic!("Expected RAM backing when VRAM is unavailable, got {:?}", other),
+        other => panic!(
+            "Expected RAM backing when VRAM is unavailable, got {:?}",
+            other
+        ),
     }
 
     let _ = std::fs::remove_dir_all(cache_dir);

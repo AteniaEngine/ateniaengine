@@ -1,7 +1,7 @@
-﻿use atenia_engine::apx8::kernel_generator::KernelIR;
-use atenia_engine::apx8::gpu_finalizer::gpu_finalize;
 use atenia_engine::apx8::codegen::gpu_codegen_v1::GPUCodegenV1;
-use atenia_engine::tensor::{Tensor, Device, DType};
+use atenia_engine::apx8::gpu_finalizer::gpu_finalize;
+use atenia_engine::apx8::kernel_generator::KernelIR;
+use atenia_engine::tensor::{DType, Device, Tensor};
 
 #[test]
 fn apx_8_17_structure() {

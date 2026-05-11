@@ -1,8 +1,4 @@
-use atenia_engine::apx5::apx_5_3_planner::{
-    Planner5_3,
-    NodeExecInfo,
-    LayoutDecision,
-};
+use atenia_engine::apx5::apx_5_3_planner::{LayoutDecision, NodeExecInfo, Planner5_3};
 
 #[test]
 fn test_5_3_produces_coherent_plan() {

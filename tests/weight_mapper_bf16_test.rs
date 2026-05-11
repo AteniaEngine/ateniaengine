@@ -14,19 +14,15 @@
 use std::collections::HashMap;
 
 use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::tensor::tensor::{f32_to_bf16_bits, Tensor, TensorStorage};
+use atenia_engine::tensor::tensor::{Tensor, TensorStorage, f32_to_bf16_bits};
 use atenia_engine::v17::loader::safetensors_reader::SafetensorsReader;
 use atenia_engine::v17::loader::weight_mapper::WeightMapper;
-use safetensors::tensor::TensorView;
 use safetensors::Dtype as StDtype;
+use safetensors::tensor::TensorView;
 
 /// Helper: build a tiny graph with two named parameters of fixed
 /// shape, return `(graph, names, ids)`.
-fn build_tiny_graph() -> (
-    atenia_engine::amg::graph::Graph,
-    Vec<String>,
-    Vec<usize>,
-) {
+fn build_tiny_graph() -> (atenia_engine::amg::graph::Graph, Vec<String>, Vec<usize>) {
     let mut gb = GraphBuilder::new();
 
     // Parameters built with zero data; the loader overwrites.
@@ -154,8 +150,14 @@ fn bf16_flag_produces_cpu_bf16_storage_with_truncated_values() {
 
     let decoded_w = w.copy_to_cpu_vec();
     let decoded_b = b.copy_to_cpu_vec();
-    assert_eq!(decoded_w, expected_w, "weight decoded values must equal BF16 truncation");
-    assert_eq!(decoded_b, expected_b, "bias decoded values must equal BF16 truncation");
+    assert_eq!(
+        decoded_w, expected_w,
+        "weight decoded values must equal BF16 truncation"
+    );
+    assert_eq!(
+        decoded_b, expected_b,
+        "bias decoded values must equal BF16 truncation"
+    );
 
     // 3. Persistent storage halved: Vec<u16> instead of Vec<f32>.
     if let TensorStorage::CpuBf16(bits) = w.storage() {
@@ -176,7 +178,16 @@ fn bf16_path_round_trips_bit_exact_to_precision_floor_spike() {
     // identical results. Run the same load both ways and assert
     // the decoded F32 vectors are bit-equal.
     let blob = build_safetensors_blob(
-        || vec![std::f32::consts::PI, -1.234567, 0.000123, 12345.6789, -0.5, 1e-7],
+        || {
+            vec![
+                std::f32::consts::PI,
+                -1.234567,
+                0.000123,
+                12345.6789,
+                -0.5,
+                1e-7,
+            ]
+        },
         || vec![std::f32::consts::E, 100.0_f32, -1e-5],
     );
 

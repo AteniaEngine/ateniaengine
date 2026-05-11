@@ -65,7 +65,11 @@ fn mock_hw_snapshot_multi_gpu(
     }
 }
 
-fn make_tensor(num_elements: u64, element_size_bytes: u32, estimated_compute_cost: Option<f32>) -> TensorProfile {
+fn make_tensor(
+    num_elements: u64,
+    element_size_bytes: u32,
+    estimated_compute_cost: Option<f32>,
+) -> TensorProfile {
     TensorProfile {
         num_elements,
         element_size_bytes,
@@ -75,10 +79,7 @@ fn make_tensor(num_elements: u64, element_size_bytes: u32, estimated_compute_cos
 
 #[test]
 fn best_gpu_by_reliability() {
-    let gpus = vec![
-        make_gpu("gpu0", Some(10.0)),
-        make_gpu("gpu1", Some(5.0)),
-    ];
+    let gpus = vec![make_gpu("gpu0", Some(10.0)), make_gpu("gpu1", Some(5.0))];
 
     let reliability = vec![
         ("gpu0".to_string(), make_stats(2, 8, false)),
@@ -95,10 +96,7 @@ fn best_gpu_by_reliability() {
 
 #[test]
 fn tie_breaker_by_compute_score() {
-    let gpus = vec![
-        make_gpu("gpu0", Some(5.0)),
-        make_gpu("gpu1", Some(7.0)),
-    ];
+    let gpus = vec![make_gpu("gpu0", Some(5.0)), make_gpu("gpu1", Some(7.0))];
 
     let reliability = vec![
         ("gpu0".to_string(), make_stats(10, 0, false)),

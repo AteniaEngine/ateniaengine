@@ -1,8 +1,8 @@
-﻿use atenia_engine::apx9::vgpu_warp::*;
-use atenia_engine::apx9::vgpu_pipeline::*;
 use atenia_engine::apx9::vgpu_instr::*;
 use atenia_engine::apx9::vgpu_oows::VGPUOOWarpScheduler;
-use atenia_engine::{tensor::Tensor, tensor::DType, tensor::Device};
+use atenia_engine::apx9::vgpu_pipeline::*;
+use atenia_engine::apx9::vgpu_warp::*;
+use atenia_engine::{tensor::DType, tensor::Device, tensor::Tensor};
 
 #[test]
 fn apx_9_22_skips_hazard_warp() {

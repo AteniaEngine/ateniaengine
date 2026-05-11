@@ -1,6 +1,6 @@
-use std::path::PathBuf;
 use std::fs::{self, File};
 use std::io::Write;
+use std::path::PathBuf;
 
 use super::NvrtcError;
 

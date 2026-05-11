@@ -59,13 +59,7 @@ pub fn cuda_linear(
 
         let rc = unsafe {
             launch_linear_f32_device_ptrs(
-                d_a,
-                d_b,
-                d_bias,
-                d_out,
-                m as c_int,
-                k as c_int,
-                n as c_int,
+                d_a, d_b, d_bias, d_out, m as c_int, k as c_int, n as c_int,
             )
         };
 

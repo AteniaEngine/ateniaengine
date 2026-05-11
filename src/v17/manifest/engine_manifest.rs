@@ -43,18 +43,34 @@ impl EngineManifest {
         out.push_str(&format!("\"engine_version\":\"{}\",", self.engine_version));
         out.push_str("\"enabled_backends\":[");
         for (i, b) in self.enabled_backends.iter().enumerate() {
-            if i > 0 { out.push(','); }
-            out.push('"'); out.push_str(b); out.push('"');
+            if i > 0 {
+                out.push(',');
+            }
+            out.push('"');
+            out.push_str(b);
+            out.push('"');
         }
         out.push(']');
         out.push_str(",\"profiling_level\":\"");
         out.push_str(&self.profiling_level);
         out.push_str("\",\"snapshot_support\":");
-        out.push_str(if self.snapshot_support {"true"} else {"false"});
+        out.push_str(if self.snapshot_support {
+            "true"
+        } else {
+            "false"
+        });
         out.push_str(",\"consistency_guard_support\":");
-        out.push_str(if self.consistency_guard_support {"true"} else {"false"});
+        out.push_str(if self.consistency_guard_support {
+            "true"
+        } else {
+            "false"
+        });
         out.push_str(",\"learning_enabled\":");
-        out.push_str(if self.learning_enabled {"true"} else {"false"});
+        out.push_str(if self.learning_enabled {
+            "true"
+        } else {
+            "false"
+        });
         out.push('}');
         out
     }

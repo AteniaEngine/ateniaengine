@@ -55,8 +55,8 @@ use std::time::Instant;
 use atenia_engine::apx6::matmul_tiled_6_3b::{matmul_tiled_6_3b, matmul_tiled_6_3b_pex};
 use atenia_engine::apx6_4::matmul_4x8_avx2;
 use atenia_engine::matmul_dispatcher::{batch_matmul_dispatch, matmul_dispatch};
-use atenia_engine::simd_kernels::avx2::matmul_avx2;
 use atenia_engine::simd_kernels::avx2::bf16_decode_bulk;
+use atenia_engine::simd_kernels::avx2::matmul_avx2;
 use atenia_engine::tensor::tensor::{bf16_bits_to_f32, f32_to_bf16_bits};
 
 const WARMUP_ITERS: usize = 1;
@@ -89,7 +89,10 @@ fn report_environment() {
         cfg!(target_feature = "fma"),
         cfg!(target_feature = "avx512f"),
     );
-    println!("ATENIA_APX_MODE = {:?}  (default = \"4.19\")", std::env::var("ATENIA_APX_MODE").ok());
+    println!(
+        "ATENIA_APX_MODE = {:?}  (default = \"4.19\")",
+        std::env::var("ATENIA_APX_MODE").ok()
+    );
     println!("apx_mode() resolved: {:?}", atenia_engine::apx_mode());
     println!("CPU threads (rayon):   {}", rayon::current_num_threads());
     println!();
@@ -117,9 +120,24 @@ impl MatMulShape {
 }
 
 const MATMUL_SHAPES: &[MatMulShape] = &[
-    MatMulShape { label: "Llama 2 13B Q/K/V/O proj seq=1", m: 1, k: 5120, n: 5120 },
-    MatMulShape { label: "Llama 2 13B gate/up proj seq=4", m: 4, k: 5120, n: 13824 },
-    MatMulShape { label: "LM head 4096 → 32000 seq=1",     m: 1, k: 4096, n: 32000 },
+    MatMulShape {
+        label: "Llama 2 13B Q/K/V/O proj seq=1",
+        m: 1,
+        k: 5120,
+        n: 5120,
+    },
+    MatMulShape {
+        label: "Llama 2 13B gate/up proj seq=4",
+        m: 4,
+        k: 5120,
+        n: 13824,
+    },
+    MatMulShape {
+        label: "LM head 4096 → 32000 seq=1",
+        m: 1,
+        k: 4096,
+        n: 32000,
+    },
 ];
 
 #[derive(Clone, Copy)]
@@ -142,12 +160,13 @@ impl BatchShape {
     }
 }
 
-const BATCH_SHAPES: &[BatchShape] = &[
-    BatchShape {
-        label: "Llama 2 13B attention QK^T (seq=4, 40 heads)",
-        batch: 40, m: 4, k: 128, n: 128,
-    },
-];
+const BATCH_SHAPES: &[BatchShape] = &[BatchShape {
+    label: "Llama 2 13B attention QK^T (seq=4, 40 heads)",
+    batch: 40,
+    m: 4,
+    k: 128,
+    n: 128,
+}];
 
 /// Time a closure over `iters` repetitions plus a single
 /// warmup, returning `(median_secs, min_secs)`.
@@ -221,15 +240,11 @@ fn run_avx2_basic(a: &[f32], b: &[f32], out: &mut [f32], m: usize, k: usize, n: 
     }
 }
 
-fn run_avx2_tiled_6_3b(
-    a: &[f32], b: &[f32], out: &mut [f32], m: usize, k: usize, n: usize,
-) {
+fn run_avx2_tiled_6_3b(a: &[f32], b: &[f32], out: &mut [f32], m: usize, k: usize, n: usize) {
     matmul_tiled_6_3b(a, b, out, m, k, n);
 }
 
-fn run_avx2_tiled_6_3b_pex(
-    a: &[f32], b: &[f32], out: &mut [f32], m: usize, k: usize, n: usize,
-) {
+fn run_avx2_tiled_6_3b_pex(a: &[f32], b: &[f32], out: &mut [f32], m: usize, k: usize, n: usize) {
     matmul_tiled_6_3b_pex(a, b, out, m, k, n);
 }
 
@@ -254,23 +269,43 @@ fn run_dispatch(a: &[f32], b: &[f32], out: &mut [f32], m: usize, k: usize, n: us
 // ---------- MatMul shape benchmark ----------
 
 fn bench_matmul_shape(shape: &MatMulShape) {
-    println!("\n[Shape: {}]   M={}  K={}  N={}  ({:.2} GFLOPs)",
-        shape.label, shape.m, shape.k, shape.n, shape.flops() / 1.0e9);
+    println!(
+        "\n[Shape: {}]   M={}  K={}  N={}  ({:.2} GFLOPs)",
+        shape.label,
+        shape.m,
+        shape.k,
+        shape.n,
+        shape.flops() / 1.0e9
+    );
 
-    let a: Vec<f32> = (0..(shape.m * shape.k)).map(|i| (i as f32 * 1e-4).sin()).collect();
-    let b: Vec<f32> = (0..(shape.k * shape.n)).map(|i| (i as f32 * 1e-4).cos()).collect();
+    let a: Vec<f32> = (0..(shape.m * shape.k))
+        .map(|i| (i as f32 * 1e-4).sin())
+        .collect();
+    let b: Vec<f32> = (0..(shape.k * shape.n))
+        .map(|i| (i as f32 * 1e-4).cos())
+        .collect();
     let mut out = vec![0.0_f32; shape.m * shape.n];
 
     // The scalar fallback is brutally slow on `4 × 5120 ×
     // 13824` (~565 GFLOPs); time it once instead of 5×.
-    let scalar_iters = if shape.flops() > 100.0e9 { TIMED_ITERS_SLOW } else { TIMED_ITERS };
+    let scalar_iters = if shape.flops() > 100.0e9 {
+        TIMED_ITERS_SLOW
+    } else {
+        TIMED_ITERS
+    };
 
     let (m_s, mn_s) = time_iters(scalar_iters, || {
         run_scalar(&a, &b, &mut out, shape.m, shape.k, shape.n);
     });
     print_row(
-        if scalar_iters == TIMED_ITERS_SLOW { "scalar (1 iter)" } else { "scalar" },
-        shape, m_s, mn_s,
+        if scalar_iters == TIMED_ITERS_SLOW {
+            "scalar (1 iter)"
+        } else {
+            "scalar"
+        },
+        shape,
+        m_s,
+        mn_s,
     );
 
     if std::is_x86_feature_detected!("avx2") {
@@ -301,17 +336,23 @@ fn bench_matmul_shape(shape: &MatMulShape) {
         // threaded (the library's default build); the
         // dispatcher's rayon row-partition wrapper layers
         // multi-thread parallelism on top.
-        let (m_s, mn_s) = time_iters(TIMED_ITERS, || {
-            unsafe {
-                matrixmultiply::sgemm(
-                    shape.m, shape.k, shape.n,
-                    1.0,
-                    a.as_ptr(), shape.k as isize, 1,
-                    b.as_ptr(), shape.n as isize, 1,
-                    0.0,
-                    out.as_mut_ptr(), shape.n as isize, 1,
-                );
-            }
+        let (m_s, mn_s) = time_iters(TIMED_ITERS, || unsafe {
+            matrixmultiply::sgemm(
+                shape.m,
+                shape.k,
+                shape.n,
+                1.0,
+                a.as_ptr(),
+                shape.k as isize,
+                1,
+                b.as_ptr(),
+                shape.n as isize,
+                1,
+                0.0,
+                out.as_mut_ptr(),
+                shape.n as isize,
+                1,
+            );
         });
         print_row("matrixmultiply sgemm", shape, m_s, mn_s);
     }
@@ -320,17 +361,29 @@ fn bench_matmul_shape(shape: &MatMulShape) {
         run_dispatch(&a, &b, &mut out, shape.m, shape.k, shape.n);
     });
     print_row(
-        if scalar_iters == TIMED_ITERS_SLOW { "matmul_dispatch (1 iter)" } else { "matmul_dispatch" },
-        shape, m_s, mn_s,
+        if scalar_iters == TIMED_ITERS_SLOW {
+            "matmul_dispatch (1 iter)"
+        } else {
+            "matmul_dispatch"
+        },
+        shape,
+        m_s,
+        mn_s,
     );
 }
 
 // ---------- BatchMatMul shape benchmark ----------
 
 fn bench_batch_shape(shape: &BatchShape) {
-    println!("\n[BatchMatMul: {}]   batch={} M={} K={} N={}  ({:.2} GFLOPs)",
-        shape.label, shape.batch, shape.m, shape.k, shape.n,
-        shape.flops() / 1.0e9);
+    println!(
+        "\n[BatchMatMul: {}]   batch={} M={} K={} N={}  ({:.2} GFLOPs)",
+        shape.label,
+        shape.batch,
+        shape.m,
+        shape.k,
+        shape.n,
+        shape.flops() / 1.0e9
+    );
 
     let total_a = shape.batch * shape.m * shape.k;
     let total_b = shape.batch * shape.k * shape.n;
@@ -395,9 +448,12 @@ fn bench_bf16_and_alloc() {
     // 5120 × 13824 = 70,778,880 elements. The `down_proj`
     // weight in Llama 2 13B at MLP layer.
     let n_elems: usize = 5120 * 13824;
-    println!("    elements: {} ({:.1} MB BF16, {:.1} MB F32)",
-        n_elems, n_elems as f64 * 2.0 / 1_048_576.0,
-        n_elems as f64 * 4.0 / 1_048_576.0);
+    println!(
+        "    elements: {} ({:.1} MB BF16, {:.1} MB F32)",
+        n_elems,
+        n_elems as f64 * 2.0 / 1_048_576.0,
+        n_elems as f64 * 4.0 / 1_048_576.0
+    );
 
     // Synth BF16 payload: round-trip a deterministic F32
     // pattern through `f32_to_bf16_bits` so the bytes are
@@ -416,7 +472,8 @@ fn bench_bf16_and_alloc() {
     });
     println!(
         "    scalar bf16→f32 decode + alloc:        {:>10.3} ms (min {:>8.3} ms)   {:>6.2} GB/s decode",
-        m_s * 1000.0, mn_s * 1000.0,
+        m_s * 1000.0,
+        mn_s * 1000.0,
         n_elems as f64 * 4.0 / m_s / 1.0e9,
     );
 
@@ -432,7 +489,8 @@ fn bench_bf16_and_alloc() {
     });
     println!(
         "    SIMD bf16→f32 decode (M4.8.c):         {:>10.3} ms (min {:>8.3} ms)   {:>6.2} GB/s decode",
-        m_s * 1000.0, mn_s * 1000.0,
+        m_s * 1000.0,
+        mn_s * 1000.0,
         n_elems as f64 * 4.0 / m_s / 1.0e9,
     );
 
@@ -444,7 +502,8 @@ fn bench_bf16_and_alloc() {
     });
     println!(
         "    Vec<u16> clone (~142 MB):              {:>10.3} ms (min {:>8.3} ms)   {:>6.2} GB/s memcpy",
-        m_s * 1000.0, mn_s * 1000.0,
+        m_s * 1000.0,
+        mn_s * 1000.0,
         n_elems as f64 * 2.0 / m_s / 1.0e9,
     );
 
@@ -455,7 +514,8 @@ fn bench_bf16_and_alloc() {
     });
     println!(
         "    vec![0.0_f32; N] allocation (~283 MB): {:>10.3} ms (min {:>8.3} ms)",
-        m_s * 1000.0, mn_s * 1000.0,
+        m_s * 1000.0,
+        mn_s * 1000.0,
     );
 
     // Cost #4: clone of a `Vec<f32>` of the same size — what
@@ -467,7 +527,8 @@ fn bench_bf16_and_alloc() {
     });
     println!(
         "    Vec<f32> clone (~283 MB):              {:>10.3} ms (min {:>8.3} ms)   {:>6.2} GB/s memcpy",
-        m_s * 1000.0, mn_s * 1000.0,
+        m_s * 1000.0,
+        mn_s * 1000.0,
         n_elems as f64 * 4.0 / m_s / 1.0e9,
     );
 
@@ -479,19 +540,13 @@ fn bench_bf16_and_alloc() {
     // before the matmul kernel even starts. The harness's
     // raw numbers above let M4.8.b and M4.8.c quantify how
     // much each fix removes.
-    println!(
-        "    Per-MatMul-call overhead (estimated 2× clone + 2× decode + 1× output alloc):"
-    );
+    println!("    Per-MatMul-call overhead (estimated 2× clone + 2× decode + 1× output alloc):");
     println!(
         "        ~{:.0} ms per MatMul call on a 13B-class operand pair",
-        (m_s + m_s) * 1000.0  /* placeholder — real composite goes via the executor */
+        (m_s + m_s) * 1000.0 /* placeholder — real composite goes via the executor */
     );
-    println!(
-        "        At 280 MatMul calls per Llama 2 13B forward, this is the lower bound"
-    );
-    println!(
-        "        of the M4.8.c decode-cache savings target."
-    );
+    println!("        At 280 MatMul calls per Llama 2 13B forward, this is the lower bound");
+    println!("        of the M4.8.c decode-cache savings target.");
 }
 
 fn main() {

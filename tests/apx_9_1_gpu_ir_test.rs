@@ -3,11 +3,20 @@ use atenia_engine::*;
 #[test]
 fn apx_9_1_gpu_ir_basic_kernel() {
     let mut k = GpuIrKernel::new("vec_add");
-    k.params.push(GpuIrParam { name: "a".into(), ty: GpuIrType::Ptr });
-    k.params.push(GpuIrParam { name: "b".into(), ty: GpuIrType::Ptr });
+    k.params.push(GpuIrParam {
+        name: "a".into(),
+        ty: GpuIrType::Ptr,
+    });
+    k.params.push(GpuIrParam {
+        name: "b".into(),
+        ty: GpuIrType::Ptr,
+    });
 
     k.body.push(GpuIrStmt::Comment("Load values".into()));
-    k.body.push(GpuIrStmt::LocalVar { name: "i".into(), ty: GpuIrType::I32 });
+    k.body.push(GpuIrStmt::LocalVar {
+        name: "i".into(),
+        ty: GpuIrType::I32,
+    });
 
     assert_eq!(k.name, "vec_add");
     assert_eq!(k.params.len(), 2);

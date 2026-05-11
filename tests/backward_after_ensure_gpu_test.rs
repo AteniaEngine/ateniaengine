@@ -56,13 +56,7 @@ fn require_gpu(test_name: &str) -> bool {
 }
 
 fn tensor_from(shape: Vec<usize>, data: Vec<f32>) -> Tensor {
-    let mut t = Tensor::with_layout(
-        shape,
-        0.0,
-        Device::CPU,
-        Layout::Contiguous,
-        DType::F32,
-    );
+    let mut t = Tensor::with_layout(shape, 0.0, Device::CPU, Layout::Contiguous, DType::F32);
     t.as_cpu_slice_mut().copy_from_slice(&data);
     t
 }
@@ -72,7 +66,8 @@ fn tensor_from(shape: Vec<usize>, data: Vec<f32>) -> Tensor {
 fn migrate_all_outputs_to_gpu(graph: &mut atenia_engine::amg::graph::Graph) {
     for node in graph.nodes.iter_mut() {
         if let Some(ref mut out) = node.output {
-            out.ensure_gpu().expect("test setup: ensure_gpu must succeed");
+            out.ensure_gpu()
+                .expect("test setup: ensure_gpu must succeed");
         }
     }
 }
@@ -160,10 +155,7 @@ fn test_backward_works_with_problematic_closure() {
 
     let mut graph = gb.build();
 
-    let x = tensor_from(
-        vec![2, 3],
-        vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0],
-    );
+    let x = tensor_from(vec![2, 3], vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0]);
 
     let outputs = graph.execute(vec![x]);
     assert_eq!(outputs.len(), 1);

@@ -39,8 +39,7 @@ impl MemoryForecaster {
     /// Assumes the result tensor shares `a`'s storage footprint. Not a predictive model:
     /// this is static arithmetic over declared tensor sizes, with no runtime signals.
     pub fn predict_add_operation(&mut self, a: &Tensor, b: &Tensor) {
-        self.predicted_next_bytes =
-            a.estimated_bytes() + b.estimated_bytes() + a.estimated_bytes();
+        self.predicted_next_bytes = a.estimated_bytes() + b.estimated_bytes() + a.estimated_bytes();
     }
 
     /// Returns `true` if the predicted memory allocation would exceed the provided limit.

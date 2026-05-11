@@ -64,16 +64,8 @@ fn graph_execution_enqueues_tasks_in_node_order() {
     let kernel1 = make_kernel("node1", KernelKind::ComputeHeavy);
     let kernel2 = make_kernel("node2", KernelKind::Small);
 
-    graph.add_node_with_tensors(
-        kernel1,
-        vec!["t1".to_string()],
-        vec![MemoryTier::Ssd],
-    );
-    graph.add_node_with_tensors(
-        kernel2,
-        vec!["t2".to_string()],
-        vec![MemoryTier::Ram],
-    );
+    graph.add_node_with_tensors(kernel1, vec!["t1".to_string()], vec![MemoryTier::Ssd]);
+    graph.add_node_with_tensors(kernel2, vec!["t2".to_string()], vec![MemoryTier::Ram]);
 
     let snapshot = make_snapshot(0.1, 0.1);
     let cfg = make_cpu_cfg();
@@ -120,16 +112,8 @@ fn graph_execution_updates_memory_tiers() {
     let kernel1 = make_kernel("node1", KernelKind::ComputeHeavy);
     let kernel2 = make_kernel("node2", KernelKind::Small);
 
-    graph.add_node_with_tensors(
-        kernel1,
-        vec!["t1".to_string()],
-        vec![MemoryTier::Ssd],
-    );
-    graph.add_node_with_tensors(
-        kernel2,
-        vec!["t2".to_string()],
-        vec![MemoryTier::Ram],
-    );
+    graph.add_node_with_tensors(kernel1, vec!["t1".to_string()], vec![MemoryTier::Ssd]);
+    graph.add_node_with_tensors(kernel2, vec!["t2".to_string()], vec![MemoryTier::Ram]);
 
     let snapshot = make_snapshot(0.1, 0.1);
     let cfg = make_cpu_cfg();
@@ -228,11 +212,7 @@ fn gpu_plan_enqueues_gpu_compute_for_compute_heavy_node() {
     let mut graph = ReconfigurableGraph::new();
     let kernel = make_kernel("gpu_node", KernelKind::ComputeHeavy);
 
-    graph.add_node_with_tensors(
-        kernel,
-        vec!["t".to_string()],
-        vec![MemoryTier::Ram],
-    );
+    graph.add_node_with_tensors(kernel, vec!["t".to_string()], vec![MemoryTier::Ram]);
 
     let snapshot = make_snapshot(0.1, 0.1);
     let cfg = make_cpu_cfg();
@@ -250,7 +230,8 @@ fn gpu_plan_enqueues_gpu_compute_for_compute_heavy_node() {
         if line.contains("ENQUEUE stream=Gpu") && line.contains("move:ram->vram:t") {
             saw_transfer = true;
         }
-        if line.contains("ENQUEUE stream=Gpu") && line.contains("kind=Compute")
+        if line.contains("ENQUEUE stream=Gpu")
+            && line.contains("kind=Compute")
             && line.contains("name=gpu_node")
         {
             saw_gpu_compute = true;

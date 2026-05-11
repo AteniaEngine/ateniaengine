@@ -1,8 +1,8 @@
 // APX 8.15 — GPU Pre-Compilation Cache v0
 // Synthetic cache of "precompiled" kernels based on KernelIR.
 
-use std::collections::HashMap;
 use crate::apx8::kernel_generator::KernelIR;
+use std::collections::HashMap;
 
 #[derive(Debug, Default)]
 pub struct PrecompileCache {
@@ -11,7 +11,9 @@ pub struct PrecompileCache {
 
 impl PrecompileCache {
     pub fn new() -> Self {
-        Self { store: HashMap::new() }
+        Self {
+            store: HashMap::new(),
+        }
     }
 
     pub fn compile_if_missing(&mut self, ir: &KernelIR) -> String {

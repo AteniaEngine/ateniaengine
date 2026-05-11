@@ -1,9 +1,4 @@
-pub fn fused_rmsnorm_backward(
-    x: &[f32],
-    w: &[f32],
-    grad_out: &[f32],
-    hidden: usize,
-) -> Vec<f32> {
+pub fn fused_rmsnorm_backward(x: &[f32], w: &[f32], grad_out: &[f32], hidden: usize) -> Vec<f32> {
     #[cfg(debug_assertions)]
     {
         eprintln!("[APX-2.5] fused_rmsnorm_backward invoked");

@@ -171,7 +171,9 @@ impl KvLayer {
     /// pre-allocated as `TensorStorage::CpuBf16(Vec<u16>)`
     /// with `seq_filled = 0`.
     pub fn empty_with_dtype(
-        batch: usize, num_kv_heads: usize, head_dim: usize,
+        batch: usize,
+        num_kv_heads: usize,
+        head_dim: usize,
         dtype: KvCellDtype,
     ) -> Self {
         let shape = vec![batch, num_kv_heads, 0, head_dim];
@@ -189,7 +191,9 @@ impl KvLayer {
 
     /// Current sequence length (cached_len). Reads off the
     /// third axis of `k`; `v` mirrors by construction.
-    pub fn seq_len(&self) -> usize { self.k.shape[2] }
+    pub fn seq_len(&self) -> usize {
+        self.k.shape[2]
+    }
 }
 
 /// Configuration parameters used to size a [`KvCache`] at
@@ -229,8 +233,7 @@ impl KvCacheConfig {
     /// [`Self::bytes_per_token_f32`] when `cell_dtype` is
     /// `F32`, and exactly half under `BF16`.
     pub fn bytes_per_token(&self) -> usize {
-        2 * self.num_layers * self.num_kv_heads * self.head_dim
-            * self.cell_dtype.bytes_per_cell()
+        2 * self.num_layers * self.num_kv_heads * self.head_dim * self.cell_dtype.bytes_per_cell()
     }
 }
 
@@ -265,10 +268,14 @@ impl KvCache {
     /// first `append` call grows the underlying `Vec<f32>`.
     pub fn new(config: KvCacheConfig) -> Self {
         let layers = (0..config.num_layers)
-            .map(|_| KvLayer::empty_with_dtype(
-                config.batch, config.num_kv_heads, config.head_dim,
-                config.cell_dtype,
-            ))
+            .map(|_| {
+                KvLayer::empty_with_dtype(
+                    config.batch,
+                    config.num_kv_heads,
+                    config.head_dim,
+                    config.cell_dtype,
+                )
+            })
             .collect();
         Self { config, layers }
     }
@@ -280,7 +287,9 @@ impl KvCache {
     }
 
     /// True iff no tokens have been cached yet.
-    pub fn is_empty(&self) -> bool { self.seq_len() == 0 }
+    pub fn is_empty(&self) -> bool {
+        self.seq_len() == 0
+    }
 
     /// Append a `[batch, num_kv_heads, slice_seq, head_dim]`
     /// K, V pair to the given layer's cache.
@@ -292,11 +301,19 @@ impl KvCache {
     ///
     /// Bit-exactly equivalent to `concat([prev_K, k_slice], axis=2)`
     /// — locked by tests in this module.
-    pub fn append(&mut self, layer_idx: usize, k_slice: &Tensor, v_slice: &Tensor)
-        -> Result<(), KvCacheError>
-    {
-        let layer = self.layers.get_mut(layer_idx)
-            .ok_or(KvCacheError::LayerOutOfRange { layer_idx, num_layers: self.config.num_layers })?;
+    pub fn append(
+        &mut self,
+        layer_idx: usize,
+        k_slice: &Tensor,
+        v_slice: &Tensor,
+    ) -> Result<(), KvCacheError> {
+        let layer = self
+            .layers
+            .get_mut(layer_idx)
+            .ok_or(KvCacheError::LayerOutOfRange {
+                layer_idx,
+                num_layers: self.config.num_layers,
+            })?;
 
         validate_slice_shape(&self.config, &k_slice.shape, "K")?;
         validate_slice_shape(&self.config, &v_slice.shape, "V")?;
@@ -317,8 +334,13 @@ impl KvCache {
     /// Borrowed; no copy. Returned shape:
     /// `[batch, num_kv_heads, seq_filled, head_dim]`.
     pub fn get(&self, layer_idx: usize) -> Result<(&Tensor, &Tensor), KvCacheError> {
-        let layer = self.layers.get(layer_idx)
-            .ok_or(KvCacheError::LayerOutOfRange { layer_idx, num_layers: self.config.num_layers })?;
+        let layer = self
+            .layers
+            .get(layer_idx)
+            .ok_or(KvCacheError::LayerOutOfRange {
+                layer_idx,
+                num_layers: self.config.num_layers,
+            })?;
         Ok((&layer.k, &layer.v))
     }
 
@@ -347,9 +369,11 @@ impl KvCache {
     /// Total bytes resident in F32 across every layer. Use
     /// for telemetry and capacity decisions.
     pub fn resident_bytes_f32(&self) -> usize {
-        self.layers.iter()
+        self.layers
+            .iter()
             .map(|l| l.k.shape.iter().product::<usize>() + l.v.shape.iter().product::<usize>())
-            .sum::<usize>() * 4
+            .sum::<usize>()
+            * 4
     }
 
     /// **M8.6** — total bytes resident under the active
@@ -357,7 +381,9 @@ impl KvCache {
     /// F32 caches; halves it for BF16. Mirrors the per-token
     /// helper [`KvCacheConfig::bytes_per_token`].
     pub fn resident_bytes(&self) -> usize {
-        let cells: usize = self.layers.iter()
+        let cells: usize = self
+            .layers
+            .iter()
             .map(|l| l.k.shape.iter().product::<usize>() + l.v.shape.iter().product::<usize>())
             .sum();
         cells * self.config.cell_dtype.bytes_per_cell()
@@ -423,34 +449,73 @@ pub struct KvCacheBuildSpec {
 /// Errors surfaced by [`KvCache`] operations.
 #[derive(Debug)]
 pub enum KvCacheError {
-    LayerOutOfRange { layer_idx: usize, num_layers: usize },
-    BadShape { what: &'static str, expected_rank: usize, got: Vec<usize> },
-    ShapeMismatch { what: &'static str, k: Vec<usize>, v: Vec<usize> },
-    HeadStructure { what: &'static str, expected: (usize, usize, usize), got: Vec<usize> },
+    LayerOutOfRange {
+        layer_idx: usize,
+        num_layers: usize,
+    },
+    BadShape {
+        what: &'static str,
+        expected_rank: usize,
+        got: Vec<usize>,
+    },
+    ShapeMismatch {
+        what: &'static str,
+        k: Vec<usize>,
+        v: Vec<usize>,
+    },
+    HeadStructure {
+        what: &'static str,
+        expected: (usize, usize, usize),
+        got: Vec<usize>,
+    },
 }
 
 impl std::fmt::Display for KvCacheError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            KvCacheError::LayerOutOfRange { layer_idx, num_layers } =>
-                write!(f, "kv_cache: layer {layer_idx} out of range (cache has {num_layers})"),
-            KvCacheError::BadShape { what, expected_rank, got } =>
-                write!(f, "kv_cache: {what} expected rank {expected_rank}, got shape {got:?}"),
-            KvCacheError::ShapeMismatch { what, k, v } =>
-                write!(f, "kv_cache: {what} shape mismatch — K {k:?} vs V {v:?}"),
-            KvCacheError::HeadStructure { what, expected, got } =>
-                write!(f, "kv_cache: {what} head structure mismatch (expected (batch, num_kv_heads, head_dim) = {expected:?}, got shape {got:?})"),
+            KvCacheError::LayerOutOfRange {
+                layer_idx,
+                num_layers,
+            } => write!(
+                f,
+                "kv_cache: layer {layer_idx} out of range (cache has {num_layers})"
+            ),
+            KvCacheError::BadShape {
+                what,
+                expected_rank,
+                got,
+            } => write!(
+                f,
+                "kv_cache: {what} expected rank {expected_rank}, got shape {got:?}"
+            ),
+            KvCacheError::ShapeMismatch { what, k, v } => {
+                write!(f, "kv_cache: {what} shape mismatch — K {k:?} vs V {v:?}")
+            }
+            KvCacheError::HeadStructure {
+                what,
+                expected,
+                got,
+            } => write!(
+                f,
+                "kv_cache: {what} head structure mismatch (expected (batch, num_kv_heads, head_dim) = {expected:?}, got shape {got:?})"
+            ),
         }
     }
 }
 
 impl std::error::Error for KvCacheError {}
 
-fn validate_slice_shape(cfg: &KvCacheConfig, shape: &[usize], what: &'static str)
-    -> Result<(), KvCacheError>
-{
+fn validate_slice_shape(
+    cfg: &KvCacheConfig,
+    shape: &[usize],
+    what: &'static str,
+) -> Result<(), KvCacheError> {
     if shape.len() != 4 {
-        return Err(KvCacheError::BadShape { what, expected_rank: 4, got: shape.to_vec() });
+        return Err(KvCacheError::BadShape {
+            what,
+            expected_rank: 4,
+            got: shape.to_vec(),
+        });
     }
     if shape[0] != cfg.batch || shape[1] != cfg.num_kv_heads || shape[3] != cfg.head_dim {
         return Err(KvCacheError::HeadStructure {
@@ -526,9 +591,9 @@ fn append_along_seq_axis(dst: &mut Tensor, slice: &Tensor) -> Result<(), KvCache
         for b in 0..batch {
             for h in 0..kv_heads {
                 let prev_off = ((b * kv_heads + h) * prev_seq) * head_dim;
-                out.extend_from_slice(&prev_bits[prev_off .. prev_off + prev_seq * head_dim]);
+                out.extend_from_slice(&prev_bits[prev_off..prev_off + prev_seq * head_dim]);
                 let slice_off = ((b * kv_heads + h) * new_seq) * head_dim;
-                out.extend_from_slice(&slice_bits[slice_off .. slice_off + new_seq * head_dim]);
+                out.extend_from_slice(&slice_bits[slice_off..slice_off + new_seq * head_dim]);
             }
         }
 
@@ -551,10 +616,10 @@ fn append_along_seq_axis(dst: &mut Tensor, slice: &Tensor) -> Result<(), KvCache
         for h in 0..kv_heads {
             // Copy prev[b, h, :, :]
             let prev_off = ((b * kv_heads + h) * prev_seq) * head_dim;
-            out.extend_from_slice(&prev_data[prev_off .. prev_off + prev_seq * head_dim]);
+            out.extend_from_slice(&prev_data[prev_off..prev_off + prev_seq * head_dim]);
             // Copy slice[b, h, :, :]
             let slice_off = ((b * kv_heads + h) * new_seq) * head_dim;
-            out.extend_from_slice(&slice_data[slice_off .. slice_off + new_seq * head_dim]);
+            out.extend_from_slice(&slice_data[slice_off..slice_off + new_seq * head_dim]);
         }
     }
 
@@ -618,16 +683,23 @@ mod tests {
     fn tensor_kind_eviction_priority_orders_correctly() {
         // Activations evict first, weights last. KV cache
         // sits in between. Locked by D59.
-        assert!(TensorKind::Activation.lru_eviction_priority()
-              > TensorKind::KvCache.lru_eviction_priority());
-        assert!(TensorKind::KvCache.lru_eviction_priority()
-              > TensorKind::Parameter.lru_eviction_priority());
+        assert!(
+            TensorKind::Activation.lru_eviction_priority()
+                > TensorKind::KvCache.lru_eviction_priority()
+        );
+        assert!(
+            TensorKind::KvCache.lru_eviction_priority()
+                > TensorKind::Parameter.lru_eviction_priority()
+        );
     }
 
     #[test]
     fn empty_cache_reports_zero_seq_len() {
         let cache = KvCache::new(KvCacheConfig {
-            batch: 1, num_layers: 4, num_kv_heads: 8, head_dim: 16,
+            batch: 1,
+            num_layers: 4,
+            num_kv_heads: 8,
+            head_dim: 16,
             cell_dtype: KvCellDtype::F32,
         });
         assert!(cache.is_empty());
@@ -642,7 +714,13 @@ mod tests {
 
     #[test]
     fn append_advances_seq_len_per_layer() {
-        let cfg = KvCacheConfig { batch: 1, num_layers: 2, num_kv_heads: 2, head_dim: 4, cell_dtype: KvCellDtype::F32 };
+        let cfg = KvCacheConfig {
+            batch: 1,
+            num_layers: 2,
+            num_kv_heads: 2,
+            head_dim: 4,
+            cell_dtype: KvCellDtype::F32,
+        };
         let mut cache = KvCache::new(cfg);
 
         // Append a 5-token slice to layer 0.
@@ -668,7 +746,13 @@ mod tests {
         // `cache.append(slice_a) + cache.append(slice_b) +
         //  cache.get(layer)` must equal manually concating
         // [slice_a, slice_b] along axis 2.
-        let cfg = KvCacheConfig { batch: 1, num_layers: 1, num_kv_heads: 3, head_dim: 4, cell_dtype: KvCellDtype::F32 };
+        let cfg = KvCacheConfig {
+            batch: 1,
+            num_layers: 1,
+            num_kv_heads: 3,
+            head_dim: 4,
+            cell_dtype: KvCellDtype::F32,
+        };
         let mut cache = KvCache::new(cfg);
 
         let k_a = arange_tensor(vec![1, 3, 2, 4], 1.0);
@@ -685,7 +769,8 @@ mod tests {
         let manual_concat = |a: &Tensor, b: &Tensor| -> Vec<f32> {
             let batch = a.shape[0];
             let h = a.shape[1];
-            let sa = a.shape[2]; let sb = b.shape[2];
+            let sa = a.shape[2];
+            let sb = b.shape[2];
             let d = a.shape[3];
             let ad = a.copy_to_cpu_vec();
             let bd = b.copy_to_cpu_vec();
@@ -693,9 +778,9 @@ mod tests {
             for bi in 0..batch {
                 for hi in 0..h {
                     let ao = ((bi * h + hi) * sa) * d;
-                    out.extend_from_slice(&ad[ao .. ao + sa * d]);
+                    out.extend_from_slice(&ad[ao..ao + sa * d]);
                     let bo = ((bi * h + hi) * sb) * d;
-                    out.extend_from_slice(&bd[bo .. bo + sb * d]);
+                    out.extend_from_slice(&bd[bo..bo + sb * d]);
                 }
             }
             out
@@ -704,17 +789,33 @@ mod tests {
         let ref_k = manual_concat(&k_a, &k_b);
         let ref_v = manual_concat(&v_a, &v_b);
         assert_eq!(cached_k.shape, vec![1, 3, 5, 4]);
-        assert_eq!(cached_k.copy_to_cpu_vec(), ref_k, "K cache != concat reference");
-        assert_eq!(cached_v.copy_to_cpu_vec(), ref_v, "V cache != concat reference");
+        assert_eq!(
+            cached_k.copy_to_cpu_vec(),
+            ref_k,
+            "K cache != concat reference"
+        );
+        assert_eq!(
+            cached_v.copy_to_cpu_vec(),
+            ref_v,
+            "V cache != concat reference"
+        );
     }
 
     #[test]
     fn clear_resets_all_layers_to_empty() {
-        let cfg = KvCacheConfig { batch: 1, num_layers: 3, num_kv_heads: 2, head_dim: 4, cell_dtype: KvCellDtype::F32 };
+        let cfg = KvCacheConfig {
+            batch: 1,
+            num_layers: 3,
+            num_kv_heads: 2,
+            head_dim: 4,
+            cell_dtype: KvCellDtype::F32,
+        };
         let mut cache = KvCache::new(cfg);
         let k = arange_tensor(vec![1, 2, 7, 4], 1.0);
         let v = arange_tensor(vec![1, 2, 7, 4], 1.0);
-        for li in 0..3 { cache.append(li, &k, &v).unwrap(); }
+        for li in 0..3 {
+            cache.append(li, &k, &v).unwrap();
+        }
         assert_eq!(cache.seq_len(), 7);
 
         cache.clear();
@@ -731,7 +832,13 @@ mod tests {
 
     #[test]
     fn append_rejects_bad_shapes() {
-        let cfg = KvCacheConfig { batch: 1, num_layers: 1, num_kv_heads: 2, head_dim: 4, cell_dtype: KvCellDtype::F32 };
+        let cfg = KvCacheConfig {
+            batch: 1,
+            num_layers: 1,
+            num_kv_heads: 2,
+            head_dim: 4,
+            cell_dtype: KvCellDtype::F32,
+        };
         let mut cache = KvCache::new(cfg);
 
         // Wrong rank.
@@ -759,7 +866,10 @@ mod tests {
         // section 2). Per the M5 plan the F32 number is
         // 2× the BF16 figure.
         let cfg = KvCacheConfig {
-            batch: 1, num_layers: 40, num_kv_heads: 40, head_dim: 128,
+            batch: 1,
+            num_layers: 40,
+            num_kv_heads: 40,
+            head_dim: 128,
             cell_dtype: KvCellDtype::F32,
         };
         // 40 layers × 2 (K+V) × 40 heads × 128 dim × 4 bytes
@@ -800,8 +910,10 @@ mod tests {
         let b = Tensor::new_cpu(vec![1, 3], vec![100.0, 200.0, 300.0]);
         let out = run_concat(a, b, 0);
         assert_eq!(out.shape, vec![3, 3]);
-        assert_eq!(out.copy_to_cpu_vec(),
-            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 100.0, 200.0, 300.0]);
+        assert_eq!(
+            out.copy_to_cpu_vec(),
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 100.0, 200.0, 300.0]
+        );
     }
 
     #[test]
@@ -811,8 +923,10 @@ mod tests {
         let b = Tensor::new_cpu(vec![2, 3], vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0]);
         let out = run_concat(a, b, 1);
         assert_eq!(out.shape, vec![2, 5]);
-        assert_eq!(out.copy_to_cpu_vec(),
-            vec![1.0, 2.0, 10.0, 20.0, 30.0, 3.0, 4.0, 40.0, 50.0, 60.0]);
+        assert_eq!(
+            out.copy_to_cpu_vec(),
+            vec![1.0, 2.0, 10.0, 20.0, 30.0, 3.0, 4.0, 40.0, 50.0, 60.0]
+        );
     }
 
     #[test]
@@ -821,20 +935,33 @@ mod tests {
         // on KV-cache-shaped tensors `[batch, n_kv, seq, head_dim]`
         // matches the runtime KvCache::append behaviour
         // bit-exactly.
-        let cfg = KvCacheConfig { batch: 1, num_layers: 1, num_kv_heads: 2, head_dim: 4, cell_dtype: KvCellDtype::F32 };
+        let cfg = KvCacheConfig {
+            batch: 1,
+            num_layers: 1,
+            num_kv_heads: 2,
+            head_dim: 4,
+            cell_dtype: KvCellDtype::F32,
+        };
         let mut cache = KvCache::new(cfg);
 
-        let cache_k = arange_tensor(vec![1, 2, 3, 4], 1.0);  // 3 cached tokens
-        let new_k   = arange_tensor(vec![1, 2, 2, 4], 100.0); // 2 new tokens
-        cache.append(0, &cache_k, &arange_tensor(vec![1, 2, 3, 4], 1.0)).unwrap();
-        cache.append(0, &new_k,   &arange_tensor(vec![1, 2, 2, 4], 100.0)).unwrap();
+        let cache_k = arange_tensor(vec![1, 2, 3, 4], 1.0); // 3 cached tokens
+        let new_k = arange_tensor(vec![1, 2, 2, 4], 100.0); // 2 new tokens
+        cache
+            .append(0, &cache_k, &arange_tensor(vec![1, 2, 3, 4], 1.0))
+            .unwrap();
+        cache
+            .append(0, &new_k, &arange_tensor(vec![1, 2, 2, 4], 100.0))
+            .unwrap();
         let (cached_k, _) = cache.get(0).unwrap();
 
         let graph_concat = run_concat(cache_k, new_k, 2);
 
         assert_eq!(graph_concat.shape, vec![1, 2, 5, 4]);
-        assert_eq!(graph_concat.copy_to_cpu_vec(), cached_k.copy_to_cpu_vec(),
-            "Concat node output != KvCache::append reference");
+        assert_eq!(
+            graph_concat.copy_to_cpu_vec(),
+            cached_k.copy_to_cpu_vec(),
+            "Concat node output != KvCache::append reference"
+        );
     }
 
     #[test]
@@ -855,14 +982,21 @@ mod tests {
 
         // Sanity: the parameter slot has its initial value.
         let initial = g.nodes[p_id].output.as_ref().unwrap();
-        assert_eq!(initial.copy_to_cpu_vec(), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(
+            initial.copy_to_cpu_vec(),
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+        );
 
         // Overwrite with a fresh tensor (mimics what M5.c
         // will do every decode step for cache-K / cache-V).
         let replacement = arange_tensor(vec![2, 3], 100.0);
-        g.overwrite_parameter(p_id, replacement).expect("overwrite failed");
+        g.overwrite_parameter(p_id, replacement)
+            .expect("overwrite failed");
         let after = g.nodes[p_id].output.as_ref().unwrap();
-        assert_eq!(after.copy_to_cpu_vec(), vec![100.0, 101.0, 102.0, 103.0, 104.0, 105.0]);
+        assert_eq!(
+            after.copy_to_cpu_vec(),
+            vec![100.0, 101.0, 102.0, 103.0, 104.0, 105.0]
+        );
 
         // Non-Parameter node id rejected.
         assert!(matches!(

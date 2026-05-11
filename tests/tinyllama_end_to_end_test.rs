@@ -26,9 +26,7 @@
 //! the `println!` output.
 
 use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::nn::llama::{
-    build_llama, llama_weight_mapper, LlamaConfig, LlamaRuntime,
-};
+use atenia_engine::nn::llama::{LlamaConfig, LlamaRuntime, build_llama, llama_weight_mapper};
 use atenia_engine::tensor::Tensor;
 use atenia_engine::v17::loader::safetensors_reader::SafetensorsReader;
 use std::env;
@@ -104,8 +102,7 @@ fn tinyllama_loads_and_executes_forward_with_real_weights() {
     // ---- 4. Load weights ----
     println!("Reading safetensors...");
     let reader_start = std::time::Instant::now();
-    let reader = SafetensorsReader::open(Path::new(&path))
-        .expect("failed to open safetensors");
+    let reader = SafetensorsReader::open(Path::new(&path)).expect("failed to open safetensors");
     let reader_elapsed = reader_start.elapsed();
     println!(
         "Reader opened in {:.2}s ({} tensors in file)",
@@ -186,10 +183,7 @@ fn tinyllama_loads_and_executes_forward_with_real_weights() {
     );
     println!("All {} logit values finite", logits_slice.len());
 
-    let max_abs = logits_slice
-        .iter()
-        .map(|v| v.abs())
-        .fold(0.0_f32, f32::max);
+    let max_abs = logits_slice.iter().map(|v| v.abs()).fold(0.0_f32, f32::max);
     let min_abs_nonzero = logits_slice
         .iter()
         .map(|v| v.abs())
@@ -211,20 +205,12 @@ fn tinyllama_loads_and_executes_forward_with_real_weights() {
     // ---- 8. Argmax of the last-position logits (predicted next token) ----
     let vocab = config.vocab_size;
     let last_token_logits = &logits_slice[3 * vocab..4 * vocab];
-    let (predicted_id, max_logit) =
-        last_token_logits
-            .iter()
-            .enumerate()
-            .fold(
-                (0_usize, f32::NEG_INFINITY),
-                |(best_i, best_v), (i, &v)| {
-                    if v > best_v {
-                        (i, v)
-                    } else {
-                        (best_i, best_v)
-                    }
-                },
-            );
+    let (predicted_id, max_logit) = last_token_logits.iter().enumerate().fold(
+        (0_usize, f32::NEG_INFINITY),
+        |(best_i, best_v), (i, &v)| {
+            if v > best_v { (i, v) } else { (best_i, best_v) }
+        },
+    );
     println!(
         "Predicted next token at position 3: id={} logit={:.4}",
         predicted_id, max_logit

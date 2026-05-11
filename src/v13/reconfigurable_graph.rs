@@ -70,10 +70,7 @@ impl ReconfigurableGraph {
     ) -> GraphPlacementPlan {
         let vram_p = snapshot.vram.pressure.unwrap_or(0.0);
         let ram_p = snapshot.ram.pressure.unwrap_or(0.0);
-        let snapshot_summary = format!(
-            "Snapshot pressures: vram={:.4}, ram={:.4}",
-            vram_p, ram_p
-        );
+        let snapshot_summary = format!("Snapshot pressures: vram={:.4}, ram={:.4}", vram_p, ram_p);
 
         let mut placements = Vec::with_capacity(self.nodes.len());
 
@@ -107,10 +104,7 @@ impl ReconfigurableGraph {
     ) -> GraphPlacementPlan {
         let vram_p = snapshot.vram.pressure.unwrap_or(0.0);
         let ram_p = snapshot.ram.pressure.unwrap_or(0.0);
-        let snapshot_summary = format!(
-            "Snapshot pressures: vram={:.4}, ram={:.4}",
-            vram_p, ram_p
-        );
+        let snapshot_summary = format!("Snapshot pressures: vram={:.4}, ram={:.4}", vram_p, ram_p);
 
         let mut placements = Vec::with_capacity(self.nodes.len());
 

@@ -43,9 +43,7 @@ fn apx_6_9_fusion_benchmark() {
 
         println!(
             "[APX 6.9] op=FusedQKV baseline={}us fused={}us selected={:?}",
-            unfused_us,
-            fused_us,
-            decision
+            unfused_us, fused_us, decision
         );
     }
 }

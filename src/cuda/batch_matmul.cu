@@ -1,5 +1,6 @@
 #include <cuda_runtime.h>
 #include <cstdio>
+#include "cuda_common.h"
 
 extern "C" __global__
 void batch_matmul_kernel(

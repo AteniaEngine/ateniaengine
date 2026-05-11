@@ -63,11 +63,7 @@ pub fn fuse_linear_activation_linear(graph: &mut Graph) -> usize {
                     let b1_id = l1_inputs.get(2).cloned();
                     let b2_id = inputs2.get(2).cloned();
 
-                    let acts: Vec<ActType> = chain
-                        .iter()
-                        .rev()
-                        .map(|(_, a)| a.clone())
-                        .collect();
+                    let acts: Vec<ActType> = chain.iter().rev().map(|(_, a)| a.clone()).collect();
 
                     if acts.is_empty() {
                         break;
@@ -84,8 +80,7 @@ pub fn fuse_linear_activation_linear(graph: &mut Graph) -> usize {
                         fused_inputs.push(b2);
                     }
 
-                    graph.nodes[lin2_idx].node_type =
-                        NodeType::FusedLinearActivationChain(acts);
+                    graph.nodes[lin2_idx].node_type = NodeType::FusedLinearActivationChain(acts);
                     graph.nodes[lin2_idx].inputs = fused_inputs;
 
                     graph.nodes[lin1_idx].node_type = NodeType::NoOp;
@@ -155,8 +150,7 @@ pub fn fuse_linear_activation_linear(graph: &mut Graph) -> usize {
                         fused_inputs.push(b2);
                     }
 
-                    graph.nodes[lin2_idx].node_type =
-                        NodeType::FusedLinearActivationChain(acts);
+                    graph.nodes[lin2_idx].node_type = NodeType::FusedLinearActivationChain(acts);
                     graph.nodes[lin2_idx].inputs = fused_inputs;
 
                     graph.nodes[fused_idx].node_type = NodeType::NoOp;

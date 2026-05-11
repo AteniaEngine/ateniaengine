@@ -1,4 +1,4 @@
-use atenia_engine::tensor::{Tensor, Device};
+use atenia_engine::tensor::{Device, Tensor};
 
 #[test]
 fn apx_7_3_adaptive_learns_best_strategy() {
@@ -18,6 +18,8 @@ fn apx_7_3_adaptive_learns_best_strategy() {
 
     // We do not validate exact performance, but we do verify that it learned
     // something in the small-size bucket.
-    let buckets = atenia_engine::apx7::adaptive_pgl::ADAPTIVE_BUCKETS.read().unwrap();
+    let buckets = atenia_engine::apx7::adaptive_pgl::ADAPTIVE_BUCKETS
+        .read()
+        .unwrap();
     assert!(buckets[0].count >= 5);
 }

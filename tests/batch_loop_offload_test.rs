@@ -59,11 +59,7 @@ fn offload_runs_between_ticks_and_moves_ram_to_ssd_when_ram_high() {
 
     let mut graph = ReconfigurableGraph::new();
     let kernel = make_kernel("cpu_node", KernelKind::Small);
-    graph.add_node_with_tensors(
-        kernel,
-        vec!["t1".to_string()],
-        vec![MemoryTier::Ram],
-    );
+    graph.add_node_with_tensors(kernel, vec!["t1".to_string()], vec![MemoryTier::Ram]);
 
     let snapshots = vec![
         make_snapshot(0.1, 0.1),  // tick 0: low RAM pressure
@@ -120,16 +116,9 @@ fn hysteresis_stable_band_does_not_thrash_between_ticks() {
 
     let mut graph = ReconfigurableGraph::new();
     let kernel = make_kernel("cpu_node", KernelKind::Small);
-    graph.add_node_with_tensors(
-        kernel,
-        vec!["t2".to_string()],
-        vec![MemoryTier::Ram],
-    );
+    graph.add_node_with_tensors(kernel, vec!["t2".to_string()], vec![MemoryTier::Ram]);
 
-    let snapshots = vec![
-        make_snapshot(0.1, 0.90),
-        make_snapshot(0.1, 0.90),
-    ];
+    let snapshots = vec![make_snapshot(0.1, 0.90), make_snapshot(0.1, 0.90)];
 
     let offload = SmartOffloadEngine::default();
 

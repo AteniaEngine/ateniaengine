@@ -1,6 +1,6 @@
-﻿use atenia_engine::apx8::kernel_generator::*;
+use atenia_engine::apx8::kernel_generator::*;
 use atenia_engine::apx8::kernel_registry::KERNEL_REGISTRY;
-use atenia_engine::tensor::{Tensor, Device, DType};
+use atenia_engine::tensor::{DType, Device, Tensor};
 
 #[test]
 fn apx_8_9_basic_structure() {

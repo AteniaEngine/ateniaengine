@@ -30,7 +30,9 @@ impl ModelArtifact {
         total_size_bytes: u64,
     ) -> Result<Self, ModelError> {
         if id.trim().is_empty() {
-            return Err(ModelError::InvalidMetadata("id must not be empty".to_string()));
+            return Err(ModelError::InvalidMetadata(
+                "id must not be empty".to_string(),
+            ));
         }
         if metadata.name.trim().is_empty() {
             return Err(ModelError::InvalidMetadata(
@@ -48,7 +50,9 @@ impl ModelArtifact {
             ));
         }
         if location.trim().is_empty() {
-            return Err(ModelError::InvalidPath("location must not be empty".to_string()));
+            return Err(ModelError::InvalidPath(
+                "location must not be empty".to_string(),
+            ));
         }
         if total_size_bytes == 0 {
             return Err(ModelError::InvalidSize(

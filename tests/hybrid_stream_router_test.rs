@@ -42,7 +42,10 @@ fn routes_gpu_compute_to_gpu_stream() {
 
     let bundle = StreamRouter::route_kernel(&mut exec, &kernel, &tiers, &snapshot, true);
 
-    assert_eq!(bundle.plan_target, atenia_engine::v13::execution_planner::ExecutionTarget::Gpu);
+    assert_eq!(
+        bundle.plan_target,
+        atenia_engine::v13::execution_planner::ExecutionTarget::Gpu
+    );
 
     exec.run_to_completion();
 
@@ -98,12 +101,8 @@ fn injects_prefetch_when_tensor_on_ssd() {
         .filter(|l| l.starts_with("RUN"))
         .collect();
 
-    let has_prefetch_run = runs
-        .iter()
-        .any(|l| l.contains("stream=SsdPrefetch"));
-    let has_compute_run = runs
-        .iter()
-        .any(|l| l.contains("name=ssd_kernel"));
+    let has_prefetch_run = runs.iter().any(|l| l.contains("stream=SsdPrefetch"));
+    let has_compute_run = runs.iter().any(|l| l.contains("name=ssd_kernel"));
 
     if !has_prefetch_run || !has_compute_run {
         panic!("expected both prefetch and compute RUN entries");

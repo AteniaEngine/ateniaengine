@@ -139,8 +139,16 @@ fn softmax_pos1_pattern() {
         expected_1,
         output[1]
     );
-    assert!(output[2].abs() < 1e-30, "pos1[2] should be ~0, got {}", output[2]);
-    assert!(output[3].abs() < 1e-30, "pos1[3] should be ~0, got {}", output[3]);
+    assert!(
+        output[2].abs() < 1e-30,
+        "pos1[2] should be ~0, got {}",
+        output[2]
+    );
+    assert!(
+        output[3].abs() < 1e-30,
+        "pos1[3] should be ~0, got {}",
+        output[3]
+    );
 }
 
 /// Sweep across the realistic range of attention scores in SmolLM2.

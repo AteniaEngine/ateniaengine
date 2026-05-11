@@ -33,7 +33,12 @@ fn policies_are_deterministic_for_same_input() {
     for policy in policies.iter() {
         let first = policy.evaluate(&input);
         let second = policy.evaluate(&input);
-        assert_eq!(first, second, "policy {} must be deterministic", policy.name());
+        assert_eq!(
+            first,
+            second,
+            "policy {} must be deterministic",
+            policy.name()
+        );
         assert_normalized(&first);
     }
 }
@@ -76,7 +81,9 @@ fn registry_registers_and_lists_all_policies() {
     assert_eq!(names, expected);
 
     for name in &expected {
-        let policy = registry.get(name).expect("policy must be present in registry");
+        let policy = registry
+            .get(name)
+            .expect("policy must be present in registry");
         let bias = policy.evaluate(&PolicyInput::default());
         assert_normalized(&bias);
     }

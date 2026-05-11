@@ -44,9 +44,7 @@ use atenia_engine::amm::vram_probe::{VramProbeApi, VramProbeError, VramSnapshot}
 use atenia_engine::tensor::{DType, Device, Layout, Tensor, TensorStorage};
 use atenia_engine::v15::policy::types::DecisionBias;
 use atenia_engine::v16::contract::constraints::{Constraints, RuntimeState};
-use atenia_engine::v16::contract::execution_contract::{
-    ExecutionBackend, ExecutionContract,
-};
+use atenia_engine::v16::contract::execution_contract::{ExecutionBackend, ExecutionContract};
 use atenia_engine::v16::guards::execution_guard::ExecutionGuard;
 use atenia_engine::v16::guards::guard_manager::GuardManager;
 use atenia_engine::v16::guards::simple_memory_pressure_guard::SimpleMemoryPressureGuard;
@@ -106,8 +104,7 @@ impl CpuProbeApi for FixedCpuProbe {
 // ---------------------------------------------------------------------
 
 fn test_cache_dir(label: &str) -> PathBuf {
-    let dir = std::env::temp_dir()
-        .join(format!("atenia_m3_e_11_6_{}_{}", label, Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("atenia_m3_e_11_6_{}_{}", label, Uuid::new_v4()));
     std::fs::create_dir_all(&dir).expect("create test cache dir");
     dir
 }
@@ -141,13 +138,7 @@ fn permissive_contract() -> ExecutionContract {
 }
 
 fn cpu_tensor(shape: Vec<usize>, data: Vec<f32>) -> Tensor {
-    let mut t = Tensor::with_layout(
-        shape,
-        0.0,
-        Device::CPU,
-        Layout::Contiguous,
-        DType::F32,
-    );
+    let mut t = Tensor::with_layout(shape, 0.0, Device::CPU, Layout::Contiguous, DType::F32);
     t.set_cpu_data(data);
     t
 }
@@ -179,8 +170,7 @@ fn make_context(
         Some(vram),
         Some(ram),
     ));
-    let guards: Vec<Box<dyn ExecutionGuard>> =
-        vec![Box::new(SimpleMemoryPressureGuard::new())];
+    let guards: Vec<Box<dyn ExecutionGuard>> = vec![Box::new(SimpleMemoryPressureGuard::new())];
     let gm = GuardManager::new(guards);
     ReactiveExecutionContext::new_without_gc(bus, permissive_contract(), gm)
         .with_cache_dir(cache_dir)
@@ -304,13 +294,7 @@ fn test_forward_reads_disk_tensor_transparently() {
 
     let mut gb = GraphBuilder::new();
     let x_id = gb.input();
-    let mut w = Tensor::with_layout(
-        vec![2, 1],
-        0.0,
-        Device::CPU,
-        Layout::Contiguous,
-        DType::F32,
-    );
+    let mut w = Tensor::with_layout(vec![2, 1], 0.0, Device::CPU, Layout::Contiguous, DType::F32);
     w.set_cpu_data(vec![3.0, 4.0]);
     let w_id = gb.parameter(w);
     let lin_id = gb.linear(x_id, w_id, None);
@@ -318,13 +302,8 @@ fn test_forward_reads_disk_tensor_transparently() {
     let mut g = gb.build();
 
     let input_tensor = {
-        let mut t = Tensor::with_layout(
-            vec![1, 2],
-            0.0,
-            Device::CPU,
-            Layout::Contiguous,
-            DType::F32,
-        );
+        let mut t =
+            Tensor::with_layout(vec![1, 2], 0.0, Device::CPU, Layout::Contiguous, DType::F32);
         t.set_cpu_data(vec![1.0, 2.0]);
         t
     };
@@ -518,7 +497,11 @@ fn test_dual_pressure_ignores_cpu_veto_end_to_end() {
 
     // Tensors reached disk.
     let (_, _, disk_count) = count_by_storage(&g);
-    assert!(disk_count >= 3, "expected all 3 parameters on Disk, got {}", disk_count);
+    assert!(
+        disk_count >= 3,
+        "expected all 3 parameters on Disk, got {}",
+        disk_count
+    );
 
     cleanup(&dir);
 }

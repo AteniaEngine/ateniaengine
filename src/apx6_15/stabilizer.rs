@@ -1,7 +1,7 @@
 use std::sync::{OnceLock, RwLock};
 
 use crate::apx6_10::GlobalDecision;
-use crate::apx6_11::runtime_policy::{set_runtime_policy, FusionRuntimePolicy};
+use crate::apx6_11::runtime_policy::{FusionRuntimePolicy, set_runtime_policy};
 
 /// Small temperature wrapper for APX 6.15, built on top of 6.14.
 #[derive(Debug, Clone, Copy)]
@@ -26,7 +26,9 @@ pub struct ApxStabilizer {
 
 impl ApxStabilizer {
     pub fn new() -> Self {
-        Self { last_decision: None }
+        Self {
+            last_decision: None,
+        }
     }
 
     /// Main entrypoint: decide "who is in charge" for this step.
@@ -59,12 +61,9 @@ impl ApxStabilizer {
 
         // 3. Update runtime policy without touching forward/backward
         match sampled {
-            GlobalDecision::PreferFull =>
-                set_runtime_policy(FusionRuntimePolicy::PreferFull),
-            GlobalDecision::PreferQKV =>
-                set_runtime_policy(FusionRuntimePolicy::PreferQKV),
-            GlobalDecision::NoPreference =>
-                set_runtime_policy(FusionRuntimePolicy::Baseline),
+            GlobalDecision::PreferFull => set_runtime_policy(FusionRuntimePolicy::PreferFull),
+            GlobalDecision::PreferQKV => set_runtime_policy(FusionRuntimePolicy::PreferQKV),
+            GlobalDecision::NoPreference => set_runtime_policy(FusionRuntimePolicy::Baseline),
         }
 
         self.last_decision = Some(sampled);

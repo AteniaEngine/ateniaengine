@@ -1,4 +1,6 @@
-use atenia_engine::v13::execution_planner::{DecisionRule, ExecutionTarget, HybridExecutionPlanner};
+use atenia_engine::v13::execution_planner::{
+    DecisionRule, ExecutionTarget, HybridExecutionPlanner,
+};
 use atenia_engine::v13::kernel_model::{KernelKind, KernelProfile};
 use atenia_engine::v13::memory_types::{MemorySnapshot, MemoryTier, TierStatus};
 
@@ -54,7 +56,10 @@ fn trace_records_multiple_rules_until_match() {
         Some(trace) => {
             assert_eq!(
                 trace.evaluated_rules,
-                vec![DecisionRule::GpuNotAvailable, DecisionRule::KernelNotGpuFriendly],
+                vec![
+                    DecisionRule::GpuNotAvailable,
+                    DecisionRule::KernelNotGpuFriendly
+                ],
             );
             assert_eq!(trace.winning_rule, DecisionRule::KernelNotGpuFriendly);
             assert_eq!(trace.target, ExecutionTarget::Cpu);

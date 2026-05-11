@@ -55,14 +55,7 @@ fn microkernel_8x8(
     }
 }
 
-pub fn matmul_tiled_6_5(
-    a: &[f32],
-    b: &[f32],
-    out: &mut [f32],
-    m: usize,
-    k: usize,
-    n: usize,
-) {
+pub fn matmul_tiled_6_5(a: &[f32], b: &[f32], out: &mut [f32], m: usize, k: usize, n: usize) {
     let bm = 64usize;
     let bn = 64usize;
 
@@ -119,13 +112,7 @@ pub fn matmul_tiled_6_5(
                     let c_ptr = unsafe { out.as_mut_ptr().add(ib * n + jb) };
 
                     unsafe {
-                        microkernel_8x8(
-                            a_panel.as_ptr(),
-                            b_panel.as_ptr(),
-                            c_ptr,
-                            n,
-                            k_local,
-                        );
+                        microkernel_8x8(a_panel.as_ptr(), b_panel.as_ptr(), c_ptr, n, k_local);
                     }
                 }
             }

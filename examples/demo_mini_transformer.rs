@@ -1,8 +1,10 @@
 use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::amg::nodes::NodeType;
-use atenia_engine::nn::transformer::{build_transformer_block, TransformerBlockHandles, TransformerConfig};
+use atenia_engine::nn::transformer::{
+    TransformerBlockHandles, TransformerConfig, build_transformer_block,
+};
 use atenia_engine::optim::adamw::AdamW;
-use atenia_engine::tensor::{Device, DType, Layout, Tensor};
+use atenia_engine::tensor::{DType, Device, Layout, Tensor};
 use atenia_engine::training::trainer_v2::TrainerV2;
 
 fn sample_input(cfg: &TransformerConfig) -> Tensor {
@@ -51,7 +53,13 @@ fn setup_trainer(cfg: &TransformerConfig) -> (TrainerV2, Tensor) {
     let total_sum_id = graph.add_node_of_type(NodeType::MatMul, vec![ones_seq_id, sum_features_id]);
 
     let mean_scale = 1.0f32 / (cfg.d_model * cfg.seq_len) as f32;
-    let scale_tensor = Tensor::with_layout(vec![1, 1], mean_scale, Device::CPU, Layout::Contiguous, DType::F32);
+    let scale_tensor = Tensor::with_layout(
+        vec![1, 1],
+        mean_scale,
+        Device::CPU,
+        Layout::Contiguous,
+        DType::F32,
+    );
     let scale_id = graph.add_parameter(scale_tensor);
     let loss_id = graph.add_node_of_type(NodeType::Mul, vec![total_sum_id, scale_id]);
     let _out_id = graph.add_node_of_type(NodeType::Output, vec![loss_id]);
@@ -80,5 +88,8 @@ fn main() {
         }
     }
 
-    println!("Entrenamiento finalizado. Pérdida final = {:.6}", final_loss);
+    println!(
+        "Entrenamiento finalizado. Pérdida final = {:.6}",
+        final_loss
+    );
 }

@@ -24,20 +24,50 @@ pub struct AbortFlag {
 }
 
 impl AbortFlag {
-    pub fn new() -> Self { Self { aborted: false } }
-    pub fn abort(&mut self) { self.aborted = true; }
-    pub fn is_aborted(&self) -> bool { self.aborted }
+    pub fn new() -> Self {
+        Self { aborted: false }
+    }
+    pub fn abort(&mut self) {
+        self.aborted = true;
+    }
+    pub fn is_aborted(&self) -> bool {
+        self.aborted
+    }
 }
 
-fn idx_nchw(n: usize, c: usize, h: usize, w: usize, c_in: usize, h_in: usize, w_in: usize) -> usize {
+fn idx_nchw(
+    n: usize,
+    c: usize,
+    h: usize,
+    w: usize,
+    c_in: usize,
+    h_in: usize,
+    w_in: usize,
+) -> usize {
     (((n * c_in + c) * h_in) + h) * w_in + w
 }
 
-fn idx_nchw_out(n: usize, c: usize, h: usize, w: usize, c_out: usize, h_out: usize, w_out: usize) -> usize {
+fn idx_nchw_out(
+    n: usize,
+    c: usize,
+    h: usize,
+    w: usize,
+    c_out: usize,
+    h_out: usize,
+    w_out: usize,
+) -> usize {
     (((n * c_out + c) * h_out) + h) * w_out + w
 }
 
-fn idx_oihw(oc: usize, ic: usize, kh: usize, kw: usize, c_in: usize, k_h: usize, k_w: usize) -> usize {
+fn idx_oihw(
+    oc: usize,
+    ic: usize,
+    kh: usize,
+    kw: usize,
+    c_in: usize,
+    k_h: usize,
+    k_w: usize,
+) -> usize {
     (((oc * c_in + ic) * k_h) + kh) * k_w + kw
 }
 
@@ -110,11 +140,17 @@ pub fn conv2d_cpu(
     let mut out_data = vec![0.0_f32; n * c_out * h_out * w_out];
 
     for n_idx in 0..n {
-        if abort_flag.is_aborted() { return Err(ConvError::Aborted); }
+        if abort_flag.is_aborted() {
+            return Err(ConvError::Aborted);
+        }
         for oc in 0..c_out {
-            if abort_flag.is_aborted() { return Err(ConvError::Aborted); }
+            if abort_flag.is_aborted() {
+                return Err(ConvError::Aborted);
+            }
             for oh in 0..h_out {
-                if abort_flag.is_aborted() { return Err(ConvError::Aborted); }
+                if abort_flag.is_aborted() {
+                    return Err(ConvError::Aborted);
+                }
                 for ow in 0..w_out {
                     let mut acc = 0.0_f32;
                     for ic in 0..c_in {
@@ -155,5 +191,8 @@ pub fn conv2d_cpu(
         }
     }
 
-    Ok(Tensor { shape: vec![n, c_out, h_out, w_out], data: out_data })
+    Ok(Tensor {
+        shape: vec![n, c_out, h_out, w_out],
+        data: out_data,
+    })
 }

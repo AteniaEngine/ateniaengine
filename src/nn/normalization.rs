@@ -16,17 +16,10 @@ pub fn rms_norm(x: &Tensor, eps: f32) -> Tensor {
 
     let cols = last_dim;
 
-    let mut out = Tensor::with_layout(
-        x.shape.clone(),
-        0.0,
-        x.device,
-        Layout::Contiguous,
-        x.dtype,
-    );
+    let mut out = Tensor::with_layout(x.shape.clone(), 0.0, x.device, Layout::Contiguous, x.dtype);
 
     let x_slice = x.as_cpu_slice();
-    out
-        .as_cpu_slice_mut()
+    out.as_cpu_slice_mut()
         .par_chunks_mut(cols)
         .enumerate()
         .for_each(|(row, chunk)| {
@@ -48,19 +41,17 @@ pub fn rms_norm(x: &Tensor, eps: f32) -> Tensor {
 // ================================================================
 #[allow(dead_code)]
 pub fn rmsnorm_backward_parallel(x: &Tensor, grad_out: &Tensor) -> Tensor {
-    assert!(x.shape.len() >= 1, "rmsnorm_backward_parallel: tensor must have at least 1 dim");
+    assert!(
+        x.shape.len() >= 1,
+        "rmsnorm_backward_parallel: tensor must have at least 1 dim"
+    );
     let cols = *x
         .shape
         .last()
         .expect("rmsnorm_backward_parallel requires last dimension");
 
-    let mut grad_in = Tensor::with_layout(
-        x.shape.clone(),
-        0.0,
-        x.device,
-        Layout::Contiguous,
-        x.dtype,
-    );
+    let mut grad_in =
+        Tensor::with_layout(x.shape.clone(), 0.0, x.device, Layout::Contiguous, x.dtype);
 
     let x_slice = x.as_cpu_slice();
     let grad_out_slice = grad_out.as_cpu_slice();

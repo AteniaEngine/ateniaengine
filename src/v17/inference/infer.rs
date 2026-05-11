@@ -4,9 +4,9 @@ use crate::v15::policy::preferences::user_preferences::UserPreferences;
 use crate::v15::policy::types::DecisionBias;
 use crate::v16::contract::constraints::{Constraint, ConstraintKind, Constraints, RuntimeState};
 use crate::v16::contract::execution_contract::{ExecutionBackend, ExecutionContract};
+use crate::v16::executor::executor_state::ExecutorStatus;
 use crate::v16::feedback::event_emitter::EventEmitter;
 use crate::v16::feedback::feedback_errors::FeedbackError;
-use crate::v16::executor::executor_state::ExecutorStatus;
 use crate::v16::planner::execution_planner::ExecutionPlanner;
 use crate::v17::adapter::adapter_context::AdapterContext;
 use crate::v17::adapter::adapter_errors::AdapterError;
@@ -16,8 +16,8 @@ use crate::v17::compute::tensor::Tensor;
 use crate::v17::inference::inference_context::InferenceContext;
 use crate::v17::inference::inference_errors::InferenceError;
 use crate::v17::inference::inference_result::InferenceResult;
-use crate::v17::loader::loader_policy::LoaderPolicy;
 use crate::v17::loader::loader_errors::LoaderError;
+use crate::v17::loader::loader_policy::LoaderPolicy;
 use crate::v17::loader::model_loader::ModelLoader;
 use crate::v17::model::model_artifact::ModelArtifact;
 
@@ -72,44 +72,53 @@ fn build_inference_context(
     }
 
     let policy = LoaderPolicy::LoadAll;
-    let loaded_model = ModelLoader::load(artifact, &policy, 1_048_576)
-        .map_err(|e| match e {
-            LoaderError::FileNotFound(p) => InferenceError::LoadFailed(format!("file not found: {p}")),
-            LoaderError::SizeMismatch { expected, actual } => {
-                InferenceError::LoadFailed(format!("size mismatch: expected {}, actual {}", expected, actual))
-            }
-            LoaderError::InsufficientMemory { required, available } => InferenceError::LoadFailed(format!(
-                "insufficient memory: required {}, available {}",
-                required, available
-            )),
-            LoaderError::PolicyDenied(msg) | LoaderError::IoError(msg) => {
-                InferenceError::LoadFailed(format!("io/policy error: {msg}"))
-            }
-            // M4-a additions: InvalidFormat and UnsupportedDType are
-            // produced by the safetensors reader, which is not yet
-            // wired into this inference entrypoint (M4-b/c will add
-            // that). Route them through the same LoadFailed variant
-            // so the match stays exhaustive.
-            LoaderError::InvalidFormat(msg) => {
-                InferenceError::LoadFailed(format!("invalid model format: {msg}"))
-            }
-            LoaderError::UnsupportedDType(msg) => {
-                InferenceError::LoadFailed(format!("unsupported dtype: {msg}"))
-            }
-            LoaderError::ShapeMismatch { tensor_name, expected, actual } => {
-                InferenceError::LoadFailed(format!(
-                    "shape mismatch for '{}': expected {:?}, got {:?}",
-                    tensor_name, expected, actual
-                ))
-            }
-        })?;
+    let loaded_model = ModelLoader::load(artifact, &policy, 1_048_576).map_err(|e| match e {
+        LoaderError::FileNotFound(p) => InferenceError::LoadFailed(format!("file not found: {p}")),
+        LoaderError::SizeMismatch { expected, actual } => InferenceError::LoadFailed(format!(
+            "size mismatch: expected {}, actual {}",
+            expected, actual
+        )),
+        LoaderError::InsufficientMemory {
+            required,
+            available,
+        } => InferenceError::LoadFailed(format!(
+            "insufficient memory: required {}, available {}",
+            required, available
+        )),
+        LoaderError::PolicyDenied(msg) | LoaderError::IoError(msg) => {
+            InferenceError::LoadFailed(format!("io/policy error: {msg}"))
+        }
+        // M4-a additions: InvalidFormat and UnsupportedDType are
+        // produced by the safetensors reader, which is not yet
+        // wired into this inference entrypoint (M4-b/c will add
+        // that). Route them through the same LoadFailed variant
+        // so the match stays exhaustive.
+        LoaderError::InvalidFormat(msg) => {
+            InferenceError::LoadFailed(format!("invalid model format: {msg}"))
+        }
+        LoaderError::UnsupportedDType(msg) => {
+            InferenceError::LoadFailed(format!("unsupported dtype: {msg}"))
+        }
+        LoaderError::ShapeMismatch {
+            tensor_name,
+            expected,
+            actual,
+        } => InferenceError::LoadFailed(format!(
+            "shape mismatch for '{}': expected {:?}, got {:?}",
+            tensor_name, expected, actual
+        )),
+    })?;
 
     let contract = make_default_contract();
     let plan = ExecutionPlanner::build_plan(&contract)
         .map_err(|e| InferenceError::PlanningError(format!("planner: {:?}", e)))?;
 
     let backend = CpuBackend::new();
-    let adapter_ctx = AdapterContext::new(loaded_model.clone(), contract.clone(), GuardAction::Continue);
+    let adapter_ctx = AdapterContext::new(
+        loaded_model.clone(),
+        contract.clone(),
+        GuardAction::Continue,
+    );
 
     Ok(InferenceContext {
         artifact: artifact.clone(),
@@ -126,7 +135,15 @@ use crate::v16::guards::guard_action::GuardAction;
 fn build_feedback_and_explanation(
     ctx: &InferenceContext,
     executed_steps: &[usize],
-) -> Result<(Vec<crate::v16::feedback::execution_event::ExecutionEvent>, crate::v16::feedback::execution_outcome::ExecutionOutcome, String, String), InferenceError> {
+) -> Result<
+    (
+        Vec<crate::v16::feedback::execution_event::ExecutionEvent>,
+        crate::v16::feedback::execution_outcome::ExecutionOutcome,
+        String,
+        String,
+    ),
+    InferenceError,
+> {
     let (events, outcome) = EventEmitter::emit_for_snapshot(
         &ctx.plan,
         executed_steps,
@@ -146,7 +163,9 @@ fn build_feedback_and_explanation(
     )
     .map_err(|e| InferenceError::FeedbackError(format!("explain: {:?}", e)))?;
 
-    use crate::v16::explain::explanation_formatter::{format_explanation_json, format_explanation_text};
+    use crate::v16::explain::explanation_formatter::{
+        format_explanation_json, format_explanation_text,
+    };
     let text = format_explanation_text(&explanation);
     let json = format_explanation_json(&explanation);
 

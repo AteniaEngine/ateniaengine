@@ -48,9 +48,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::nn::llama::{
-    build_llama, llama_weight_mapper, LlamaConfig, LlamaRuntime,
-};
+use atenia_engine::nn::llama::{LlamaConfig, LlamaRuntime, build_llama, llama_weight_mapper};
 use atenia_engine::tensor::disk_tier;
 use atenia_engine::tensor::tensor::{Tensor, TensorStorage};
 use atenia_engine::v17::loader::safetensors_reader::SafetensorsReader;
@@ -59,8 +57,9 @@ const TOKENS: [f32; 4] = [1.0, 100.0, 200.0, 300.0];
 const ADR_004_THRESHOLD: f64 = 0.5;
 
 fn load_f64_fixture(rel_dir: &str) -> Vec<f64> {
-    let path =
-        PathBuf::from("tests/fixtures").join(rel_dir).join("expected_logits_f64.json");
+    let path = PathBuf::from("tests/fixtures")
+        .join(rel_dir)
+        .join("expected_logits_f64.json");
     let s = fs::read_to_string(&path)
         .unwrap_or_else(|_| panic!("F64 fixture missing: {}", path.display()));
     let json: serde_json::Value = serde_json::from_str(&s).expect("malformed F64 fixture");
@@ -91,7 +90,10 @@ fn run_one_model(
     expected_param_count: usize,
     vocab_size: usize,
 ) -> (f64, [bool; 4], u64, f32, f32) {
-    println!("\n=== {} F64 re-validation under M4.7.4 disk spill ===", label);
+    println!(
+        "\n=== {} F64 re-validation under M4.7.4 disk spill ===",
+        label
+    );
 
     let path =
         env::var(safetensors_env_var).unwrap_or_else(|_| panic!("Set {}", safetensors_env_var));
@@ -111,11 +113,14 @@ fn run_one_model(
     assert_eq!(handles.param_ids.len(), expected_param_count);
 
     // Load with BF16 storage (same as M4.7.2.e / M4.7.3.f).
-    println!("Loading {} weights with store_params_as_bf16 = true ...", label);
+    println!(
+        "Loading {} weights with store_params_as_bf16 = true ...",
+        label
+    );
     let load_start = Instant::now();
     let reader = SafetensorsReader::open(Path::new(&path)).expect("open safetensors");
-    let mut mapper = llama_weight_mapper(&config, &handles.param_names, &handles.param_ids)
-        .expect("mapper");
+    let mut mapper =
+        llama_weight_mapper(&config, &handles.param_names, &handles.param_ids).expect("mapper");
     mapper.set_store_params_as_bf16(true);
     let report = mapper.load_into(&mut graph, &reader).expect("load");
     drop(reader);
@@ -141,23 +146,19 @@ fn run_one_model(
     assert!(
         migration.tensors_migrated >= expected_param_count - 5,
         "expected near-{} tensors spilled, got {}",
-        expected_param_count, migration.tensors_migrated
+        expected_param_count,
+        migration.tensors_migrated
     );
     assert!(migration.failure.is_none());
 
     // Sum disk footprint.
     let mut total_disk_bytes: u64 = 0;
     for &id in &handles.param_ids {
-        if let TensorStorage::Disk(h) =
-            &graph.nodes[id].output.as_ref().expect("param").storage
-        {
+        if let TensorStorage::Disk(h) = &graph.nodes[id].output.as_ref().expect("param").storage {
             total_disk_bytes += fs::metadata(h.path()).expect("disk meta").len();
         }
     }
-    println!(
-        "Disk footprint: {:.1} MB",
-        total_disk_bytes as f64 / 1e6
-    );
+    println!("Disk footprint: {:.1} MB", total_disk_bytes as f64 / 1e6);
 
     // Forward.
     let tokens = Tensor::new_cpu(vec![1, 4], TOKENS.to_vec());

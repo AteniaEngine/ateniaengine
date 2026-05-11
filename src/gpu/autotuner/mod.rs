@@ -45,13 +45,7 @@ pub fn autotune_matmul(
     }
 
     // Candidate layouts
-    let candidates = [
-        (8, 8),
-        (16, 16),
-        (32, 8),
-        (8, 32),
-        (32, 16),
-    ];
+    let candidates = [(8, 8), (16, 16), (32, 8), (8, 32), (32, 16)];
 
     let mut best: Option<(f32, TuningResult)> = None;
 
@@ -62,14 +56,36 @@ pub fn autotune_matmul(
         let t = runner((bx, by, gx, gy));
 
         match best {
-            None => best = Some((t, TuningResult { block_x: bx, block_y: by, grid_x: gx, grid_y: gy })),
-            Some((bt, _)) if t < bt =>
-                best = Some((t, TuningResult { block_x: bx, block_y: by, grid_x: gx, grid_y: gy })),
+            None => {
+                best = Some((
+                    t,
+                    TuningResult {
+                        block_x: bx,
+                        block_y: by,
+                        grid_x: gx,
+                        grid_y: gy,
+                    },
+                ))
+            }
+            Some((bt, _)) if t < bt => {
+                best = Some((
+                    t,
+                    TuningResult {
+                        block_x: bx,
+                        block_y: by,
+                        grid_x: gx,
+                        grid_y: gy,
+                    },
+                ))
+            }
             _ => {}
         }
     }
 
     let final_best = best.unwrap().1;
-    autotuner_cache().lock().unwrap().insert(key, final_best.clone());
+    autotuner_cache()
+        .lock()
+        .unwrap()
+        .insert(key, final_best.clone());
     final_best
 }

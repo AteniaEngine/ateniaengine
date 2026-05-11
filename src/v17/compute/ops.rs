@@ -10,9 +10,13 @@ pub fn add(a: &Tensor, b: &Tensor) -> Result<Tensor, ComputeError> {
             "add: shapes must match".to_string(),
         ));
     }
-    let data: Vec<f32> = a.data.iter().zip(b.data.iter()).map(|(x, y)| x + y).collect();
-    Tensor::new(a.shape.clone(), data)
-        .map_err(|e| ComputeError::ShapeMismatch(format!("add: {e}")))
+    let data: Vec<f32> = a
+        .data
+        .iter()
+        .zip(b.data.iter())
+        .map(|(x, y)| x + y)
+        .collect();
+    Tensor::new(a.shape.clone(), data).map_err(|e| ComputeError::ShapeMismatch(format!("add: {e}")))
 }
 
 /// Matrix multiplication for 2D tensors.
@@ -45,8 +49,7 @@ pub fn matmul(a: &Tensor, b: &Tensor) -> Result<Tensor, ComputeError> {
         }
     }
 
-    Tensor::new(vec![m, n], out)
-        .map_err(|e| ComputeError::ShapeMismatch(format!("matmul: {e}")))
+    Tensor::new(vec![m, n], out).map_err(|e| ComputeError::ShapeMismatch(format!("matmul: {e}")))
 }
 
 /// ReLU activation applied elementwise.

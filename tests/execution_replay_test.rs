@@ -136,13 +136,22 @@ fn replay_is_deterministic() {
     let replay_ctx1 = ReplayContext::new("replay1".to_string(), ctx1);
     let replay_ctx2 = ReplayContext::new("replay2".to_string(), ctx2);
 
-    let mut r1 = ExecutionReplay::new(contract.clone(), plan.clone(), events.clone(), outcome.clone(), replay_ctx1);
+    let mut r1 = ExecutionReplay::new(
+        contract.clone(),
+        plan.clone(),
+        events.clone(),
+        outcome.clone(),
+        replay_ctx1,
+    );
     let mut r2 = ExecutionReplay::new(contract, plan, events, outcome, replay_ctx2);
 
     r1.replay().expect("first replay");
     r2.replay().expect("second replay");
 
-    assert_eq!(r1.context.context.runtime.calls, r2.context.context.runtime.calls);
+    assert_eq!(
+        r1.context.context.runtime.calls,
+        r2.context.context.runtime.calls
+    );
 }
 
 #[test]

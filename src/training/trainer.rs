@@ -15,10 +15,8 @@ pub struct Trainer {
 
 impl Trainer {
     pub fn new(config: TrainerConfig) -> Self {
-        let batch_manager = BatchManager::new(
-            config.memory_limit_bytes,
-            config.safety_margin_bytes,
-        );
+        let batch_manager =
+            BatchManager::new(config.memory_limit_bytes, config.safety_margin_bytes);
 
         Self {
             config,
@@ -36,9 +34,7 @@ impl Trainer {
 
     /// Simulated training loop using adaptive batch sizes.
     pub fn train(&self, dataset: &Vec<Tensor>, sample_template: &Tensor) -> Vec<f32> {
-        let batch_size = self
-            .batch_manager
-            .estimate_max_batch_size(sample_template);
+        let batch_size = self.batch_manager.estimate_max_batch_size(sample_template);
 
         let mut losses = Vec::new();
 

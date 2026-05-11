@@ -9,12 +9,12 @@
 use std::collections::HashMap;
 
 use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::nn::mini_flux::{build_mini_flux, MiniFluxConfig};
+use atenia_engine::nn::mini_flux::{MiniFluxConfig, build_mini_flux};
 use atenia_engine::v17::loader::loader_errors::LoaderError;
 use atenia_engine::v17::loader::safetensors_reader::SafetensorsReader;
 use atenia_engine::v17::loader::weight_mapper::WeightMapper;
-use safetensors::tensor::TensorView;
 use safetensors::Dtype as StDtype;
+use safetensors::tensor::TensorView;
 
 fn tiny_cfg() -> MiniFluxConfig {
     MiniFluxConfig {
@@ -31,7 +31,10 @@ fn tiny_cfg() -> MiniFluxConfig {
 /// return `(graph, handles)`.
 fn fresh_mini_flux(
     cfg: &MiniFluxConfig,
-) -> (atenia_engine::amg::graph::Graph, atenia_engine::nn::mini_flux::MiniFluxHandles) {
+) -> (
+    atenia_engine::amg::graph::Graph,
+    atenia_engine::nn::mini_flux::MiniFluxHandles,
+) {
     let mut gb = GraphBuilder::new();
     let tokens_id = gb.input();
     let mut graph = gb.build();
@@ -166,8 +169,7 @@ fn shape_mismatch_surfaces_actionable_error() {
     let buffer = safetensors::serialize(&views, &None).unwrap();
 
     let mapper =
-        WeightMapper::from_param_names_and_ids(&handles.param_names, &handles.param_ids)
-            .unwrap();
+        WeightMapper::from_param_names_and_ids(&handles.param_names, &handles.param_ids).unwrap();
     let reader = SafetensorsReader::from_bytes(buffer).unwrap();
 
     let err = mapper
@@ -215,8 +217,7 @@ fn missing_tensors_reported_not_errored() {
     let buffer = safetensors::serialize(&views, &None).unwrap();
 
     let mapper =
-        WeightMapper::from_param_names_and_ids(&handles.param_names, &handles.param_ids)
-            .unwrap();
+        WeightMapper::from_param_names_and_ids(&handles.param_names, &handles.param_ids).unwrap();
     let reader = SafetensorsReader::from_bytes(buffer).unwrap();
     let report = mapper.load_into(&mut graph, &reader).unwrap();
 
@@ -258,8 +259,7 @@ fn extra_tensors_in_reader_reported_as_skipped() {
     let buffer = safetensors::serialize(&views, &None).unwrap();
 
     let mapper =
-        WeightMapper::from_param_names_and_ids(&handles.param_names, &handles.param_ids)
-            .unwrap();
+        WeightMapper::from_param_names_and_ids(&handles.param_names, &handles.param_ids).unwrap();
     let reader = SafetensorsReader::from_bytes(buffer).unwrap();
     let report = mapper.load_into(&mut graph, &reader).unwrap();
 
@@ -308,8 +308,12 @@ fn bf16_tensor_loads_correctly_after_m4d() {
         expected_after_truncate.push(f32::from_bits((top16 as u32) << 16));
     }
 
-    let view =
-        TensorView::new(StDtype::BF16, vec![cfg.vocab_size, cfg.d_model], &bf16_bytes).unwrap();
+    let view = TensorView::new(
+        StDtype::BF16,
+        vec![cfg.vocab_size, cfg.d_model],
+        &bf16_bytes,
+    )
+    .unwrap();
     let mut views: HashMap<String, TensorView> = HashMap::new();
     views.insert("embedding".to_string(), view);
     let buffer = safetensors::serialize(&views, &None).unwrap();
@@ -326,8 +330,7 @@ fn bf16_tensor_loads_correctly_after_m4d() {
     }
 
     let mapper =
-        WeightMapper::from_param_names_and_ids(&handles.param_names, &handles.param_ids)
-            .unwrap();
+        WeightMapper::from_param_names_and_ids(&handles.param_names, &handles.param_ids).unwrap();
     let reader = SafetensorsReader::from_bytes(buffer).unwrap();
     let report = mapper
         .load_into(&mut graph, &reader)
@@ -341,7 +344,11 @@ fn bf16_tensor_loads_correctly_after_m4d() {
         .as_ref()
         .unwrap()
         .as_cpu_slice();
-    for (i, (got, expected)) in loaded_values.iter().zip(expected_after_truncate.iter()).enumerate() {
+    for (i, (got, expected)) in loaded_values
+        .iter()
+        .zip(expected_after_truncate.iter())
+        .enumerate()
+    {
         assert_eq!(
             got.to_bits(),
             expected.to_bits(),

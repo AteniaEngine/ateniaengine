@@ -1,5 +1,5 @@
-﻿use atenia_engine::tensor::{Tensor, Device};
 use atenia_engine::config::get_runtime_flags;
+use atenia_engine::tensor::{Device, Tensor};
 
 #[test]
 fn apx_7_1_ws_matmul_matches_seq() {
@@ -21,12 +21,20 @@ fn apx_7_1_ws_matmul_matches_seq() {
     let out_ws = a.matmul_parallel_ws(&b);
 
     let mut max_diff = 0.0f32;
-    for (x, y) in out_seq.as_cpu_slice().iter().zip(out_ws.as_cpu_slice().iter()) {
+    for (x, y) in out_seq
+        .as_cpu_slice()
+        .iter()
+        .zip(out_ws.as_cpu_slice().iter())
+    {
         let d = (x - y).abs();
         if d > max_diff {
             max_diff = d;
         }
     }
 
-    assert!(max_diff < 1e-6, "WS must match sequential, max diff = {}", max_diff);
+    assert!(
+        max_diff < 1e-6,
+        "WS must match sequential, max diff = {}",
+        max_diff
+    );
 }

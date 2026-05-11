@@ -1,15 +1,17 @@
 use crate::v16::contract::constraints::{Constraint, ConstraintKind, Constraints, RuntimeState};
 use crate::v16::contract::execution_contract::{ExecutionBackend, ExecutionContract};
-use crate::v16::planner::execution_planner::ExecutionPlanner;
 use crate::v16::planner::execution_plan::ExecutionPlan;
-use crate::v17::compute::tensor::Tensor;
+use crate::v16::planner::execution_planner::ExecutionPlanner;
 use crate::v17::cnn::activation::relu;
 use crate::v17::cnn::bias::add_bias;
-use crate::v17::cnn::conv2d::{conv2d_cpu, Conv2DParams, AbortFlag};
-use crate::v17::cnn::maxpool2d::{maxpool2d_cpu, MaxPool2DParams};
-use crate::v17::cnn::cnn_adapter::{CNNExecutionAdapter, CNNExecutionPlan, CNNGraph, CNNLayer, CNNLayerKind, CNNAdapterError};
+use crate::v17::cnn::cnn_adapter::{
+    CNNAdapterError, CNNExecutionAdapter, CNNExecutionPlan, CNNGraph, CNNLayer, CNNLayerKind,
+};
+use crate::v17::cnn::conv2d::{AbortFlag, Conv2DParams, conv2d_cpu};
+use crate::v17::cnn::maxpool2d::{MaxPool2DParams, maxpool2d_cpu};
 use crate::v17::cnn::mnist::mnist_input::mnist_synthetic_input;
 use crate::v17::cnn::mnist::mnist_model::MnistCNNModel;
+use crate::v17::compute::tensor::Tensor;
 use crate::v17::snapshot::execution_snapshot::ExecutionSnapshot;
 use crate::v17::snapshot::snapshot_hash::hash_str;
 
@@ -22,7 +24,7 @@ pub enum MnistRunnerError {
 
 #[derive(Debug, Clone)]
 pub struct MnistInferenceResult {
-    pub logits: Tensor,          // [1, 10]
+    pub logits: Tensor, // [1, 10]
     pub predicted_digit: usize,
     pub cnn_plan: CNNExecutionPlan,
     pub logical_plan: ExecutionPlan,
@@ -108,10 +110,22 @@ fn flatten_nchw_to_nc(input: &Tensor) -> Tensor {
 fn build_cnn_graph() -> CNNGraph {
     CNNGraph {
         layers: vec![
-            CNNLayer { name: "conv2d".to_string(), kind: CNNLayerKind::Conv2D },
-            CNNLayer { name: "bias".to_string(), kind: CNNLayerKind::Bias },
-            CNNLayer { name: "relu".to_string(), kind: CNNLayerKind::ReLU },
-            CNNLayer { name: "maxpool".to_string(), kind: CNNLayerKind::MaxPool2D },
+            CNNLayer {
+                name: "conv2d".to_string(),
+                kind: CNNLayerKind::Conv2D,
+            },
+            CNNLayer {
+                name: "bias".to_string(),
+                kind: CNNLayerKind::Bias,
+            },
+            CNNLayer {
+                name: "relu".to_string(),
+                kind: CNNLayerKind::ReLU,
+            },
+            CNNLayer {
+                name: "maxpool".to_string(),
+                kind: CNNLayerKind::MaxPool2D,
+            },
         ],
     }
 }
@@ -131,9 +145,18 @@ fn run_cnn_pipeline(
     let mut x = mnist_synthetic_input();
 
     // Step 1: Conv2D
-    let conv_params = Conv2DParams { stride: (1, 1), padding: (1, 1) };
-    x = conv2d_cpu(&x, &model.conv_weights, Some(&model.conv_bias), &conv_params, abort_flag)
-        .map_err(|_| MnistRunnerError::InvalidState("conv2d failed".to_string()))?;
+    let conv_params = Conv2DParams {
+        stride: (1, 1),
+        padding: (1, 1),
+    };
+    x = conv2d_cpu(
+        &x,
+        &model.conv_weights,
+        Some(&model.conv_bias),
+        &conv_params,
+        abort_flag,
+    )
+    .map_err(|_| MnistRunnerError::InvalidState("conv2d failed".to_string()))?;
 
     // Step 2: Bias (no-op in this synthetic model as bias is already applied in conv)
     // Included for structural completeness; use zero bias tensor.
@@ -146,7 +169,11 @@ fn run_cnn_pipeline(
         .map_err(|_| MnistRunnerError::InvalidState("relu failed".to_string()))?;
 
     // Step 4: MaxPool2D 2x2 stride 2
-    let pool_params = MaxPool2DParams { kernel: (2, 2), stride: (2, 2), padding: (0, 0) };
+    let pool_params = MaxPool2DParams {
+        kernel: (2, 2),
+        stride: (2, 2),
+        padding: (0, 0),
+    };
     x = maxpool2d_cpu(&x, &pool_params, abort_flag)
         .map_err(|_| MnistRunnerError::InvalidState("maxpool failed".to_string()))?;
 

@@ -2,11 +2,17 @@ use atenia_engine::nn::linear::linear;
 use atenia_engine::nn::softmax::softmax_last_dim;
 use atenia_engine::tensor::ops::batch_matmul::batch_matmul_parallel;
 use atenia_engine::tensor::ops::matmul_cpu::matmul_parallel;
-use atenia_engine::tensor::{Device, DType, Layout, Tensor};
+use atenia_engine::tensor::{DType, Device, Layout, Tensor};
 
 fn tensor_from_fn(shape: (usize, usize), f: impl Fn(usize, usize) -> f32) -> Tensor {
     let (rows, cols) = shape;
-    let mut t = Tensor::with_layout(vec![rows, cols], 0.0, Device::CPU, Layout::Contiguous, DType::F32);
+    let mut t = Tensor::with_layout(
+        vec![rows, cols],
+        0.0,
+        Device::CPU,
+        Layout::Contiguous,
+        DType::F32,
+    );
     {
         let slice = t.as_cpu_slice_mut();
         for r in 0..rows {
@@ -41,8 +47,18 @@ fn serial_matmul(a: &Tensor, b: &Tensor) -> Tensor {
 fn serial_softmax(x: &Tensor) -> Tensor {
     let ndim = x.shape.len();
     let cols = x.shape[ndim - 1];
-    let rows = if ndim == 1 { 1 } else { x.shape[..ndim - 1].iter().product() };
-    let mut out = Tensor::with_layout(x.shape.clone(), 0.0, Device::CPU, Layout::Contiguous, DType::F32);
+    let rows = if ndim == 1 {
+        1
+    } else {
+        x.shape[..ndim - 1].iter().product()
+    };
+    let mut out = Tensor::with_layout(
+        x.shape.clone(),
+        0.0,
+        Device::CPU,
+        Layout::Contiguous,
+        DType::F32,
+    );
     let x_slice = x.as_cpu_slice();
     let out_slice = out.as_cpu_slice_mut();
     for row in 0..rows {
@@ -76,7 +92,11 @@ fn test_parallel_matmul_matches_serial() {
     let serial = serial_matmul(&a, &b);
 
     assert_eq!(parallel.shape, serial.shape);
-    for (p, s) in parallel.as_cpu_slice().iter().zip(serial.as_cpu_slice().iter()) {
+    for (p, s) in parallel
+        .as_cpu_slice()
+        .iter()
+        .zip(serial.as_cpu_slice().iter())
+    {
         assert!((p - s).abs() < 1e-5);
     }
 }
@@ -88,7 +108,11 @@ fn test_parallel_softmax_identical() {
     let parallel = softmax_last_dim(&x);
     let serial = serial_softmax(&x);
 
-    for (p, s) in parallel.as_cpu_slice().iter().zip(serial.as_cpu_slice().iter()) {
+    for (p, s) in parallel
+        .as_cpu_slice()
+        .iter()
+        .zip(serial.as_cpu_slice().iter())
+    {
         assert!((p - s).abs() < 1e-6);
     }
 }
@@ -120,15 +144,31 @@ fn test_parallel_linear_matches_serial() {
         }
     }
 
-    for (p, s) in parallel.as_cpu_slice().iter().zip(serial.as_cpu_slice().iter()) {
+    for (p, s) in parallel
+        .as_cpu_slice()
+        .iter()
+        .zip(serial.as_cpu_slice().iter())
+    {
         assert!((p - s).abs() < 1e-5);
     }
 }
 
 #[test]
 fn test_batch_matmul_3d() {
-    let mut a = Tensor::with_layout(vec![3, 2, 4], 0.0, Device::CPU, Layout::Contiguous, DType::F32);
-    let mut b = Tensor::with_layout(vec![3, 4, 3], 0.0, Device::CPU, Layout::Contiguous, DType::F32);
+    let mut a = Tensor::with_layout(
+        vec![3, 2, 4],
+        0.0,
+        Device::CPU,
+        Layout::Contiguous,
+        DType::F32,
+    );
+    let mut b = Tensor::with_layout(
+        vec![3, 4, 3],
+        0.0,
+        Device::CPU,
+        Layout::Contiguous,
+        DType::F32,
+    );
     for (idx, v) in a.as_cpu_slice_mut().iter_mut().enumerate() {
         *v = (idx as f32) * 0.01;
     }
@@ -139,7 +179,13 @@ fn test_batch_matmul_3d() {
     let parallel = batch_matmul_parallel(&a, &b);
 
     // serial baseline
-    let mut serial = Tensor::with_layout(vec![3, 2, 3], 0.0, Device::CPU, Layout::Contiguous, DType::F32);
+    let mut serial = Tensor::with_layout(
+        vec![3, 2, 3],
+        0.0,
+        Device::CPU,
+        Layout::Contiguous,
+        DType::F32,
+    );
     {
         let a_slice = a.as_cpu_slice();
         let b_slice = b.as_cpu_slice();
@@ -160,7 +206,11 @@ fn test_batch_matmul_3d() {
     }
 
     assert_eq!(parallel.shape, serial.shape);
-    for (p, s) in parallel.as_cpu_slice().iter().zip(serial.as_cpu_slice().iter()) {
+    for (p, s) in parallel
+        .as_cpu_slice()
+        .iter()
+        .zip(serial.as_cpu_slice().iter())
+    {
         assert!((p - s).abs() < 1e-5);
     }
 }

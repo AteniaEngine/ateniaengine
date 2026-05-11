@@ -1,13 +1,6 @@
 use std::arch::x86_64::*;
 
-pub fn matmul_tiled_6_3b(
-    a: &[f32],
-    b: &[f32],
-    out: &mut [f32],
-    m: usize,
-    k: usize,
-    n: usize,
-) {
+pub fn matmul_tiled_6_3b(a: &[f32], b: &[f32], out: &mut [f32], m: usize, k: usize, n: usize) {
     let bm = 32;
     let bn = 32;
     let bk = 32;
@@ -58,9 +51,7 @@ pub fn matmul_tiled_6_3b(
                                 // contiguous.
                                 let panel_col = (j - j0) as usize;
                                 let panel_row = (p - p0) as usize;
-                                let b_ptr = b_panel
-                                    .as_ptr()
-                                    .add(panel_col * bk + panel_row);
+                                let b_ptr = b_panel.as_ptr().add(panel_col * bk + panel_row);
                                 let b_vec = _mm256_loadu_ps(b_ptr);
 
                                 acc = _mm256_fmadd_ps(a_vec, b_vec, acc);
@@ -98,14 +89,7 @@ pub fn matmul_tiled_6_3b(
 /// parallel using PEXExecutor. Each task writes to a disjoint region of
 /// `out`, and the loop over `p0` remains sequential within the task,
 /// preserving the exact per-element sum.
-pub fn matmul_tiled_6_3b_pex(
-    a: &[f32],
-    b: &[f32],
-    out: &mut [f32],
-    m: usize,
-    k: usize,
-    n: usize,
-){
+pub fn matmul_tiled_6_3b_pex(a: &[f32], b: &[f32], out: &mut [f32], m: usize, k: usize, n: usize) {
     let bm = 32;
     let bn = 32;
     let bk = 32;
@@ -174,9 +158,8 @@ pub fn matmul_tiled_6_3b_pex(
 
                                     let panel_col = (j - j0) as usize;
                                     let panel_row = (p - p0) as usize;
-                                    let b_panel_ptr = b_panel
-                                        .as_ptr()
-                                        .add(panel_col * bk + panel_row);
+                                    let b_panel_ptr =
+                                        b_panel.as_ptr().add(panel_col * bk + panel_row);
                                     let b_vec = _mm256_loadu_ps(b_panel_ptr);
 
                                     acc = _mm256_fmadd_ps(a_vec, b_vec, acc);

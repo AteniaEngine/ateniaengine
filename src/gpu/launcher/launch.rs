@@ -2,10 +2,10 @@ use libloading::{Library, Symbol};
 use std::ffi::c_void;
 use std::ptr;
 
-use crate::gpu::runtime::GpuRuntime;
-use crate::gpu::loader::CudaFunction;
-use crate::gpu::safety::GpuSafety;
 use super::LaunchError;
+use crate::gpu::loader::CudaFunction;
+use crate::gpu::runtime::GpuRuntime;
+use crate::gpu::safety::GpuSafety;
 
 pub struct GpuLauncher {
     driver: Library,
@@ -43,19 +43,27 @@ impl GpuLauncher {
             let cu_launch: Symbol<
                 unsafe extern "C" fn(
                     cufunc: *mut c_void,
-                    grid_x: u32, grid_y: u32, grid_z: u32,
-                    block_x: u32, block_y: u32, block_z: u32,
+                    grid_x: u32,
+                    grid_y: u32,
+                    grid_z: u32,
+                    block_x: u32,
+                    block_y: u32,
+                    block_z: u32,
                     shared_mem: u32,
                     stream: *mut c_void,
                     args: *mut *mut c_void,
                     extra: *mut *mut c_void,
-                ) -> i32
+                ) -> i32,
             > = self.get(b"cuLaunchKernel\0")?;
 
             let res = cu_launch(
                 func.handle as *mut _,
-                grid.0, grid.1, grid.2,
-                block.0, block.1, block.2,
+                grid.0,
+                grid.1,
+                grid.2,
+                block.0,
+                block.1,
+                block.2,
                 shared_mem,
                 rt.default_stream,
                 args.as_mut_ptr(),

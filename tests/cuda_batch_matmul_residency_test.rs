@@ -55,8 +55,7 @@ fn cpu_batch_matmul_ref(
 }
 
 fn make_cuda_tensor_from_host(data: &[f32], shape: &[usize]) -> Tensor {
-    let mut t =
-        Tensor::zeros_new_cuda(shape).expect("VRAM allocation failed (no CUDA driver?)");
+    let mut t = Tensor::zeros_new_cuda(shape).expect("VRAM allocation failed (no CUDA driver?)");
     t.ensure_cpu()
         .expect("ensure_cpu failed on freshly-allocated Cuda");
     t.set_cpu_data(data.to_vec());
@@ -79,14 +78,16 @@ fn cuda_batch_matmul_residency_path_matches_cpu() {
     let n = 4;
 
     let a_host: Vec<f32> = (0..batch * m * k).map(|i| (i as f32) * 0.1 - 0.5).collect();
-    let b_host: Vec<f32> = (0..batch * k * n).map(|i| (i as f32) * 0.05 + 0.25).collect();
+    let b_host: Vec<f32> = (0..batch * k * n)
+        .map(|i| (i as f32) * 0.05 + 0.25)
+        .collect();
 
     let cpu_ref = cpu_batch_matmul_ref(&a_host, &b_host, batch, m, k, n);
 
     let a_gpu = make_cuda_tensor_from_host(&a_host, &[batch, m, k]);
     let b_gpu = make_cuda_tensor_from_host(&b_host, &[batch, k, n]);
-    let mut out_gpu = Tensor::zeros_new_cuda(&[batch, m, n])
-        .expect("VRAM allocation for output failed");
+    let mut out_gpu =
+        Tensor::zeros_new_cuda(&[batch, m, n]).expect("VRAM allocation for output failed");
 
     cuda_batch_matmul(&a_gpu, &b_gpu, &mut out_gpu, batch, m, k, n);
 

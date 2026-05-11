@@ -172,9 +172,8 @@ impl TensorGPU {
         let numel = bits.len();
         let size = numel * 2;
         let gpu_ptr = engine.alloc(size).map_err(|_| ())?;
-        let raw_bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(bits.as_ptr() as *const u8, size)
-        };
+        let raw_bytes: &[u8] =
+            unsafe { std::slice::from_raw_parts(bits.as_ptr() as *const u8, size) };
         if engine.copy_htod_bytes(&gpu_ptr, raw_bytes).is_err() {
             let _ = engine.free(&gpu_ptr);
             return Err(());
@@ -222,9 +221,8 @@ impl TensorGPU {
         let engine = crate::gpu::gpu_engine().ok_or(())?;
         let numel = self.rows * self.cols;
         let mut out = vec![0u16; numel];
-        let raw: &mut [u8] = unsafe {
-            std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, numel * 2)
-        };
+        let raw: &mut [u8] =
+            unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, numel * 2) };
         if engine.copy_dtoh_bytes(&self.inner.gpu_ptr, raw).is_err() {
             return Err(());
         }

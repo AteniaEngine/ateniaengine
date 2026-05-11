@@ -5,14 +5,7 @@ fn load8(ptr: *const f32) -> __m256 {
     unsafe { _mm256_loadu_ps(ptr) }
 }
 
-pub fn matmul_4x8_avx2(
-    a: *const f32,
-    b: *const f32,
-    out: *mut f32,
-    m: usize,
-    k: usize,
-    n: usize,
-) {
+pub fn matmul_4x8_avx2(a: *const f32, b: *const f32, out: *mut f32, m: usize, k: usize, n: usize) {
     let mr = 4usize; // rows of A
     let nr = 8usize; // cols of B
 

@@ -310,12 +310,8 @@ mod tests {
     #[test]
     fn test_spike_expires() {
         // Long baseline (keeps samples alive), short spike recency.
-        let m = LatencyMonitor::with_config(
-            Duration::from_secs(5),
-            Duration::from_millis(50),
-            2.0,
-            10,
-        );
+        let m =
+            LatencyMonitor::with_config(Duration::from_secs(5), Duration::from_millis(50), 2.0, 10);
         for _ in 0..15 {
             m.record_latency(Duration::from_millis(50));
         }
@@ -340,7 +336,9 @@ mod tests {
         for _ in 0..15 {
             m.record_latency(Duration::from_millis(50));
         }
-        let ewma = m.latency_ewma().expect("EWMA must be Some with >=min_samples");
+        let ewma = m
+            .latency_ewma()
+            .expect("EWMA must be Some with >=min_samples");
         // Uniform 50ms samples: EWMA converges to 50ms regardless
         // of alpha. Allow 1ms tolerance for float arithmetic.
         let ms = ewma.as_secs_f64() * 1000.0;
@@ -365,11 +363,7 @@ mod tests {
         for _ in 0..15 {
             m.record_latency(Duration::from_millis(100));
         }
-        let ewma_ms = m
-            .latency_ewma()
-            .expect("EWMA must be Some")
-            .as_secs_f64()
-            * 1000.0;
+        let ewma_ms = m.latency_ewma().expect("EWMA must be Some").as_secs_f64() * 1000.0;
         assert!(
             ewma_ms > 60.0,
             "EWMA should have moved above the initial baseline, got {}ms",
@@ -384,12 +378,8 @@ mod tests {
 
     #[test]
     fn test_spike_ignored_below_min_samples() {
-        let m = LatencyMonitor::with_config(
-            Duration::from_secs(5),
-            Duration::from_secs(5),
-            2.0,
-            10,
-        );
+        let m =
+            LatencyMonitor::with_config(Duration::from_secs(5), Duration::from_secs(5), 2.0, 10);
         // Only 5 prior samples — below min_samples of 10.
         for _ in 0..5 {
             m.record_latency(Duration::from_millis(50));

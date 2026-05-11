@@ -1,7 +1,7 @@
-﻿use atenia_engine::amg::builder::GraphBuilder;
+use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::amg::graph::Graph;
 use atenia_engine::amg::nodes::NodeType;
-use atenia_engine::tensor::{Device, DType, Layout, Tensor};
+use atenia_engine::tensor::{DType, Device, Layout, Tensor};
 
 fn build_simple_mlp_graph() -> (Graph, Vec<usize>) {
     // x -> Linear(w1, b1) -> SiLU -> Linear(w2, b2) -> Output (mean squared loss vs target)
@@ -70,13 +70,21 @@ fn build_simple_mlp_graph() -> (Graph, Vec<usize>) {
     let ones_id = graph.add_parameter(ones);
     // Flatten sq to [batch*out_dim, 1] so that [1, batch*out_dim] x [batch*out_dim, 1] -> [1,1]
     let sq_flat = graph.add_node_of_type(
-        NodeType::Reshape { target: vec![(batch * out_dim) as isize, 1] },
+        NodeType::Reshape {
+            target: vec![(batch * out_dim) as isize, 1],
+        },
         vec![sq],
     );
     let total = graph.add_node_of_type(NodeType::MatMul, vec![ones_id, sq_flat]);
 
     let scale_val = 1.0f32 / (batch * out_dim) as f32;
-    let scale = Tensor::with_layout(vec![1, 1], scale_val, Device::CPU, Layout::Contiguous, DType::F32);
+    let scale = Tensor::with_layout(
+        vec![1, 1],
+        scale_val,
+        Device::CPU,
+        Layout::Contiguous,
+        DType::F32,
+    );
     let scale_id = graph.add_parameter(scale);
     let loss = graph.add_node_of_type(NodeType::Mul, vec![total, scale_id]);
     graph.add_node_of_type(NodeType::Output, vec![loss]);

@@ -251,9 +251,9 @@ fn get_u32(v: &Value, key: &str) -> Result<u32, ConfigError> {
 /// - `Err` when the field is missing, a non-integer scalar, an
 ///   empty array, or an array containing non-integer entries.
 fn get_u32_or_first_of_array(v: &Value, key: &str) -> Result<u32, ConfigError> {
-    let raw = v.get(key).ok_or_else(|| {
-        ConfigError::Parse(format!("missing field `{}`", key))
-    })?;
+    let raw = v
+        .get(key)
+        .ok_or_else(|| ConfigError::Parse(format!("missing field `{}`", key)))?;
     if let Some(n) = raw.as_u64() {
         if n > u32::MAX as u64 {
             return Err(ConfigError::Parse(format!(
@@ -336,15 +336,9 @@ fn get_optional_usize(v: &Value, key: &str) -> Result<Option<usize>, ConfigError
     match v.get(key) {
         None => Ok(None),
         Some(Value::Null) => Ok(None),
-        Some(other) => other
-            .as_u64()
-            .map(|n| Some(n as usize))
-            .ok_or_else(|| {
-                ConfigError::Parse(format!(
-                    "field `{}` is not a non-negative integer",
-                    key
-                ))
-            }),
+        Some(other) => other.as_u64().map(|n| Some(n as usize)).ok_or_else(|| {
+            ConfigError::Parse(format!("field `{}` is not a non-negative integer", key))
+        }),
     }
 }
 
@@ -377,9 +371,7 @@ fn get_rope_scaling(v: &Value) -> Result<Option<RopeScaling>, ConfigError> {
                 .get("factor")
                 .and_then(|x| x.as_f64())
                 .ok_or_else(|| {
-                    ConfigError::Parse(
-                        "rope_scaling.llama3 requires numeric `factor`".into(),
-                    )
+                    ConfigError::Parse("rope_scaling.llama3 requires numeric `factor`".into())
                 })? as f32;
             let low_freq_factor = block
                 .get("low_freq_factor")
@@ -459,27 +451,17 @@ fn get_rope_scaling(v: &Value) -> Result<Option<RopeScaling>, ConfigError> {
 /// LongRope branch to read the per-dimension factor vectors.
 /// Errors with a clear context-prefixed message when the field
 /// is missing, not an array, or contains a non-numeric element.
-fn parse_f32_array(
-    block: &Value,
-    key: &str,
-    context: &str,
-) -> Result<Vec<f32>, ConfigError> {
+fn parse_f32_array(block: &Value, key: &str, context: &str) -> Result<Vec<f32>, ConfigError> {
     let arr = block
         .get(key)
         .and_then(|x| x.as_array())
-        .ok_or_else(|| {
-            ConfigError::Parse(format!(
-                "{context} requires array field `{key}`"
-            ))
-        })?;
+        .ok_or_else(|| ConfigError::Parse(format!("{context} requires array field `{key}`")))?;
     arr.iter()
         .enumerate()
         .map(|(i, x)| {
-            x.as_f64().map(|v| v as f32).ok_or_else(|| {
-                ConfigError::Parse(format!(
-                    "{context}.{key}[{i}] is not a number"
-                ))
-            })
+            x.as_f64()
+                .map(|v| v as f32)
+                .ok_or_else(|| ConfigError::Parse(format!("{context}.{key}[{i}] is not a number")))
         })
         .collect()
 }
@@ -495,15 +477,12 @@ fn get_optional_f32(v: &Value, key: &str) -> Result<Option<f32>, ConfigError> {
     match v.get(key) {
         None => Ok(None),
         Some(Value::Null) => Ok(None),
-        Some(other) => other
-            .as_f64()
-            .map(|f| Some(f as f32))
-            .ok_or_else(|| {
-                ConfigError::Parse(format!(
-                    "field `{}` is not a number (expected float or integer)",
-                    key
-                ))
-            }),
+        Some(other) => other.as_f64().map(|f| Some(f as f32)).ok_or_else(|| {
+            ConfigError::Parse(format!(
+                "field `{}` is not a number (expected float or integer)",
+                key
+            ))
+        }),
     }
 }
 
@@ -820,8 +799,7 @@ mod tests {
     #[test]
     fn eos_token_id_empty_array_rejected() {
         let v = base_config_value(json!([]));
-        let err = LlamaConfig::from_json_str(&v.to_string())
-            .expect_err("empty array must fail");
+        let err = LlamaConfig::from_json_str(&v.to_string()).expect_err("empty array must fail");
         let msg = format!("{err}");
         assert!(
             msg.contains("eos_token_id") && msg.contains("empty"),
@@ -868,8 +846,7 @@ mod tests {
             "short_factor": short,
             "long_factor": long
         });
-        let cfg = LlamaConfig::from_json_str(&v.to_string())
-            .expect("LongRope config must parse");
+        let cfg = LlamaConfig::from_json_str(&v.to_string()).expect("LongRope config must parse");
         match cfg.effective_rope_scaling() {
             Some(RopeScaling::LongRope {
                 short_factor,
@@ -919,20 +896,25 @@ mod tests {
             "vocab_size": 256_000
             // tie_word_embeddings intentionally omitted.
         });
-        let cfg = LlamaConfig::from_json_str(&v.to_string())
-            .expect("Gemma 2 config must parse");
+        let cfg = LlamaConfig::from_json_str(&v.to_string()).expect("Gemma 2 config must parse");
         assert_eq!(cfg.model_type.as_deref(), Some("gemma2"));
         assert!(cfg.tie_word_embeddings, "gemma2 default = true");
-        assert!(cfg.attn_logit_softcapping
-            .map(|x| (x - 50.0).abs() < 1e-6)
-            .unwrap_or(false));
-        assert!(cfg.final_logit_softcapping
-            .map(|x| (x - 30.0).abs() < 1e-6)
-            .unwrap_or(false));
+        assert!(
+            cfg.attn_logit_softcapping
+                .map(|x| (x - 50.0).abs() < 1e-6)
+                .unwrap_or(false)
+        );
+        assert!(
+            cfg.final_logit_softcapping
+                .map(|x| (x - 30.0).abs() < 1e-6)
+                .unwrap_or(false)
+        );
         assert_eq!(cfg.sliding_window, Some(4096));
-        assert!(cfg.query_pre_attn_scalar
-            .map(|x| (x - 256.0).abs() < 1e-6)
-            .unwrap_or(false));
+        assert!(
+            cfg.query_pre_attn_scalar
+                .map(|x| (x - 256.0).abs() < 1e-6)
+                .unwrap_or(false)
+        );
         assert_eq!(cfg.eos_token_id, 1);
         assert_eq!(cfg.head_dim, Some(256));
     }
@@ -956,8 +938,7 @@ mod tests {
     #[test]
     fn llama_config_has_all_gemma2_fields_none() {
         let v = base_config_value(json!(2));
-        let cfg = LlamaConfig::from_json_str(&v.to_string())
-            .expect("plain Llama config parses");
+        let cfg = LlamaConfig::from_json_str(&v.to_string()).expect("plain Llama config parses");
         assert!(cfg.attn_logit_softcapping.is_none());
         assert!(cfg.final_logit_softcapping.is_none());
         assert!(cfg.sliding_window.is_none());

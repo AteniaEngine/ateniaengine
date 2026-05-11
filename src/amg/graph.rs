@@ -1,17 +1,17 @@
 use super::chunking::{chunk_tensor, merge_chunks};
 use super::nodes::{Node, NodeType};
-use super::scheduler::{build_execution_plan, ExecStep, ExecutionPlan};
+use super::scheduler::{ExecStep, ExecutionPlan, build_execution_plan};
 use crate::amg::grad_store::GradStore;
 use crate::amg::reactive::{ExecutionAbortReason, ReactiveExecutionContext};
-use crate::apx3_9::op_router::{route, ExecTarget};
+use crate::apx3_9::op_router::{ExecTarget, route};
 use crate::apx4::gpu_dispatch::{
-    dispatch_matmul as dispatch_matmul_gpu, ApxExecTarget as Apx4ExecTarget,
+    ApxExecTarget as Apx4ExecTarget, dispatch_matmul as dispatch_matmul_gpu,
 };
-use crate::apx4_11::gpu_hooks;
-use crate::apx4_13::fusion_engine::FusedOp;
 use crate::apx4_3::GpuPlan;
 use crate::apx4_5::dispatcher::dispatch_batch_matmul_cuda;
 use crate::apx4_7::{FusionPlan, PersistentPlan};
+use crate::apx4_11::gpu_hooks;
+use crate::apx4_13::fusion_engine::FusedOp;
 use crate::apx5::apx_5_3_planner::{NodeExecInfo, Planner5_3};
 use crate::apx5::kernel_planner::{KernelPlanner, KernelTarget};
 use crate::apx5_4::{DeviceTarget, Sample};
@@ -1369,7 +1369,7 @@ impl Graph {
         // modify the graph nor its math; it only provides metadata so that
         // TLO can reorder independent nodes in HPGE.
         if !graph.nodes.is_empty() {
-            use crate::apx7::tlo::{set_locality_hints, LocalityHint};
+            use crate::apx7::tlo::{LocalityHint, set_locality_hints};
 
             let mut hints = vec![
                 LocalityHint {
@@ -1670,7 +1670,7 @@ impl Graph {
             if let Ok(sel) = crate::apx6_10::global_fusion_selector().lock() {
                 if let Some(global_decision) = sel.best_decision() {
                     use crate::apx6_10::GlobalDecision;
-                    use crate::apx6_11::runtime_policy::{set_runtime_policy, FusionRuntimePolicy};
+                    use crate::apx6_11::runtime_policy::{FusionRuntimePolicy, set_runtime_policy};
 
                     // Deterministic 6.11 policy, also used as the base for 6.12
                     // scheduling hints.
@@ -1689,7 +1689,7 @@ impl Graph {
                     // APX 6.12: also derive the pure scheduling bias.
                     if crate::apx_mode_at_least("6.12") {
                         use crate::apx6_12::adaptive_scheduler::{
-                            set_schedule_bias, AdaptiveScheduleBias,
+                            AdaptiveScheduleBias, set_schedule_bias,
                         };
 
                         match global_decision {
@@ -1709,7 +1709,7 @@ impl Graph {
                     // the 6.11 global policy, but still only affects planning hints.
                     if crate::apx_mode_at_least("6.13") {
                         use crate::apx6_11::runtime_policy::{
-                            set_runtime_policy, FusionRuntimePolicy,
+                            FusionRuntimePolicy, set_runtime_policy,
                         };
 
                         // APX 6.14: update the adaptive temperature before
@@ -2279,7 +2279,7 @@ impl Graph {
 
                     if let Some(wproj_t) = wproj_t {
                         use crate::amg::fusions::execute_fused_attention_full;
-                        use crate::apx6_10::{global_fusion_selector, FusionProfile};
+                        use crate::apx6_10::{FusionProfile, global_fusion_selector};
 
                         let t_full = Instant::now();
                         let _y_full = execute_fused_attention_full(
@@ -3113,7 +3113,7 @@ impl Graph {
             // APX 6.11: apply the global fusion policy only as a planning bias
             // (does not alter real forward nor backward).
             if crate::apx_mode_at_least("6.11") {
-                use crate::apx6_11::runtime_policy::{get_runtime_policy, FusionRuntimePolicy};
+                use crate::apx6_11::runtime_policy::{FusionRuntimePolicy, get_runtime_policy};
 
                 match get_runtime_policy() {
                     FusionRuntimePolicy::Baseline => {}
@@ -3126,7 +3126,7 @@ impl Graph {
             // prefetch) based on AdaptiveScheduleBias. Does not touch the
             // math nor the backward tape.
             if crate::apx_mode_at_least("6.12") {
-                use crate::apx6_12::adaptive_scheduler::{get_schedule_bias, AdaptiveScheduleBias};
+                use crate::apx6_12::adaptive_scheduler::{AdaptiveScheduleBias, get_schedule_bias};
 
                 match get_schedule_bias() {
                     AdaptiveScheduleBias::None => {}

@@ -1,6 +1,6 @@
-﻿use atenia_engine::tensor::{Device, DType, Layout, Tensor};
 use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::amg::scheduler::{build_execution_plan, ExecStep};
+use atenia_engine::amg::scheduler::{ExecStep, build_execution_plan};
+use atenia_engine::tensor::{DType, Device, Layout, Tensor};
 
 #[test]
 fn simple_add_graph() {
@@ -37,7 +37,10 @@ fn fusion_builds_fused_add_mul_step() {
     let g = gb.build();
     let (plan, _) = build_execution_plan(&g.nodes);
 
-    let has_fused = plan.steps.iter().any(|s| matches!(s, ExecStep::FusedAddMul { .. }));
+    let has_fused = plan
+        .steps
+        .iter()
+        .any(|s| matches!(s, ExecStep::FusedAddMul { .. }));
     assert!(has_fused, "Expected a fused Add→Mul step in execution plan");
 }
 
@@ -53,20 +56,8 @@ fn chunked_execution_produces_same_result_as_normal() {
     let mut g2 = g1.clone();
 
     let len = 10_000;
-    let mut t1 = Tensor::with_layout(
-        vec![len],
-        0.0,
-        Device::CPU,
-        Layout::Contiguous,
-        DType::F32,
-    );
-    let mut t2 = Tensor::with_layout(
-        vec![len],
-        0.0,
-        Device::CPU,
-        Layout::Contiguous,
-        DType::F32,
-    );
+    let mut t1 = Tensor::with_layout(vec![len], 0.0, Device::CPU, Layout::Contiguous, DType::F32);
+    let mut t2 = Tensor::with_layout(vec![len], 0.0, Device::CPU, Layout::Contiguous, DType::F32);
 
     for (i, v) in t1.as_cpu_slice_mut().iter_mut().enumerate() {
         *v = i as f32;
@@ -82,7 +73,11 @@ fn chunked_execution_produces_same_result_as_normal() {
     assert_eq!(chunked.len(), 1);
     assert_eq!(normal[0].numel(), chunked[0].numel());
 
-    for (a, b) in normal[0].as_cpu_slice().iter().zip(chunked[0].as_cpu_slice().iter()) {
+    for (a, b) in normal[0]
+        .as_cpu_slice()
+        .iter()
+        .zip(chunked[0].as_cpu_slice().iter())
+    {
         assert!((a - b).abs() < 1e-6);
     }
 }

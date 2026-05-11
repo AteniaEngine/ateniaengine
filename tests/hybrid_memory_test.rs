@@ -1,7 +1,5 @@
 use atenia_engine::v13::hybrid_memory::HybridMemoryManager;
-use atenia_engine::v13::memory_types::{
-    MemorySnapshot, MemoryTier, MoveError, TierStatus,
-};
+use atenia_engine::v13::memory_types::{MemorySnapshot, MemoryTier, MoveError, TierStatus};
 
 use std::fs;
 

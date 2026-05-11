@@ -19,19 +19,16 @@ impl CudaArchDetector {
 
     unsafe fn get<T>(&self, name: &[u8]) -> Result<Symbol<'_, T>, ArchError> {
         unsafe {
-            self.driver
-                .get(name)
-                .map_err(move |_| {
-                    let sym = std::str::from_utf8(name).unwrap_or("unknown").to_string();
-                    ArchError::MissingSymbol(sym)
-                })
+            self.driver.get(name).map_err(move |_| {
+                let sym = std::str::from_utf8(name).unwrap_or("unknown").to_string();
+                ArchError::MissingSymbol(sym)
+            })
         }
     }
 
     pub fn compute_capability(&self) -> Result<(i32, i32), ArchError> {
         unsafe {
-            let cu_init: Symbol<unsafe extern "C" fn(u32) -> i32> =
-                self.get(b"cuInit\0")?;
+            let cu_init: Symbol<unsafe extern "C" fn(u32) -> i32> = self.get(b"cuInit\0")?;
 
             let cu_device_get: Symbol<unsafe extern "C" fn(*mut i32, i32) -> i32> =
                 self.get(b"cuDeviceGet\0")?;

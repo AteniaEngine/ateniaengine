@@ -1,6 +1,6 @@
-﻿use atenia_engine::apx9::vgpu_warp::*;
 use atenia_engine::apx9::vgpu_divergence::*;
-use atenia_engine::{tensor::Tensor, tensor::DType, tensor::Device};
+use atenia_engine::apx9::vgpu_warp::*;
+use atenia_engine::{tensor::DType, tensor::Device, tensor::Tensor};
 
 #[test]
 fn apx_9_19_structure() {

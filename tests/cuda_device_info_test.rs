@@ -18,14 +18,18 @@ fn test_cuda_device_info() {
         // Load symbols
         let cu_init: Symbol<unsafe extern "C" fn(u32) -> i32> =
             driver.get(b"cuInit\0").expect("❌ Missing cuInit");
-        let cu_device_get: Symbol<unsafe extern "C" fn(*mut i32, i32) -> i32> =
-            driver.get(b"cuDeviceGet\0").expect("❌ Missing cuDeviceGet");
-        let cu_device_get_count: Symbol<unsafe extern "C" fn(*mut i32) -> i32> =
-            driver.get(b"cuDeviceGetCount\0").expect("❌ Missing cuDeviceGetCount");
-        let cu_device_get_name: Symbol<unsafe extern "C" fn(*mut i8, i32, i32) -> i32> =
-            driver.get(b"cuDeviceGetName\0").expect("❌ Missing cuDeviceGetName");
-        let cu_device_get_attr: Symbol<unsafe extern "C" fn(*mut i32, i32, i32) -> i32> =
-            driver.get(b"cuDeviceGetAttribute\0").expect("❌ Missing cuDeviceGetAttribute");
+        let cu_device_get: Symbol<unsafe extern "C" fn(*mut i32, i32) -> i32> = driver
+            .get(b"cuDeviceGet\0")
+            .expect("❌ Missing cuDeviceGet");
+        let cu_device_get_count: Symbol<unsafe extern "C" fn(*mut i32) -> i32> = driver
+            .get(b"cuDeviceGetCount\0")
+            .expect("❌ Missing cuDeviceGetCount");
+        let cu_device_get_name: Symbol<unsafe extern "C" fn(*mut i8, i32, i32) -> i32> = driver
+            .get(b"cuDeviceGetName\0")
+            .expect("❌ Missing cuDeviceGetName");
+        let cu_device_get_attr: Symbol<unsafe extern "C" fn(*mut i32, i32, i32) -> i32> = driver
+            .get(b"cuDeviceGetAttribute\0")
+            .expect("❌ Missing cuDeviceGetAttribute");
 
         // Init CUDA
         assert_eq!(cu_init(0), 0, "❌ cuInit failed");
@@ -33,7 +37,11 @@ fn test_cuda_device_info() {
 
         // Device count
         let mut count = 0;
-        assert_eq!(cu_device_get_count(&mut count), 0, "❌ cuDeviceGetCount failed");
+        assert_eq!(
+            cu_device_get_count(&mut count),
+            0,
+            "❌ cuDeviceGetCount failed"
+        );
         println!("✔ Devices found: {}", count);
         assert!(count > 0, "❌ No CUDA devices detected!");
 
@@ -63,15 +71,13 @@ fn test_cuda_device_info() {
         println!("✔ Compute capability: {}.{}", major, minor);
 
         assert!(
-            matches!((major, minor),
-                (8, 9) | (8, 0) | (8, 6) |
-                (7, 5) |
-                (6, 1) |
-                (7, 0) |
-                (7, 2)
+            matches!(
+                (major, minor),
+                (8, 9) | (8, 0) | (8, 6) | (7, 5) | (6, 1) | (7, 0) | (7, 2)
             ),
             "❌ Unsupported compute capability: {}.{}",
-            major, minor
+            major,
+            minor
         );
 
         // Check VRAM via attribute 200 (TOTAL_MEMORY)
@@ -80,7 +86,10 @@ fn test_cuda_device_info() {
         let _ = cu_device_get_attr(&mut mem_bytes, GLOBAL_MEM_ATTR, device);
 
         if mem_bytes > 0 {
-            println!("✔ VRAM detected: {:.2} GB", mem_bytes as f64 / 1024.0 / 1024.0 / 1024.0);
+            println!(
+                "✔ VRAM detected: {:.2} GB",
+                mem_bytes as f64 / 1024.0 / 1024.0 / 1024.0
+            );
         } else {
             println!("⚠ Could not query VRAM size.");
         }

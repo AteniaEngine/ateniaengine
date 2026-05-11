@@ -1,5 +1,5 @@
-﻿use atenia_engine::tensor::{Tensor, Device};
 use atenia_engine::config::get_runtime_flags;
+use atenia_engine::tensor::{Device, Tensor};
 
 fn max_abs_diff(a: &Tensor, b: &Tensor) -> f32 {
     a.as_cpu_slice()
@@ -29,7 +29,7 @@ fn apx_7_2_all_strategies_match_seq() {
 
     // PEX v1 y PEX v2 WS usan los wrappers ya validados en 7.0 y 7.1.
     let pex = a.matmul_parallel(&b);
-    let ws  = a.matmul_parallel_ws(&b);
+    let ws = a.matmul_parallel_ws(&b);
 
     assert!(max_abs_diff(&seq, &pex) < 1e-5);
     assert!(max_abs_diff(&seq, &ws) < 1e-5);

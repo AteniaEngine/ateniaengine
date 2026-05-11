@@ -1,12 +1,12 @@
 // APX 8.13 — GPU Codegen v1
 // Synthetic GPU kernel generation from KernelIR. Does not execute anything.
 
-use crate::apx8::kernel_generator::KernelIR;
-use crate::apx8::gpu_autoselector::GPUAutoSelector;
-use crate::apx8::precompile_cache::PrecompileCache;
-use crate::apx8::multiarch_router::route_kernel;
-use crate::apx8::gpu_finalizer::gpu_finalize;
 use crate::apx8::device_planner::plan_for_ir;
+use crate::apx8::gpu_autoselector::GPUAutoSelector;
+use crate::apx8::gpu_finalizer::gpu_finalize;
+use crate::apx8::kernel_generator::KernelIR;
+use crate::apx8::multiarch_router::route_kernel;
+use crate::apx8::precompile_cache::PrecompileCache;
 
 #[derive(Debug, Clone)]
 pub struct GPUCodegenV1 {

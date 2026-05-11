@@ -1,7 +1,7 @@
 use std::time::Instant;
 
-use crate::gpu::tensor::{GpuTensorManager, TensorGPU};
 use crate::gpu::ops::matmul::MatMulOp;
+use crate::gpu::tensor::{GpuTensorManager, TensorGPU};
 
 /// Simple latency record per square matmul size.
 pub struct LatencyRecord {
@@ -60,7 +60,10 @@ impl GpuProfiler {
             let avg_ms = acc_ms / runs as f32;
             eprintln!("[PROF] size={} avg={:.4} ms", n, avg_ms);
 
-            results.push(LatencyRecord { size: n, ms: avg_ms });
+            results.push(LatencyRecord {
+                size: n,
+                ms: avg_ms,
+            });
         }
 
         results

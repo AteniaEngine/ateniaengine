@@ -24,7 +24,7 @@ pub struct CudaCodegen;
 impl GpuCodegen for CudaCodegen {
     fn generate(&self, tpl: &KernelTemplate) -> String {
         format!(
-r#"// CUDA mock kernel
+            r#"// CUDA mock kernel
 extern "C" __global__
 void {name}(float* a, float* b, float* out, int N) {{
     // mock IR:
@@ -45,7 +45,7 @@ pub struct MetalCodegen;
 impl GpuCodegen for MetalCodegen {
     fn generate(&self, tpl: &KernelTemplate) -> String {
         format!(
-r#"// Metal mock kernel
+            r#"// Metal mock kernel
 #include <metal_stdlib>
 using namespace metal;
 
@@ -70,7 +70,7 @@ pub struct HipCodegen;
 impl GpuCodegen for HipCodegen {
     fn generate(&self, tpl: &KernelTemplate) -> String {
         format!(
-r#"// HIP mock kernel
+            r#"// HIP mock kernel
 extern "C" __global__
 void {name}(float* a, float* b, float* out, int N) {{
     // mock IR:
@@ -91,7 +91,7 @@ pub struct VulkanCodegen;
 impl GpuCodegen for VulkanCodegen {
     fn generate(&self, tpl: &KernelTemplate) -> String {
         format!(
-r#"// Vulkan mock compute shader
+            r#"// Vulkan mock compute shader
 // entry: {name}
 // mock IR:
 // {ir}

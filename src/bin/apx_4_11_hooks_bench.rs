@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::tensor::{Tensor, Device};
+use atenia_engine::tensor::{Device, Tensor};
 use atenia_engine::{apx_set_silent_mode, init_apx};
 
 fn build_linear_stack_graph(
@@ -35,7 +35,14 @@ fn build_linear_stack_graph(
     gb.build()
 }
 
-fn run_linear_bench(label: &str, layers: usize, batch: usize, in_dim: usize, hidden_dim: usize, out_dim: usize) {
+fn run_linear_bench(
+    label: &str,
+    layers: usize,
+    batch: usize,
+    in_dim: usize,
+    hidden_dim: usize,
+    out_dim: usize,
+) {
     let x = Tensor::randn(&[batch, in_dim], Device::CPU);
 
     // Pure CPU benchmark.
@@ -68,9 +75,7 @@ fn run_linear_bench(label: &str, layers: usize, batch: usize, in_dim: usize, hid
 
     println!(
         "[APX 4.11 BENCH] {label}: CPU={:.4} ms | GPUHook={:.4} ms | Speedup={:.2}x",
-        cpu_per_it,
-        gpu_per_it,
-        speedup,
+        cpu_per_it, gpu_per_it, speedup,
     );
 }
 
@@ -84,8 +89,22 @@ fn main() {
     // Some typical sizes. hidden_dim is used only for intermediate layers; the last is in_dim->out_dim.
     let configs = [
         ("Linear 64→64", 20usize, 32usize, 64usize, 64usize, 64usize),
-        ("Linear 128→64", 20usize, 32usize, 128usize, 64usize, 64usize),
-        ("Linear 256→128", 20usize, 32usize, 256usize, 128usize, 128usize),
+        (
+            "Linear 128→64",
+            20usize,
+            32usize,
+            128usize,
+            64usize,
+            64usize,
+        ),
+        (
+            "Linear 256→128",
+            20usize,
+            32usize,
+            256usize,
+            128usize,
+            128usize,
+        ),
     ];
 
     for (label, layers, batch, in_dim, hidden_dim, out_dim) in configs.into_iter() {

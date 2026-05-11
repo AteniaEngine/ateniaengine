@@ -1,6 +1,8 @@
 use std::time::Instant;
 
-use atenia_engine::apx3_8::{device_context::DeviceContext, kernel_dispatch::dispatch_matmul as dispatch_matmul_apx3_8};
+use atenia_engine::apx3_8::{
+    device_context::DeviceContext, kernel_dispatch::dispatch_matmul as dispatch_matmul_apx3_8,
+};
 use atenia_engine::apx6::matmul_tiled_6_3b::matmul_tiled_6_3b;
 use atenia_engine::apx6_4::matmul_4x8_avx2;
 use atenia_engine::tensor::Device;

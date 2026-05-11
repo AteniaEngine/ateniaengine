@@ -1,10 +1,19 @@
-﻿use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::tensor::{Tensor, Device, DType, Layout};
+use atenia_engine::amg::builder::GraphBuilder;
+use atenia_engine::tensor::{DType, Device, Layout, Tensor};
 
 fn assert_close(a: &Tensor, b: &Tensor, tol: f32) {
-    assert_eq!(a.shape, b.shape, "shape mismatch: {:?} vs {:?}", a.shape, b.shape);
+    assert_eq!(
+        a.shape, b.shape,
+        "shape mismatch: {:?} vs {:?}",
+        a.shape, b.shape
+    );
     assert_eq!(a.numel(), b.numel(), "len mismatch");
-    for (i, (va, vb)) in a.as_cpu_slice().iter().zip(b.as_cpu_slice().iter()).enumerate() {
+    for (i, (va, vb)) in a
+        .as_cpu_slice()
+        .iter()
+        .zip(b.as_cpu_slice().iter())
+        .enumerate()
+    {
         let diff = (va - vb).abs();
         assert!(
             diff <= tol,
@@ -41,7 +50,9 @@ fn build_self_attention_graph() -> (GraphBuilder, usize, usize, usize, usize) {
 #[test]
 fn self_attention_forward_fused_matches_naive() {
     // Configure mode 4.17 to enable fused Self-Attention detection.
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "4.17"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "4.17");
+    }
 
     // Build the base graph and clone it to get naive and fused versions.
     let (gb, _x_id, _wq_id, _wk_id, _wv_id) = build_self_attention_graph();
@@ -57,7 +68,13 @@ fn self_attention_forward_fused_matches_naive() {
 
     let x = Tensor::with_layout(vec![m, d], 0.5, Device::CPU, Layout::Contiguous, DType::F32);
     let wq = Tensor::with_layout(vec![d, d], 0.1, Device::CPU, Layout::Contiguous, DType::F32);
-    let wk = Tensor::with_layout(vec![d, d], -0.2, Device::CPU, Layout::Contiguous, DType::F32);
+    let wk = Tensor::with_layout(
+        vec![d, d],
+        -0.2,
+        Device::CPU,
+        Layout::Contiguous,
+        DType::F32,
+    );
     let wv = Tensor::with_layout(vec![d, d], 0.3, Device::CPU, Layout::Contiguous, DType::F32);
 
     let inputs = vec![x.clone(), wq.clone(), wk.clone(), wv.clone()];

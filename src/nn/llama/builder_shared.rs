@@ -116,10 +116,18 @@ pub enum BuildError {
 impl std::fmt::Display for BuildError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BuildError::MissingParameter { name } =>
-                write!(f, "build_llama_with_store: parameter '{name}' not in WeightStore"),
-            BuildError::ParameterShapeMismatch { name, expected, got } =>
-                write!(f, "build_llama_with_store: '{name}' has shape {got:?} in store, expected {expected:?}"),
+            BuildError::MissingParameter { name } => write!(
+                f,
+                "build_llama_with_store: parameter '{name}' not in WeightStore"
+            ),
+            BuildError::ParameterShapeMismatch {
+                name,
+                expected,
+                got,
+            } => write!(
+                f,
+                "build_llama_with_store: '{name}' has shape {got:?} in store, expected {expected:?}"
+            ),
         }
     }
 }

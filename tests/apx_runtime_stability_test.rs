@@ -1,15 +1,17 @@
-﻿use std::fs;
+use std::fs;
 use std::io::Write;
 use std::time::{Duration, Instant};
 
 use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::amg::graph::Graph;
-use atenia_engine::nn::mini_flux::{build_mini_flux_language_model, MiniFluxConfig};
-use atenia_engine::tensor::{Device, DType, Layout, Tensor};
+use atenia_engine::nn::mini_flux::{MiniFluxConfig, build_mini_flux_language_model};
+use atenia_engine::tensor::{DType, Device, Layout, Tensor};
 
 use atenia_engine::apx6_10;
 use atenia_engine::apx6_10::FusionProfile;
-use atenia_engine::apx6_11::runtime_policy::{get_runtime_policy, set_runtime_policy, FusionRuntimePolicy};
+use atenia_engine::apx6_11::runtime_policy::{
+    FusionRuntimePolicy, get_runtime_policy, set_runtime_policy,
+};
 
 /// Runtime Stability Under Dynamic Conditions (experimental).
 ///
@@ -62,8 +64,15 @@ fn apx_runtime_stability_under_dynamic_conditions() {
     );
 
     // Validity constraint: outputs must be identical across modes.
-    assert_eq!(baseline_out.shape, adaptive_out.shape, "output shape mismatch");
-    assert_eq!(baseline_out.as_cpu_slice(), adaptive_out.as_cpu_slice(), "output data mismatch");
+    assert_eq!(
+        baseline_out.shape, adaptive_out.shape,
+        "output shape mismatch"
+    );
+    assert_eq!(
+        baseline_out.as_cpu_slice(),
+        adaptive_out.as_cpu_slice(),
+        "output data mismatch"
+    );
 
     export_csv(&metrics);
     print_summary(&metrics);
@@ -140,10 +149,7 @@ fn run_mode(
             .expect("Mini-Flux graph must return a single output");
 
         let policy = format!("{:?}", get_runtime_policy());
-        let policy_switch = prev_policy
-            .as_ref()
-            .map(|p| p != &policy)
-            .unwrap_or(false);
+        let policy_switch = prev_policy.as_ref().map(|p| p != &policy).unwrap_or(false);
         prev_policy = Some(policy.clone());
 
         metrics.push(MetricRow {
@@ -163,7 +169,8 @@ fn run_mode(
 fn build_mini_flux_graph(cfg: &MiniFluxConfig) -> Graph {
     let mut gb = GraphBuilder::new();
     let tokens_id = gb.input();
-    let (logits_id, _param_ids, _param_names) = build_mini_flux_language_model(&mut gb, cfg, tokens_id);
+    let (logits_id, _param_ids, _param_names) =
+        build_mini_flux_language_model(&mut gb, cfg, tokens_id);
     gb.output(logits_id);
     gb.build()
 }
@@ -313,10 +320,14 @@ fn summarize_mode(rows: &[MetricRow], mode: ExecutionMode) {
 
     let n = lat.len() as f64;
     let mean = lat.iter().sum::<f64>() / n;
-    let var = lat.iter().map(|x| {
-        let d = x - mean;
-        d * d
-    }).sum::<f64>() / n;
+    let var = lat
+        .iter()
+        .map(|x| {
+            let d = x - mean;
+            d * d
+        })
+        .sum::<f64>()
+        / n;
 
     println!(
         "[APX Runtime Stability] mode={} steps={} policy_switches={} mean_us={:.2} var_us2={:.2}",

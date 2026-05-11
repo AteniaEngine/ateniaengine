@@ -1,4 +1,4 @@
-use atenia_engine::tensor::tensor::{Device, DType, Layout, Tensor};
+use atenia_engine::tensor::tensor::{DType, Device, Layout, Tensor};
 
 #[test]
 fn contiguous_strides_are_correct() {
@@ -14,7 +14,7 @@ fn channels_layouts_differ() {
     let nhwc = Tensor::compute_strides(&shape, &Layout::ChannelsLast);
     assert_ne!(nchw, nhwc);
     assert_eq!(nchw, vec![3072, 1024, 32, 1]); // NCHW row-major
-    assert_eq!(nhwc, vec![3072, 1, 96, 3]);    // NHWC row-major
+    assert_eq!(nhwc, vec![3072, 1, 96, 3]); // NHWC row-major
 }
 
 #[test]
@@ -35,12 +35,19 @@ fn add_respects_layout() {
         DType::F32,
     );
 
-    a.set_cpu_data(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]);
-    b.set_cpu_data(vec![12.0, 11.0, 10.0, 9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0]);
+    a.set_cpu_data(vec![
+        1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+    ]);
+    b.set_cpu_data(vec![
+        12.0, 11.0, 10.0, 9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0,
+    ]);
 
     let result = a.add(&b);
     assert_eq!(result.layout, Layout::ChannelsLast);
-    assert_eq!(result.strides, Tensor::compute_strides(&shape, &Layout::ChannelsLast));
+    assert_eq!(
+        result.strides,
+        Tensor::compute_strides(&shape, &Layout::ChannelsLast)
+    );
     assert_eq!(result.as_cpu_slice()[0], 13.0);
     assert_eq!(result.as_cpu_slice()[11], 13.0);
 }
@@ -56,7 +63,15 @@ fn with_layout_constructor_sets_fields() {
         DType::F32,
     );
     assert_eq!(tensor.layout, Layout::ChannelsFirst);
-    assert_eq!(tensor.strides, Tensor::compute_strides(&shape, &Layout::ChannelsFirst));
+    assert_eq!(
+        tensor.strides,
+        Tensor::compute_strides(&shape, &Layout::ChannelsFirst)
+    );
     assert_eq!(tensor.device, Device::GPU);
-    assert!(tensor.as_cpu_slice().iter().all(|&v| (v - 2.0).abs() < f32::EPSILON));
+    assert!(
+        tensor
+            .as_cpu_slice()
+            .iter()
+            .all(|&v| (v - 2.0).abs() < f32::EPSILON)
+    );
 }

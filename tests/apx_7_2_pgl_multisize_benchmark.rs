@@ -1,5 +1,5 @@
-use atenia_engine::tensor::{Tensor, Device};
 use atenia_engine::config::get_runtime_flags;
+use atenia_engine::tensor::{Device, Tensor};
 
 #[inline(always)]
 fn now<F, T>(f: F) -> f64

@@ -1,14 +1,8 @@
-﻿use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::tensor::{Device, DType, Layout, Tensor};
+use atenia_engine::amg::builder::GraphBuilder;
+use atenia_engine::tensor::{DType, Device, Layout, Tensor};
 
 fn make_tensor(shape: Vec<usize>, value: f32) -> Tensor {
-    let mut t = Tensor::with_layout(
-        shape,
-        0.0,
-        Device::CPU,
-        Layout::Contiguous,
-        DType::F32,
-    );
+    let mut t = Tensor::with_layout(shape, 0.0, Device::CPU, Layout::Contiguous, DType::F32);
     for v in t.as_cpu_slice_mut().iter_mut() {
         *v = value;
     }
@@ -32,9 +26,7 @@ fn linear_backward_matches_manual_gradients() {
         for (id, node) in graph.nodes.iter().enumerate() {
             eprintln!(
                 "[DUMP] NODE {}: {:?} | inputs={:?}",
-                id,
-                node.node_type,
-                node.inputs
+                id, node.node_type, node.inputs
             );
         }
     }

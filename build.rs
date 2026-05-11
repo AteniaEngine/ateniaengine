@@ -3,23 +3,69 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Detects the highest installed CUDA Toolkit version under the default
-/// NVIDIA install root, or respects the `CUDA_PATH` env var if set.
+/// NVIDIA install location (Windows) or Linux, or respects the `CUDA_PATH`
+/// env var if set.
 ///
 /// Returns the full toolkit directory (e.g.
-/// `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2`).
+/// `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2` on Windows,
+/// `/usr/local/cuda` on Linux).
 fn detect_cuda_path() -> Result<String, String> {
     // Manual override via env var.
     if let Ok(p) = std::env::var("CUDA_PATH") {
-        if Path::new(&p).join("bin").join("nvcc.exe").is_file() {
+        let nvcc_name = if cfg!(windows) { "nvcc.exe" } else { "nvcc" };
+        if Path::new(&p).join("bin").join(nvcc_name).is_file() {
             return Ok(p);
         }
         return Err(format!(
-            "CUDA_PATH is set to '{}' but nvcc.exe was not found there.",
-            p
+            "CUDA_PATH is set to '{}' but {} was not found there.",
+            p, nvcc_name
         ));
     }
 
-    // Default Windows install location.
+    // Linux: Check common CUDA locations
+    if cfg!(unix) {
+        // First, try to find nvcc using 'which' command
+        if let Ok(output) = Command::new("which").arg("nvcc").output() {
+            if output.status.success() {
+                let nvcc_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !nvcc_path.is_empty() {
+                    // nvcc found in PATH, derive CUDA_PATH from its location
+                    // nvcc is usually in CUDA_PATH/bin or /usr/bin
+                    if nvcc_path.contains("/bin/nvcc") {
+                        let cuda_dir = nvcc_path.trim_end_matches("/bin/nvcc");
+                        if Path::new(cuda_dir).is_dir() {
+                            return Ok(cuda_dir.to_string());
+                        }
+                    } else if nvcc_path == "/usr/bin/nvcc" {
+                        // Ubuntu nvidia-cuda-toolkit installs libraries in /usr/lib/x86_64-linux-gnu/
+                        // or /usr/lib/cuda/lib64/
+                        if Path::new("/usr/lib/cuda/lib64").is_dir() {
+                            return Ok("/usr/lib/cuda".to_string());
+                        } else if Path::new("/usr/lib/x86_64-linux-gnu").is_dir() {
+                            return Ok("/usr/lib/x86_64-linux-gnu".to_string());
+                        } else {
+                            // Fallback: use /usr as CUDA_PATH
+                            return Ok("/usr".to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Then check standard CUDA locations
+        for cuda_dir in &["/usr/local/cuda", "/opt/cuda", "/usr/cuda"] {
+            if Path::new(cuda_dir).join("bin").join("nvcc").is_file() {
+                return Ok(cuda_dir.to_string());
+            }
+        }
+        return Err(
+            "CUDA Toolkit not found. nvcc not found in PATH, /usr/local/cuda, /opt/cuda, or /usr/cuda. \
+             Install with: sudo apt install nvidia-cuda-toolkit or set CUDA_PATH."
+                .to_string(),
+        );
+    }
+
+    // Windows: Default Windows install location.
     let base = r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA";
     let entries = fs::read_dir(base).map_err(|_| {
         format!(
@@ -34,9 +80,15 @@ fn detect_cuda_path() -> Result<String, String> {
     let mut versions: Vec<((u32, u32), PathBuf)> = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        let Some(rest) = name.strip_prefix('v') else { continue };
-        let Some((maj, min)) = rest.split_once('.') else { continue };
-        let (Ok(m), Ok(n)) = (maj.parse::<u32>(), min.parse::<u32>()) else { continue };
+        let Some(rest) = name.strip_prefix('v') else {
+            continue;
+        };
+        let Some((maj, min)) = rest.split_once('.') else {
+            continue;
+        };
+        let (Ok(m), Ok(n)) = (maj.parse::<u32>(), min.parse::<u32>()) else {
+            continue;
+        };
         let p = entry.path();
         if p.join("bin").join("nvcc.exe").is_file() {
             versions.push(((m, n), p));
@@ -61,10 +113,29 @@ fn detect_cuda_path() -> Result<String, String> {
 /// installation and returns the path to its `bin\Hostx64\x64` directory
 /// (which contains `cl.exe` and `lib.exe`).
 ///
+/// On Linux, returns the path to gcc.
+///
 /// Respects `MSVC_TOOLS_PATH` as a manual override pointing at that same
-/// `bin\Hostx64\x64` directory.
-fn detect_msvc_bin() -> Result<String, String> {
-    // Manual override via env var.
+/// `bin\Hostx64\x64` directory on Windows, or the gcc binary on Linux.
+fn detect_compiler_bin() -> Result<String, String> {
+    // Linux: Use gcc
+    if cfg!(unix) {
+        if let Ok(p) = std::env::var("CC") {
+            if Path::new(&p).is_file() {
+                return Ok(p);
+            }
+            return Err(format!("CC is set to '{}' but it's not a file.", p));
+        }
+
+        // Try to find gcc
+        if Path::new("/usr/bin/gcc").is_file() {
+            return Ok("/usr/bin/gcc".to_string());
+        }
+
+        return Err("gcc not found. Install with: sudo apt install build-essential".to_string());
+    }
+
+    // Windows: MSVC detection
     if let Ok(p) = std::env::var("MSVC_TOOLS_PATH") {
         if Path::new(&p).join("lib.exe").is_file() {
             return Ok(p);
@@ -75,20 +146,18 @@ fn detect_msvc_bin() -> Result<String, String> {
         ));
     }
 
-    // Visual Studio roots. Modern VS uses a numeric version (18, 19, ...);
-    // older layouts use the year (2019, 2022). Accept any purely numeric
-    // subfolder so the detection covers both schemes.
     let roots = [
         r"C:\Program Files (x86)\Microsoft Visual Studio",
         r"C:\Program Files\Microsoft Visual Studio",
     ];
     let editions = ["BuildTools", "Community", "Professional", "Enterprise"];
 
-    // Score entries by MSVC version parts descending; the highest wins.
     let mut candidates: Vec<(Vec<u32>, PathBuf)> = Vec::new();
 
     for root in roots {
-        let Ok(root_entries) = fs::read_dir(root) else { continue };
+        let Ok(root_entries) = fs::read_dir(root) else {
+            continue;
+        };
         for vs_dir in root_entries.flatten() {
             let name = vs_dir.file_name().to_string_lossy().into_owned();
             if name.is_empty() || !name.chars().all(|c| c.is_ascii_digit()) {
@@ -96,13 +165,10 @@ fn detect_msvc_bin() -> Result<String, String> {
             }
 
             for ed in editions {
-                let msvc_root = vs_dir
-                    .path()
-                    .join(ed)
-                    .join("VC")
-                    .join("Tools")
-                    .join("MSVC");
-                let Ok(vers) = fs::read_dir(&msvc_root) else { continue };
+                let msvc_root = vs_dir.path().join(ed).join("VC").join("Tools").join("MSVC");
+                let Ok(vers) = fs::read_dir(&msvc_root) else {
+                    continue;
+                };
                 for v in vers.flatten() {
                     let vname = v.file_name().to_string_lossy().into_owned();
                     let parts: Option<Vec<u32>> =
@@ -136,17 +202,44 @@ fn main() {
     let cu_path = "src/cuda/atenia_kernels.cu";
 
     // Auto-detected toolchain paths. Overridable via CUDA_PATH / MSVC_TOOLS_PATH.
-    let cuda_path = detect_cuda_path().unwrap_or_else(|e| panic!("{}", e));
-    let nvcc_path = format!(r"{}\bin\nvcc.exe", cuda_path);
-    let msvc_bin = detect_msvc_bin().unwrap_or_else(|e| panic!("{}", e));
-    let lib_exe = format!(r"{}\lib.exe", msvc_bin);
+    let cuda_path = match detect_cuda_path() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("[build.rs] CUDA detection failed: {}", e);
+            eprintln!("[build.rs] Skipping CUDA kernel compilation (CPU-only build)");
+            return;
+        }
+    };
+
+    let compiler_bin = match detect_compiler_bin() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("[build.rs] Compiler detection failed: {}", e);
+            eprintln!("[build.rs] Skipping CUDA kernel compilation (CPU-only build)");
+            return;
+        }
+    };
+
+    let is_windows = cfg!(windows);
+    let nvcc_name = if is_windows { "nvcc.exe" } else { "nvcc" };
+
+    // On Ubuntu with nvidia-cuda-toolkit, nvcc is in /usr/bin, not in CUDA_PATH/bin
+    let nvcc_path = if cuda_path == "/usr"
+        || cuda_path == "/usr/lib/cuda"
+        || cuda_path == "/usr/lib/x86_64-linux-gnu"
+    {
+        "/usr/bin/nvcc".to_string()
+    } else {
+        format!("{}/bin/{}", cuda_path, nvcc_name)
+    };
 
     // Rebuild when the user changes toolchain overrides.
     println!("cargo:rerun-if-env-changed=CUDA_PATH");
     println!("cargo:rerun-if-env-changed=MSVC_TOOLS_PATH");
+    println!("cargo:rerun-if-env-changed=CC");
 
     eprintln!("[build.rs] Detected CUDA:  {}", cuda_path);
-    eprintln!("[build.rs] Detected MSVC:  {}", msvc_bin);
+    eprintln!("[build.rs] Detected Compiler:  {}", compiler_bin);
 
     println!("cargo:rerun-if-changed=src/cuda/atenia_kernels.cu");
     println!("cargo:rerun-if-changed=src/cuda/atenia_kernels.h");
@@ -160,330 +253,184 @@ fn main() {
     eprintln!("[DEBUG] Using NVCC path: {}", nvcc_path);
     eprintln!("[DEBUG] CU file path: {}", cu_path);
 
-    let output = Command::new(&nvcc_path)
-        .args(&[
-            "-ccbin",
-            msvc_bin.as_str(),
-            "-c",
-            cu_path,
-            "-o", "atenia_kernels.obj",
-            "-Xcompiler", "/MD",
-            "-Xcompiler", "/EHsc",
-            "-v",
-        ])
+    // Compile CUDA kernels
+    compile_cuda_kernel(
+        &nvcc_path,
+        &compiler_bin,
+        cu_path,
+        "atenia_kernels.obj",
+        is_windows,
+    );
+    compile_cuda_kernel(
+        &nvcc_path,
+        &compiler_bin,
+        "src/cuda/matmul_kernel.cu",
+        "matmul_kernel.obj",
+        is_windows,
+    );
+    compile_cuda_kernel(
+        &nvcc_path,
+        &compiler_bin,
+        "src/cuda/linear_cuda.cu",
+        "linear_cuda.obj",
+        is_windows,
+    );
+    compile_cuda_kernel(
+        &nvcc_path,
+        &compiler_bin,
+        "src/cuda/batch_matmul.cu",
+        "batch_matmul.obj",
+        is_windows,
+    );
+    compile_cuda_kernel(
+        &nvcc_path,
+        &compiler_bin,
+        "src/cuda/fused_linear_silu.cu",
+        "fused_linear_silu.obj",
+        is_windows,
+    );
+    compile_cuda_kernel(
+        &nvcc_path,
+        &compiler_bin,
+        "src/cuda/bf16_to_f32.cu",
+        "bf16_to_f32.obj",
+        is_windows,
+    );
+    compile_cuda_kernel(
+        &nvcc_path,
+        &compiler_bin,
+        "src/cuda/int8_to_bf16.cu",
+        "int8_to_bf16.obj",
+        is_windows,
+    );
+
+    // Link kernels into static libraries
+    if is_windows {
+        let lib_exe = format!("{}/lib.exe", compiler_bin);
+        create_static_lib(&lib_exe, "atenia_kernels.obj", "atenia_kernels.lib");
+        create_static_lib(&lib_exe, "matmul_kernel.obj", "matmul_kernel.lib");
+        create_static_lib(&lib_exe, "linear_cuda.obj", "linear_cuda.lib");
+        create_static_lib(&lib_exe, "batch_matmul.obj", "batch_matmul.lib");
+        create_static_lib(&lib_exe, "fused_linear_silu.obj", "fused_linear_silu.lib");
+        create_static_lib(&lib_exe, "bf16_to_f32.obj", "bf16_to_f32.lib");
+        create_static_lib(&lib_exe, "int8_to_bf16.obj", "int8_to_bf16.lib");
+    } else {
+        // Linux: use ar to create static libraries
+        create_static_lib_linux("atenia_kernels.obj", "libatenia_kernels.a");
+        create_static_lib_linux("matmul_kernel.obj", "libmatmul_kernel.a");
+        create_static_lib_linux("linear_cuda.obj", "liblinear_cuda.a");
+        create_static_lib_linux("batch_matmul.obj", "libbatch_matmul.a");
+        create_static_lib_linux("fused_linear_silu.obj", "libfused_linear_silu.a");
+        create_static_lib_linux("bf16_to_f32.obj", "libbf16_to_f32.a");
+        create_static_lib_linux("int8_to_bf16.obj", "libint8_to_bf16.a");
+    }
+
+    // Link against cudart from the same toolkit we used to compile kernels.
+    let cuda_lib_dir = if is_windows {
+        format!(r"{}\lib\x64", cuda_path)
+    } else if cuda_path == "/usr" || cuda_path == "/usr/lib/x86_64-linux-gnu" {
+        "/usr/lib/x86_64-linux-gnu".to_string()
+    } else if cuda_path == "/usr/lib/cuda" {
+        "/usr/lib/cuda/lib64".to_string()
+    } else {
+        format!("{}/lib64", cuda_path)
+    };
+    println!("cargo:rustc-link-search=native={}", cuda_lib_dir);
+    println!("cargo:rustc-link-lib=dylib=cudart");
+    println!("cargo:rustc-link-lib=dylib=cublas");
+
+    // Link our static libraries
+    println!("cargo:rustc-link-search=.");
+    if is_windows {
+        println!("cargo:rustc-link-lib=static=atenia_kernels");
+        println!("cargo:rustc-link-lib=static=matmul_kernel");
+        println!("cargo:rustc-link-lib=static=linear_cuda");
+        println!("cargo:rustc-link-lib=static=batch_matmul");
+        println!("cargo:rustc-link-lib=static=fused_linear_silu");
+        println!("cargo:rustc-link-lib=static=bf16_to_f32");
+    } else {
+        println!("cargo:rustc-link-lib=static=atenia_kernels");
+        println!("cargo:rustc-link-lib=static=matmul_kernel");
+        println!("cargo:rustc-link-lib=static=linear_cuda");
+        println!("cargo:rustc-link-lib=static=batch_matmul");
+        println!("cargo:rustc-link-lib=static=fused_linear_silu");
+        println!("cargo:rustc-link-lib=static=bf16_to_f32");
+    }
+}
+
+fn compile_cuda_kernel(
+    nvcc_path: &str,
+    compiler_bin: &str,
+    cu_file: &str,
+    output_obj: &str,
+    is_windows: bool,
+) {
+    let mut args = vec![];
+
+    if is_windows {
+        args.extend(&["-ccbin", compiler_bin]);
+        args.extend(&["-Xcompiler", "/MD"]);
+        args.extend(&["-Xcompiler", "/EHsc"]);
+    } else {
+        args.extend(&["-ccbin", compiler_bin]);
+    }
+
+    args.extend(&["-c", cu_file, "-o", output_obj]);
+
+    if is_windows {
+        args.push("-v");
+    }
+
+    let output = Command::new(nvcc_path)
+        .args(&args)
         .output()
         .expect("Failed to run NVCC");
 
     eprintln!("---- NVCC STATUS: {:?} ----", output.status.code());
-    eprintln!("---- NVCC STDOUT ----\n{}", String::from_utf8_lossy(&output.stdout));
-    eprintln!("---- NVCC STDERR ----\n{}", String::from_utf8_lossy(&output.stderr));
+    eprintln!(
+        "---- NVCC STDOUT ----\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    eprintln!(
+        "---- NVCC STDERR ----\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     if !output.status.success() {
-        panic!("CUDA kernel compilation failed");
+        panic!("CUDA kernel compilation failed for {}", cu_file);
     }
+}
 
-    let output_lib = Command::new(&lib_exe)
-        .args(&["/OUT:atenia_kernels.lib", "atenia_kernels.obj"])
+fn create_static_lib(lib_exe: &str, obj_file: &str, lib_name: &str) {
+    let output = Command::new(lib_exe)
+        .args(&["/OUT:".to_string() + lib_name, obj_file.to_string()])
         .output()
         .expect("Failed to create static library.");
 
-    eprintln!("---- LIB STATUS: {:?} ----", output_lib.status.code());
-    eprintln!("---- LIB STDOUT ----\n{}", String::from_utf8_lossy(&output_lib.stdout));
-    eprintln!("---- LIB STDERR ----\n{}", String::from_utf8_lossy(&output_lib.stderr));
+    eprintln!("---- LIB STATUS: {:?} ----", output.status.code());
+    eprintln!(
+        "---- LIB STDOUT ----\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    eprintln!(
+        "---- LIB STDERR ----\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
 
-    // Compile matmul kernel
-    let matmul_out = Command::new(&nvcc_path)
-        .args(&[
-            "-ccbin",
-            msvc_bin.as_str(),
-            "-c",
-            "src/cuda/matmul_kernel.cu",
-            "-o",
-            "matmul_kernel.obj",
-            "-Xcompiler",
-            "/MD",
-            "-Xcompiler",
-            "/EHsc",
-        ])
+fn create_static_lib_linux(obj_file: &str, lib_name: &str) {
+    let output = Command::new("ar")
+        .args(&["rcs", lib_name, obj_file])
         .output()
-        .expect("Failed to run NVCC (matmul)");
+        .expect("Failed to create static library with ar.");
 
-    eprintln!("---- MATMUL NVCC STATUS: {:?} ----", matmul_out.status.code());
+    eprintln!("---- AR STATUS: {:?} ----", output.status.code());
     eprintln!(
-        "---- MATMUL NVCC STDOUT ----\n{}",
-        String::from_utf8_lossy(&matmul_out.stdout)
+        "---- AR STDOUT ----\n{}",
+        String::from_utf8_lossy(&output.stdout)
     );
     eprintln!(
-        "---- MATMUL NVCC STDERR ----\n{}",
-        String::from_utf8_lossy(&matmul_out.stderr)
+        "---- AR STDERR ----\n{}",
+        String::from_utf8_lossy(&output.stderr)
     );
-
-    if !matmul_out.status.success() {
-        panic!("CUDA matmul kernel compilation failed");
-    }
-
-    let matmul_lib = Command::new(&lib_exe)
-        .args(&["/OUT:matmul_kernel.lib", "matmul_kernel.obj"])
-        .output()
-        .expect("Failed to create matmul library.");
-
-    eprintln!("---- MATMUL LIB STATUS: {:?} ----", matmul_lib.status.code());
-    eprintln!(
-        "---- MATMUL LIB STDOUT ----\n{}",
-        String::from_utf8_lossy(&matmul_lib.stdout)
-    );
-    eprintln!(
-        "---- MATMUL LIB STDERR ----\n{}",
-        String::from_utf8_lossy(&matmul_lib.stderr)
-    );
-
-    // Compile linear CUDA kernel into separate static library
-    let linear_out = Command::new(&nvcc_path)
-        .args(&[
-            "-ccbin",
-            msvc_bin.as_str(),
-            "-c",
-            "src/cuda/linear_cuda.cu",
-            "-o",
-            "linear_cuda.obj",
-            "-Xcompiler",
-            "/MD",
-            "-Xcompiler",
-            "/EHsc",
-        ])
-        .output()
-        .expect("Failed to run NVCC (linear)");
-
-    eprintln!("---- LINEAR NVCC STATUS: {:?} ----", linear_out.status.code());
-    eprintln!(
-        "---- LINEAR NVCC STDOUT ----\n{}",
-        String::from_utf8_lossy(&linear_out.stdout)
-    );
-    eprintln!(
-        "---- LINEAR NVCC STDERR ----\n{}",
-        String::from_utf8_lossy(&linear_out.stderr)
-    );
-
-    if !linear_out.status.success() {
-        panic!("CUDA linear kernel compilation failed");
-    }
-
-    let linear_lib = Command::new(&lib_exe)
-        .args(&["/OUT:linear_cuda.lib", "linear_cuda.obj"])
-        .output()
-        .expect("Failed to create linear_cuda library.");
-
-    eprintln!("---- LINEAR LIB STATUS: {:?} ----", linear_lib.status.code());
-    eprintln!(
-        "---- LINEAR LIB STDOUT ----\n{}",
-        String::from_utf8_lossy(&linear_lib.stdout)
-    );
-    eprintln!(
-        "---- LINEAR LIB STDERR ----\n{}",
-        String::from_utf8_lossy(&linear_lib.stderr)
-    );
-
-    // Compile batch_matmul CUDA kernel into separate static library
-    let bmm_out = Command::new(&nvcc_path)
-        .args(&[
-            "-ccbin",
-            msvc_bin.as_str(),
-            "-c",
-            "src/cuda/batch_matmul.cu",
-            "-o",
-            "batch_matmul.obj",
-            "-Xcompiler",
-            "/MD",
-            "-Xcompiler",
-            "/EHsc",
-        ])
-        .output()
-        .expect("Failed to run NVCC (batch_matmul)");
-
-    eprintln!("---- BATCH_MATMUL NVCC STATUS: {:?} ----", bmm_out.status.code());
-    eprintln!(
-        "---- BATCH_MATMUL NVCC STDOUT ----\n{}",
-        String::from_utf8_lossy(&bmm_out.stdout)
-    );
-    eprintln!(
-        "---- BATCH_MATMUL NVCC STDERR ----\n{}",
-        String::from_utf8_lossy(&bmm_out.stderr)
-    );
-
-    if !bmm_out.status.success() {
-        panic!("CUDA batch_matmul kernel compilation failed");
-    }
-
-    let bmm_lib = Command::new(&lib_exe)
-        .args(&["/OUT:batch_matmul.lib", "batch_matmul.obj"])
-        .output()
-        .expect("Failed to create batch_matmul library.");
-
-    eprintln!("---- BATCH_MATMUL LIB STATUS: {:?} ----", bmm_lib.status.code());
-    eprintln!(
-        "---- BATCH_MATMUL LIB STDOUT ----\n{}",
-        String::from_utf8_lossy(&bmm_lib.stdout)
-    );
-    eprintln!(
-        "---- BATCH_MATMUL LIB STDERR ----\n{}",
-        String::from_utf8_lossy(&bmm_lib.stderr)
-    );
-
-    // Compile fused_linear_silu CUDA kernel into separate static library
-    let fls_out = Command::new(&nvcc_path)
-        .args(&[
-            "-ccbin",
-            msvc_bin.as_str(),
-            "-c",
-            "src/cuda/fused_linear_silu.cu",
-            "-o",
-            "fused_linear_silu.obj",
-            "-Xcompiler",
-            "/MD",
-            "-Xcompiler",
-            "/EHsc",
-        ])
-        .output()
-        .expect("Failed to run NVCC (fused_linear_silu)");
-
-    eprintln!("---- FUSED_LINEAR_SILU NVCC STATUS: {:?} ----", fls_out.status.code());
-    eprintln!(
-        "---- FUSED_LINEAR_SILU NVCC STDOUT ----\n{}",
-        String::from_utf8_lossy(&fls_out.stdout)
-    );
-    eprintln!(
-        "---- FUSED_LINEAR_SILU NVCC STDERR ----\n{}",
-        String::from_utf8_lossy(&fls_out.stderr)
-    );
-
-    if !fls_out.status.success() {
-        panic!("CUDA fused_linear_silu kernel compilation failed");
-    }
-
-    let fls_lib = Command::new(&lib_exe)
-        .args(&["/OUT:fused_linear_silu.lib", "fused_linear_silu.obj"])
-        .output()
-        .expect("Failed to create fused_linear_silu library.");
-
-    eprintln!("---- FUSED_LINEAR_SILU LIB STATUS: {:?} ----", fls_lib.status.code());
-    eprintln!(
-        "---- FUSED_LINEAR_SILU LIB STDOUT ----\n{}",
-        String::from_utf8_lossy(&fls_lib.stdout)
-    );
-    eprintln!(
-        "---- FUSED_LINEAR_SILU LIB STDERR ----\n{}",
-        String::from_utf8_lossy(&fls_lib.stderr)
-    );
-
-    // Compile bf16_to_f32 CUDA kernel into separate static library
-    let bf16_out = Command::new(&nvcc_path)
-        .args(&[
-            "-ccbin",
-            msvc_bin.as_str(),
-            "-c",
-            "src/cuda/bf16_to_f32.cu",
-            "-o",
-            "bf16_to_f32.obj",
-            "-Xcompiler",
-            "/MD",
-            "-Xcompiler",
-            "/EHsc",
-        ])
-        .output()
-        .expect("Failed to run NVCC (bf16_to_f32)");
-
-    eprintln!("---- BF16_TO_F32 NVCC STATUS: {:?} ----", bf16_out.status.code());
-    eprintln!(
-        "---- BF16_TO_F32 NVCC STDOUT ----\n{}",
-        String::from_utf8_lossy(&bf16_out.stdout)
-    );
-    eprintln!(
-        "---- BF16_TO_F32 NVCC STDERR ----\n{}",
-        String::from_utf8_lossy(&bf16_out.stderr)
-    );
-
-    if !bf16_out.status.success() {
-        panic!("CUDA bf16_to_f32 kernel compilation failed");
-    }
-
-    let bf16_lib = Command::new(&lib_exe)
-        .args(&["/OUT:bf16_to_f32.lib", "bf16_to_f32.obj"])
-        .output()
-        .expect("Failed to create bf16_to_f32 library.");
-
-    eprintln!("---- BF16_TO_F32 LIB STATUS: {:?} ----", bf16_lib.status.code());
-    eprintln!(
-        "---- BF16_TO_F32 LIB STDOUT ----\n{}",
-        String::from_utf8_lossy(&bf16_lib.stdout)
-    );
-    eprintln!(
-        "---- BF16_TO_F32 LIB STDERR ----\n{}",
-        String::from_utf8_lossy(&bf16_lib.stderr)
-    );
-
-    // M9.0 — INT8 → BF16 per-channel dequant kernel for the
-    // `examples/bench_int8_w8a16.rs` microbench (gating data
-    // for M9 INT8 weight quantisation).
-    let int8_out = Command::new(&nvcc_path)
-        .args(&[
-            "-ccbin",
-            msvc_bin.as_str(),
-            "-c",
-            "src/cuda/int8_to_bf16.cu",
-            "-o",
-            "int8_to_bf16.obj",
-            "-Xcompiler",
-            "/MD",
-            "-Xcompiler",
-            "/EHsc",
-        ])
-        .output()
-        .expect("Failed to run NVCC (int8_to_bf16)");
-
-    eprintln!("---- INT8_TO_BF16 NVCC STATUS: {:?} ----", int8_out.status.code());
-    eprintln!(
-        "---- INT8_TO_BF16 NVCC STDOUT ----\n{}",
-        String::from_utf8_lossy(&int8_out.stdout)
-    );
-    eprintln!(
-        "---- INT8_TO_BF16 NVCC STDERR ----\n{}",
-        String::from_utf8_lossy(&int8_out.stderr)
-    );
-
-    if !int8_out.status.success() {
-        panic!("CUDA int8_to_bf16 kernel compilation failed");
-    }
-
-    let int8_lib = Command::new(&lib_exe)
-        .args(&["/OUT:int8_to_bf16.lib", "int8_to_bf16.obj"])
-        .output()
-        .expect("Failed to create int8_to_bf16 library.");
-
-    eprintln!("---- INT8_TO_BF16 LIB STATUS: {:?} ----", int8_lib.status.code());
-    eprintln!(
-        "---- INT8_TO_BF16 LIB STDOUT ----\n{}",
-        String::from_utf8_lossy(&int8_lib.stdout)
-    );
-    eprintln!(
-        "---- INT8_TO_BF16 LIB STDERR ----\n{}",
-        String::from_utf8_lossy(&int8_lib.stderr)
-    );
-
-    // Link against cudart from the same toolkit we used to compile kernels.
-    let cuda_lib_dir = format!(r"{}\lib\x64", cuda_path);
-    println!("cargo:rustc-link-search=native={}", cuda_lib_dir);
-    println!("cargo:rustc-link-lib=dylib=cudart");
-    // M8.0 — link cuBLAS for the BF16 TC bench (`examples/bench_cublas_bf16.rs`)
-    // and any future production path that needs cublasGemmEx. Same toolkit as
-    // cudart so the versions stay coherent.
-    println!("cargo:rustc-link-lib=dylib=cublas");
-
-    // Nuestra lib está en el cwd
-    println!("cargo:rustc-link-search=.");
-    println!("cargo:rustc-link-lib=static=atenia_kernels");
-    println!("cargo:rustc-link-lib=static=matmul_kernel");
-    println!("cargo:rustc-link-lib=static=linear_cuda");
-    println!("cargo:rustc-link-lib=static=batch_matmul");
-    println!("cargo:rustc-link-lib=static=fused_linear_silu");
-    println!("cargo:rustc-link-lib=static=bf16_to_f32");
 }

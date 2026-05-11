@@ -1,20 +1,11 @@
-use atenia_engine::profiler::exec_record::*;
 use atenia_engine::gpu::fingerprint::KernelFingerprint;
+use atenia_engine::profiler::exec_record::*;
 
 #[test]
 fn apx_12_7_recorder_basic() {
     let mut rec = ExecutionRecorder::new();
 
-    let dummy_fp = KernelFingerprint::new(
-        9999,
-        (1, 1, 1),
-        (1, 1, 1),
-        0,
-        4,
-        0,
-        32,
-        "TEST",
-    );
+    let dummy_fp = KernelFingerprint::new(9999, (1, 1, 1), (1, 1, 1), 0, 4, 0, 32, "TEST");
 
     rec.record("fake_kernel", 1.23, dummy_fp.clone());
     rec.record("fake_kernel2", 2.34, dummy_fp);

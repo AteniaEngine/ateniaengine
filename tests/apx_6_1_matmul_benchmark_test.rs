@@ -1,6 +1,8 @@
 use std::time::Instant;
 
-use atenia_engine::apx3_8::{device_context::DeviceContext, kernel_dispatch::dispatch_matmul as dispatch_matmul_apx3_8};
+use atenia_engine::apx3_8::{
+    device_context::DeviceContext, kernel_dispatch::dispatch_matmul as dispatch_matmul_apx3_8,
+};
 use atenia_engine::kernels::matmul_tiled_cpu::matmul_tiled_cpu;
 use atenia_engine::tensor::Device;
 
@@ -30,10 +32,21 @@ fn benchmark_size(m: usize, k: usize, n: usize) {
 
     for (i, (x, y)) in out_base.iter().zip(out_tiled.iter()).enumerate() {
         let diff = (x - y).abs();
-        assert!(diff < 1e-3, "mismatch at {}: base={} tiled={} diff={}", i, x, y, diff);
+        assert!(
+            diff < 1e-3,
+            "mismatch at {}: base={} tiled={} diff={}",
+            i,
+            x,
+            y,
+            diff
+        );
     }
 
-    let speedup = if t_tiled > 0 { t_base as f64 / t_tiled as f64 } else { 0.0 };
+    let speedup = if t_tiled > 0 {
+        t_base as f64 / t_tiled as f64
+    } else {
+        0.0
+    };
     println!(
         "[APX 6.1 BENCH] size {}x{}x{} -> baseline={} us | tiled={} us | speedup={:.2}x",
         m, k, n, t_base, t_tiled, speedup

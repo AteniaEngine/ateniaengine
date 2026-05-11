@@ -17,7 +17,11 @@ pub struct AdapterContext {
 }
 
 impl AdapterContext {
-    pub fn new(model: LoadedModelHandle, contract: ExecutionContract, guard_action: GuardAction) -> Self {
+    pub fn new(
+        model: LoadedModelHandle,
+        contract: ExecutionContract,
+        guard_action: GuardAction,
+    ) -> Self {
         Self {
             model,
             contract,

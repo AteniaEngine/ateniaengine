@@ -40,8 +40,7 @@ impl PolicyManager {
 
     /// Returns a handle to the currently active policy.
     pub fn active_policy(&self) -> Arc<dyn ExecutionPolicy> {
-        self
-            .registry
+        self.registry
             .get(&self.active_name)
             .expect("active policy must exist in registry")
     }

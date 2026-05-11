@@ -22,12 +22,12 @@ pub mod phi3;
 pub mod pipeline;
 pub mod weight_loading;
 
-pub use builder::{build_llama, LlamaHandles, LlamaRuntime};
-pub use builder_shared::{build_llama_with_store, BuildError, LlamaHandlesShared};
+pub use builder::{LlamaHandles, LlamaRuntime, build_llama};
+pub use builder_shared::{BuildError, LlamaHandlesShared, build_llama_with_store};
 pub use config::{ConfigError, LlamaConfig, RopeScaling};
 pub use generator::{
-    generate_greedy, CollectingTokenSink, GenerateError, GeneratedToken,
-    GenerationConfig, StdoutTokenSink, TokenSink,
+    CollectingTokenSink, GenerateError, GeneratedToken, GenerationConfig, StdoutTokenSink,
+    TokenSink, generate_greedy,
 };
 pub use pipeline::{GenerationPipeline, PipelineError};
 pub use weight_loading::llama_weight_mapper;

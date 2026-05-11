@@ -16,7 +16,10 @@ impl LoaderPolicy {
         if available < required {
             match self {
                 LoaderPolicy::LoadAll | LoaderPolicy::FailIfInsufficientRam => {
-                    Err(LoaderError::InsufficientMemory { required, available })
+                    Err(LoaderError::InsufficientMemory {
+                        required,
+                        available,
+                    })
                 }
             }
         } else {

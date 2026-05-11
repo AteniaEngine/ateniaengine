@@ -1,9 +1,11 @@
-﻿use atenia_engine::amg::builder::GraphBuilder;
+use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::amg::graph::Graph;
 use atenia_engine::amg::nodes::NodeType;
-use atenia_engine::nn::mini_flux::{build_language_training_graph, build_mini_flux, MiniFluxConfig};
+use atenia_engine::nn::mini_flux::{
+    MiniFluxConfig, build_language_training_graph, build_mini_flux,
+};
 use atenia_engine::optim::adamw::AdamW;
-use atenia_engine::tensor::{Device, DType, Layout, Tensor};
+use atenia_engine::tensor::{DType, Device, Layout, Tensor};
 use atenia_engine::training::trainer_v2::TrainerV2;
 
 #[allow(dead_code)]
@@ -104,8 +106,14 @@ pub fn build_training_graph(cfg: &MiniFluxConfig) -> (Graph, Vec<usize>) {
         (cfg.batch_size * cfg.seq_len) as isize,
         cfg.vocab_size as isize,
     ];
-    let logits_flat = graph.add_node_of_type(NodeType::Reshape { target: flat_shape.clone() }, vec![handles.logits_id]);
-    let target_flat = graph.add_node_of_type(NodeType::Reshape { target: flat_shape }, vec![target_id]);
+    let logits_flat = graph.add_node_of_type(
+        NodeType::Reshape {
+            target: flat_shape.clone(),
+        },
+        vec![handles.logits_id],
+    );
+    let target_flat =
+        graph.add_node_of_type(NodeType::Reshape { target: flat_shape }, vec![target_id]);
 
     let diff = graph.add_node_of_type(NodeType::Sub, vec![logits_flat, target_flat]);
     let sq = graph.add_node_of_type(NodeType::Mul, vec![diff, diff]);
@@ -131,7 +139,13 @@ pub fn build_training_graph(cfg: &MiniFluxConfig) -> (Graph, Vec<usize>) {
     let total = graph.add_node_of_type(NodeType::MatMul, vec![ones_seq_id, sum_features]);
 
     let mean_scale = 1.0f32 / (cfg.batch_size * cfg.seq_len * cfg.vocab_size) as f32;
-    let scale = Tensor::with_layout(vec![1, 1], mean_scale, Device::CPU, Layout::Contiguous, DType::F32);
+    let scale = Tensor::with_layout(
+        vec![1, 1],
+        mean_scale,
+        Device::CPU,
+        Layout::Contiguous,
+        DType::F32,
+    );
     let scale_id = graph.add_parameter(scale);
     let loss = graph.add_node_of_type(NodeType::Mul, vec![total, scale_id]);
     graph.add_node_of_type(NodeType::Output, vec![loss]);

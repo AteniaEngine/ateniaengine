@@ -52,15 +52,13 @@
 
 use std::path::{Path, PathBuf};
 
-use atenia_engine::nn::llama::{
-    CollectingTokenSink, GenerationPipeline,
-};
+use atenia_engine::nn::llama::{CollectingTokenSink, GenerationPipeline};
 
 const TINYLLAMA_DIR_DEFAULT: &str = "models/tinyllama-1.1b";
 
 fn tinyllama_dir() -> Option<PathBuf> {
-    let dir = std::env::var("ATENIA_TINYLLAMA_DIR")
-        .unwrap_or_else(|_| TINYLLAMA_DIR_DEFAULT.to_string());
+    let dir =
+        std::env::var("ATENIA_TINYLLAMA_DIR").unwrap_or_else(|_| TINYLLAMA_DIR_DEFAULT.to_string());
     let path = PathBuf::from(dir);
     if path.join("config.json").exists()
         && path.join("tokenizer.json").exists()
@@ -92,7 +90,9 @@ struct DeterminismFixture {
 
 fn read_fixture() -> Option<DeterminismFixture> {
     let path = fixture_path();
-    if !path.exists() { return None; }
+    if !path.exists() {
+        return None;
+    }
     let s = std::fs::read_to_string(&path).ok()?;
     serde_json::from_str(&s).ok()
 }
@@ -115,26 +115,31 @@ fn write_fixture(fix: &DeterminismFixture) {
 #[ignore]
 fn tinyllama_pipeline_loads_and_generates_deterministic_text() {
     let Some(dir) = tinyllama_dir() else {
-        eprintln!("[skip] TinyLlama checkpoint not present at {TINYLLAMA_DIR_DEFAULT} \
-                   (override with ATENIA_TINYLLAMA_DIR)");
+        eprintln!(
+            "[skip] TinyLlama checkpoint not present at {TINYLLAMA_DIR_DEFAULT} \
+                   (override with ATENIA_TINYLLAMA_DIR)"
+        );
         return;
     };
 
     eprintln!("loading TinyLlama from {}...", dir.display());
     let load_start = std::time::Instant::now();
-    let pipe = GenerationPipeline::from_model_dir(&dir)
-        .expect("pipeline load failed");
-    eprintln!("loaded in {:.2}s ({} parameters in store, {:.2} MiB resident)",
+    let pipe = GenerationPipeline::from_model_dir(&dir).expect("pipeline load failed");
+    eprintln!(
+        "loaded in {:.2}s ({} parameters in store, {:.2} MiB resident)",
         load_start.elapsed().as_secs_f32(),
         pipe.store.len(),
-        pipe.store.resident_bytes() as f64 / 1_048_576.0);
+        pipe.store.resident_bytes() as f64 / 1_048_576.0
+    );
 
     // Sanity: TinyLlama config matches expectations.
     assert_eq!(pipe.config.num_attention_heads, 32);
     assert_eq!(pipe.config.num_key_value_heads, 4);
     assert_eq!(pipe.config.num_hidden_layers, 22);
-    assert!(pipe.tokenizer.has_chat_template(),
-        "TinyLlama-Chat must ship a chat_template");
+    assert!(
+        pipe.tokenizer.has_chat_template(),
+        "TinyLlama-Chat must ship a chat_template"
+    );
 
     // Fixed prompt — locked bytes, used both for R6 and the
     // determinism fixture.
@@ -144,17 +149,22 @@ fn tinyllama_pipeline_loads_and_generates_deterministic_text() {
     eprintln!("generating {max_new_tokens} tokens for prompt {prompt:?}...");
     let mut sink = CollectingTokenSink::default();
     let gen_start = std::time::Instant::now();
-    let text = pipe.generate(prompt, max_new_tokens, &mut sink)
+    let text = pipe
+        .generate(prompt, max_new_tokens, &mut sink)
         .expect("generate failed");
-    eprintln!("generated in {:.2}s: {:?}",
-        gen_start.elapsed().as_secs_f32(), text);
+    eprintln!(
+        "generated in {:.2}s: {:?}",
+        gen_start.elapsed().as_secs_f32(),
+        text
+    );
 
     // R6 contract — must produce something within the cap,
     // every event has the right step index, EOS handled.
-    assert!(!sink.tokens.is_empty(),
-        "must emit at least one token");
-    assert!(sink.tokens.len() <= max_new_tokens,
-        "must respect max_new_tokens cap");
+    assert!(!sink.tokens.is_empty(), "must emit at least one token");
+    assert!(
+        sink.tokens.len() <= max_new_tokens,
+        "must respect max_new_tokens cap"
+    );
     for (i, t) in sink.tokens.iter().enumerate() {
         assert_eq!(t.step, i, "step index must equal sink array index");
         if i + 1 < sink.tokens.len() {
@@ -164,8 +174,7 @@ fn tinyllama_pipeline_loads_and_generates_deterministic_text() {
 
     // Build / load the determinism fixture.
     let token_ids: Vec<u32> = sink.tokens.iter().map(|t| t.token_id).collect();
-    let regenerate = std::env::var("ATENIA_REGENERATE_FIXTURES")
-        .ok().as_deref() == Some("1");
+    let regenerate = std::env::var("ATENIA_REGENERATE_FIXTURES").ok().as_deref() == Some("1");
 
     if regenerate {
         let fixture = DeterminismFixture {
@@ -175,31 +184,44 @@ fn tinyllama_pipeline_loads_and_generates_deterministic_text() {
             max_new_tokens,
         };
         write_fixture(&fixture);
-        eprintln!("[regen] wrote determinism fixture to {}",
-            fixture_path().display());
+        eprintln!(
+            "[regen] wrote determinism fixture to {}",
+            fixture_path().display()
+        );
         return;
     }
 
     match read_fixture() {
         Some(fix) => {
-            assert_eq!(fix.prompt, prompt,
+            assert_eq!(
+                fix.prompt, prompt,
                 "fixture prompt drift (re-run with ATENIA_REGENERATE_FIXTURES=1 \
-                 if intentional)");
-            assert_eq!(fix.max_new_tokens, max_new_tokens,
-                "fixture max_new_tokens drift");
-            assert_eq!(fix.expected_token_ids, token_ids,
+                 if intentional)"
+            );
+            assert_eq!(
+                fix.max_new_tokens, max_new_tokens,
+                "fixture max_new_tokens drift"
+            );
+            assert_eq!(
+                fix.expected_token_ids, token_ids,
                 "DETERMINISM BREACH: token IDs differ from locked fixture. \
-                 If intentional, re-run with ATENIA_REGENERATE_FIXTURES=1.");
-            assert_eq!(fix.expected_text, text,
+                 If intentional, re-run with ATENIA_REGENERATE_FIXTURES=1."
+            );
+            assert_eq!(
+                fix.expected_text, text,
                 "DETERMINISM BREACH: decoded text differs from locked fixture. \
-                 If intentional, re-run with ATENIA_REGENERATE_FIXTURES=1.");
+                 If intentional, re-run with ATENIA_REGENERATE_FIXTURES=1."
+            );
             eprintln!("[ok] determinism fixture matches (token IDs + text)");
         }
         None => {
             // No fixture yet. Print what we got so the
             // operator can hand-write one and re-run, or
             // re-run with ATENIA_REGENERATE_FIXTURES=1.
-            eprintln!("[fixture-missing] no fixture at {}", fixture_path().display());
+            eprintln!(
+                "[fixture-missing] no fixture at {}",
+                fixture_path().display()
+            );
             eprintln!("first-run capture:");
             eprintln!("  prompt:           {prompt:?}");
             eprintln!("  max_new_tokens:   {max_new_tokens}");
@@ -221,10 +243,11 @@ fn tinyllama_pipeline_loads_and_generates_deterministic_text() {
 #[test]
 #[ignore]
 fn tinyllama_pipeline_load_completes_with_full_param_set() {
-    let Some(dir) = tinyllama_dir() else { return; };
+    let Some(dir) = tinyllama_dir() else {
+        return;
+    };
 
-    let pipe = GenerationPipeline::from_model_dir(&dir)
-        .expect("pipeline load failed");
+    let pipe = GenerationPipeline::from_model_dir(&dir).expect("pipeline load failed");
 
     // TinyLlama: 22 layers × 9 params + 1 embed + 1 final
     // norm + 1 lm_head = 22*9 + 3 = 201. Sanity match
@@ -257,7 +280,10 @@ fn tinyllama_pipeline_load_completes_with_full_param_set() {
 /// (cheap; doesn't need the checkpoint).
 #[test]
 fn pipeline_missing_dir_surfaces_clear_error() {
-    let res = GenerationPipeline::from_model_dir(Path::new(
-        "definitely_not_a_model_dir_for_M5_d_b_test"));
-    assert!(res.is_err(), "missing dir must produce an error, not a panic");
+    let res =
+        GenerationPipeline::from_model_dir(Path::new("definitely_not_a_model_dir_for_M5_d_b_test"));
+    assert!(
+        res.is_err(),
+        "missing dir must produce an error, not a panic"
+    );
 }

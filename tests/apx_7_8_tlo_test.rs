@@ -1,6 +1,6 @@
-﻿use atenia_engine::amg::graph::Graph;
+use atenia_engine::amg::graph::Graph;
 use atenia_engine::amg::nodes::{Node, NodeType};
-use atenia_engine::tensor::{Tensor, Device, Layout};
+use atenia_engine::tensor::{Device, Layout, Tensor};
 
 fn max_abs_diff(a: &Tensor, b: &Tensor) -> f32 {
     a.as_cpu_slice()
@@ -26,7 +26,13 @@ fn make_two_branch_graph() -> Graph {
 }
 
 fn make_inputs() -> Vec<Tensor> {
-    let x = Tensor::with_layout(vec![16, 16], 1.0, Device::CPU, Layout::Contiguous, atenia_engine::tensor::DType::F32);
+    let x = Tensor::with_layout(
+        vec![16, 16],
+        1.0,
+        Device::CPU,
+        Layout::Contiguous,
+        atenia_engine::tensor::DType::F32,
+    );
     vec![x]
 }
 
@@ -34,11 +40,15 @@ fn make_inputs() -> Vec<Tensor> {
 fn apx_7_8_tlo_equivalence_with_sequential() {
     let inputs = make_inputs();
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.4"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.4");
+    }
     let mut g_seq = make_two_branch_graph();
     let out_seq = g_seq.execute(inputs.clone());
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.8"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.8");
+    }
     let mut g_tlo = make_two_branch_graph();
     let out_tlo = g_tlo.execute(inputs);
 
@@ -51,7 +61,9 @@ fn apx_7_8_tlo_reorders_ready_nodes_structural() {
     // We do not observe ready_queue directly, but we ensure that
     // hint construction does not panic and that TLO can be invoked without
     // breaking anything in a simple two-branch graph.
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.8"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.8");
+    }
     let mut g = make_two_branch_graph();
     let _ = g.execute(make_inputs());
 }
@@ -69,11 +81,15 @@ fn apx_7_8_tlo_performance_sanity() {
         t0.elapsed().as_secs_f64() * 1000.0
     }
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.5"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.5");
+    }
     let mut g_hpge = make_two_branch_graph();
     let t_hpge = now_ms(|| g_hpge.execute(inputs.clone()));
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.8"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.8");
+    }
     let mut g_tlo = make_two_branch_graph();
     let t_tlo = now_ms(|| g_tlo.execute(inputs));
 

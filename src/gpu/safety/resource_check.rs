@@ -136,10 +136,7 @@ pub fn probe_free_vram_bytes() -> u64 {
 /// The function probes the live machine state and applies the
 /// policy described in the module docs. Logs the decision to
 /// stderr unless `apx_is_silent()` is set.
-pub fn check_before_gpu_operation(
-    required_ram_mb: u64,
-    required_vram_mb: u64,
-) -> SafetyDecision {
+pub fn check_before_gpu_operation(required_ram_mb: u64, required_vram_mb: u64) -> SafetyDecision {
     let free_ram = probe_free_ram_bytes();
     let free_vram = probe_free_vram_bytes();
     let required_ram = required_ram_mb * 1024 * 1024;

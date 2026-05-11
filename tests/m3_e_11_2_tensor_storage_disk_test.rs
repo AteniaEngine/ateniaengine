@@ -17,14 +17,11 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 use atenia_engine::tensor::disk_tier;
-use atenia_engine::tensor::{
-    DType, Device, Layout, StorageTransferError, Tensor, TensorStorage,
-};
+use atenia_engine::tensor::{DType, Device, Layout, StorageTransferError, Tensor, TensorStorage};
 
 /// Throwaway cache directory unique per test. Cleanup is best-effort.
 fn test_cache_dir(label: &str) -> PathBuf {
-    let dir = std::env::temp_dir()
-        .join(format!("atenia_m3_e_11_2_{}_{}", label, Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("atenia_m3_e_11_2_{}_{}", label, Uuid::new_v4()));
     std::fs::create_dir_all(&dir).expect("create test cache dir");
     dir
 }
@@ -37,15 +34,8 @@ fn cleanup(dir: &PathBuf) {
 /// `TensorStorage::Disk`, backed by a file written into `cache_dir`
 /// containing `data` as raw f32 bytes.
 fn build_disk_tensor(cache_dir: &PathBuf, shape: Vec<usize>, data: Vec<f32>) -> Tensor {
-    let handle = disk_tier::write_f32_tensor(cache_dir, &data)
-        .expect("write tensor to disk");
-    let mut t = Tensor::with_layout(
-        shape,
-        0.0,
-        Device::CPU,
-        Layout::Contiguous,
-        DType::F32,
-    );
+    let handle = disk_tier::write_f32_tensor(cache_dir, &data).expect("write tensor to disk");
+    let mut t = Tensor::with_layout(shape, 0.0, Device::CPU, Layout::Contiguous, DType::F32);
     t.storage = TensorStorage::Disk(handle);
     t
 }
@@ -106,7 +96,10 @@ fn test_ensure_cpu_from_disk_cleans_up_file() {
         TensorStorage::Disk(h) => h.path().to_path_buf(),
         _ => unreachable!("constructed as Disk"),
     };
-    assert!(path.exists(), "pre-condition: file exists while Disk handle is alive");
+    assert!(
+        path.exists(),
+        "pre-condition: file exists while Disk handle is alive"
+    );
 
     t.ensure_cpu().expect("ensure_cpu ok");
 
@@ -161,10 +154,7 @@ fn test_ensure_cpu_from_disk_size_mismatch() {
             assert_eq!(expected, 10, "expected = tensor.numel()");
             assert_eq!(got, 4, "got = actual file element count");
         }
-        Err(other) => panic!(
-            "expected DiskSizeMismatch, got {:?}",
-            other
-        ),
+        Err(other) => panic!("expected DiskSizeMismatch, got {:?}", other),
         Ok(_) => panic!("ensure_cpu succeeded when it should have failed"),
     }
 
@@ -254,10 +244,7 @@ fn test_copy_to_cpu_vec_from_disk() {
         "copy_to_cpu_vec must not mutate storage"
     );
     // File is still on disk.
-    assert!(
-        path.exists(),
-        "file must survive a non-mutating read"
-    );
+    assert!(path.exists(), "file must survive a non-mutating read");
 
     // Dropping the tensor cleans up.
     drop(t);

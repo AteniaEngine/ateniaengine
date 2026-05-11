@@ -6,14 +6,11 @@ use crate::tensor::Tensor;
 pub fn relu(x: &Tensor) -> Tensor {
     let mut out = x.clone();
 
-    out
-        .as_cpu_slice_mut()
-        .par_iter_mut()
-        .for_each(|o| {
-            if *o < 0.0 {
-                *o = 0.0;
-            }
-        });
+    out.as_cpu_slice_mut().par_iter_mut().for_each(|o| {
+        if *o < 0.0 {
+            *o = 0.0;
+        }
+    });
 
     out
 }
@@ -23,8 +20,7 @@ pub fn silu(x: &Tensor) -> Tensor {
     let mut out = x.clone();
     let x_slice = x.as_cpu_slice();
 
-    out
-        .as_cpu_slice_mut()
+    out.as_cpu_slice_mut()
         .par_iter_mut()
         .zip(x_slice.par_iter())
         .for_each(|(o, v)| {
@@ -40,8 +36,7 @@ pub fn gelu(x: &Tensor) -> Tensor {
     let mut out = x.clone();
     let x_slice = x.as_cpu_slice();
 
-    out
-        .as_cpu_slice_mut()
+    out.as_cpu_slice_mut()
         .par_iter_mut()
         .zip(x_slice.par_iter())
         .for_each(|(o, v)| {

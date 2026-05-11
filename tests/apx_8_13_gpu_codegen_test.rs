@@ -1,10 +1,12 @@
-﻿use atenia_engine::apx8::kernel_generator::KernelIR;
 use atenia_engine::apx8::codegen::gpu_codegen_v1::GPUCodegenV1;
-use atenia_engine::tensor::{Tensor, Device, DType};
+use atenia_engine::apx8::kernel_generator::KernelIR;
+use atenia_engine::tensor::{DType, Device, Tensor};
 
 #[test]
 fn apx_8_13_codegen_produces_strings() {
-    let cg = GPUCodegenV1 { target: "cuda".into() };
+    let cg = GPUCodegenV1 {
+        target: "cuda".into(),
+    };
     let ir = KernelIR::new_mock("vecadd");
     let code = cg.generate_kernel(&ir);
     assert!(code.contains("vecadd"));
@@ -18,13 +20,19 @@ fn apx_8_13_codegen_does_not_change_numerics() {
     let res_before = a.add(&b);
 
     // Generate synthetic GPU code from a mock IR.
-    let cg = GPUCodegenV1 { target: "cuda".into() };
+    let cg = GPUCodegenV1 {
+        target: "cuda".into(),
+    };
     let ir = KernelIR::new_mock("vecadd");
     let _code = cg.generate_kernel(&ir);
 
     let res_after = a.add(&b);
 
-    for (x, y) in res_before.as_cpu_slice().iter().zip(res_after.as_cpu_slice().iter()) {
+    for (x, y) in res_before
+        .as_cpu_slice()
+        .iter()
+        .zip(res_after.as_cpu_slice().iter())
+    {
         assert!((x - y).abs() < 1e-6);
     }
 }
@@ -33,9 +41,15 @@ fn apx_8_13_codegen_does_not_change_numerics() {
 fn apx_8_13_targets_independent() {
     let ir = KernelIR::new_mock("vecadd");
 
-    let cuda = GPUCodegenV1 { target: "cuda".into() };
-    let hip = GPUCodegenV1 { target: "hip".into() };
-    let metal = GPUCodegenV1 { target: "metal".into() };
+    let cuda = GPUCodegenV1 {
+        target: "cuda".into(),
+    };
+    let hip = GPUCodegenV1 {
+        target: "hip".into(),
+    };
+    let metal = GPUCodegenV1 {
+        target: "metal".into(),
+    };
 
     let c_cuda = cuda.generate_kernel(&ir);
     let c_hip = hip.generate_kernel(&ir);

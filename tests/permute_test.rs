@@ -110,15 +110,16 @@ fn permute_reverse_all_dims() {
         shape[3],
         1,
     ];
-    let out_strides = [shape[2] * shape[1] * shape[0], shape[1] * shape[0], shape[0], 1];
+    let out_strides = [
+        shape[2] * shape[1] * shape[0],
+        shape[1] * shape[0],
+        shape[0],
+        1,
+    ];
     let out_slice = out.as_cpu_slice();
-    for &(i0, i1, i2, i3) in &[
-        (0, 0, 0, 0),
-        (1, 2, 3, 4),
-        (0, 1, 2, 3),
-        (1, 0, 1, 0),
-    ] {
-        let in_lin = i0 * in_strides[0] + i1 * in_strides[1] + i2 * in_strides[2] + i3 * in_strides[3];
+    for &(i0, i1, i2, i3) in &[(0, 0, 0, 0), (1, 2, 3, 4), (0, 1, 2, 3), (1, 0, 1, 0)] {
+        let in_lin =
+            i0 * in_strides[0] + i1 * in_strides[1] + i2 * in_strides[2] + i3 * in_strides[3];
         let out_lin =
             i3 * out_strides[0] + i2 * out_strides[1] + i1 * out_strides[2] + i0 * out_strides[3];
         assert!(

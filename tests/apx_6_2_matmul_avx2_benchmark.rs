@@ -1,5 +1,5 @@
-use atenia_engine::matmul_dispatcher;
 use atenia_engine::apx6_2::avx2_matmul;
+use atenia_engine::matmul_dispatcher;
 
 #[test]
 #[ignore = "benchmark — run with cargo test -- --ignored"]
@@ -22,14 +22,7 @@ fn bench_avx2_vs_baseline() {
         // avx2
         let t1 = Instant::now();
         unsafe {
-            avx2_matmul::matmul_avx2_f32(
-                a.as_ptr(),
-                b.as_ptr(),
-                out.as_mut_ptr(),
-                m,
-                k,
-                n,
-            );
+            avx2_matmul::matmul_avx2_f32(a.as_ptr(), b.as_ptr(), out.as_mut_ptr(), m, k, n);
         }
         let avx2 = t1.elapsed().as_micros();
 

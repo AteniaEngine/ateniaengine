@@ -136,7 +136,9 @@ mod tests {
     fn test_time_since_last_some_after_record() {
         let c = FailureCounter::new();
         c.record_failure();
-        let elapsed = c.time_since_last_failure().expect("must be Some after record");
+        let elapsed = c
+            .time_since_last_failure()
+            .expect("must be Some after record");
         // Elapsed should be very small on a non-hung machine.
         assert!(elapsed < Duration::from_secs(1));
     }

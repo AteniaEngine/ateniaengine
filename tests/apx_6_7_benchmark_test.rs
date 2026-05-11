@@ -1,9 +1,11 @@
 use std::time::Instant;
 
-use atenia_engine::apx3_8::{device_context::DeviceContext, kernel_dispatch::dispatch_matmul as dispatch_matmul_apx3_8};
+use atenia_engine::apx3_8::{
+    device_context::DeviceContext, kernel_dispatch::dispatch_matmul as dispatch_matmul_apx3_8,
+};
 use atenia_engine::apx6_4::matmul_4x8_avx2;
-use atenia_engine::apx6_7::runtime_profile::RuntimeProfile;
 use atenia_engine::apx6_7::auto_bench::run_initial_bench;
+use atenia_engine::apx6_7::runtime_profile::RuntimeProfile;
 use atenia_engine::tensor::Device;
 
 fn baseline_matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> (Vec<f32>, u128) {
@@ -47,7 +49,9 @@ fn apx_6_7_benchmark_profile_logging() {
             s,
             base_us,
             micro_us,
-            profile.best_for(s).unwrap_or_else(|| "baseline".to_string()),
+            profile
+                .best_for(s)
+                .unwrap_or_else(|| "baseline".to_string()),
         );
     }
 }

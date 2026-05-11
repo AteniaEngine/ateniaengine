@@ -1,17 +1,13 @@
 use std::fs;
 use std::path::PathBuf;
 
-use atenia_engine::v13::self_trainer::{
-    BackendChoice, ExecutionContext, SelfTrainer,
-};
-use atenia_engine::v13::self_trainer_persistence::{
-    load_trainer_from_path, save_trainer_to_path,
-};
-use atenia_engine::v13::self_trainer_integration::ExecResult;
-use atenia_engine::v13::warm_start::build_warm_start_plan;
 use atenia_engine::v13::checkpoint::drift::DriftReport;
 use atenia_engine::v13::checkpoint::{HybridCheckpoint, WarmStartPlan};
 use atenia_engine::v13::memory_types::MemoryTier;
+use atenia_engine::v13::self_trainer::{BackendChoice, ExecutionContext, SelfTrainer};
+use atenia_engine::v13::self_trainer_integration::ExecResult;
+use atenia_engine::v13::self_trainer_persistence::{load_trainer_from_path, save_trainer_to_path};
+use atenia_engine::v13::warm_start::build_warm_start_plan;
 
 fn temp_path(name: &str) -> PathBuf {
     let mut p = PathBuf::from("./.atenia_self_trainer_persist_test");
@@ -37,7 +33,9 @@ fn make_checkpoint_with_decisions() -> (HybridCheckpoint, WarmStartPlan) {
         entries: vec![entry],
     };
 
-    let mut mem = atenia_engine::v13::hybrid_memory::HybridMemoryManager::new("./.atenia_dummy_cache_persist");
+    let mut mem = atenia_engine::v13::hybrid_memory::HybridMemoryManager::new(
+        "./.atenia_dummy_cache_persist",
+    );
     mem.register_tensor("t1", 0, MemoryTier::Ram);
 
     let drift_reports: Vec<DriftReport> = Vec::new();
@@ -71,7 +69,11 @@ fn persistence_roundtrip_preserves_recommendations() {
             ExecResult::Ok { score: 10 },
             false,
         );
-        let ep = atenia_engine::v13::self_trainer::TrainingEpisode { ctx, decision, outcome };
+        let ep = atenia_engine::v13::self_trainer::TrainingEpisode {
+            ctx,
+            decision,
+            outcome,
+        };
         trainer.record_episode(ep);
     }
 
@@ -117,7 +119,11 @@ fn persistence_roundtrip_preserves_stats() {
         had_drift: true,
     };
 
-    let ep = atenia_engine::v13::self_trainer::TrainingEpisode { ctx, decision, outcome };
+    let ep = atenia_engine::v13::self_trainer::TrainingEpisode {
+        ctx,
+        decision,
+        outcome,
+    };
     trainer.record_episode(ep);
 
     let stats_before = trainer.stats_for(ctx, BackendChoice::Gpu).unwrap();
@@ -157,7 +163,8 @@ fn corrupted_lines_are_ignored() {
 
     let header = "ATENIA_SELFTRAINER_V1\n";
     let bad_line = "gpu_avail=x;vram_band=not_a_number;backend=cpu;count=abc\n";
-    let good_line = "gpu_avail=1;vram_band=1;ram_band=2;backend=gpu;count=3;success=2;score_sum=9;drift=1\n";
+    let good_line =
+        "gpu_avail=1;vram_band=1;ram_band=2;backend=gpu;count=3;success=2;score_sum=9;drift=1\n";
 
     let content = format!("{}{}{}", header, bad_line, good_line);
     if let Some(parent) = path.parent() {
@@ -197,9 +204,9 @@ fn missing_file_returns_empty_trainer() {
     let trainer = load_trainer_from_path(&path).unwrap();
 
     let ctx = ExecutionContext {
-            gpu_available: false,
-            vram_pressure: 0.2,
-            ram_pressure: 0.3,
+        gpu_available: false,
+        vram_pressure: 0.2,
+        ram_pressure: 0.3,
     };
 
     let choice = trainer.recommend_backend(ctx);

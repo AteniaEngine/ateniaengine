@@ -25,9 +25,7 @@
 //! ```
 
 use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::nn::llama::{
-    build_llama, llama_weight_mapper, LlamaConfig, LlamaRuntime,
-};
+use atenia_engine::nn::llama::{LlamaConfig, LlamaRuntime, build_llama, llama_weight_mapper};
 use atenia_engine::tensor::Tensor;
 use atenia_engine::v17::loader::safetensors_reader::SafetensorsReader;
 use std::env;
@@ -184,7 +182,10 @@ fn qwen25_loads_and_executes_forward_with_real_weights() {
     println!("Executing forward pass...");
     let forward_start = std::time::Instant::now();
     let outputs = graph.execute(vec![tokens]);
-    println!("Forward completed in {:.2}s", forward_start.elapsed().as_secs_f32());
+    println!(
+        "Forward completed in {:.2}s",
+        forward_start.elapsed().as_secs_f32()
+    );
 
     assert_eq!(outputs.len(), 1, "expected 1 output, got {}", outputs.len());
     let logits = &outputs[0];
@@ -210,13 +211,18 @@ fn qwen25_loads_and_executes_forward_with_real_weights() {
     let max_abs = slice.iter().map(|v| v.abs()).fold(0.0_f32, f32::max);
     let mean_abs: f32 = slice.iter().map(|v| v.abs()).sum::<f32>() / slice.len() as f32;
     assert!(max_abs < 1000.0, "logits suspiciously large: {}", max_abs);
-    println!("Logit stats: max |v|={:.4} mean |v|={:.4}", max_abs, mean_abs);
+    println!(
+        "Logit stats: max |v|={:.4} mean |v|={:.4}",
+        max_abs, mean_abs
+    );
 
     let last = &slice[3 * config.vocab_size..4 * config.vocab_size];
-    let (pred_id, pred_logit) = last.iter().enumerate().fold(
-        (0_usize, f32::NEG_INFINITY),
-        |(bi, bv), (i, &v)| if v > bv { (i, v) } else { (bi, bv) },
-    );
+    let (pred_id, pred_logit) =
+        last.iter()
+            .enumerate()
+            .fold((0_usize, f32::NEG_INFINITY), |(bi, bv), (i, &v)| {
+                if v > bv { (i, v) } else { (bi, bv) }
+            });
     println!(
         "Predicted next token at position 3: id={} logit={:.4}",
         pred_id, pred_logit

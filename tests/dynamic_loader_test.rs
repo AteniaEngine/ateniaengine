@@ -1,7 +1,4 @@
-use atenia_engine::gpu::{
-    nvrtc::NvrtcCompiler,
-    loader::CudaLoader,
-};
+use atenia_engine::gpu::{loader::CudaLoader, nvrtc::NvrtcCompiler};
 
 #[test]
 fn test_dynamic_load_add_one() {

@@ -12,8 +12,8 @@ use v16::contract::execution_contract::{ExecutionBackend, ExecutionContract};
 use v16::executor::execution_context::{ExecutionContext, RuntimeFacade};
 use v16::executor::executor_state::ExecutorStatus;
 use v16::executor::safe_executor::SafeExecutor;
-use v16::planner::execution_planner::ExecutionPlanner;
 use v16::planner::execution_plan::ExecutionPlan;
+use v16::planner::execution_planner::ExecutionPlanner;
 
 #[derive(Debug, Default, Clone, PartialEq)]
 struct MockRuntime {

@@ -1,6 +1,6 @@
 use atenia_engine::amg::graph::Graph;
 use atenia_engine::amg::nodes::{Node, NodeType};
-use atenia_engine::tensor::{Tensor, Device, Layout};
+use atenia_engine::tensor::{Device, Layout, Tensor};
 
 fn make_deep_graph(width: usize, depth: usize) -> Graph {
     let mut nodes = Vec::new();
@@ -27,7 +27,13 @@ fn make_deep_graph(width: usize, depth: usize) -> Graph {
 }
 
 fn make_inputs() -> Vec<Tensor> {
-    let x = Tensor::with_layout(vec![64, 64], 1.0, Device::CPU, Layout::Contiguous, atenia_engine::tensor::DType::F32);
+    let x = Tensor::with_layout(
+        vec![64, 64],
+        1.0,
+        Device::CPU,
+        Layout::Contiguous,
+        atenia_engine::tensor::DType::F32,
+    );
     vec![x]
 }
 
@@ -47,23 +53,33 @@ fn apx_7_12_ule_bench_print() {
     let depth = 6;
     let inputs = make_inputs();
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.5"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.5");
+    }
     let mut g_hpge = make_deep_graph(width, depth);
     let t_hpge = now_ms(|| g_hpge.execute(inputs.clone()));
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.9"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.9");
+    }
     let mut g_hls = make_deep_graph(width, depth);
     let t_hls = now_ms(|| g_hls.execute(inputs.clone()));
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.10"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.10");
+    }
     let mut g_hlsd = make_deep_graph(width, depth);
     let t_hlsd = now_ms(|| g_hlsd.execute(inputs.clone()));
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.11"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.11");
+    }
     let mut g_pfls = make_deep_graph(width, depth);
     let t_pfls = now_ms(|| g_pfls.execute(inputs.clone()));
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.12"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.12");
+    }
     let mut g_ule = make_deep_graph(width, depth);
     let t_ule = now_ms(|| g_ule.execute(inputs));
 

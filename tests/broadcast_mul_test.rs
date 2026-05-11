@@ -37,7 +37,13 @@ fn broadcast_mul_same_shape_matches_elementwise_mul() {
     for i in 0..n {
         let want = a_data[i] * b_data[i];
         let g = got.as_cpu_slice()[i];
-        assert!((g - want).abs() < 1e-7, "idx {}: got {} want {}", i, g, want);
+        assert!(
+            (g - want).abs() < 1e-7,
+            "idx {}: got {} want {}",
+            i,
+            g,
+            want
+        );
     }
 }
 
@@ -60,7 +66,15 @@ fn broadcast_mul_last_dim_broadcast_on_rank3() {
                 let lin = i * 12 + j * 4 + k;
                 let want = a_data[lin] * b_data[k];
                 let g = got.as_cpu_slice()[lin];
-                assert!((g - want).abs() < 1e-7, "({},{},{}): got {} want {}", i, j, k, g, want);
+                assert!(
+                    (g - want).abs() < 1e-7,
+                    "({},{},{}): got {} want {}",
+                    i,
+                    j,
+                    k,
+                    g,
+                    want
+                );
             }
         }
     }
@@ -84,7 +98,15 @@ fn broadcast_mul_rmsnorm_gamma_pattern() {
                 let lin = (bi * s + si) * h + hi;
                 let want = a_data[lin] * g_data[hi];
                 let g = got.as_cpu_slice()[lin];
-                assert!((g - want).abs() < 1e-7, "({},{},{}): got {} want {}", bi, si, hi, g, want);
+                assert!(
+                    (g - want).abs() < 1e-7,
+                    "({},{},{}): got {} want {}",
+                    bi,
+                    si,
+                    hi,
+                    g,
+                    want
+                );
             }
         }
     }

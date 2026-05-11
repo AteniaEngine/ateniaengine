@@ -8,14 +8,22 @@ use v14::timeline::timeline_event::TimelineEvent;
 fn records_events_in_order_with_monotonic_timestamps() {
     let mut timeline = ExecutionTimeline::new();
 
-    timeline.record(TimelineEvent::DeviceSelected { device: "cpu0".to_string() });
-    timeline.record(TimelineEvent::KernelStart { kernel_id: "k1".to_string(), device: "cpu0".to_string() });
+    timeline.record(TimelineEvent::DeviceSelected {
+        device: "cpu0".to_string(),
+    });
+    timeline.record(TimelineEvent::KernelStart {
+        kernel_id: "k1".to_string(),
+        device: "cpu0".to_string(),
+    });
     timeline.record(TimelineEvent::MemoryTransfer {
         src_device: "cpu0".to_string(),
         dst_device: "gpu0".to_string(),
         bytes: 1024,
     });
-    timeline.record(TimelineEvent::KernelEnd { kernel_id: "k1".to_string(), device: "gpu0".to_string() });
+    timeline.record(TimelineEvent::KernelEnd {
+        kernel_id: "k1".to_string(),
+        device: "gpu0".to_string(),
+    });
 
     let events = timeline.events();
     assert_eq!(events.len(), 4);
@@ -28,8 +36,13 @@ fn records_events_in_order_with_monotonic_timestamps() {
 fn export_json_is_stable_and_structurally_correct() {
     let mut timeline = ExecutionTimeline::new();
 
-    timeline.record(TimelineEvent::DeviceSelected { device: "cpu0".to_string() });
-    timeline.record(TimelineEvent::KernelStart { kernel_id: "k1".to_string(), device: "cpu0".to_string() });
+    timeline.record(TimelineEvent::DeviceSelected {
+        device: "cpu0".to_string(),
+    });
+    timeline.record(TimelineEvent::KernelStart {
+        kernel_id: "k1".to_string(),
+        device: "cpu0".to_string(),
+    });
     timeline.record(TimelineEvent::MemoryTransfer {
         src_device: "cpu0".to_string(),
         dst_device: "gpu0".to_string(),
@@ -65,14 +78,18 @@ fn export_json_is_stable_and_structurally_correct() {
 fn reset_clears_all_state() {
     let mut timeline = ExecutionTimeline::new();
 
-    timeline.record(TimelineEvent::DeviceSelected { device: "cpu0".to_string() });
+    timeline.record(TimelineEvent::DeviceSelected {
+        device: "cpu0".to_string(),
+    });
     assert_eq!(timeline.events().len(), 1);
 
     timeline.reset();
     assert_eq!(timeline.events().len(), 0);
 
     // After reset, timestamps should start again from zero.
-    timeline.record(TimelineEvent::DeviceSelected { device: "cpu1".to_string() });
+    timeline.record(TimelineEvent::DeviceSelected {
+        device: "cpu1".to_string(),
+    });
     let events = timeline.events();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].timestamp, 0);

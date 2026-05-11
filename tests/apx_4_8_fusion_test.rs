@@ -1,6 +1,6 @@
-﻿use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::tensor::{Tensor, Device};
+use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::apx4_8::pattern::detect_and_fuse_linear_activation;
+use atenia_engine::tensor::{Device, Tensor};
 
 #[test]
 fn test_apx_4_8_fusion_crea_nodo_fusionado() {
@@ -25,8 +25,8 @@ fn test_apx_4_8_fusion_crea_nodo_fusionado() {
 #[test]
 fn test_apx_4_8_exec_fused_linear_activation_equivalente() {
     use atenia_engine::apx4_8::fused_linear_activation::exec_fused_linear_silu;
-    use atenia_engine::nn::linear::linear as linear_op;
     use atenia_engine::nn::activations::silu;
+    use atenia_engine::nn::linear::linear as linear_op;
 
     let x = Tensor::randn(&[8, 32], Device::CPU);
     let w = Tensor::randn(&[32, 64], Device::CPU);

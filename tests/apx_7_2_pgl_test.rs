@@ -1,4 +1,4 @@
-use atenia_engine::apx7_2::pgl::{decide_pgl, PGLStrategy};
+use atenia_engine::apx7_2::pgl::{PGLStrategy, decide_pgl};
 
 #[test]
 fn apx_7_2_small_mat_chooses_seq() {

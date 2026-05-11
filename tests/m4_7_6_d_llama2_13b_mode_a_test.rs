@@ -105,9 +105,7 @@ use atenia_engine::gpu::dispatch::hooks::{
     gpu_matmul_legacy_count, gpu_matmul_resident_count, gpu_matmul_roundtrip_count,
     gpu_matmul_total_count,
 };
-use atenia_engine::nn::llama::{
-    build_llama, llama_weight_mapper, LlamaConfig, LlamaRuntime,
-};
+use atenia_engine::nn::llama::{LlamaConfig, LlamaRuntime, build_llama, llama_weight_mapper};
 use atenia_engine::tensor::tensor::Tensor;
 use atenia_engine::v17::loader::sharded_reader::ShardedSafetensorsReader;
 
@@ -166,8 +164,7 @@ fn llama2_13b_mode_a_clean_ram_runs_with_gpu_matmul_wiring() {
     // ---- 2. Load 363 tensors via ShardedSafetensorsReader ----
     let index_path = model_dir.join("model.safetensors.index.json");
     println!("Opening sharded index at {} ...", index_path.display());
-    let sharded =
-        ShardedSafetensorsReader::open(&index_path).expect("open sharded reader");
+    let sharded = ShardedSafetensorsReader::open(&index_path).expect("open sharded reader");
     println!(
         "{} shards, {} tensors declared",
         sharded.shard_count(),
@@ -229,7 +226,10 @@ fn llama2_13b_mode_a_clean_ram_runs_with_gpu_matmul_wiring() {
     );
     let max_abs = slice.iter().map(|v| v.abs()).fold(0.0_f32, f32::max);
     let mean_abs: f32 = slice.iter().map(|v| v.abs()).sum::<f32>() / slice.len() as f32;
-    println!("Logit stats: max |v|={:.4}  mean |v|={:.4}", max_abs, mean_abs);
+    println!(
+        "Logit stats: max |v|={:.4}  mean |v|={:.4}",
+        max_abs, mean_abs
+    );
     assert!(
         max_abs < 1000.0,
         "logits suspiciously large: max |v| = {} (instability?)",

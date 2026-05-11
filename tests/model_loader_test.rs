@@ -49,12 +49,14 @@ fn valid_model_is_loaded_into_ram() {
     let artifact = make_artifact(&path, data.len() as u64);
     let policy = LoaderPolicy::LoadAll;
 
-    let handle = ModelLoader::load(&artifact, &policy, 1024 * 1024)
-        .expect("model should load");
+    let handle = ModelLoader::load(&artifact, &policy, 1024 * 1024).expect("model should load");
 
     assert_eq!(handle.artifact_id, artifact.id);
     assert_eq!(handle.bytes, data);
-    assert_eq!(handle.memory_map.total_size_bytes, artifact.total_size_bytes);
+    assert_eq!(
+        handle.memory_map.total_size_bytes,
+        artifact.total_size_bytes
+    );
     assert!(handle.memory_map.fully_loaded());
 }
 
@@ -101,8 +103,7 @@ fn no_compute_is_triggered_during_load() {
     let artifact = make_artifact(&path, data.len() as u64);
     let policy = LoaderPolicy::LoadAll;
 
-    let handle = ModelLoader::load(&artifact, &policy, 1024 * 1024)
-        .expect("model should load");
+    let handle = ModelLoader::load(&artifact, &policy, 1024 * 1024).expect("model should load");
 
     // The loader must not transform bytes; it only moves them into RAM.
     assert_eq!(handle.bytes, data);

@@ -7,10 +7,23 @@ fn apx_9_2_emit_basic_structure() {
         name: "vecadd".to_string(),
         threads: 256,
         ops: vec![
-            GpuOp::Load { dst: "%f1".into(), src: "%A+tid*4".into() },
-            GpuOp::Load { dst: "%f2".into(), src: "%B+tid*4".into() },
-            GpuOp::Add  { dst: "%f3".into(), a: "%f1".into(), b: "%f2".into() },
-            GpuOp::Store { dst: "%Out+tid*4".into(), src: "%f3".into() }
+            GpuOp::Load {
+                dst: "%f1".into(),
+                src: "%A+tid*4".into(),
+            },
+            GpuOp::Load {
+                dst: "%f2".into(),
+                src: "%B+tid*4".into(),
+            },
+            GpuOp::Add {
+                dst: "%f3".into(),
+                a: "%f1".into(),
+                b: "%f2".into(),
+            },
+            GpuOp::Store {
+                dst: "%Out+tid*4".into(),
+                src: "%f3".into(),
+            },
         ],
     };
 

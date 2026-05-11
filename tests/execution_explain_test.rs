@@ -9,12 +9,12 @@ mod v15;
 use v15::policy::types::DecisionBias;
 use v16::contract::constraints::{Constraint, ConstraintKind, Constraints, RuntimeState};
 use v16::contract::execution_contract::{ExecutionBackend, ExecutionContract};
-use v16::feedback::event_emitter::EventEmitter;
-use v16::guards::guard_action::GuardAction;
 use v16::explain::explanation_builder::ExplanationBuilder;
 use v16::explain::explanation_formatter::{format_explanation_json, format_explanation_text};
-use v16::speculative::speculative_plan::SpeculativePlan;
+use v16::feedback::event_emitter::EventEmitter;
+use v16::guards::guard_action::GuardAction;
 use v16::planner::execution_planner::ExecutionPlanner;
+use v16::speculative::speculative_plan::SpeculativePlan;
 
 fn make_contract() -> ExecutionContract {
     let bias = DecisionBias {
@@ -133,7 +133,10 @@ fn explanation_includes_speculation_when_present() {
     )
     .expect("events");
 
-    let guard_actions = vec![(0usize, GuardAction::Continue), (1usize, GuardAction::Degrade)];
+    let guard_actions = vec![
+        (0usize, GuardAction::Continue),
+        (1usize, GuardAction::Degrade),
+    ];
     let speculative_plan = Some(SpeculativePlan::from_base(&plan));
 
     let expl = ExplanationBuilder::build(
@@ -165,7 +168,10 @@ fn explanation_is_deterministic() {
     )
     .expect("events");
 
-    let guard_actions = vec![(0usize, GuardAction::Continue), (1usize, GuardAction::Continue)];
+    let guard_actions = vec![
+        (0usize, GuardAction::Continue),
+        (1usize, GuardAction::Continue),
+    ];
 
     let e1 = ExplanationBuilder::build(
         &contract.bias,
@@ -206,7 +212,10 @@ fn formatting_output_is_stable() {
     )
     .expect("events");
 
-    let guard_actions = vec![(0usize, GuardAction::Continue), (1usize, GuardAction::Continue)];
+    let guard_actions = vec![
+        (0usize, GuardAction::Continue),
+        (1usize, GuardAction::Continue),
+    ];
 
     let expl = ExplanationBuilder::build(
         &contract.bias,

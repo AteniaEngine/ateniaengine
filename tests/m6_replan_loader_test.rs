@@ -25,15 +25,15 @@ use std::sync::Mutex;
 use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::amg::weight_store::SharedParam;
 use atenia_engine::cuda::cuda_available;
-use atenia_engine::gpu::tier_plan::{plan, TensorMeta, Tier, TierPlanInput};
-use atenia_engine::tensor::tensor::{f32_to_bf16_bits, Tensor};
+use atenia_engine::gpu::tier_plan::{TensorMeta, Tier, TierPlanInput, plan};
+use atenia_engine::tensor::tensor::{Tensor, f32_to_bf16_bits};
 use atenia_engine::tensor::{DType, TensorStorage};
 use atenia_engine::v17::loader::safetensors_reader::SafetensorsReader;
 use atenia_engine::v17::loader::weight_mapper::{
-    vram_fast_path_count, vram_slow_path_count, WeightMapper,
+    WeightMapper, vram_fast_path_count, vram_slow_path_count,
 };
-use safetensors::tensor::TensorView;
 use safetensors::Dtype as StDtype;
+use safetensors::tensor::TensorView;
 
 // ---------------------------------------------------------------------
 // Helpers
@@ -52,9 +52,7 @@ static COUNTER_TEST_LOCK: Mutex<()> = Mutex::new(());
 /// tensors. Each `(name, shape, f32_values)` tuple becomes one
 /// BF16-encoded tensor in the file (values are quantised via
 /// `f32_to_bf16_bits` before serialisation).
-fn build_multi_bf16_safetensors(
-    entries: &[(&str, Vec<usize>, Vec<f32>)],
-) -> Vec<u8> {
+fn build_multi_bf16_safetensors(entries: &[(&str, Vec<usize>, Vec<f32>)]) -> Vec<u8> {
     // We need each tensor's BF16 bytes to outlive the `views`
     // HashMap (the `TensorView` holds a `&[u8]` borrow). Allocate
     // owned `Vec<u8>` per entry up-front.
@@ -111,8 +109,18 @@ fn all_ram_plan_matches_load_into_bit_exact() {
     // Two small BF16 tensors. Plan all to Ram → result must be
     // bit-exact equivalent to the classic `load_into` path.
     let entries = vec![
-        ("w1", vec![3, 4], (0..12).map(|i| (i as f32) * 0.25 - 1.5).collect::<Vec<_>>()),
-        ("w2", vec![2, 5], (0..10).map(|i| ((i as f32) * 0.1).sin()).collect::<Vec<_>>()),
+        (
+            "w1",
+            vec![3, 4],
+            (0..12).map(|i| (i as f32) * 0.25 - 1.5).collect::<Vec<_>>(),
+        ),
+        (
+            "w2",
+            vec![2, 5],
+            (0..10)
+                .map(|i| ((i as f32) * 0.1).sin())
+                .collect::<Vec<_>>(),
+        ),
     ];
     let buf = build_multi_bf16_safetensors(&entries);
     let reader = SafetensorsReader::from_bytes(buf.clone()).expect("reader");
@@ -121,13 +129,13 @@ fn all_ram_plan_matches_load_into_bit_exact() {
     let (mut graph_a, param_ids_a, param_names_a) = build_graph_for_entries(&entries);
     let (mut graph_b, _param_ids_b, _param_names_b) = build_graph_for_entries(&entries);
 
-    let mapper_a =
-        WeightMapper::from_param_names_and_ids(&param_names_a, &param_ids_a).unwrap();
-    let mapper_b =
-        WeightMapper::from_param_names_and_ids(&param_names_a, &param_ids_a).unwrap();
+    let mapper_a = WeightMapper::from_param_names_and_ids(&param_names_a, &param_ids_a).unwrap();
+    let mapper_b = WeightMapper::from_param_names_and_ids(&param_names_a, &param_ids_a).unwrap();
 
     // Path A: classic `load_into`.
-    let _report_a = mapper_a.load_into(&mut graph_a, &reader).expect("load_into A");
+    let _report_a = mapper_a
+        .load_into(&mut graph_a, &reader)
+        .expect("load_into A");
     // Hoist into Arc-shared store (same step the production
     // pipeline does).
     let store_a = atenia_engine::amg::weight_store::WeightStore::extract_from_graph(
@@ -163,13 +171,7 @@ fn all_ram_plan_matches_load_into_bit_exact() {
 
     let reader_b = SafetensorsReader::from_bytes(buf).expect("reader");
     let (store_b, _report_b) = mapper_b
-        .load_into_with_residency_plan(
-            &mut graph_b,
-            &reader_b,
-            &p,
-            &param_ids_a,
-            &param_names_a,
-        )
+        .load_into_with_residency_plan(&mut graph_b, &reader_b, &p, &param_ids_a, &param_names_a)
         .expect("load_into_with_residency_plan B");
 
     // Compare the two stores element-by-element. With the
@@ -182,13 +184,14 @@ fn all_ram_plan_matches_load_into_bit_exact() {
         let a = store_a.get_by_name(name).unwrap();
         let b = store_b.get_by_name(name).unwrap();
         match (a, b) {
-            (
-                SharedParam::F32 { shape: sa, arc: aa },
-                SharedParam::F32 { shape: sb, arc: ab },
-            ) => {
+            (SharedParam::F32 { shape: sa, arc: aa }, SharedParam::F32 { shape: sb, arc: ab }) => {
                 assert_eq!(sa, sb, "shape mismatch for '{}'", name);
-                assert_eq!(aa.as_slice(), ab.as_slice(),
-                    "F32 bytes mismatch for '{}'", name);
+                assert_eq!(
+                    aa.as_slice(),
+                    ab.as_slice(),
+                    "F32 bytes mismatch for '{}'",
+                    name
+                );
             }
             _ => panic!(
                 "expected both stores to hold F32 for '{}', got A={:?} B={:?}",
@@ -231,8 +234,7 @@ fn mixed_plan_produces_cuda_entries_for_vram_tier() {
     let reader = SafetensorsReader::from_bytes(buf).expect("reader");
 
     let (mut graph, param_ids, param_names) = build_graph_for_entries(&entries);
-    let mapper =
-        WeightMapper::from_param_names_and_ids(&param_names, &param_ids).unwrap();
+    let mapper = WeightMapper::from_param_names_and_ids(&param_names, &param_ids).unwrap();
 
     let metas: Vec<TensorMeta> = entries
         .iter()
@@ -261,12 +263,18 @@ fn mixed_plan_produces_cuda_entries_for_vram_tier() {
     // Verify variant types.
     let proj = store.get_by_name("w_proj.weight").unwrap();
     let other = store.get_by_name("w_other").unwrap();
-    assert!(matches!(proj, SharedParam::Cuda { .. }),
-        "w_proj.weight must be SharedParam::Cuda, got {:?}", proj);
+    assert!(
+        matches!(proj, SharedParam::Cuda { .. }),
+        "w_proj.weight must be SharedParam::Cuda, got {:?}",
+        proj
+    );
     // Default mapper writes F32 to Cpu slots; extract_from_graph
     // hoists Cpu → CpuShared → SharedParam::F32.
-    assert!(matches!(other, SharedParam::F32 { .. }),
-        "w_other must be SharedParam::F32, got {:?}", other);
+    assert!(
+        matches!(other, SharedParam::F32 { .. }),
+        "w_other must be SharedParam::F32, got {:?}",
+        other
+    );
 
     // Numerical correctness: download the GPU tensor and compare
     // against the source BF16-decoded F32 reference.
@@ -337,8 +345,7 @@ fn vram_bf16_no_transforms_uses_fast_path_only() {
     let reader = SafetensorsReader::from_bytes(buf).expect("reader");
 
     let (mut graph, param_ids, param_names) = build_graph_for_entries(&entries);
-    let mapper =
-        WeightMapper::from_param_names_and_ids(&param_names, &param_ids).unwrap();
+    let mapper = WeightMapper::from_param_names_and_ids(&param_names, &param_ids).unwrap();
 
     let metas: Vec<TensorMeta> = entries
         .iter()

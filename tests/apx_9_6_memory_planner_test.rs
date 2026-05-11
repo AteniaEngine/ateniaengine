@@ -1,7 +1,7 @@
-use atenia_engine::apx9::memory_planner::*;
 use atenia_engine::amg::graph::Graph;
 use atenia_engine::amg::nodes::{Node, NodeType};
-use atenia_engine::tensor::{Tensor, Device, DType};
+use atenia_engine::apx9::memory_planner::*;
+use atenia_engine::tensor::{DType, Device, Tensor};
 
 #[test]
 fn apx_9_6_basic_structure() {
@@ -51,8 +51,12 @@ fn apx_9_6_buffer_reuse_chain() {
     let mut off_a = None;
     let mut off_c = None;
     for a in &plan.assignments {
-        if a.node_id == 0 { off_a = Some(a.offset); }
-        if a.node_id == 2 { off_c = Some(a.offset); }
+        if a.node_id == 0 {
+            off_a = Some(a.offset);
+        }
+        if a.node_id == 2 {
+            off_c = Some(a.offset);
+        }
     }
 
     let off_a = off_a.expect("missing assign for A");

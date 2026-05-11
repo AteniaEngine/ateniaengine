@@ -1,8 +1,8 @@
-use crate::gpu::tensor::{TensorGPU, GpuTensorManager};
-use crate::gpu::nvrtc::compiler::NvrtcCompiler;
-use crate::gpu::loader::CudaLoader;
 use crate::gpu::launcher::GpuLauncher;
+use crate::gpu::loader::CudaLoader;
+use crate::gpu::nvrtc::compiler::NvrtcCompiler;
 use crate::gpu::runtime::GpuRuntime;
+use crate::gpu::tensor::{GpuTensorManager, TensorGPU};
 
 pub struct LinearBackwardGPU;
 
@@ -13,9 +13,9 @@ impl LinearBackwardGPU {
     /// dB = sum_i dOut[i, :]
     pub fn run(
         mgr: &GpuTensorManager,
-        x: &TensorGPU,      // [M, K]
-        w: &TensorGPU,      // [K, N]
-        dout: &TensorGPU,   // [M, N]
+        x: &TensorGPU,    // [M, K]
+        w: &TensorGPU,    // [K, N]
+        dout: &TensorGPU, // [M, N]
     ) -> Result<(TensorGPU, TensorGPU, TensorGPU), ()> {
         let _ = mgr;
         let m = x.rows as i32;

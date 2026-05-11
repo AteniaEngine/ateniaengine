@@ -1,4 +1,4 @@
-use atenia_engine::{softmax3, sample_decision};
+use atenia_engine::{sample_decision, softmax3};
 
 fn run_one(temp: f32, iters: usize) {
     // Synthetic scores: full clearly better than qkv/base.
@@ -18,12 +18,7 @@ fn run_one(temp: f32, iters: usize) {
 
     println!(
         "[APX 6.13] T={temp:.2} | p_full={:.4} p_qkv={:.4} p_base={:.4} | counts: full={} qkv={} base={}",
-        td.p_full,
-        td.p_qkv,
-        td.p_base,
-        full,
-        qkv,
-        base,
+        td.p_full, td.p_qkv, td.p_base, full, qkv, base,
     );
 }
 

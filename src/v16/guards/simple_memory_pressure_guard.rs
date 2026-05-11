@@ -77,11 +77,7 @@ impl ExecutionGuard for SimpleMemoryPressureGuard {
         "simple_memory_pressure_guard"
     }
 
-    fn evaluate(
-        &self,
-        _contract: &ExecutionContract,
-        conditions: &GuardConditions,
-    ) -> GuardAction {
+    fn evaluate(&self, _contract: &ExecutionContract, conditions: &GuardConditions) -> GuardAction {
         if conditions.memory_pressure > self.threshold {
             GuardAction::Degrade
         } else {

@@ -1,8 +1,8 @@
 use rayon::prelude::*;
 
-use crate::tensor::{Layout, Tensor};
 use crate::ops::linear::LinearOp;
 use crate::ops::matmul::MatMulOp;
+use crate::tensor::{Layout, Tensor};
 
 /// 2D matrix multiplication wrapper.
 pub fn matmul(a: &Tensor, b: &Tensor) -> Tensor {
@@ -39,10 +39,7 @@ pub fn linear(x: &Tensor, weight: &Tensor, bias: Option<&Tensor>) -> Tensor {
     );
 
     if let Some(b) = bias {
-        assert!(
-            b.shape.len() == 1,
-            "linear: bias must be 1D [out_features]"
-        );
+        assert!(b.shape.len() == 1, "linear: bias must be 1D [out_features]");
         assert_eq!(
             b.shape[0], out_features,
             "linear: bias length must match out_features"
@@ -61,8 +58,7 @@ pub fn linear(x: &Tensor, weight: &Tensor, bias: Option<&Tensor>) -> Tensor {
     let bias_data = bias.map(|b| b.copy_to_cpu_vec());
     let x_slice = x.as_cpu_slice();
 
-    out
-        .as_cpu_slice_mut()
+    out.as_cpu_slice_mut()
         .par_chunks_mut(out_features)
         .enumerate()
         .for_each(|(row, chunk)| {

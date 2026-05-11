@@ -1,8 +1,8 @@
-use atenia_engine::tensor::{Device, DType, Layout, Tensor};
-use atenia_engine::nn::linear::{linear, matmul};
 use atenia_engine::nn::activations::silu;
+use atenia_engine::nn::linear::{linear, matmul};
 use atenia_engine::nn::normalization::rms_norm;
 use atenia_engine::nn::softmax::softmax_last_dim;
+use atenia_engine::tensor::{DType, Device, Layout, Tensor};
 
 fn make_tensor_2d(shape: (usize, usize), fill_fn: impl Fn(usize, usize) -> f32) -> Tensor {
     let (rows, cols) = shape;
@@ -46,13 +46,7 @@ fn linear_without_bias() {
 fn linear_with_bias() {
     let x = make_tensor_2d((1, 3), |_, j| j as f32);
     let w = make_tensor_2d((3, 2), |i, j| (i + j) as f32);
-    let mut b = Tensor::with_layout(
-        vec![2],
-        0.0,
-        Device::CPU,
-        Layout::Contiguous,
-        DType::F32,
-    );
+    let mut b = Tensor::with_layout(vec![2], 0.0, Device::CPU, Layout::Contiguous, DType::F32);
     b.as_cpu_slice_mut()[0] = 1.0;
     b.as_cpu_slice_mut()[1] = -1.0;
 
@@ -64,13 +58,7 @@ fn linear_with_bias() {
 
 #[test]
 fn rms_norm_keeps_constant_vector_same_scale() {
-    let mut t = Tensor::with_layout(
-        vec![2, 4],
-        0.0,
-        Device::CPU,
-        Layout::Contiguous,
-        DType::F32,
-    );
+    let mut t = Tensor::with_layout(vec![2, 4], 0.0, Device::CPU, Layout::Contiguous, DType::F32);
     for v in t.as_cpu_slice_mut().iter_mut() {
         *v = 1.0;
     }
@@ -85,13 +73,7 @@ fn rms_norm_keeps_constant_vector_same_scale() {
 
 #[test]
 fn silu_is_reasonable() {
-    let mut t = Tensor::with_layout(
-        vec![4],
-        0.0,
-        Device::CPU,
-        Layout::Contiguous,
-        DType::F32,
-    );
+    let mut t = Tensor::with_layout(vec![4], 0.0, Device::CPU, Layout::Contiguous, DType::F32);
     t.set_cpu_data(vec![-2.0, -1.0, 0.0, 2.0]);
 
     let out = silu(&t);
@@ -121,6 +103,11 @@ fn softmax_rows_sum_to_one() {
         let row = &out.as_cpu_slice()[start..end];
 
         let sum: f32 = row.iter().sum();
-        assert!((sum - 1.0).abs() < 1e-4, "softmax row {} sums to {}", i, sum);
+        assert!(
+            (sum - 1.0).abs() < 1e-4,
+            "softmax row {} sums to {}",
+            i,
+            sum
+        );
     }
 }

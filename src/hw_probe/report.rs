@@ -108,7 +108,7 @@ pub fn vendor_name(vendor_id: u32) -> &'static str {
         0x5143 => "Qualcomm",
         0x13B5 => "ARM",
         0x1414 => "Microsoft", // Basic Render Driver on Windows (WARP / software)
-        0 => "Software", // wgpu returns vendor=0 for the fallback software adapter
+        0 => "Software",       // wgpu returns vendor=0 for the fallback software adapter
         _ => "Unknown",
     }
 }
@@ -125,7 +125,11 @@ pub fn format_iso8601_utc(unix_secs: u64) -> String {
     // Howard Hinnant: shift civil epoch to 0000-03-01 to simplify
     // leap-year handling.
     let z = days + 719_468;
-    let era = if z >= 0 { z / 146_097 } else { (z - 146_096) / 146_097 };
+    let era = if z >= 0 {
+        z / 146_097
+    } else {
+        (z - 146_096) / 146_097
+    };
     let doe = z - era * 146_097; // day of era, [0, 146096]
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
     let y = yoe + era * 400;
@@ -156,13 +160,21 @@ impl std::fmt::Display for ProbeReport {
         writeln!(f)?;
 
         writeln!(f, "System:")?;
-        writeln!(f, "  OS:       {} ({})", self.system.os, self.system.os_version)?;
+        writeln!(
+            f,
+            "  OS:       {} ({})",
+            self.system.os, self.system.os_version
+        )?;
         writeln!(f, "  Arch:     {}", self.system.arch)?;
-        writeln!(f, "  Hostname: {}", if self.system.hostname.is_empty() {
-            "(not exposed)"
-        } else {
-            &self.system.hostname
-        })?;
+        writeln!(
+            f,
+            "  Hostname: {}",
+            if self.system.hostname.is_empty() {
+                "(not exposed)"
+            } else {
+                &self.system.hostname
+            }
+        )?;
         writeln!(f, "  RAM:      {} MB", self.system.ram_total_mb)?;
         writeln!(f)?;
 

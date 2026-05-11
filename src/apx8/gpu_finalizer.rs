@@ -2,7 +2,7 @@
 // Final symbolic stage: IR -> final string, no compilation nor real execution.
 
 use crate::apx8::kernel_generator::KernelIR;
-use crate::apx8::multiarch_router::{route_kernel, TargetArch};
+use crate::apx8::multiarch_router::{TargetArch, route_kernel};
 
 pub fn gpu_finalize(ir: &KernelIR) -> String {
     let arch = route_kernel(ir);

@@ -1,16 +1,13 @@
 use crate::amg::nodes::{Node, NodeType};
+use crate::apx4_13::fusion_engine::{FusedOp, FusionEngine};
 use std::collections::HashMap;
-use crate::apx4_13::fusion_engine::{FusionEngine, FusedOp};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExecStep {
     /// Execute a single node by ID.
     Single(usize),
     /// Fused pattern: (Add → Mul) where Mul takes Add's output and another input.
-    FusedAddMul {
-        add_node: usize,
-        mul_node: usize,
-    },
+    FusedAddMul { add_node: usize, mul_node: usize },
 }
 
 #[derive(Clone, Debug)]

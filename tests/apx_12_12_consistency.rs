@@ -12,10 +12,10 @@ fn apx_12_12_consistency_basic() {
 
     // State must be one of the valid ones
     match rep.state {
-        GpuConsistency::Stable |
-        GpuConsistency::JitterLow |
-        GpuConsistency::JitterMedium |
-        GpuConsistency::JitterHigh |
-        GpuConsistency::Unstable => {}
+        GpuConsistency::Stable
+        | GpuConsistency::JitterLow
+        | GpuConsistency::JitterMedium
+        | GpuConsistency::JitterHigh
+        | GpuConsistency::Unstable => {}
     }
 }

@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
-use crate::v15::policy::evidence::snapshot::PolicyEvidenceSnapshot;
 use crate::v15::policy::evidence::signals::PolicySignalKind;
+use crate::v15::policy::evidence::snapshot::PolicyEvidenceSnapshot;
 use crate::v15::policy::preferences::user_preferences::UserPreferences;
 use crate::v15::policy::types::DecisionBias;
 
@@ -90,14 +90,22 @@ impl PolicyExplanation {
             vec.push(PreferenceExplanation { name, status });
         };
 
-        push_pref(&mut preference_explanations, "prefer_latency", prefs.prefer_latency);
+        push_pref(
+            &mut preference_explanations,
+            "prefer_latency",
+            prefs.prefer_latency,
+        );
         push_pref(&mut preference_explanations, "avoid_ssd", prefs.avoid_ssd);
         push_pref(
             &mut preference_explanations,
             "prioritize_stability",
             prefs.prioritize_stability,
         );
-        push_pref(&mut preference_explanations, "minimize_power", prefs.minimize_power);
+        push_pref(
+            &mut preference_explanations,
+            "minimize_power",
+            prefs.minimize_power,
+        );
         push_pref(&mut preference_explanations, "prefer_gpu", prefs.prefer_gpu);
 
         let mut notes: Vec<String> = Vec::new();
@@ -107,7 +115,10 @@ impl PolicyExplanation {
         }
 
         if final_bias != base_bias_before_prefs {
-            notes.push("Final bias reflects both evidence and (possibly scaled) user preferences".to_string());
+            notes.push(
+                "Final bias reflects both evidence and (possibly scaled) user preferences"
+                    .to_string(),
+            );
         } else {
             notes.push("Final bias matches base bias; either no preferences were active or risk overrode them".to_string());
         }

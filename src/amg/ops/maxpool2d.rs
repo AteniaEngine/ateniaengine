@@ -86,10 +86,8 @@ pub fn execute_maxpool2d(input: &Tensor, config: &MaxPool2DConfig) -> Tensor {
                     let mut max_val = f32::NEG_INFINITY;
                     for kh in 0..k_h {
                         for kw in 0..k_w {
-                            let ih_signed =
-                                (oh * stride_h) as isize + kh as isize - pad_h as isize;
-                            let iw_signed =
-                                (ow * stride_w) as isize + kw as isize - pad_w as isize;
+                            let ih_signed = (oh * stride_h) as isize + kh as isize - pad_h as isize;
+                            let iw_signed = (ow * stride_w) as isize + kw as isize - pad_w as isize;
                             if ih_signed < 0 || iw_signed < 0 {
                                 continue;
                             }
@@ -191,10 +189,8 @@ pub fn execute_maxpool2d_backward(
                     let mut best_pos: Option<usize> = None;
                     for kh in 0..k_h {
                         for kw in 0..k_w {
-                            let ih_signed = (oh * stride_h) as isize + kh as isize
-                                - pad_h as isize;
-                            let iw_signed = (ow * stride_w) as isize + kw as isize
-                                - pad_w as isize;
+                            let ih_signed = (oh * stride_h) as isize + kh as isize - pad_h as isize;
+                            let iw_signed = (ow * stride_w) as isize + kw as isize - pad_w as isize;
                             if ih_signed < 0 || iw_signed < 0 {
                                 continue;
                             }

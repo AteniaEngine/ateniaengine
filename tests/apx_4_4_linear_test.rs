@@ -1,5 +1,5 @@
-﻿use atenia_engine::tensor::{Tensor, Device};
 use atenia_engine::nn::linear::linear;
+use atenia_engine::tensor::{Device, Tensor};
 
 #[test]
 fn gpu_linear_matches_cpu() {
@@ -32,9 +32,7 @@ fn cuda_linear_panics_on_cuda_input() {
     // `ensure_cpu()` before invoking the op. The panic message must
     // mention "GPU-resident" and "ensure_cpu" so callers can act.
     if atenia_engine::gpu::gpu_engine().is_none() {
-        println!(
-            "[TEST:cuda_linear_panics_on_cuda_input] no GPU available -> graceful skip"
-        );
+        println!("[TEST:cuda_linear_panics_on_cuda_input] no GPU available -> graceful skip");
         return;
     }
 

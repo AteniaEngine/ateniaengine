@@ -3,8 +3,8 @@
 #[path = "../src/v15/mod.rs"]
 mod v15;
 
-use v15::policy::evidence::snapshot::PolicyEvidenceSnapshot;
 use v15::policy::evidence::signals::{PolicySignal, PolicySignalKind};
+use v15::policy::evidence::snapshot::PolicyEvidenceSnapshot;
 use v15::policy::preferences::preference_weights::apply_user_preferences;
 use v15::policy::preferences::user_preferences::UserPreferences;
 use v15::policy::types::DecisionBias;
@@ -77,7 +77,8 @@ fn no_preferences_fallback_to_bias() {
     let prefs = UserPreferences::default();
 
     let adjusted_no_evidence = apply_user_preferences(&base, &prefs, None);
-    let adjusted_with_evidence = apply_user_preferences(&base, &prefs, Some(&pre_oom_evidence(0.5)));
+    let adjusted_with_evidence =
+        apply_user_preferences(&base, &prefs, Some(&pre_oom_evidence(0.5)));
 
     // Without any active preferences, behavior must match the base bias,
     // regardless of evidence.

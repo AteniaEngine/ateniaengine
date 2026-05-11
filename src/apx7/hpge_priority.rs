@@ -1,8 +1,8 @@
 use crate::amg::graph::Graph;
 use crate::amg::nodes::{Node, NodeType};
 use crate::amg::reactive::ExecutionAbortReason;
-use std::sync::{OnceLock, RwLock};
 use crate::apx7::hpfa::FusionAffinity;
+use std::sync::{OnceLock, RwLock};
 
 /// Per-node priority information for APX 7.6 HPGE v2.
 #[derive(Clone, Debug, Default)]
@@ -111,9 +111,7 @@ fn compute_priority(p: &NodePriorityInfo) -> f64 {
 /// Version 7.6 of the priority graph executor (Critical-Path Optimizer).
 ///
 /// Keeps the same guarantees as HPGE v1 and never alters kernels nor backward.
-pub fn execute_graph_parallel_priority(
-    graph: &mut Graph,
-) -> Result<(), ExecutionAbortReason> {
+pub fn execute_graph_parallel_priority(graph: &mut Graph) -> Result<(), ExecutionAbortReason> {
     let node_count = graph.nodes.len();
     if node_count == 0 {
         return Ok(());

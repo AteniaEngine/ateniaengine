@@ -1,10 +1,8 @@
-﻿mod mini_flux_common;
+mod mini_flux_common;
 
 use atenia_engine::apx5::apx_5_3_planner::NodeExecInfo;
 use atenia_engine::apx6_11::runtime_policy::{
-    FusionRuntimePolicy,
-    get_runtime_policy,
-    set_runtime_policy,
+    FusionRuntimePolicy, get_runtime_policy, set_runtime_policy,
 };
 use atenia_engine::tensor::Tensor;
 use mini_flux_common::{default_cfg, run_logits_forward, sample_tokens};
@@ -97,6 +95,12 @@ fn apx_6_11_mini_flux_outputs_are_stable_across_policies() {
     let diff_full = max_abs_diff(&logits_610, &logits_full);
     let diff_qkv = max_abs_diff(&logits_610, &logits_qkv);
 
-    assert!(diff_full <= 1e-5, "6.10 vs 6.11 PreferFull diverged: diff={diff_full}");
-    assert!(diff_qkv <= 1e-5, "6.10 vs 6.11 PreferQKV diverged: diff={diff_qkv}");
+    assert!(
+        diff_full <= 1e-5,
+        "6.10 vs 6.11 PreferFull diverged: diff={diff_full}"
+    );
+    assert!(
+        diff_qkv <= 1e-5,
+        "6.10 vs 6.11 PreferQKV diverged: diff={diff_qkv}"
+    );
 }

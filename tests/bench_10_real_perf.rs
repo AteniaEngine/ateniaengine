@@ -1,10 +1,12 @@
-﻿use std::time::Instant;
+use std::time::Instant;
 
-use atenia_engine::tensor::{Tensor, Device, DType};
-use atenia_engine::gpu::tensor::{GpuTensorManager, TensorGPU};
-use atenia_engine::gpu::ops::matmul::MatMulOp;
+use atenia_engine::gpu::autodiff::{
+    linear_backward::LinearBackwardGPU, matmul_backward::MatMulBackwardGPU,
+};
 use atenia_engine::gpu::ops::linear::LinearOp;
-use atenia_engine::gpu::autodiff::{matmul_backward::MatMulBackwardGPU, linear_backward::LinearBackwardGPU};
+use atenia_engine::gpu::ops::matmul::MatMulOp;
+use atenia_engine::gpu::tensor::{GpuTensorManager, TensorGPU};
+use atenia_engine::tensor::{DType, Device, Tensor};
 
 /// Helper: measure N iterations and return avg in ms
 fn benchmark<F: Fn()>(name: &str, iters: usize, f: F) {
@@ -147,7 +149,15 @@ fn bench_real_perf() {
                 Ok(t) => t,
                 Err(_) => return,
             };
-            LinearOp::run(a_gpu.raw_ptr(), w_gpu.raw_ptr(), b_gpu.raw_ptr(), out_gpu.raw_ptr(), n, n, n);
+            LinearOp::run(
+                a_gpu.raw_ptr(),
+                w_gpu.raw_ptr(),
+                b_gpu.raw_ptr(),
+                out_gpu.raw_ptr(),
+                n,
+                n,
+                n,
+            );
         });
 
         // BACKWARD MATMUL GPU (real)

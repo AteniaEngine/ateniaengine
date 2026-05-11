@@ -23,13 +23,13 @@
 //! Every test graceful-skips when no GPU is available, following the
 //! pattern of prior M3-d tests.
 
+use atenia_engine::apx4_8::fused_linear_activation::exec_fused_linear_silu;
 use atenia_engine::cuda::batch_matmul::cuda_batch_matmul;
 use atenia_engine::cuda::fused_linear_silu::cuda_fused_linear_silu;
 use atenia_engine::cuda::linear::cuda_linear;
 use atenia_engine::gpu::gpu_engine;
 use atenia_engine::nn::linear::linear as cpu_linear;
 use atenia_engine::tensor::ops::batch_matmul::batch_matmul_parallel;
-use atenia_engine::apx4_8::fused_linear_activation::exec_fused_linear_silu;
 use atenia_engine::tensor::{Device, Tensor};
 
 fn require_gpu(test_name: &str) -> bool {

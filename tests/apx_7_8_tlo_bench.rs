@@ -1,6 +1,6 @@
 use atenia_engine::amg::graph::Graph;
 use atenia_engine::amg::nodes::{Node, NodeType};
-use atenia_engine::tensor::{Tensor, Device, Layout};
+use atenia_engine::tensor::{Device, Layout, Tensor};
 
 fn make_wide_graph(width: usize) -> Graph {
     // 0: Input X
@@ -24,7 +24,13 @@ fn make_wide_graph(width: usize) -> Graph {
 }
 
 fn make_input() -> Vec<Tensor> {
-    let x = Tensor::with_layout(vec![64, 64], 1.0, Device::CPU, Layout::Contiguous, atenia_engine::tensor::DType::F32);
+    let x = Tensor::with_layout(
+        vec![64, 64],
+        1.0,
+        Device::CPU,
+        Layout::Contiguous,
+        atenia_engine::tensor::DType::F32,
+    );
     vec![x]
 }
 
@@ -43,15 +49,21 @@ fn apx_7_8_tlo_bench_print() {
     let width = 8;
     let inputs = make_input();
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.5"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.5");
+    }
     let mut g_hpge = make_wide_graph(width);
     let t_hpge = now_ms(|| g_hpge.execute(inputs.clone()));
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.7"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.7");
+    }
     let mut g_hpfa = make_wide_graph(width);
     let t_hpfa = now_ms(|| g_hpfa.execute(inputs.clone()));
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.8"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.8");
+    }
     let mut g_tlo = make_wide_graph(width);
     let t_tlo = now_ms(|| g_tlo.execute(inputs));
 

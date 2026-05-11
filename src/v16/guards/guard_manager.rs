@@ -8,7 +8,7 @@ use super::guard_conditions::GuardConditions;
 use super::guard_errors::GuardError;
 
 pub struct GuardManager {
-    guards: Vec<Box<dyn ExecutionGuard>>, 
+    guards: Vec<Box<dyn ExecutionGuard>>,
 }
 
 impl GuardManager {

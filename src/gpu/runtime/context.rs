@@ -42,8 +42,7 @@ impl GpuRuntime {
 
     fn init(&mut self) -> Result<(), GpuRuntimeError> {
         unsafe {
-            let cu_init: Symbol<unsafe extern "C" fn(u32) -> i32> =
-                self.get(b"cuInit\0")?;
+            let cu_init: Symbol<unsafe extern "C" fn(u32) -> i32> = self.get(b"cuInit\0")?;
 
             log("Initializing CUDA driver...");
             let res = cu_init(0);

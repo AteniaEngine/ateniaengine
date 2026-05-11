@@ -18,10 +18,7 @@ impl EventEmitter {
         final_error: Option<&str>,
     ) -> Result<(Vec<ExecutionEvent>, ExecutionOutcome), FeedbackError> {
         // Validate executed_steps: indices within range and non-decreasing
-        if executed_steps
-            .iter()
-            .any(|&idx| idx >= plan.steps.len())
-        {
+        if executed_steps.iter().any(|&idx| idx >= plan.steps.len()) {
             return Err(FeedbackError::InvalidEvent(
                 "executed step index out of bounds".to_string(),
             ));

@@ -1,6 +1,6 @@
-﻿use atenia_engine::apx9::vgpu_instr::VGPUInstr;
+use atenia_engine::apx9::vgpu_instr::VGPUInstr;
 use atenia_engine::apx9::vgpu_sm::VirtualSM;
-use atenia_engine::tensor::{Tensor, Device, DType};
+use atenia_engine::tensor::{DType, Device, Tensor};
 
 #[test]
 fn apx_9_25_sm_structure() {
@@ -38,11 +38,7 @@ fn apx_9_25_no_numeric_change() {
 #[test]
 fn apx_9_25_pipeline_integration() {
     // Symbolic program with a few instructions.
-    let program = vec![
-        VGPUInstr::Noop,
-        VGPUInstr::Noop,
-        VGPUInstr::Noop,
-    ];
+    let program = vec![VGPUInstr::Noop, VGPUInstr::Noop, VGPUInstr::Noop];
 
     let mut sm = VirtualSM::new(program, 1, 32, 64);
     let initial_pc = sm.pc;

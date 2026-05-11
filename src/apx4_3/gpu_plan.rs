@@ -27,7 +27,10 @@ impl GpuPlan {
                 }
                 false => {
                     if let Some(s) = start {
-                        segments.push(GpuSegment { start: s, end: i - 1 });
+                        segments.push(GpuSegment {
+                            start: s,
+                            end: i - 1,
+                        });
                         start = None;
                     }
                 }
@@ -52,8 +55,5 @@ pub fn is_cuda_available_for(node: &NodeType) -> bool {
     // skip si record_tape está activo. Reactivar Linear requiere
     // validar exec_gpu_linear contra TensorStorage::Cuda, trabajo
     // que pertenece a milestone futuro.
-    matches!(
-        node,
-        NodeType::MatMul
-    )
+    matches!(node, NodeType::MatMul)
 }

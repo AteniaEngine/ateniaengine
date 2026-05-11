@@ -112,7 +112,10 @@ fn manifest_path(root: &Path) -> PathBuf {
 
 fn write_manifest(root: &Path, checkpoint: &HybridCheckpoint) -> Result<(), CheckpointError> {
     if let Err(e) = fs::create_dir_all(root) {
-        return Err(CheckpointError::Io(format!("Failed to create checkpoint root {:?}: {}", root, e)));
+        return Err(CheckpointError::Io(format!(
+            "Failed to create checkpoint root {:?}: {}",
+            root, e
+        )));
     }
 
     let path = manifest_path(root);
@@ -162,9 +165,7 @@ fn write_manifest(root: &Path, checkpoint: &HybridCheckpoint) -> Result<(), Chec
         };
 
         if plan_summary_str.contains('\n') || plan_summary_str.contains('\r') {
-            plan_summary_str = plan_summary_str
-                .replace('\n', " ")
-                .replace('\r', " ");
+            plan_summary_str = plan_summary_str.replace('\n', " ").replace('\r', " ");
         }
 
         let block = format!(

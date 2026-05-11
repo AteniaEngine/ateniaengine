@@ -1,4 +1,4 @@
-﻿//! Gradient check: AMG's `MaxPool2D` analytical backward vs
+//! Gradient check: AMG's `MaxPool2D` analytical backward vs
 //! central-difference numerical gradient.
 //!
 //! MaxPool's gradient is piecewise constant: each input element
@@ -57,7 +57,12 @@ fn assert_grad_close(analytical: &[f32], numerical: &[f32], ctx: &str) {
         assert!(
             rel < REL_TOL,
             "{}: idx {}: analytical={} numerical={} rel_err={} > tol={}",
-            ctx, i, a, n, rel, REL_TOL
+            ctx,
+            i,
+            a,
+            n,
+            rel,
+            REL_TOL
         );
     }
 }

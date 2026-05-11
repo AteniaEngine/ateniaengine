@@ -43,7 +43,7 @@
 use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::amg::graph::Graph;
 use atenia_engine::amg::nodes::{Node, NodeType};
-use atenia_engine::tensor::{Device, DType, Layout, Tensor};
+use atenia_engine::tensor::{DType, Device, Layout, Tensor};
 
 // ---------------------------------------------------------------------
 // Shared helpers
@@ -59,20 +59,20 @@ fn fill_sine(t: &mut Tensor, seed: usize) {
 
 fn new_tensor(shape: Vec<usize>, seed: usize) -> Tensor {
     let numel: usize = shape.iter().product();
-    let mut t = Tensor::with_layout(
-        shape,
-        0.0,
-        Device::CPU,
-        Layout::Contiguous,
-        DType::F32,
-    );
+    let mut t = Tensor::with_layout(shape, 0.0, Device::CPU, Layout::Contiguous, DType::F32);
     fill_sine(&mut t, seed);
     let _ = numel;
     t
 }
 
 fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
-    assert_eq!(a.len(), b.len(), "length mismatch: {} vs {}", a.len(), b.len());
+    assert_eq!(
+        a.len(),
+        b.len(),
+        "length mismatch: {} vs {}",
+        a.len(),
+        b.len()
+    );
     a.iter()
         .zip(b.iter())
         .map(|(x, y)| (x - y).abs())
@@ -369,13 +369,7 @@ fn test_backward_correctness_4_input_bias_on_first() {
     let b1 = new_tensor(vec![d_h], 12);
     let w2 = new_tensor(vec![d_h, d_out], 13);
 
-    let mut f = build_fused_chain_silu(
-        x.clone(),
-        w1.clone(),
-        Some(b1.clone()),
-        w2.clone(),
-        None,
-    );
+    let mut f = build_fused_chain_silu(x.clone(), w1.clone(), Some(b1.clone()), w2.clone(), None);
     let mut r = build_ref_chain_silu(x, w1, Some(b1), w2, None, 1);
 
     assert!(matches!(
@@ -423,13 +417,7 @@ fn test_backward_correctness_4_input_bias_on_second() {
     let w2 = new_tensor(vec![d_h, d_out], 22);
     let b2 = new_tensor(vec![d_out], 23);
 
-    let mut f = build_fused_chain_silu(
-        x.clone(),
-        w1.clone(),
-        None,
-        w2.clone(),
-        Some(b2.clone()),
-    );
+    let mut f = build_fused_chain_silu(x.clone(), w1.clone(), None, w2.clone(), Some(b2.clone()));
     let mut r = build_ref_chain_silu(x, w1, None, w2, Some(b2), 1);
 
     assert_eq!(f.graph.nodes[f.chain_id].inputs.len(), 4);
@@ -676,7 +664,11 @@ fn test_backward_seq_vs_par_fused_chain() {
     for id in [x_id, w1_id, w2_id] {
         let gs = grad_of(&g_seq, id);
         let gp = grad_of(&g_par, id);
-        assert_eq!(gs.len(), gp.len(), "seq/par grad length mismatch for id {id}");
+        assert_eq!(
+            gs.len(),
+            gp.len(),
+            "seq/par grad length mismatch for id {id}"
+        );
         assert!(
             !gs.is_empty(),
             "seq grad empty for id {id} — BackOp likely not registered"

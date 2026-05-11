@@ -1,5 +1,5 @@
-﻿use atenia_engine::apx9::cpu_to_ptx::*;
 use atenia_engine::apx8::kernel_generator::{KernelIR, KernelOp};
+use atenia_engine::apx9::cpu_to_ptx::*;
 
 #[test]
 fn apx_9_11_structure() {
@@ -35,7 +35,7 @@ fn apx_9_11_thread_indexing() {
 
 #[test]
 fn apx_9_11_no_numeric_change() {
-    use atenia_engine::tensor::{Tensor, Device, DType};
+    use atenia_engine::tensor::{DType, Device, Tensor};
 
     let a = Tensor::ones(vec![4], Device::CPU, DType::F32);
     let b = Tensor::ones(vec![4], Device::CPU, DType::F32);

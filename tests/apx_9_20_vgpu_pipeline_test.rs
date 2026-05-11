@@ -1,7 +1,7 @@
-﻿use atenia_engine::apx9::vgpu_warp::*;
-use atenia_engine::apx9::vgpu_pipeline::*;
 use atenia_engine::apx9::vgpu_instr::*;
-use atenia_engine::{tensor::Tensor, tensor::DType, tensor::Device};
+use atenia_engine::apx9::vgpu_pipeline::*;
+use atenia_engine::apx9::vgpu_warp::*;
+use atenia_engine::{tensor::DType, tensor::Device, tensor::Tensor};
 
 #[test]
 fn apx_9_20_pipeline_basic_stages() {
@@ -21,10 +21,7 @@ fn apx_9_20_pipeline_basic_stages() {
 #[test]
 fn apx_9_20_pipeline_updates_pc_correctly() {
     let mut warp = VGPUWarp::new(32, 0);
-    let program = vec![
-        VGPUInstr::Add { dst: 0, a: 0, b: 1 },
-        VGPUInstr::Noop,
-    ];
+    let program = vec![VGPUInstr::Add { dst: 0, a: 0, b: 1 }, VGPUInstr::Noop];
 
     let pc_before = warp.pc;
 

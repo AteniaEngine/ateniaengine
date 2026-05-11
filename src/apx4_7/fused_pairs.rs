@@ -12,12 +12,7 @@ fn node_in_gpu_segment(graph: &Graph, id: usize) -> bool {
 
 /// Execute a Linear->Linear pair (A -> B) using existing Linear executors
 /// (GPU if applicable, CPU as fallback), without touching private methods.
-pub fn exec_fused_linear_linear(
-    graph: &mut Graph,
-    id_a: usize,
-    id_b: usize,
-    _record_tape: bool,
-) {
+pub fn exec_fused_linear_linear(graph: &mut Graph, id_a: usize, id_b: usize, _record_tape: bool) {
     // 1) Execute Linear A
     if node_in_gpu_segment(graph, id_a) {
         graph.exec_gpu_linear(id_a);

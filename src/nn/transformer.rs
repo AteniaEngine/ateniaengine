@@ -1,6 +1,6 @@
 use crate::amg::graph::Graph;
 use crate::amg::nodes::NodeType;
-use crate::tensor::{Device, DType, Layout, Tensor};
+use crate::tensor::{DType, Device, Layout, Tensor};
 
 pub struct TransformerConfig {
     pub d_model: usize,
@@ -22,14 +22,47 @@ pub fn build_transformer_block(
 ) -> TransformerBlockHandles {
     let mut param_ids = Vec::new();
 
-    let w_q = register_weight(graph, prefix, "w_q", cfg.d_model, cfg.d_model, &mut param_ids);
-    let w_k = register_weight(graph, prefix, "w_k", cfg.d_model, cfg.d_model, &mut param_ids);
-    let w_v = register_weight(graph, prefix, "w_v", cfg.d_model, cfg.d_model, &mut param_ids);
-    let w_o = register_weight(graph, prefix, "w_o", cfg.d_model, cfg.d_model, &mut param_ids);
+    let w_q = register_weight(
+        graph,
+        prefix,
+        "w_q",
+        cfg.d_model,
+        cfg.d_model,
+        &mut param_ids,
+    );
+    let w_k = register_weight(
+        graph,
+        prefix,
+        "w_k",
+        cfg.d_model,
+        cfg.d_model,
+        &mut param_ids,
+    );
+    let w_v = register_weight(
+        graph,
+        prefix,
+        "w_v",
+        cfg.d_model,
+        cfg.d_model,
+        &mut param_ids,
+    );
+    let w_o = register_weight(
+        graph,
+        prefix,
+        "w_o",
+        cfg.d_model,
+        cfg.d_model,
+        &mut param_ids,
+    );
     let w1 = register_weight(graph, prefix, "w1", cfg.d_model, cfg.d_ff, &mut param_ids);
     let w2 = register_weight(graph, prefix, "w2", cfg.d_ff, cfg.d_model, &mut param_ids);
 
-    let input_norm_id = graph.add_node_of_type(NodeType::RmsNorm { eps_bits: (1e-5_f32).to_bits() }, vec![input_id]);
+    let input_norm_id = graph.add_node_of_type(
+        NodeType::RmsNorm {
+            eps_bits: (1e-5_f32).to_bits(),
+        },
+        vec![input_id],
+    );
 
     let q_id = graph.add_node_of_type(NodeType::Linear, vec![input_norm_id, w_q]);
     let k_id = graph.add_node_of_type(NodeType::Linear, vec![input_norm_id, w_k]);
@@ -54,7 +87,12 @@ pub fn build_transformer_block(
     let attn_proj_id = graph.add_node_of_type(NodeType::Linear, vec![attn_out_id, w_o]);
 
     let x1_id = graph.add_node_of_type(NodeType::Add, vec![input_id, attn_proj_id]);
-    let x1_norm_id = graph.add_node_of_type(NodeType::RmsNorm { eps_bits: (1e-5_f32).to_bits() }, vec![x1_id]);
+    let x1_norm_id = graph.add_node_of_type(
+        NodeType::RmsNorm {
+            eps_bits: (1e-5_f32).to_bits(),
+        },
+        vec![x1_id],
+    );
 
     let hidden_id = graph.add_node_of_type(NodeType::Linear, vec![x1_norm_id, w1]);
     let hidden_silu_id = graph.add_node_of_type(NodeType::SiLU, vec![hidden_id]);

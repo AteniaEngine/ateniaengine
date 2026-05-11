@@ -132,7 +132,6 @@ impl GpuUtilProbe {
             lock: Mutex::new(()),
         }
     }
-
 }
 
 impl Default for GpuUtilProbe {
@@ -197,10 +196,7 @@ impl GpuUtilProbeApi for GpuUtilProbe {
 /// - A row with `pid == "-"` is an empty-GPU placeholder (no active
 ///   compute/graphics processes) — skip.
 /// - Distinct GPU index values across rows → `MultipleGpusUnsupported`.
-fn parse_pmon_output(
-    stdout: &str,
-    own_pid: u32,
-) -> Result<GpuUtilSnapshot, GpuUtilProbeError> {
+fn parse_pmon_output(stdout: &str, own_pid: u32) -> Result<GpuUtilSnapshot, GpuUtilProbeError> {
     let mut total_sm: f32 = 0.0;
     let mut self_sm: f32 = 0.0;
     let mut gpu_index_seen: Option<&str> = None;
@@ -243,10 +239,7 @@ fn parse_pmon_output(
             0.0
         } else {
             sm_token.parse::<f32>().map_err(|e| {
-                GpuUtilProbeError::ParseError(format!(
-                    "sm column '{}': {}",
-                    sm_token, e
-                ))
+                GpuUtilProbeError::ParseError(format!("sm column '{}': {}", sm_token, e))
             })?
         };
 
@@ -256,10 +249,7 @@ fn parse_pmon_output(
         // on the PID token is fatal — it means the line layout is
         // not what we expect.
         let pid_value: u32 = pid_token.parse::<u32>().map_err(|e| {
-            GpuUtilProbeError::ParseError(format!(
-                "pid column '{}': {}",
-                pid_token, e
-            ))
+            GpuUtilProbeError::ParseError(format!("pid column '{}': {}", pid_token, e))
         })?;
 
         if pid_value == own_pid {

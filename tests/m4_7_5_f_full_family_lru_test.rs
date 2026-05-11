@@ -55,15 +55,11 @@ use atenia_engine::amg::reactive::ReactiveExecutionContext;
 use atenia_engine::amm::ram_probe::{RamProbeApi, RamProbeError, RamSnapshot};
 use atenia_engine::amm::signal_bus::SignalBus;
 use atenia_engine::amm::vram_probe::{VramProbeApi, VramProbeError, VramSnapshot};
-use atenia_engine::nn::llama::{
-    build_llama, llama_weight_mapper, LlamaConfig, LlamaRuntime,
-};
+use atenia_engine::nn::llama::{LlamaConfig, LlamaRuntime, build_llama, llama_weight_mapper};
 use atenia_engine::tensor::tensor::Tensor;
 use atenia_engine::v15::policy::types::DecisionBias;
 use atenia_engine::v16::contract::constraints::{Constraints, RuntimeState};
-use atenia_engine::v16::contract::execution_contract::{
-    ExecutionBackend, ExecutionContract,
-};
+use atenia_engine::v16::contract::execution_contract::{ExecutionBackend, ExecutionContract};
 use atenia_engine::v16::guards::execution_guard::ExecutionGuard;
 use atenia_engine::v16::guards::guard_manager::GuardManager;
 use atenia_engine::v16::guards::simple_memory_pressure_guard::SimpleMemoryPressureGuard;
@@ -73,8 +69,9 @@ const TOKENS: [f32; 4] = [1.0, 100.0, 200.0, 300.0];
 const ADR_004_THRESHOLD: f64 = 0.5;
 
 fn load_f64_fixture(rel_dir: &str) -> Vec<f64> {
-    let path =
-        PathBuf::from("tests/fixtures").join(rel_dir).join("expected_logits_f64.json");
+    let path = PathBuf::from("tests/fixtures")
+        .join(rel_dir)
+        .join("expected_logits_f64.json");
     let s = fs::read_to_string(&path)
         .unwrap_or_else(|_| panic!("F64 fixture missing: {}", path.display()));
     let json: serde_json::Value = serde_json::from_str(&s).expect("malformed F64 fixture");
@@ -148,8 +145,7 @@ fn make_low_pressure_context(cache_dir: PathBuf) -> ReactiveExecutionContext {
         Some(Arc::new(LowPressureVramProbe)),
         Some(Arc::new(LowPressureRamProbe)),
     ));
-    let guards: Vec<Box<dyn ExecutionGuard>> =
-        vec![Box::new(SimpleMemoryPressureGuard::new())];
+    let guards: Vec<Box<dyn ExecutionGuard>> = vec![Box::new(SimpleMemoryPressureGuard::new())];
     let gm = GuardManager::new(guards);
     ReactiveExecutionContext::new_without_gc(bus, permissive_contract(), gm)
         .with_cache_dir(cache_dir)
@@ -165,7 +161,10 @@ fn run_one_model(
     expected_param_count: usize,
     vocab_size: usize,
 ) -> (f64, [bool; 4], usize, usize) {
-    println!("\n=== {} F64 re-validation under M4.7.5 LRU spill ===", label);
+    println!(
+        "\n=== {} F64 re-validation under M4.7.5 LRU spill ===",
+        label
+    );
 
     let path =
         env::var(safetensors_env_var).unwrap_or_else(|_| panic!("Set {}", safetensors_env_var));
@@ -184,11 +183,14 @@ fn run_one_model(
     let mut graph = gb.build();
     assert_eq!(handles.param_ids.len(), expected_param_count);
 
-    println!("Loading {} weights with store_params_as_bf16 = true ...", label);
+    println!(
+        "Loading {} weights with store_params_as_bf16 = true ...",
+        label
+    );
     let load_start = Instant::now();
     let reader = SafetensorsReader::open(Path::new(&path)).expect("open safetensors");
-    let mut mapper = llama_weight_mapper(&config, &handles.param_names, &handles.param_ids)
-        .expect("mapper");
+    let mut mapper =
+        llama_weight_mapper(&config, &handles.param_names, &handles.param_ids).expect("mapper");
     mapper.set_store_params_as_bf16(true);
     let report = mapper.load_into(&mut graph, &reader).expect("load");
     drop(reader);
@@ -260,21 +262,18 @@ fn run_one_model(
         migration.tensors_migrated < lru_size_before,
         "M4.7.5 must spill SELECTIVELY: migrated={} >= LRU size={}; \
          the LRU bottom-fraction slice was bypassed (whole-LRU spill?)",
-        migration.tensors_migrated, lru_size_before
+        migration.tensors_migrated,
+        lru_size_before
     );
 
     // Reference for the per-model line below: how the bottom-50%
     // slice maps onto eligible candidates given the warmup
     // forward's touched-node profile.
-    let bottom_slice_target =
-        ((lru_size_before as f32) * 0.5_f32).floor() as usize;
+    let bottom_slice_target = ((lru_size_before as f32) * 0.5_f32).floor() as usize;
     println!(
         "Selectivity sanity: migrated={}, bottom_slice_target={} (50% of LRU), \
          lru_size={}, total_params={}",
-        migration.tensors_migrated,
-        bottom_slice_target,
-        lru_size_before,
-        expected_param_count,
+        migration.tensors_migrated, bottom_slice_target, lru_size_before, expected_param_count,
     );
 
     // Re-execute. Every consumer arm's M4.7.3.d / M4.7.5.e
@@ -337,7 +336,12 @@ fn run_one_model(
     );
 
     let _ = std::fs::remove_dir_all(&dir);
-    (max_drift, matches, migration.tensors_migrated, lru_size_before)
+    (
+        max_drift,
+        matches,
+        migration.tensors_migrated,
+        lru_size_before,
+    )
 }
 
 const TINYLLAMA_CONFIG: &str = r#"{

@@ -152,8 +152,7 @@ impl ForegroundProbeApi for ForegroundProbe {
         // Return value is the thread id (irrelevant for us); the
         // PID comes out via the out-param. A return of 0 indicates
         // failure — map to `None`.
-        let tid =
-            unsafe { win::GetWindowThreadProcessId(hwnd, &mut foreground_pid as *mut _) };
+        let tid = unsafe { win::GetWindowThreadProcessId(hwnd, &mut foreground_pid as *mut _) };
         if tid == 0 {
             return Ok(ForegroundSnapshot {
                 foreground_is_atenia: None,

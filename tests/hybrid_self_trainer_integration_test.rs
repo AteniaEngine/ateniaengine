@@ -3,7 +3,7 @@ use atenia_engine::v13::checkpoint::{WarmStartAction, WarmStartDecision, WarmSta
 use atenia_engine::v13::memory_types::{MemoryTier, TensorId};
 use atenia_engine::v13::self_trainer::{BackendChoice, SelfTrainer};
 use atenia_engine::v13::self_trainer_integration::{
-    context_from_pressures, record_from_warm_start, recommend_for_next_tick, ExecResult,
+    ExecResult, context_from_pressures, recommend_for_next_tick, record_from_warm_start,
 };
 
 fn make_gpu_promote_plan() -> WarmStartPlan {
@@ -12,7 +12,9 @@ fn make_gpu_promote_plan() -> WarmStartPlan {
         is_grad: false,
         current: MemoryTier::Ram,
         desired: Some(MemoryTier::Vram),
-        action: WarmStartAction::HintPromote { to: MemoryTier::Vram },
+        action: WarmStartAction::HintPromote {
+            to: MemoryTier::Vram,
+        },
         reason: "Desired VRAM and GPU available".to_string(),
     };
 
@@ -116,7 +118,9 @@ fn recommend_changes_after_recording() {
 
     match backend {
         BackendChoice::Gpu => {}
-        BackendChoice::Cpu => panic!("expected GPU to be preferred after recording high-score GPU episodes"),
+        BackendChoice::Cpu => {
+            panic!("expected GPU to be preferred after recording high-score GPU episodes")
+        }
     }
 }
 

@@ -1,8 +1,8 @@
-use crate::v13::checkpoint::drift::DriftReport;
 use crate::v13::checkpoint::WarmStartPlan;
+use crate::v13::checkpoint::drift::DriftReport;
 use crate::v13::self_trainer::{
-    summarize_warm_start_plan, BackendChoice, ExecutionContext, EpisodeOutcome, SelfTrainer,
-    TrainingEpisode,
+    BackendChoice, EpisodeOutcome, ExecutionContext, SelfTrainer, TrainingEpisode,
+    summarize_warm_start_plan,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -63,7 +63,11 @@ pub fn record_from_warm_start(
 ) {
     let decision = summarize_warm_start_plan(plan);
     let outcome = outcome_from_exec_result(res, had_drift(drifts));
-    let episode = TrainingEpisode { ctx, decision, outcome };
+    let episode = TrainingEpisode {
+        ctx,
+        decision,
+        outcome,
+    };
     trainer.record_episode(episode);
 }
 

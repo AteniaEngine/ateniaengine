@@ -1,5 +1,5 @@
 use atenia_engine::amm::batch_manager::BatchManager;
-use atenia_engine::tensor::tensor::{Device, DType, Tensor};
+use atenia_engine::tensor::tensor::{DType, Device, Tensor};
 
 fn sample_tensor(elements: usize) -> Tensor {
     Tensor::new(vec![elements], 1.0, Device::CPU, DType::F32)

@@ -69,7 +69,10 @@ impl<'a> HLSScheduler<'a> {
 
             let idx = map.entry(sig).or_insert_with(|| {
                 let idx = clusters.len();
-                clusters.push(HLSCluster { nodes: Vec::new(), score: 0.0 });
+                clusters.push(HLSCluster {
+                    nodes: Vec::new(),
+                    score: 0.0,
+                });
                 idx
             });
 

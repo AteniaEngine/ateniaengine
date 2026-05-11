@@ -1,7 +1,4 @@
-use atenia_engine::gpu::{
-    memory::GpuMemoryEngine,
-    ops::matmul::MatMulOp,
-};
+use atenia_engine::gpu::{memory::GpuMemoryEngine, ops::matmul::MatMulOp};
 
 fn cpu_matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
     let mut out = vec![0.0; m * n];

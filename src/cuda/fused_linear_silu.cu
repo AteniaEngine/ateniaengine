@@ -1,6 +1,7 @@
 // Kernel interno: opera sobre punteros DEVICE.
 #include <cuda_runtime.h>
 #include <cstdio>
+#include "cuda_common.h"
 
 __global__ void fused_linear_silu_f32_kernel(
     const float* __restrict__ X,   // [M,K]

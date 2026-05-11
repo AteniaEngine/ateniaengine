@@ -42,17 +42,17 @@
 
 use std::io::Write;
 
+use super::builder::LlamaRuntime;
+use super::builder_shared::{BuildError, LlamaHandlesShared};
+use super::phi3::build_with_store;
 use crate::amg::builder::GraphBuilder;
 use crate::amg::graph::Graph;
 use crate::amg::kv_cache::{
-    cast_kv_cell_bf16_to_f32, cast_kv_cell_f32_to_bf16, KvCacheBuildSpec, KvCacheHandles,
+    KvCacheBuildSpec, KvCacheHandles, cast_kv_cell_bf16_to_f32, cast_kv_cell_f32_to_bf16,
 };
 use crate::amg::weight_store::WeightStore;
 use crate::nn::llama::config::LlamaConfig;
 use crate::tensor::Tensor;
-use super::builder::LlamaRuntime;
-use super::builder_shared::{BuildError, LlamaHandlesShared};
-use super::phi3::build_with_store;
 
 /// Configuration for one generation call.
 #[derive(Debug, Clone)]
@@ -96,7 +96,9 @@ pub trait TokenSink {
 }
 
 impl<F: FnMut(&GeneratedToken)> TokenSink for F {
-    fn on_token(&mut self, t: &GeneratedToken) { self(t) }
+    fn on_token(&mut self, t: &GeneratedToken) {
+        self(t)
+    }
 }
 
 /// Default production sink: print + flush per token.
@@ -123,7 +125,9 @@ pub struct CollectingTokenSink {
 }
 
 impl TokenSink for CollectingTokenSink {
-    fn on_token(&mut self, t: &GeneratedToken) { self.tokens.push(t.clone()); }
+    fn on_token(&mut self, t: &GeneratedToken) {
+        self.tokens.push(t.clone());
+    }
 }
 
 /// Errors surfaced during generation.
@@ -143,7 +147,9 @@ impl std::fmt::Display for GenerateError {
 impl std::error::Error for GenerateError {}
 
 impl From<BuildError> for GenerateError {
-    fn from(e: BuildError) -> Self { GenerateError::Build(e) }
+    fn from(e: BuildError) -> Self {
+        GenerateError::Build(e)
+    }
 }
 
 /// **M5.d.a** — single generation entry point.
@@ -192,7 +198,10 @@ where
     DT: FnMut(u32) -> String,
     S: TokenSink,
 {
-    assert!(!prompt_ids.is_empty(), "generate_greedy: prompt_ids must not be empty");
+    assert!(
+        !prompt_ids.is_empty(),
+        "generate_greedy: prompt_ids must not be empty"
+    );
 
     let prompt_len = prompt_ids.len();
     let vocab = cfg.vocab_size;
@@ -215,8 +224,7 @@ where
     // Validation: 4-token determinism fixture on TinyLlama
     // 1.1B-Chat (M5.d.b) is bit-exact identical with BF16 KV
     // cache — same token IDs, same decoded text.
-    let bf16_kv = std::env::var("ATENIA_LEGACY_F32_KV_CACHE")
-        .as_deref() != Ok("1");
+    let bf16_kv = std::env::var("ATENIA_LEGACY_F32_KV_CACHE").as_deref() != Ok("1");
     if std::env::var("ATENIA_BF16_KV_CACHE").as_deref() == Ok("1") {
         // No-op compatibility: M8.6.0 operators can keep the
         // flag set with no behavioural change. We do not warn
@@ -230,23 +238,26 @@ where
 
     let mut gb = GraphBuilder::new();
     let token_in = gb.input();
-    let runtime = LlamaRuntime { batch: 1, seq: prompt_len };
+    let runtime = LlamaRuntime {
+        batch: 1,
+        seq: prompt_len,
+    };
     let spec = KvCacheBuildSpec { cached_len: 0 };
-    let h: LlamaHandlesShared = build_with_store(
-        &mut gb, cfg, &runtime, token_in, store, Some(&spec),
-    )?;
+    let h: LlamaHandlesShared =
+        build_with_store(&mut gb, cfg, &runtime, token_in, store, Some(&spec))?;
     let _ = gb.output(h.logits_id);
     let mut g_prefill = gb.build();
 
-    let logits_prefill = g_prefill.execute(vec![prefill_input])
-        .into_iter().next().expect("prefill: missing output tensor");
+    let logits_prefill = g_prefill
+        .execute(vec![prefill_input])
+        .into_iter()
+        .next()
+        .expect("prefill: missing output tensor");
 
     // Greedy argmax for the first generated token (logits at
     // last prompt position predicts the next token).
     let prefill_logits_data = logits_prefill.copy_to_cpu_vec();
-    let mut next_token = greedy_argmax_at(
-        &prefill_logits_data, prompt_len - 1, vocab,
-    );
+    let mut next_token = greedy_argmax_at(&prefill_logits_data, prompt_len - 1, vocab);
 
     // Harvest cache state from prefill.
     let kv_handles = h.kv_handles.expect("prefill must produce kv_handles");
@@ -294,20 +305,19 @@ where
 
         // Build the next decode graph at seq=1 with the
         // current cached_len.
-        let token_input =
-            Tensor::new_cpu(vec![1, 1], vec![token_id as f32]);
+        let token_input = Tensor::new_cpu(vec![1, 1], vec![token_id as f32]);
         let mut gb_d = GraphBuilder::new();
         let token_in_d = gb_d.input();
         let runtime_d = LlamaRuntime { batch: 1, seq: 1 };
         let spec_d = KvCacheBuildSpec { cached_len };
-        let h_d = build_with_store(
-            &mut gb_d, cfg, &runtime_d, token_in_d, store, Some(&spec_d),
-        )?;
+        let h_d = build_with_store(&mut gb_d, cfg, &runtime_d, token_in_d, store, Some(&spec_d))?;
         let _ = gb_d.output(h_d.logits_id);
         let mut g_d = gb_d.build();
 
         // Patch cache slots.
-        let kv_d = h_d.kv_handles.as_ref()
+        let kv_d = h_d
+            .kv_handles
+            .as_ref()
             .expect("decode build_llama_with_store must produce kv_handles");
         for (li, layer) in kv_d.per_layer.iter().enumerate() {
             // M8.6 — if the ledger holds BF16 cells, decode
@@ -329,8 +339,11 @@ where
                 .expect("decode: overwrite cache_V");
         }
 
-        let logits_d = g_d.execute(vec![token_input])
-            .into_iter().next().expect("decode: missing output tensor");
+        let logits_d = g_d
+            .execute(vec![token_input])
+            .into_iter()
+            .next()
+            .expect("decode: missing output tensor");
         let logits_d_data = logits_d.copy_to_cpu_vec();
 
         // Greedy argmax over the single seq position.
@@ -351,23 +364,36 @@ where
 }
 
 fn greedy_argmax_at(logits_data: &[f32], position: usize, vocab: usize) -> u32 {
-    let row = &logits_data[position * vocab .. (position + 1) * vocab];
-    row.iter().enumerate()
+    let row = &logits_data[position * vocab..(position + 1) * vocab];
+    row.iter()
+        .enumerate()
         .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
         .map(|(i, _)| i as u32)
         .unwrap()
 }
 
 fn harvest_cache_k(g: &Graph, kv: &KvCacheHandles) -> Vec<Tensor> {
-    kv.per_layer.iter()
-        .map(|h| g.nodes[h.k_full_node_id].output.as_ref()
-            .expect("k_full not materialised").clone())
+    kv.per_layer
+        .iter()
+        .map(|h| {
+            g.nodes[h.k_full_node_id]
+                .output
+                .as_ref()
+                .expect("k_full not materialised")
+                .clone()
+        })
         .collect()
 }
 
 fn harvest_cache_v(g: &Graph, kv: &KvCacheHandles) -> Vec<Tensor> {
-    kv.per_layer.iter()
-        .map(|h| g.nodes[h.v_full_node_id].output.as_ref()
-            .expect("v_full not materialised").clone())
+    kv.per_layer
+        .iter()
+        .map(|h| {
+            g.nodes[h.v_full_node_id]
+                .output
+                .as_ref()
+                .expect("v_full not materialised")
+                .clone()
+        })
         .collect()
 }

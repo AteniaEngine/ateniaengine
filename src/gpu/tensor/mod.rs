@@ -1,5 +1,5 @@
-pub mod tensor_gpu;
 pub mod manager;
+pub mod tensor_gpu;
 
-pub use tensor_gpu::TensorGPU;
 pub use manager::GpuTensorManager;
+pub use tensor_gpu::TensorGPU;

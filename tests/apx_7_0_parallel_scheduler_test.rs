@@ -1,5 +1,5 @@
-﻿use atenia_engine::tensor::{Tensor, Device};
 use atenia_engine::apx7::pex_engine::PEXExecutor;
+use atenia_engine::tensor::{Device, Tensor};
 
 #[test]
 fn apx_7_0_parallel_matmul_matches_sequential() {
@@ -22,8 +22,8 @@ fn apx_7_0_parallel_matmul_matches_sequential() {
 
 #[test]
 fn apx_7_0_parallel_scheduler_uses_multiple_threads() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     let counter = Arc::new(AtomicUsize::new(0));
 

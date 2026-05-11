@@ -1,5 +1,6 @@
 #include <cuda_runtime.h>
 #include <stdio.h>
+#include "cuda_common.h"
 
 extern "C" {
 
@@ -14,7 +15,7 @@ void vec_add_kernel(const float* a, const float* b, float* out, int n) {
     }
 }
 
-__declspec(dllexport)
+CUDA_EXPORT
 void vec_add_cuda(const float* a, const float* b, float* out, int n) {
     float *d_a, *d_b, *d_out;
 
@@ -42,12 +43,12 @@ void vec_add_cuda(const float* a, const float* b, float* out, int n) {
 // -------------------------------------------------
 // Simple exported wrappers used by the Rust pool FFI
 // -------------------------------------------------
-__declspec(dllexport)
+CUDA_EXPORT
 void cuda_malloc(void** ptr, size_t bytes) {
     cudaMalloc(ptr, bytes);
 }
 
-__declspec(dllexport)
+CUDA_EXPORT
 void cuda_free(void* ptr) {
     cudaFree(ptr);
 }

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
-use crate::v13::checkpoint::{drift, CheckpointError, HybridCheckpoint};
+use crate::v13::checkpoint::{CheckpointError, HybridCheckpoint, drift};
 use crate::v13::hybrid_memory::HybridMemoryManager;
 use crate::v13::memory_types::{MemoryTier, TensorId};
 use crate::v13::persistent_cache::{CacheError as PCacheError, CacheKind};
@@ -116,10 +116,7 @@ pub fn restore_checkpoint_lazy(
                 state: LazyState::Unmaterialized,
                 tier: effective_tier,
                 length: entry.len_bytes,
-                source: LazySource::PersistentCache {
-                    kind,
-                    key,
-                },
+                source: LazySource::PersistentCache { kind, key },
             };
 
             insert_lazy(TensorId(entry.id.clone()), backing);

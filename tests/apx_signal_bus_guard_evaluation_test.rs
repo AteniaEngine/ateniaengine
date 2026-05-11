@@ -8,9 +8,7 @@
 use atenia_engine::amm::signal_bus::SignalBus;
 use atenia_engine::v15::policy::types::DecisionBias;
 use atenia_engine::v16::contract::constraints::{Constraints, RuntimeState};
-use atenia_engine::v16::contract::execution_contract::{
-    ExecutionBackend, ExecutionContract,
-};
+use atenia_engine::v16::contract::execution_contract::{ExecutionBackend, ExecutionContract};
 use atenia_engine::v16::guards::execution_guard::ExecutionGuard;
 use atenia_engine::v16::guards::guard_action::GuardAction;
 use atenia_engine::v16::guards::guard_conditions::GuardConditions;
@@ -27,11 +25,7 @@ impl ExecutionGuard for MemoryPressureGuard {
         "memory_pressure_guard"
     }
 
-    fn evaluate(
-        &self,
-        _contract: &ExecutionContract,
-        conditions: &GuardConditions,
-    ) -> GuardAction {
+    fn evaluate(&self, _contract: &ExecutionContract, conditions: &GuardConditions) -> GuardAction {
         if conditions.memory_pressure > self.threshold {
             GuardAction::Abort
         } else {

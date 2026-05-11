@@ -52,9 +52,10 @@ fn cpu_when_kernel_small() {
     let plan = HybridExecutionPlanner::plan(&kernel, &tiers, &snapshot, true);
 
     assert_eq!(plan.target, ExecutionTarget::Cpu);
-    assert!(plan
-        .reason
-        .contains("Kernel not suitable for GPU execution"));
+    assert!(
+        plan.reason
+            .contains("Kernel not suitable for GPU execution")
+    );
 }
 
 #[test]

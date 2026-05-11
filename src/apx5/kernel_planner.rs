@@ -59,7 +59,11 @@ impl KernelPlanner {
         }
 
         // Original APX 5.2 size-based heuristic.
-        let size: usize = if dims.is_empty() { 0 } else { dims.iter().product() };
+        let size: usize = if dims.is_empty() {
+            0
+        } else {
+            dims.iter().product()
+        };
 
         if size < 4096 {
             KernelPlan {

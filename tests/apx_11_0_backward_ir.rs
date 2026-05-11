@@ -1,5 +1,5 @@
 use atenia_engine::gpu_autodiff::ir_backward::BackwardKernelSpec;
-use atenia_engine::tensor::{Tensor, Device, DType};
+use atenia_engine::tensor::{DType, Device, Tensor};
 
 #[test]
 fn test_backward_ir_structural() {
@@ -12,7 +12,7 @@ fn test_backward_ir_structural() {
         "extern \"C\" __global__ void linear_backward() {}",
         vec![t_in.clone()],
         vec![t_grad.clone()],
-        vec![]
+        vec![],
     );
 
     assert_eq!(spec.name, "linear_backward");

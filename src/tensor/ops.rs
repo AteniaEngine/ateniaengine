@@ -2,8 +2,8 @@
 
 use super::tensor::{Device, Layout, Tensor};
 
-pub mod matmul_cpu;
 pub mod batch_matmul;
+pub mod matmul_cpu;
 
 impl Tensor {
     /// Element-wise addition between two tensors, keeping the device from `self`.
@@ -49,10 +49,28 @@ impl Tensor {
     }
 
     fn validate_binary_op(&self, other: &Tensor, op: &str) {
-        assert_eq!(self.shape.len(), other.shape.len(), "Tensor ranks must match for {}", op);
-        assert_eq!(self.shape, other.shape, "Tensor shapes must match for {}", op);
-        assert_eq!(self.strides.len(), other.strides.len(), "Stride ranks must match for {}", op);
-        assert_eq!(self.dtype, other.dtype, "Tensor dtypes must match for {}", op);
+        assert_eq!(
+            self.shape.len(),
+            other.shape.len(),
+            "Tensor ranks must match for {}",
+            op
+        );
+        assert_eq!(
+            self.shape, other.shape,
+            "Tensor shapes must match for {}",
+            op
+        );
+        assert_eq!(
+            self.strides.len(),
+            other.strides.len(),
+            "Stride ranks must match for {}",
+            op
+        );
+        assert_eq!(
+            self.dtype, other.dtype,
+            "Tensor dtypes must match for {}",
+            op
+        );
         assert_eq!(
             self.numel(),
             other.numel(),
@@ -103,12 +121,14 @@ impl Tensor {
 
     fn validate_matmul_dims(&self, other: &Tensor) {
         assert_eq!(
-            self.shape.len(), 2,
+            self.shape.len(),
+            2,
             "matmul expects lhs to be 2D, got rank {}",
             self.shape.len()
         );
         assert_eq!(
-            other.shape.len(), 2,
+            other.shape.len(),
+            2,
             "matmul expects rhs to be 2D, got rank {}",
             other.shape.len()
         );
@@ -328,13 +348,7 @@ fn matmul_serial(a: &Tensor, b: &Tensor) -> Tensor {
     let m = a.shape[0];
     let k = a.shape[1];
     let n = b.shape[1];
-    let mut out = Tensor::with_layout(
-        vec![m, n],
-        0.0,
-        a.device,
-        Layout::Contiguous,
-        a.dtype,
-    );
+    let mut out = Tensor::with_layout(vec![m, n], 0.0, a.device, Layout::Contiguous, a.dtype);
     let a_slice = a.as_cpu_slice();
     let b_slice = b.as_cpu_slice();
     let out_slice = out.as_cpu_slice_mut();

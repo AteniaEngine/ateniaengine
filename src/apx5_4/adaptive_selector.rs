@@ -1,6 +1,6 @@
-use crate::apx5::apx_5_3_planner::{ExecutionPlan5_3, NodeExecInfo, LayoutDecision};
+use crate::apx5::apx_5_3_planner::{ExecutionPlan5_3, LayoutDecision, NodeExecInfo};
 
-use super::{OpStats, Sample, DeviceTarget};
+use super::{DeviceTarget, OpStats, Sample};
 
 #[derive(Clone, Debug)]
 pub struct AdaptiveDecision {
@@ -64,7 +64,11 @@ impl AdaptiveSelector {
             }
 
             let avg = |v: &Vec<u64>| {
-                if v.is_empty() { None } else { Some(v.iter().copied().sum::<u64>() as f64 / v.len() as f64) }
+                if v.is_empty() {
+                    None
+                } else {
+                    Some(v.iter().copied().sum::<u64>() as f64 / v.len() as f64)
+                }
             };
 
             let cpu_avg = avg(&cpu_durs);

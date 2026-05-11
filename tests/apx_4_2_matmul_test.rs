@@ -1,18 +1,18 @@
-﻿use atenia_engine::tensor::{Tensor, Device};
 use atenia_engine::cuda::matmul::cuda_matmul;
+use atenia_engine::tensor::{Device, Tensor};
 
 #[test]
 fn gpu_matmul_matches_cpu_small() {
     // Deterministic 2x2 case to debug indexing and data.
-    let m = 2; let k = 2; let n = 2;
+    let m = 2;
+    let k = 2;
+    let n = 2;
 
     let mut a = Tensor::zeros_new(&[m, k], Device::CPU);
-    a.as_cpu_slice_mut().copy_from_slice(&[1.0, 2.0,
-                             3.0, 4.0]);
+    a.as_cpu_slice_mut().copy_from_slice(&[1.0, 2.0, 3.0, 4.0]);
 
     let mut b = Tensor::zeros_new(&[k, n], Device::CPU);
-    b.as_cpu_slice_mut().copy_from_slice(&[5.0, 6.0,
-                             7.0, 8.0]);
+    b.as_cpu_slice_mut().copy_from_slice(&[5.0, 6.0, 7.0, 8.0]);
 
     // CPU reference using Tensor::matmul (which goes through the scalar matmul_dispatch).
     let cpu = a.matmul(&b);
@@ -25,7 +25,10 @@ fn gpu_matmul_matches_cpu_small() {
         if d >= 1e-4 {
             eprintln!(
                 "idx {}: cpu={}, gpu={}, diff={}",
-                i, cpu.as_cpu_slice()[i], gpu.as_cpu_slice()[i], d
+                i,
+                cpu.as_cpu_slice()[i],
+                gpu.as_cpu_slice()[i],
+                d
             );
         }
         assert!(d < 1e-4, "diff too large at {}: {}", i, d);

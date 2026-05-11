@@ -1,11 +1,4 @@
-pub fn matmul_tiled_cpu(
-    a: &[f32],
-    b: &[f32],
-    out: &mut [f32],
-    m: usize,
-    k: usize,
-    n: usize,
-) {
+pub fn matmul_tiled_cpu(a: &[f32], b: &[f32], out: &mut [f32], m: usize, k: usize, n: usize) {
     let tile_m = 32;
     let tile_k = 32;
     let tile_n = 32;

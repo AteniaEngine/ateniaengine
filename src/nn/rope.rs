@@ -370,7 +370,12 @@ pub fn apply_rope_with_inv_freqs(x: &Tensor, head_dim: usize, inv_freqs: &[f32])
 /// # Panics
 /// Panics if `out_grad`'s shape does not satisfy the same constraints
 /// as the forward input.
-pub fn apply_rope_backward(out_grad: &[f32], shape: &[usize], head_dim: usize, base_freq: u32) -> Vec<f32> {
+pub fn apply_rope_backward(
+    out_grad: &[f32],
+    shape: &[usize],
+    head_dim: usize,
+    base_freq: u32,
+) -> Vec<f32> {
     let inv_freqs = compute_inv_freqs(head_dim, base_freq);
     apply_rope_backward_with_inv_freqs(out_grad, shape, head_dim, &inv_freqs)
 }
@@ -547,10 +552,7 @@ mod llama3_scaling_tests {
 /// (factor = [1.0, ...] reproduces unscaled inv_freq).
 #[cfg(test)]
 mod longrope_scaling_tests {
-    use super::{
-        compute_attention_factor_longrope, compute_inv_freqs,
-        compute_inv_freqs_longrope,
-    };
+    use super::{compute_attention_factor_longrope, compute_inv_freqs, compute_inv_freqs_longrope};
 
     /// Phi-3.5 Mini parameters: head_dim = 96, theta = 10000,
     /// original_max_pos = 4096, max_pos = 131072.
@@ -568,9 +570,7 @@ mod longrope_scaling_tests {
     #[test]
     fn longrope_short_path_with_unit_factor_matches_unscaled() {
         let short = ones_factor();
-        let long: Vec<f32> = (0..HEAD_DIM / 2)
-            .map(|i| 2.0 + i as f32)
-            .collect();
+        let long: Vec<f32> = (0..HEAD_DIM / 2).map(|i| 2.0 + i as f32).collect();
         let scaled =
             compute_inv_freqs_longrope(HEAD_DIM, BASE, &short, &long, ORIGINAL_MAX_POS, 1024);
         let unscaled = compute_inv_freqs(HEAD_DIM, BASE);
@@ -581,7 +581,10 @@ mod longrope_scaling_tests {
                 diff < 1e-7,
                 "short-path with unit factor must match unscaled at i={}: \
                  got {:.6e}, expected {:.6e}, diff={:.3e}",
-                i, s, u, diff
+                i,
+                s,
+                u,
+                diff
             );
         }
     }
@@ -609,7 +612,10 @@ mod longrope_scaling_tests {
                 diff < 1e-7,
                 "long-path with factor=2 must equal unscaled / 2 at i={}: \
                  got {:.6e}, expected {:.6e}, diff={:.3e}",
-                i, s, expected, diff
+                i,
+                s,
+                expected,
+                diff
             );
         }
     }
@@ -634,7 +640,10 @@ mod longrope_scaling_tests {
         for (i, (s, u)) in scaled_at_boundary.iter().zip(unscaled.iter()).enumerate() {
             let expected = u / 3.0;
             let diff = (s - expected).abs();
-            assert!(diff < 1e-7, "boundary at i={i}: got {s} expected {expected}");
+            assert!(
+                diff < 1e-7,
+                "boundary at i={i}: got {s} expected {expected}"
+            );
         }
     }
 
@@ -702,8 +711,7 @@ mod offset_tests {
         let x = arange_tensor(vec![2, 8, 4, 64], 0.5);
 
         let baseline = apply_rope_with_inv_freqs(&x, head_dim, &inv_freqs);
-        let offset_zero =
-            apply_rope_with_offset_inv_freqs(&x, head_dim, &inv_freqs, 0);
+        let offset_zero = apply_rope_with_offset_inv_freqs(&x, head_dim, &inv_freqs, 0);
 
         assert_eq!(baseline.shape, offset_zero.shape);
         let a = baseline.copy_to_cpu_vec();
@@ -712,7 +720,8 @@ mod offset_tests {
         // Bit-exact (same arithmetic on the same operands).
         for (i, (lhs, rhs)) in a.iter().zip(b.iter()).enumerate() {
             assert_eq!(
-                lhs.to_bits(), rhs.to_bits(),
+                lhs.to_bits(),
+                rhs.to_bits(),
                 "offset=0 must match no-offset bit-exactly at index {i}: \
                  {lhs:.10} vs {rhs:.10}"
             );
@@ -746,18 +755,16 @@ mod offset_tests {
         let prefill_data = prefill.copy_to_cpu_vec();
         let row_stride = n_heads * head_dim;
         let row_off = 3 * row_stride;
-        let row_data: Vec<f32> = prefill_data[row_off .. row_off + row_stride].to_vec();
+        let row_data: Vec<f32> = prefill_data[row_off..row_off + row_stride].to_vec();
         let single_row = Tensor::new_cpu(vec![1, 1, n_heads, head_dim], row_data);
 
         // Rotate it at offset=3 — should match the row 3 of
         // the prefill rotation.
-        let single_rot = apply_rope_with_offset_inv_freqs(
-            &single_row, head_dim, &inv_freqs, 3,
-        );
+        let single_rot = apply_rope_with_offset_inv_freqs(&single_row, head_dim, &inv_freqs, 3);
 
         // Compare against `prefill_rot[..., row=3, :, :]`.
         let prefill_rot_data = prefill_rot.copy_to_cpu_vec();
-        let row3_rot = &prefill_rot_data[row_off .. row_off + row_stride];
+        let row3_rot = &prefill_rot_data[row_off..row_off + row_stride];
         let single_rot_data = single_rot.copy_to_cpu_vec();
         assert_eq!(single_rot_data.len(), row3_rot.len());
         for (i, (lhs, rhs)) in single_rot_data.iter().zip(row3_rot.iter()).enumerate() {

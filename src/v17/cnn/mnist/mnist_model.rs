@@ -5,8 +5,8 @@ use crate::v17::compute::tensor::Tensor;
 /// The goal is determinism and auditability, not accuracy.
 #[derive(Debug, Clone)]
 pub struct MnistCNNModel {
-    pub conv_weights: Tensor, // [out_channels, in_channels, k_h, k_w]
-    pub conv_bias: Tensor,   // [out_channels]
+    pub conv_weights: Tensor,  // [out_channels, in_channels, k_h, k_w]
+    pub conv_bias: Tensor,     // [out_channels]
     pub dense_weights: Tensor, // [10, flat_dim]
     pub dense_bias: Tensor,    // [10]
     pub target_digit: usize,
@@ -17,11 +17,10 @@ impl MnistCNNModel {
     /// guaranteed to have the highest logit for the fixed synthetic input.
     pub fn synthetic() -> Self {
         // Conv layer: 1 input channel, 1 output channel, 3x3 kernel.
-        let conv_weights = Tensor::new(vec![1, 1, 3, 3], vec![
-            0.0, 0.1, 0.0,
-            0.1, 0.6, 0.1,
-            0.0, 0.1, 0.0,
-        ])
+        let conv_weights = Tensor::new(
+            vec![1, 1, 3, 3],
+            vec![0.0, 0.1, 0.0, 0.1, 0.6, 0.1, 0.0, 0.1, 0.0],
+        )
         .expect("conv_weights shape mismatch");
         let conv_bias = Tensor::new(vec![1], vec![0.0]).expect("conv_bias shape mismatch");
 
@@ -37,11 +36,10 @@ impl MnistCNNModel {
         for i in 0..flat_dim {
             dense_w_data[target_digit * flat_dim + i] = 1.0;
         }
-        let dense_weights = Tensor::new(vec![10, flat_dim], dense_w_data)
-            .expect("dense_weights shape mismatch");
+        let dense_weights =
+            Tensor::new(vec![10, flat_dim], dense_w_data).expect("dense_weights shape mismatch");
 
-        let dense_bias = Tensor::new(vec![10], vec![0.0; 10])
-            .expect("dense_bias shape mismatch");
+        let dense_bias = Tensor::new(vec![10], vec![0.0; 10]).expect("dense_bias shape mismatch");
 
         Self {
             conv_weights,

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-use crate::tensor::{Device, DType, Layout, Tensor};
+use crate::tensor::{DType, Device, Layout, Tensor};
 
 #[derive(Clone, Debug)]
 pub struct Vocab {
@@ -44,12 +44,21 @@ pub fn build_vocab(text: &str) -> Vocab {
 
 pub fn encode_text(text: &str, vocab: &Vocab) -> Vec<usize> {
     text.chars()
-        .map(|ch| *vocab.stoi.get(&ch).expect("character missing from vocabulary"))
+        .map(|ch| {
+            *vocab
+                .stoi
+                .get(&ch)
+                .expect("character missing from vocabulary")
+        })
         .collect()
 }
 
 /// Create autoregressive batches (inputs, targets) with shape [batch_size, seq_len].
-pub fn make_batches(tokens: Vec<usize>, seq_len: usize, batch_size: usize) -> Vec<(Tensor, Tensor)> {
+pub fn make_batches(
+    tokens: Vec<usize>,
+    seq_len: usize,
+    batch_size: usize,
+) -> Vec<(Tensor, Tensor)> {
     assert!(seq_len > 0, "seq_len must be positive");
     assert!(batch_size > 0, "batch_size must be positive");
 

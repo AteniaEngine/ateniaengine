@@ -72,13 +72,8 @@ pub fn llama_weight_mapper(
     let hidden_size = config.hidden_size;
 
     for name in param_names {
-        let transforms = compute_transforms_for_name(
-            name,
-            hidden_size,
-            head_dim,
-            kv_groups,
-            attention_scale,
-        );
+        let transforms =
+            compute_transforms_for_name(name, hidden_size, head_dim, kv_groups, attention_scale);
         if !transforms.is_empty() {
             // Cannot fail: every name in `param_names` was just
             // inserted into the mapper above.

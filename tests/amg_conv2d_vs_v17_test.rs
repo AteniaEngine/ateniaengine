@@ -1,4 +1,4 @@
-﻿//! Forward-equivalence tests: AMG's `Conv2D` vs v17's `conv2d_cpu`.
+//! Forward-equivalence tests: AMG's `Conv2D` vs v17's `conv2d_cpu`.
 //!
 //! Both implementations operate on NCHW/OIHW layouts with identical
 //! padding and stride semantics. This suite verifies that, for a
@@ -16,7 +16,7 @@
 use atenia_engine::amg::nodes::Conv2DConfig;
 use atenia_engine::amg::ops::conv2d::execute_conv2d as amg_conv2d;
 use atenia_engine::tensor::Tensor as AmgTensor;
-use atenia_engine::v17::cnn::conv2d::{conv2d_cpu as v17_conv2d, AbortFlag, Conv2DParams};
+use atenia_engine::v17::cnn::conv2d::{AbortFlag, Conv2DParams, conv2d_cpu as v17_conv2d};
 use atenia_engine::v17::compute::tensor::Tensor as V17Tensor;
 
 const TOLERANCE: f32 = 1e-5;
@@ -72,8 +72,8 @@ fn conv2d_no_bias_no_padding_stride1() {
         padding: (0, 0),
     };
     let flag = AbortFlag::new();
-    let v17_out = v17_conv2d(&v17_input, &v17_weight, None, &v17_params, &flag)
-        .expect("v17 conv2d failed");
+    let v17_out =
+        v17_conv2d(&v17_input, &v17_weight, None, &v17_params, &flag).expect("v17 conv2d failed");
 
     assert_eq!(amg_out.shape, v17_out.shape, "shape mismatch");
     assert_close(
@@ -107,14 +107,8 @@ fn conv2d_with_bias() {
         padding: (0, 0),
     };
     let flag = AbortFlag::new();
-    let v17_out = v17_conv2d(
-        &v17_input,
-        &v17_weight,
-        Some(&v17_bias),
-        &v17_params,
-        &flag,
-    )
-    .expect("v17 conv2d failed");
+    let v17_out = v17_conv2d(&v17_input, &v17_weight, Some(&v17_bias), &v17_params, &flag)
+        .expect("v17 conv2d failed");
 
     assert_eq!(amg_out.shape, v17_out.shape, "shape mismatch");
     assert_close(amg_out.as_cpu_slice(), &v17_out.data, "conv2d_with_bias");
@@ -144,8 +138,8 @@ fn conv2d_with_padding() {
         padding: (1, 1),
     };
     let flag = AbortFlag::new();
-    let v17_out = v17_conv2d(&v17_input, &v17_weight, None, &v17_params, &flag)
-        .expect("v17 conv2d failed");
+    let v17_out =
+        v17_conv2d(&v17_input, &v17_weight, None, &v17_params, &flag).expect("v17 conv2d failed");
 
     assert_eq!(amg_out.shape, v17_out.shape, "shape mismatch");
     assert_close(amg_out.as_cpu_slice(), &v17_out.data, "conv2d_with_padding");
@@ -171,8 +165,8 @@ fn conv2d_stride_2() {
         padding: (0, 0),
     };
     let flag = AbortFlag::new();
-    let v17_out = v17_conv2d(&v17_input, &v17_weight, None, &v17_params, &flag)
-        .expect("v17 conv2d failed");
+    let v17_out =
+        v17_conv2d(&v17_input, &v17_weight, None, &v17_params, &flag).expect("v17 conv2d failed");
 
     assert_eq!(amg_out.shape, v17_out.shape, "shape mismatch");
     assert_close(amg_out.as_cpu_slice(), &v17_out.data, "conv2d_stride_2");

@@ -3,7 +3,11 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub enum FusedOp {
-    LinearSilu { x: usize, w: usize, b: Option<usize> },
+    LinearSilu {
+        x: usize,
+        w: usize,
+        b: Option<usize>,
+    },
     FusedQKV {
         x: usize,
         wq: usize,
@@ -48,7 +52,8 @@ impl FusionEngine {
         // with the experimental Self-Attention flow; in 4.19 we want both
         // features enabled.
         let disable_qkv = mode.starts_with("4.17") || mode.starts_with("4.18");
-        let enable_sa = mode.starts_with("4.17") || mode.starts_with("4.18") || mode.starts_with("4.19");
+        let enable_sa =
+            mode.starts_with("4.17") || mode.starts_with("4.18") || mode.starts_with("4.19");
 
         // --- APX 4.13: Linear → SiLU ---
         for (id, node) in nodes.iter().enumerate() {
@@ -112,9 +117,21 @@ impl FusionEngine {
             let wk = k_.inputs[1];
             let wv = v_.inputs[1];
 
-            let bq = if q.inputs.len() == 3 { Some(q.inputs[2]) } else { None };
-            let bk = if k_.inputs.len() == 3 { Some(k_.inputs[2]) } else { None };
-            let bv = if v_.inputs.len() == 3 { Some(v_.inputs[2]) } else { None };
+            let bq = if q.inputs.len() == 3 {
+                Some(q.inputs[2])
+            } else {
+                None
+            };
+            let bk = if k_.inputs.len() == 3 {
+                Some(k_.inputs[2])
+            } else {
+                None
+            };
+            let bv = if v_.inputs.len() == 3 {
+                Some(v_.inputs[2])
+            } else {
+                None
+            };
 
             // Standard QKV fusion (4.14 / 4.16 / 4.19) remains active when we
             // are not in the experimental 4.17/4.18 modes.

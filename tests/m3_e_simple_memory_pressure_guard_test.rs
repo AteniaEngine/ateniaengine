@@ -21,7 +21,7 @@ use v16::guards::execution_guard::ExecutionGuard;
 use v16::guards::guard_action::GuardAction;
 use v16::guards::guard_conditions::GuardConditions;
 use v16::guards::simple_memory_pressure_guard::{
-    SimpleMemoryPressureGuard, DEGRADE_MEMORY_PRESSURE_THRESHOLD,
+    DEGRADE_MEMORY_PRESSURE_THRESHOLD, SimpleMemoryPressureGuard,
 };
 
 fn make_permissive_contract() -> ExecutionContract {

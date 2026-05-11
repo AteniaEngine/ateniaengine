@@ -1,22 +1,17 @@
 use std::os::raw::c_int;
 
-pub mod matmul;
-pub mod linear;
 pub mod batch_matmul;
-pub mod fused_linear_silu;
 pub mod bf16_to_f32;
-pub mod int8_to_bf16;
 pub mod disk_prefetch;
+pub mod fused_linear_silu;
+pub mod int8_to_bf16;
+pub mod linear;
+pub mod matmul;
 pub(crate) mod pool_helpers;
 
 #[link(name = "atenia_kernels", kind = "static")]
 unsafe extern "C" {
-    pub fn vec_add_cuda(
-        a: *const f32,
-        b: *const f32,
-        out: *mut f32,
-        n: c_int,
-    );
+    pub fn vec_add_cuda(a: *const f32, b: *const f32, out: *mut f32, n: c_int);
 }
 
 /// **M6 step 1** — cached CUDA-driver probe.
@@ -46,9 +41,7 @@ unsafe extern "C" {
 ///     driver.
 pub fn cuda_available() -> bool {
     static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| {
-        std::process::Command::new("nvidia-smi").output().is_ok()
-    })
+    *CACHED.get_or_init(|| std::process::Command::new("nvidia-smi").output().is_ok())
 }
 
 #[cfg(test)]
@@ -75,9 +68,7 @@ mod cuda_available_tests {
     /// spawn so the test is self-validating on either kind of host.
     #[test]
     fn cuda_available_matches_direct_probe() {
-        let direct = std::process::Command::new("nvidia-smi")
-            .output()
-            .is_ok();
+        let direct = std::process::Command::new("nvidia-smi").output().is_ok();
         assert_eq!(
             cuda_available(),
             direct,
@@ -93,12 +84,7 @@ pub fn vec_add_gpu(a: &[f32], b: &[f32]) -> Vec<f32> {
     let mut out = vec![0.0f32; a.len()];
 
     unsafe {
-        vec_add_cuda(
-            a.as_ptr(),
-            b.as_ptr(),
-            out.as_mut_ptr(),
-            n,
-        );
+        vec_add_cuda(a.as_ptr(), b.as_ptr(), out.as_mut_ptr(), n);
     }
 
     out
@@ -109,9 +95,7 @@ pub fn vec_add_gpu(a: &[f32], b: &[f32]) -> Vec<f32> {
 /// callers must guard the invocation with a prior check that the
 /// storage variant is `Cuda` (typically an `all_cuda` match at the op
 /// entry point).
-pub(crate) fn cuda_device_ptr(
-    storage: &crate::tensor::TensorStorage,
-) -> *const f32 {
+pub(crate) fn cuda_device_ptr(storage: &crate::tensor::TensorStorage) -> *const f32 {
     match storage {
         crate::tensor::TensorStorage::Cuda(g) => g.device_ptr() as *const f32,
         crate::tensor::TensorStorage::Cpu(_) => {
@@ -174,9 +158,7 @@ pub(crate) fn cuda_device_ptr(
 }
 
 /// Mutable counterpart of [`cuda_device_ptr`]. Same precondition.
-pub(crate) fn cuda_device_ptr_mut(
-    storage: &crate::tensor::TensorStorage,
-) -> *mut f32 {
+pub(crate) fn cuda_device_ptr_mut(storage: &crate::tensor::TensorStorage) -> *mut f32 {
     match storage {
         crate::tensor::TensorStorage::Cuda(g) => g.device_ptr() as *mut f32,
         crate::tensor::TensorStorage::Cpu(_) => {

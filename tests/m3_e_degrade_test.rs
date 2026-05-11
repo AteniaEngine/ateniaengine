@@ -16,9 +16,7 @@ use atenia_engine::gpu::gpu_engine;
 use atenia_engine::tensor::{DType, Device, Layout, Tensor, TensorStorage};
 use atenia_engine::v15::policy::types::DecisionBias;
 use atenia_engine::v16::contract::constraints::{Constraints, RuntimeState};
-use atenia_engine::v16::contract::execution_contract::{
-    ExecutionBackend, ExecutionContract,
-};
+use atenia_engine::v16::contract::execution_contract::{ExecutionBackend, ExecutionContract};
 use atenia_engine::v16::guards::execution_guard::ExecutionGuard;
 use atenia_engine::v16::guards::guard_action::GuardAction;
 use atenia_engine::v16::guards::guard_conditions::GuardConditions;
@@ -37,13 +35,7 @@ fn require_gpu(test_name: &str) -> bool {
 }
 
 fn tensor_from(shape: Vec<usize>, data: Vec<f32>) -> Tensor {
-    let mut t = Tensor::with_layout(
-        shape,
-        0.0,
-        Device::CPU,
-        Layout::Contiguous,
-        DType::F32,
-    );
+    let mut t = Tensor::with_layout(shape, 0.0, Device::CPU, Layout::Contiguous, DType::F32);
     t.as_cpu_slice_mut().copy_from_slice(&data);
     t
 }
@@ -259,11 +251,7 @@ impl ExecutionGuard for DegradeIfFailuresGuard {
     fn name(&self) -> &'static str {
         "degrade_if_failures_guard_m3_e_3_fixture"
     }
-    fn evaluate(
-        &self,
-        _contract: &ExecutionContract,
-        conditions: &GuardConditions,
-    ) -> GuardAction {
+    fn evaluate(&self, _contract: &ExecutionContract, conditions: &GuardConditions) -> GuardAction {
         if conditions.recent_failures > 0 {
             GuardAction::Degrade
         } else {
@@ -310,13 +298,7 @@ fn build_linear_param_graph() -> (atenia_engine::amg::graph::Graph, usize, usize
     let mut gb = GraphBuilder::new();
     let x_id = gb.input();
 
-    let mut w = Tensor::with_layout(
-        vec![2, 1],
-        0.0,
-        Device::CPU,
-        Layout::Contiguous,
-        DType::F32,
-    );
+    let mut w = Tensor::with_layout(vec![2, 1], 0.0, Device::CPU, Layout::Contiguous, DType::F32);
     w.set_cpu_data(vec![3.0, 4.0]);
     let w_id = gb.parameter(w);
 
@@ -363,7 +345,9 @@ fn test_degrade_triggers_migration_and_continues() {
             .output
             .as_mut()
             .expect("parameter output present");
-        w_tensor.ensure_gpu().expect("ensure_gpu on parameter must succeed");
+        w_tensor
+            .ensure_gpu()
+            .expect("ensure_gpu on parameter must succeed");
         assert!(
             matches!(w_tensor.storage, TensorStorage::Cuda(_)),
             "setup: parameter should be Cuda after ensure_gpu"
@@ -454,7 +438,9 @@ fn test_no_degrade_without_failure_signal_preserves_cuda_parameter() {
             .output
             .as_mut()
             .expect("parameter output present");
-        w_tensor.ensure_gpu().expect("ensure_gpu on parameter must succeed");
+        w_tensor
+            .ensure_gpu()
+            .expect("ensure_gpu on parameter must succeed");
         assert!(
             matches!(w_tensor.storage, TensorStorage::Cuda(_)),
             "setup: parameter should be Cuda after ensure_gpu"
@@ -500,4 +486,3 @@ fn test_no_degrade_without_failure_signal_preserves_cuda_parameter() {
         "parameter must remain Cuda when guard emits Continue (no migration)"
     );
 }
-

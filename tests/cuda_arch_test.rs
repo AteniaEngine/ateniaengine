@@ -13,9 +13,9 @@ fn test_arch_detection() {
     };
 
     assert!(
-        arch == "compute_89" ||
-        arch == "compute_80" ||
-        arch == "compute_75" ||
-        arch == "compute_61"
+        arch == "compute_89"
+            || arch == "compute_80"
+            || arch == "compute_75"
+            || arch == "compute_61"
     );
 }

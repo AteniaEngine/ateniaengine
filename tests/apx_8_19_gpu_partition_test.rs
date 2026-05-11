@@ -1,5 +1,5 @@
-﻿use atenia_engine::apx8::gpu_partition::*;
-use atenia_engine::tensor::{Tensor, Device, DType};
+use atenia_engine::apx8::gpu_partition::*;
+use atenia_engine::tensor::{DType, Device, Tensor};
 
 #[test]
 fn apx_8_19_small_vector_no_split() {

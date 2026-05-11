@@ -6,8 +6,8 @@ mod v15;
 use v15::policy::builtin::latency_first::LatencyFirstPolicy;
 use v15::policy::builtin::stability_first::StabilityFirstPolicy;
 use v15::policy::builtin::throughput_first::ThroughputFirstPolicy;
-use v15::policy::evidence::snapshot::PolicyEvidenceSnapshot;
 use v15::policy::evidence::signals::{PolicySignal, PolicySignalKind};
+use v15::policy::evidence::snapshot::PolicyEvidenceSnapshot;
 use v15::policy::manager::policy_manager::PolicyManager;
 use v15::policy::preferences::user_preferences::UserPreferences;
 use v15::policy::registry::PolicyRegistry;
@@ -107,8 +107,10 @@ fn simulation_is_deterministic() {
 
     let names = ["stability_first", "throughput_first", "latency_first"];
 
-    let r1 = PolicySimulator::simulate_for_policies(&registry, &names, &input, &prefs, Some(&evidence));
-    let r2 = PolicySimulator::simulate_for_policies(&registry, &names, &input, &prefs, Some(&evidence));
+    let r1 =
+        PolicySimulator::simulate_for_policies(&registry, &names, &input, &prefs, Some(&evidence));
+    let r2 =
+        PolicySimulator::simulate_for_policies(&registry, &names, &input, &prefs, Some(&evidence));
 
     assert_eq!(r1, r2);
 }
@@ -122,7 +124,8 @@ fn same_input_produces_comparable_outputs() {
 
     let names = ["stability_first", "throughput_first", "latency_first"];
 
-    let results = PolicySimulator::simulate_for_policies(&registry, &names, &input, &prefs, Some(&evidence));
+    let results =
+        PolicySimulator::simulate_for_policies(&registry, &names, &input, &prefs, Some(&evidence));
 
     // All simulations must have used the same evidence snapshot; this is
     // reflected by equal considered_signals in their explanations.
@@ -147,12 +150,20 @@ fn simulation_has_no_side_effects() {
 
     let names = ["stability_first", "throughput_first", "latency_first"];
 
-    let _ = PolicySimulator::simulate_for_policies(&registry, &names, &input, &prefs, Some(&evidence));
+    let _ =
+        PolicySimulator::simulate_for_policies(&registry, &names, &input, &prefs, Some(&evidence));
 
     // Registry is not mutated in a way that changes its observable behavior
     // for the same set of policies.
-    let r_before = PolicySimulator::simulate_for_policies(&registry_before, &names, &input, &prefs, Some(&evidence));
-    let r_after = PolicySimulator::simulate_for_policies(&registry, &names, &input, &prefs, Some(&evidence));
+    let r_before = PolicySimulator::simulate_for_policies(
+        &registry_before,
+        &names,
+        &input,
+        &prefs,
+        Some(&evidence),
+    );
+    let r_after =
+        PolicySimulator::simulate_for_policies(&registry, &names, &input, &prefs, Some(&evidence));
     assert_eq!(r_before, r_after);
 
     assert_eq!(prefs, prefs_before);

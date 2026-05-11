@@ -1,7 +1,5 @@
 use atenia_engine::v13::hybrid_memory::HybridMemoryManager;
-use atenia_engine::v13::memory_types::{
-    MemoryTier, MoveError,
-};
+use atenia_engine::v13::memory_types::{MemoryTier, MoveError};
 use atenia_engine::v13::ssd_cache::SsdCache;
 
 use std::fs;
@@ -214,7 +212,10 @@ fn length_mismatch_is_error() {
         Err(MoveError::Unsupported(msg)) => {
             assert!(msg.contains("Byte length mismatch"));
         }
-        other => panic!("Expected Unsupported error due to length mismatch, got {:?}", other),
+        other => panic!(
+            "Expected Unsupported error due to length mismatch, got {:?}",
+            other
+        ),
     }
 
     let _ = fs::remove_dir_all(cache_dir());

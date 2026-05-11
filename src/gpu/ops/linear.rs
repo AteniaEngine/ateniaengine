@@ -1,6 +1,6 @@
 use crate::gpu::{
-    ops::{matmul::MatMulOp, vec_add::VecAddOp},
     memory::GpuPtr,
+    ops::{matmul::MatMulOp, vec_add::VecAddOp},
 };
 
 pub struct LinearOp;
@@ -10,15 +10,7 @@ impl LinearOp {
     /// x: [M,K]
     /// W: [N,K]
     /// b: [N]
-    pub fn run(
-        x: &GpuPtr,
-        w: &GpuPtr,
-        b: &GpuPtr,
-        out: &GpuPtr,
-        m: usize,
-        k: usize,
-        n: usize,
-    ) {
+    pub fn run(x: &GpuPtr, w: &GpuPtr, b: &GpuPtr, out: &GpuPtr, m: usize, k: usize, n: usize) {
         // 1) MatMul:  [M,K] x [K,N] => [M,N]
         MatMulOp::run(x, w, out, m, k, n);
 

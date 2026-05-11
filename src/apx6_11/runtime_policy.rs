@@ -1,4 +1,4 @@
-use std::sync::{RwLock, OnceLock};
+use std::sync::{OnceLock, RwLock};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FusionRuntimePolicy {

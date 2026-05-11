@@ -1,5 +1,5 @@
-﻿use atenia_engine::tensor::{Device, Tensor};
 use atenia_engine::apx3_5::memory_manager::MemoryManager;
+use atenia_engine::tensor::{Device, Tensor};
 
 #[test]
 fn apx_3_5_cpu_to_cpu_roundtrip_is_identical() {

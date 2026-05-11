@@ -23,13 +23,11 @@
 //!    if the GPU probe errors, memory and CPU fields are still
 //!    populated.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use atenia_engine::amm::cpu_probe::{CpuProbeApi, CpuProbeError, CpuSnapshot};
-use atenia_engine::amm::gpu_util_probe::{
-    GpuUtilProbeApi, GpuUtilProbeError, GpuUtilSnapshot,
-};
+use atenia_engine::amm::gpu_util_probe::{GpuUtilProbeApi, GpuUtilProbeError, GpuUtilSnapshot};
 use atenia_engine::amm::signal_bus::SignalBus;
 
 // --- mock probes --------------------------------------------------
@@ -113,7 +111,9 @@ impl FailingGpuUtilProbe {
 impl GpuUtilProbeApi for FailingGpuUtilProbe {
     fn snapshot(&self) -> Result<GpuUtilSnapshot, GpuUtilProbeError> {
         self.calls.fetch_add(1, Ordering::Relaxed);
-        Err(GpuUtilProbeError::PmonFailed("injected failure".to_string()))
+        Err(GpuUtilProbeError::PmonFailed(
+            "injected failure".to_string(),
+        ))
     }
 }
 

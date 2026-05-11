@@ -1,4 +1,4 @@
-﻿use atenia_engine::tensor::tensor::{Device, DType, Layout, Tensor};
+use atenia_engine::tensor::tensor::{DType, Device, Layout, Tensor};
 
 fn sample_tensor(values: &[f32], shape: Vec<usize>, device: Device, dtype: DType) -> Tensor {
     Tensor::new_cpu_with_layout(shape, values.to_vec(), device, dtype, Layout::Contiguous)

@@ -20,12 +20,16 @@ fn apx_9_5_reordering() {
     let lines: Vec<&str> = out.lines().collect();
 
     // LDG must come first
-    assert!(lines.iter().position(|l| l.contains("LDG"))
-        < lines.iter().position(|l| l.contains("FADD")));
+    assert!(
+        lines.iter().position(|l| l.contains("LDG"))
+            < lines.iter().position(|l| l.contains("FADD"))
+    );
 
     // FADD before STG
-    assert!(lines.iter().position(|l| l.contains("FADD"))
-        < lines.iter().position(|l| l.contains("STG")));
+    assert!(
+        lines.iter().position(|l| l.contains("FADD"))
+            < lines.iter().position(|l| l.contains("STG"))
+    );
 }
 
 #[test]

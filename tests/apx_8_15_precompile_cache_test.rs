@@ -1,6 +1,6 @@
-﻿use atenia_engine::apx8::kernel_generator::KernelIR;
+use atenia_engine::apx8::kernel_generator::KernelIR;
 use atenia_engine::apx8::precompile_cache::PrecompileCache;
-use atenia_engine::tensor::{Tensor, Device, DType};
+use atenia_engine::tensor::{DType, Device, Tensor};
 
 #[test]
 fn apx_8_15_basic_structure() {

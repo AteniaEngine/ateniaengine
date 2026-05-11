@@ -35,7 +35,11 @@ fn snapshot_contains_learned_entry() {
         had_drift: false,
     };
 
-    let ep = atenia_engine::v13::self_trainer::TrainingEpisode { ctx, decision, outcome };
+    let ep = atenia_engine::v13::self_trainer::TrainingEpisode {
+        ctx,
+        decision,
+        outcome,
+    };
     trainer.record_episode(ep);
 
     let snap = trainer.snapshot();
@@ -93,8 +97,16 @@ fn snapshot_is_deterministic_ordered() {
         had_drift: false,
     };
 
-    trainer.record_episode(atenia_engine::v13::self_trainer::TrainingEpisode { ctx: ctx1, decision: decision_gpu, outcome });
-    trainer.record_episode(atenia_engine::v13::self_trainer::TrainingEpisode { ctx: ctx2, decision: decision_cpu, outcome });
+    trainer.record_episode(atenia_engine::v13::self_trainer::TrainingEpisode {
+        ctx: ctx1,
+        decision: decision_gpu,
+        outcome,
+    });
+    trainer.record_episode(atenia_engine::v13::self_trainer::TrainingEpisode {
+        ctx: ctx2,
+        decision: decision_cpu,
+        outcome,
+    });
 
     let snap1 = trainer.snapshot();
     let snap2 = trainer.snapshot();
@@ -149,8 +161,16 @@ fn summary_fields_are_correct() {
         had_drift: true,
     };
 
-    trainer.record_episode(atenia_engine::v13::self_trainer::TrainingEpisode { ctx: ctx_gpu, decision: decision_gpu, outcome: outcome_gpu });
-    trainer.record_episode(atenia_engine::v13::self_trainer::TrainingEpisode { ctx: ctx_cpu, decision: decision_cpu, outcome: outcome_cpu });
+    trainer.record_episode(atenia_engine::v13::self_trainer::TrainingEpisode {
+        ctx: ctx_gpu,
+        decision: decision_gpu,
+        outcome: outcome_gpu,
+    });
+    trainer.record_episode(atenia_engine::v13::self_trainer::TrainingEpisode {
+        ctx: ctx_cpu,
+        decision: decision_cpu,
+        outcome: outcome_cpu,
+    });
 
     let snap = trainer.snapshot();
 

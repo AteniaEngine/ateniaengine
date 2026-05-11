@@ -47,10 +47,7 @@ impl GradStore {
         self.ensure_slot(id);
 
         let slots_guard = self.slots.lock().expect("gradstore poisoned");
-        slots_guard[id]
-            .lock()
-            .expect("slot poisoned")
-            .clone()
+        slots_guard[id].lock().expect("slot poisoned").clone()
     }
 
     /// Overwrite a gradient slot with an explicit vector.

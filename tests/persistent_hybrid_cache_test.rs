@@ -1,9 +1,7 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 
-use atenia_engine::v13::persistent_cache::{
-    CacheError, CacheKind, PersistentHybridCache,
-};
+use atenia_engine::v13::persistent_cache::{CacheError, CacheKind, PersistentHybridCache};
 
 #[test]
 fn put_and_get_roundtrip_tensor() {
@@ -66,9 +64,7 @@ fn get_detects_corruption_by_checksum() {
     }
 
     // Manually corrupt the .bin file by appending a byte.
-    let bin_path = std::path::Path::new(root)
-        .join("tensor")
-        .join("c1.bin");
+    let bin_path = std::path::Path::new(root).join("tensor").join("c1.bin");
 
     let mut file = match OpenOptions::new().append(true).open(&bin_path) {
         Ok(f) => f,

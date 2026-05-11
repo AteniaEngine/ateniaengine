@@ -1,9 +1,9 @@
-﻿use atenia_engine::amg::builder::GraphBuilder;
+use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::amg::graph::Graph;
-use atenia_engine::nn::mini_flux::{build_mini_flux_language_model, MiniFluxConfig};
-use atenia_engine::tensor::{Device, DType, Layout, Tensor};
+use atenia_engine::nn::mini_flux::{MiniFluxConfig, build_mini_flux_language_model};
+use atenia_engine::tensor::{DType, Device, Layout, Tensor};
 
-use atenia_engine::apx6_11::runtime_policy::{set_runtime_policy, FusionRuntimePolicy};
+use atenia_engine::apx6_11::runtime_policy::{FusionRuntimePolicy, set_runtime_policy};
 use atenia_engine::apx9::gpu_execution_planner::GPUExecutionPlanner;
 
 /// Safe Autotuning via Virtual GPU Model (experimental).
@@ -108,10 +108,7 @@ fn apx_safe_autotuning_vgpu_filters_unstable_policies() {
     for (name, ev) in &discarded {
         println!(
             "[APX Safe Autotuning] discarded_policy={} estimated_vram_bytes={} spill_nodes={} reason={}",
-            name,
-            ev.estimated_vram_bytes,
-            ev.spill_nodes,
-            ev.reason
+            name, ev.estimated_vram_bytes, ev.spill_nodes, ev.reason
         );
     }
 
@@ -121,8 +118,7 @@ fn apx_safe_autotuning_vgpu_filters_unstable_policies() {
     for c in &safe {
         println!(
             "[APX Safe Autotuning] applied_policy={} estimated_vram_bytes={}",
-            c.name,
-            required_vram
+            c.name, required_vram
         );
         unsafe {
             std::env::set_var("ATENIA_APX_MODE", "7.12");
@@ -131,7 +127,9 @@ fn apx_safe_autotuning_vgpu_filters_unstable_policies() {
 
         // Must not panic.
         let mut out = graph.execute(vec![input.clone()]);
-        let _ = out.pop().expect("Mini-Flux graph must return a single output");
+        let _ = out
+            .pop()
+            .expect("Mini-Flux graph must return a single output");
         executed_safe_names.push(c.name.clone());
     }
 
@@ -157,7 +155,10 @@ struct VirtualEval {
     reason: String,
 }
 
-fn evaluate_candidate_virtual(plan: &atenia_engine::apx9::gpu_execution_planner::GPUExecutionPlan, c: &PolicyCandidate) -> VirtualEval {
+fn evaluate_candidate_virtual(
+    plan: &atenia_engine::apx9::gpu_execution_planner::GPUExecutionPlan,
+    c: &PolicyCandidate,
+) -> VirtualEval {
     // Virtual criteria:
     // - if the plan indicates spills, we treat it as unstable (would fall back).
     // - if the plan exceeds the candidate VRAM budget, treat it as unstable.
@@ -184,7 +185,10 @@ fn evaluate_candidate_virtual(plan: &atenia_engine::apx9::gpu_execution_planner:
             estimated_vram_bytes: est,
             effective_budget_bytes: c.vram_budget_bytes,
             spill_nodes: spills,
-            reason: format!("estimated_vram_bytes={} exceeds budget_bytes={}", est, c.vram_budget_bytes),
+            reason: format!(
+                "estimated_vram_bytes={} exceeds budget_bytes={}",
+                est, c.vram_budget_bytes
+            ),
         };
     }
 
@@ -202,7 +206,8 @@ fn evaluate_candidate_virtual(plan: &atenia_engine::apx9::gpu_execution_planner:
 fn build_mini_flux_graph(cfg: &MiniFluxConfig) -> Graph {
     let mut gb = GraphBuilder::new();
     let tokens_id = gb.input();
-    let (logits_id, _param_ids, _param_names) = build_mini_flux_language_model(&mut gb, cfg, tokens_id);
+    let (logits_id, _param_ids, _param_names) =
+        build_mini_flux_language_model(&mut gb, cfg, tokens_id);
     gb.output(logits_id);
     gb.build()
 }

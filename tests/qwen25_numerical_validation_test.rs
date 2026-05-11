@@ -16,9 +16,7 @@
 //! ```
 
 use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::nn::llama::{
-    build_llama, llama_weight_mapper, LlamaConfig, LlamaRuntime,
-};
+use atenia_engine::nn::llama::{LlamaConfig, LlamaRuntime, build_llama, llama_weight_mapper};
 use atenia_engine::tensor::Tensor;
 use atenia_engine::v17::loader::safetensors_reader::SafetensorsReader;
 use std::env;
@@ -140,7 +138,9 @@ fn report_stats_f32(label: &str, diffs: &[f32]) {
 #[test]
 #[ignore = "requires QWEN25_SAFETENSORS_PATH + tests/fixtures/qwen25_reference/expected_logits_f64.json"]
 fn qwen25_atenia_matches_f64_ground_truth() {
-    println!("\n=== Qwen 2.5 1.5B Numerical Validation vs F64 Ground Truth (M4.6 B.5 / ADR-004) ===\n");
+    println!(
+        "\n=== Qwen 2.5 1.5B Numerical Validation vs F64 Ground Truth (M4.6 B.5 / ADR-004) ===\n"
+    );
 
     // ---------- Setup + forward ----------
     let path = env::var("QWEN25_SAFETENSORS_PATH")
@@ -275,8 +275,14 @@ fn qwen25_atenia_matches_f64_ground_truth() {
     let max_bf16_vs_f64 = bf16_vs_f64.iter().fold(0.0_f64, |a, &b| a.max(b));
 
     println!("\n=== Verdict ===");
-    println!("Atenia F32   max drift vs F64 truth: {:.6}", max_atenia_vs_f64);
-    println!("PyTorch BF16 max drift vs F64 truth: {:.6}", max_bf16_vs_f64);
+    println!(
+        "Atenia F32   max drift vs F64 truth: {:.6}",
+        max_atenia_vs_f64
+    );
+    println!(
+        "PyTorch BF16 max drift vs F64 truth: {:.6}",
+        max_bf16_vs_f64
+    );
 
     if max_atenia_vs_f64 < max_bf16_vs_f64 {
         let ratio = max_bf16_vs_f64 / max_atenia_vs_f64.max(1e-9);

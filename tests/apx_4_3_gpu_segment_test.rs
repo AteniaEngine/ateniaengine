@@ -5,9 +5,7 @@ fn test_gpu_segment_builds() {
     }
 
     use atenia_engine::{
-        apx4_3::gpu_plan::GpuPlan,
-        amg::builder::GraphBuilder,
-        nn::mini_flux::MiniFluxConfig,
+        amg::builder::GraphBuilder, apx4_3::gpu_plan::GpuPlan, nn::mini_flux::MiniFluxConfig,
     };
 
     let _cfg = MiniFluxConfig {

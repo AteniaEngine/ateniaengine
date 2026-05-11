@@ -1,6 +1,6 @@
-use crate::tensor::Tensor;
 use crate::nn::activations::silu;
 use crate::nn::linear::linear;
+use crate::tensor::Tensor;
 
 /// Fused Linear + Activation operation for CPU.
 /// For now we support SiLU, which already exists as an activation in the graph.

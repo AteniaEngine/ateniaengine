@@ -28,9 +28,7 @@ use atenia_engine::amm::signal_bus::SignalBus;
 use atenia_engine::tensor::{DType, Device, Layout, Tensor};
 use atenia_engine::v15::policy::types::DecisionBias;
 use atenia_engine::v16::contract::constraints::{Constraints, RuntimeState};
-use atenia_engine::v16::contract::execution_contract::{
-    ExecutionBackend, ExecutionContract,
-};
+use atenia_engine::v16::contract::execution_contract::{ExecutionBackend, ExecutionContract};
 use atenia_engine::v16::guards::execution_guard::ExecutionGuard;
 use atenia_engine::v16::guards::guard_action::GuardAction;
 use atenia_engine::v16::guards::guard_conditions::GuardConditions;
@@ -47,13 +45,8 @@ fn build_small_matmul_graph() -> atenia_engine::amg::graph::Graph {
     let mut gb = GraphBuilder::new();
     let input_id = gb.input();
 
-    let mut weight = Tensor::with_layout(
-        vec![2, 2],
-        0.0,
-        Device::CPU,
-        Layout::Contiguous,
-        DType::F32,
-    );
+    let mut weight =
+        Tensor::with_layout(vec![2, 2], 0.0, Device::CPU, Layout::Contiguous, DType::F32);
     weight.set_cpu_data(vec![1.0, 0.0, 0.0, 1.0]); // identity
     let w_id = gb.parameter(weight);
 
@@ -63,13 +56,7 @@ fn build_small_matmul_graph() -> atenia_engine::amg::graph::Graph {
 }
 
 fn make_input_tensor() -> Tensor {
-    let mut t = Tensor::with_layout(
-        vec![2, 2],
-        0.0,
-        Device::CPU,
-        Layout::Contiguous,
-        DType::F32,
-    );
+    let mut t = Tensor::with_layout(vec![2, 2], 0.0, Device::CPU, Layout::Contiguous, DType::F32);
     t.set_cpu_data(vec![1.0, 2.0, 3.0, 4.0]);
     t
 }
@@ -112,11 +99,7 @@ impl ExecutionGuard for FailureCountAbortGuard {
     fn name(&self) -> &'static str {
         "failure_count_abort_guard"
     }
-    fn evaluate(
-        &self,
-        _contract: &ExecutionContract,
-        conditions: &GuardConditions,
-    ) -> GuardAction {
+    fn evaluate(&self, _contract: &ExecutionContract, conditions: &GuardConditions) -> GuardAction {
         if conditions.recent_failures > 0 {
             GuardAction::Abort
         } else {
@@ -132,11 +115,7 @@ impl ExecutionGuard for LatencySpikeAbortGuard {
     fn name(&self) -> &'static str {
         "latency_spike_abort_guard"
     }
-    fn evaluate(
-        &self,
-        _contract: &ExecutionContract,
-        conditions: &GuardConditions,
-    ) -> GuardAction {
+    fn evaluate(&self, _contract: &ExecutionContract, conditions: &GuardConditions) -> GuardAction {
         if conditions.latency_spike {
             GuardAction::Abort
         } else {
@@ -170,7 +149,10 @@ fn abort_when_failure_counter_triggers_guard() {
 
     // Assert the abort variant and extract for field inspection.
     match result {
-        Err(ExecutionAbortReason::GuardAborted { at_node, conditions }) => {
+        Err(ExecutionAbortReason::GuardAborted {
+            at_node,
+            conditions,
+        }) => {
             // Recent failures must reflect what we recorded.
             assert_eq!(
                 conditions.recent_failures, 3,
@@ -190,7 +172,9 @@ fn abort_when_failure_counter_triggers_guard() {
     }
 
     // last_abort must match what execute_checked returned.
-    let last = graph.last_abort().expect("last_abort must be populated after abort");
+    let last = graph
+        .last_abort()
+        .expect("last_abort must be populated after abort");
     match last {
         ExecutionAbortReason::GuardAborted { conditions, .. } => {
             assert_eq!(conditions.recent_failures, 3);
@@ -227,7 +211,10 @@ fn abort_when_latency_monitor_triggers_guard() {
     let result = graph.execute_checked(vec![make_input_tensor()]);
 
     match result {
-        Err(ExecutionAbortReason::GuardAborted { at_node, conditions }) => {
+        Err(ExecutionAbortReason::GuardAborted {
+            at_node,
+            conditions,
+        }) => {
             assert!(
                 conditions.latency_spike,
                 "expected latency_spike=true in conditions, got false"

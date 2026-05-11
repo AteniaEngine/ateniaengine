@@ -35,9 +35,7 @@ impl BackwardTape {
     }
 
     pub fn get(&self, node_id: usize) -> Option<&BackOp> {
-        self.index
-            .get(&node_id)
-            .and_then(|&idx| self.ops.get(idx))
+        self.index.get(&node_id).and_then(|&idx| self.ops.get(idx))
     }
 
     pub fn has_op(&self, node_id: usize) -> bool {

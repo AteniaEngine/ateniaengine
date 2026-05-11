@@ -14,7 +14,9 @@ impl SassTranslator {
         // Safety: validate the simulated PTX first.
         let validation = PtxValidator::validate(ptx);
         if !validation.ok {
-            return SassOutput { sass: "// invalid PTX".into() };
+            return SassOutput {
+                sass: "// invalid PTX".into(),
+            };
         }
 
         let mut out = String::new();

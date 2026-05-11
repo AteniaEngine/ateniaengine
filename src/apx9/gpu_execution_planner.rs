@@ -3,17 +3,17 @@
 
 use crate::amg::graph::Graph;
 use crate::amg::nodes::NodeType;
-use crate::tensor::Tensor;
 use crate::apx8::device_planner::plan_for_ir;
 use crate::apx8::gpu_partition::suggest_partition;
 use crate::apx9::memory_planner::{GPUMemoryPlanner, MemoryPlan};
+use crate::tensor::Tensor;
 
 #[derive(Debug, Clone)]
 pub struct GPUPlanStep {
     pub node_id: usize,
-    pub device: String,       // "cpu" / "cuda0" / "hip0" / etc
+    pub device: String,                  // "cpu" / "cuda0" / "hip0" / etc
     pub partitions: Vec<(usize, usize)>, // simulated partitions (start,end)
-    pub kernel_name: String,  // mock kernel name (from IR/Codegen)
+    pub kernel_name: String,             // mock kernel name (from IR/Codegen)
     pub estimated_time_ms: f32,
     pub spill_to_cpu: bool,
 }
@@ -38,7 +38,11 @@ impl GPUExecutionPlanner {
     /// Does not modify the graph nor touch real tensors.
     pub fn build_plan(&self, graph: &Graph) -> GPUExecutionPlan {
         if graph.nodes.is_empty() {
-            return GPUExecutionPlan { steps: Vec::new(), total_vram_needed: 0, spills: Vec::new() };
+            return GPUExecutionPlan {
+                steps: Vec::new(),
+                total_vram_needed: 0,
+                spills: Vec::new(),
+            };
         }
 
         // 1) Symbolic memory plan (GMPv0)
@@ -137,7 +141,9 @@ impl GPUExecutionPlanner {
 
             // Synthetic kernel name based on node type.
             let kernel_name = match node.node_type {
-                NodeType::MatMul | NodeType::BatchMatMul | NodeType::Linear => "kernel_matmul_v0".to_string(),
+                NodeType::MatMul | NodeType::BatchMatMul | NodeType::Linear => {
+                    "kernel_matmul_v0".to_string()
+                }
                 NodeType::Add | NodeType::BroadcastAdd => "kernel_add_v0".to_string(),
                 NodeType::RmsNorm { .. } => "kernel_rmsnorm_v0".to_string(),
                 NodeType::SiLU | NodeType::Activation(_) => "kernel_activation_v0".to_string(),

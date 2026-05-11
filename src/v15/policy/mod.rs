@@ -1,9 +1,9 @@
-pub mod policy;
-pub mod types;
-pub mod registry;
 pub mod builtin;
 pub mod evidence;
-pub mod preferences;
-pub mod manager;
 pub mod explain;
+pub mod manager;
+pub mod policy;
+pub mod preferences;
+pub mod registry;
 pub mod simulation;
+pub mod types;

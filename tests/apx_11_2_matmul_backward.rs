@@ -1,5 +1,5 @@
-use atenia_engine::tensor::{Tensor, Device, DType};
 use atenia_engine::nn::linear::matmul;
+use atenia_engine::tensor::{DType, Device, Tensor};
 
 #[test]
 fn test_matmul_backward_gpu_ir() {

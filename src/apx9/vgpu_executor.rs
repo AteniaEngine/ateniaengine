@@ -6,7 +6,7 @@ pub struct VirtualKernel {
     pub ptx: String,
     pub threads_per_block: usize,
     pub blocks: usize,
-    pub args: Vec<Tensor>,   // CPU-side inputs/outputs
+    pub args: Vec<Tensor>, // CPU-side inputs/outputs
 }
 
 /// Virtual GPU executor.

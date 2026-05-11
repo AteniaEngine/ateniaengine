@@ -50,16 +50,16 @@
 
 use std::time::Instant;
 
-use atenia_engine::nn::llama::{
-    GenerationPipeline, LlamaRuntime, build_llama_with_store,
-};
 use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::amg::kv_cache::KvCacheBuildSpec;
+use atenia_engine::nn::llama::{GenerationPipeline, LlamaRuntime, build_llama_with_store};
 use atenia_engine::tensor::Tensor;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let model_dir = args.get(1).cloned()
+    let model_dir = args
+        .get(1)
+        .cloned()
         .or_else(|| std::env::var("ATENIA_BENCH_MODEL_DIR").ok())
         .unwrap_or_else(|| "models/tinyllama-1.1b".to_string());
 
@@ -80,9 +80,13 @@ fn main() {
     let resident_gib = pipe.store.resident_bytes() as f64 / (1024.0_f64.powi(3));
     eprintln!(
         "loaded in {:.1}s ({} parameters, {:.2} GiB resident)",
-        load_secs, pipe.store.len(), resident_gib);
+        load_secs,
+        pipe.store.len(),
+        resident_gib
+    );
     eprintln!();
-    eprintln!("config: {} layers, {} attention heads, {} kv heads, hidden {}, head_dim {}, intermediate {}",
+    eprintln!(
+        "config: {} layers, {} attention heads, {} kv heads, hidden {}, head_dim {}, intermediate {}",
         pipe.config.num_hidden_layers,
         pipe.config.num_attention_heads,
         pipe.config.num_key_value_heads,
@@ -108,8 +112,14 @@ fn main() {
     let runtime = LlamaRuntime { batch: 1, seq: 1 };
     let spec = KvCacheBuildSpec { cached_len };
     let h = build_llama_with_store(
-        &mut gb, &pipe.config, &runtime, token_in, &pipe.store, Some(&spec),
-    ).expect("decode build must succeed");
+        &mut gb,
+        &pipe.config,
+        &runtime,
+        token_in,
+        &pipe.store,
+        Some(&spec),
+    )
+    .expect("decode build must succeed");
     let _ = gb.output(h.logits_id);
     let mut g = gb.build();
     let build_ms = build_start.elapsed().as_secs_f64() * 1000.0;
@@ -119,34 +129,47 @@ fn main() {
     //    layer × 2). Should be near zero — it's a single
     //    tensor swap per slot, no math.
     let kv_handles = h.kv_handles.as_ref().expect("kv_handles must be Some");
-    let cache_shape = vec![1, pipe.config.num_attention_heads, cached_len,
-                           pipe.config.effective_head_dim()];
+    let cache_shape = vec![
+        1,
+        pipe.config.num_attention_heads,
+        cached_len,
+        pipe.config.effective_head_dim(),
+    ];
     let cache_numel: usize = cache_shape.iter().product();
     let zero_cache = Tensor::new_cpu(cache_shape.clone(), vec![0.0_f32; cache_numel]);
     let patch_start = Instant::now();
     for layer in &kv_handles.per_layer {
-        g.overwrite_parameter(layer.cache_k_param_id, zero_cache.clone()).unwrap();
-        g.overwrite_parameter(layer.cache_v_param_id, zero_cache.clone()).unwrap();
+        g.overwrite_parameter(layer.cache_k_param_id, zero_cache.clone())
+            .unwrap();
+        g.overwrite_parameter(layer.cache_v_param_id, zero_cache.clone())
+            .unwrap();
     }
     let patch_ms = patch_start.elapsed().as_secs_f64() * 1000.0;
-    eprintln!("cache slot patches:    {patch_ms:>10.2} ms ({} slots = {} layers × 2)",
+    eprintln!(
+        "cache slot patches:    {patch_ms:>10.2} ms ({} slots = {} layers × 2)",
         kv_handles.per_layer.len() * 2,
-        kv_handles.per_layer.len());
+        kv_handles.per_layer.len()
+    );
 
     // 3. Forward execute cost (pure math: Q/K/V/O projections,
     //    Concat with cache, attention BMM, softmax, V·attn,
     //    SwiGLU, residual + lm_head).
     let token_input = Tensor::new_cpu(vec![1, 1], vec![0.0_f32]);
     let fwd_start = Instant::now();
-    let logits = g.execute(vec![token_input]).into_iter().next()
+    let logits = g
+        .execute(vec![token_input])
+        .into_iter()
+        .next()
         .expect("forward output");
     let fwd_ms = fwd_start.elapsed().as_secs_f64() * 1000.0;
     eprintln!("forward execute:       {fwd_ms:>10.2} ms");
     eprintln!();
 
     let total_ms = build_ms + patch_ms + fwd_ms;
-    eprintln!("--- step total:        {total_ms:>10.2} ms ({:.2} tok/s)",
-        1000.0 / total_ms);
+    eprintln!(
+        "--- step total:        {total_ms:>10.2} ms ({:.2} tok/s)",
+        1000.0 / total_ms
+    );
     eprintln!();
 
     // ---- Component-wise estimates (informational) ----
@@ -168,15 +191,23 @@ fn main() {
     let total_flops = layer_flops * n_layers;
 
     eprintln!("per layer:");
-    eprintln!("  Q+K+V+O matmuls:     {:>12} FLOPs ({} × 2·hidden² at M=1)",
-        qkvo_flops, 4);
-    eprintln!("  FFN gate+up+down:    {:>12} FLOPs ({} × 2·hidden·intermediate at M=1)",
-        ffn_flops, 3);
-    eprintln!("  attention scores+out:{:>12} FLOPs (2× M=1 × hidden × cached_len)",
-        attn_flops);
+    eprintln!(
+        "  Q+K+V+O matmuls:     {:>12} FLOPs ({} × 2·hidden² at M=1)",
+        qkvo_flops, 4
+    );
+    eprintln!(
+        "  FFN gate+up+down:    {:>12} FLOPs ({} × 2·hidden·intermediate at M=1)",
+        ffn_flops, 3
+    );
+    eprintln!(
+        "  attention scores+out:{:>12} FLOPs (2× M=1 × hidden × cached_len)",
+        attn_flops
+    );
     eprintln!("total layer:           {:>12} FLOPs", layer_flops);
-    eprintln!("total step ({} layers): {:>12} FLOPs",
-        n_layers, total_flops);
+    eprintln!(
+        "total step ({} layers): {:>12} FLOPs",
+        n_layers, total_flops
+    );
     eprintln!();
     let gflops = total_flops as f64 / (fwd_ms / 1000.0) / 1e9;
     eprintln!("=> measured throughput: {gflops:.2} GFLOPS over the forward execute");

@@ -17,5 +17,8 @@ fn forward_shapes_are_correct() {
     let tokens = sample_tokens(&cfg, 0);
     let logits = run_logits_forward(&cfg, tokens);
 
-    assert_eq!(logits.shape, vec![cfg.batch_size, cfg.seq_len, cfg.vocab_size]);
+    assert_eq!(
+        logits.shape,
+        vec![cfg.batch_size, cfg.seq_len, cfg.vocab_size]
+    );
 }

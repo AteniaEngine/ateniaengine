@@ -15,10 +15,10 @@
 use std::collections::HashMap;
 
 use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::nn::mini_flux::{build_mini_flux, MiniFluxConfig};
+use atenia_engine::nn::mini_flux::{MiniFluxConfig, build_mini_flux};
 use atenia_engine::v17::loader::safetensors_reader::SafetensorsReader;
-use safetensors::tensor::TensorView;
 use safetensors::Dtype as StDtype;
+use safetensors::tensor::TensorView;
 
 fn tiny_cfg() -> MiniFluxConfig {
     // Smallest config that exercises every code path in
@@ -171,14 +171,17 @@ fn roundtrip_bit_exact_via_safetensors_writer_and_reader() {
     );
 
     for (name, shape, values_original) in &originals {
-        let entry = reader.get(name).unwrap_or_else(|| {
-            panic!("tensor '{}' missing after roundtrip", name)
-        });
+        let entry = reader
+            .get(name)
+            .unwrap_or_else(|| panic!("tensor '{}' missing after roundtrip", name));
 
         assert_eq!(
-            entry.shape, shape.as_slice(),
+            entry.shape,
+            shape.as_slice(),
             "shape mismatch for tensor '{}': got {:?}, expected {:?}",
-            name, entry.shape, shape
+            name,
+            entry.shape,
+            shape
         );
 
         let values_roundtrip = entry
@@ -192,7 +195,11 @@ fn roundtrip_bit_exact_via_safetensors_writer_and_reader() {
             name
         );
 
-        for (i, (orig, got)) in values_original.iter().zip(values_roundtrip.iter()).enumerate() {
+        for (i, (orig, got)) in values_original
+            .iter()
+            .zip(values_roundtrip.iter())
+            .enumerate()
+        {
             assert_eq!(
                 orig.to_bits(),
                 got.to_bits(),

@@ -1,5 +1,5 @@
-use atenia_engine::{VGpuMemory, VGpuRunner};
 use atenia_engine::apx9::gpu_ir::*;
+use atenia_engine::{VGpuMemory, VGpuRunner};
 
 #[test]
 fn apx_9_14_executes_add_correctly() {
@@ -7,10 +7,23 @@ fn apx_9_14_executes_add_correctly() {
         name: "vk_add".into(),
         threads: 4,
         ops: vec![
-            GpuOp::Load { dst: "a".into(), src: "in".into() },
-            GpuOp::Load { dst: "b".into(), src: "in2".into() },
-            GpuOp::Add { dst: "c".into(), a: "a".into(), b: "b".into() },
-            GpuOp::Store { dst: "out".into(), src: "c".into() },
+            GpuOp::Load {
+                dst: "a".into(),
+                src: "in".into(),
+            },
+            GpuOp::Load {
+                dst: "b".into(),
+                src: "in2".into(),
+            },
+            GpuOp::Add {
+                dst: "c".into(),
+                a: "a".into(),
+                b: "b".into(),
+            },
+            GpuOp::Store {
+                dst: "out".into(),
+                src: "c".into(),
+            },
         ],
     };
 
@@ -30,7 +43,11 @@ fn apx_9_14_executes_add_correctly() {
 
 #[test]
 fn apx_9_14_structure_is_valid() {
-    let ir = GpuKernelIR { name: "empty".into(), threads: 1, ops: vec![] };
+    let ir = GpuKernelIR {
+        name: "empty".into(),
+        threads: 1,
+        ops: vec![],
+    };
     let mut mem = VGpuMemory::new(32, 16, 2, 4);
 
     VGpuRunner::run_kernel(&ir, &mut mem, 1, 2);

@@ -1,6 +1,6 @@
-﻿use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::amg::graph::{Graph, FusedOutput};
-use atenia_engine::tensor::{Tensor, Device, DType, Layout};
+use atenia_engine::amg::builder::GraphBuilder;
+use atenia_engine::amg::graph::{FusedOutput, Graph};
+use atenia_engine::tensor::{DType, Device, Layout, Tensor};
 
 fn build_qkv_graph() -> Graph {
     let mut gb = GraphBuilder::new();
@@ -35,7 +35,13 @@ fn test_qkv_fusion_forward_matches_naive() {
     let x = Tensor::with_layout(vec![m, k], 1.0, Device::CPU, Layout::Contiguous, DType::F32);
     let wq = Tensor::with_layout(vec![k, n], 0.5, Device::CPU, Layout::Contiguous, DType::F32);
     let wk = Tensor::with_layout(vec![k, n], 0.7, Device::CPU, Layout::Contiguous, DType::F32);
-    let wv = Tensor::with_layout(vec![k, n], -0.3, Device::CPU, Layout::Contiguous, DType::F32);
+    let wv = Tensor::with_layout(
+        vec![k, n],
+        -0.3,
+        Device::CPU,
+        Layout::Contiguous,
+        DType::F32,
+    );
 
     let out_naive = g_naive.execute(vec![x.clone(), wq.clone(), wk.clone(), wv.clone()]);
     assert_eq!(out_naive.len(), 3);

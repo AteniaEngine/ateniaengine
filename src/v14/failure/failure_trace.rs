@@ -34,15 +34,8 @@ impl FailureTrace {
         let ts = self.next_timestamp;
         self.next_timestamp = self.next_timestamp.saturating_add(1);
 
-        let failure_event = FailureEvent::new(
-            kind,
-            ts,
-            message,
-            device,
-            tensor_id,
-            kernel_id,
-            severity,
-        );
+        let failure_event =
+            FailureEvent::new(kind, ts, message, device, tensor_id, kernel_id, severity);
 
         let record = RecoveryRecord::new(failure_event, action_taken, action_reason, result, ts);
         self.records.push(record);

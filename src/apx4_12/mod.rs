@@ -17,9 +17,8 @@ pub const DEFAULT_BLOCK_SIZE: usize = 64 * 1024 * 1024; // 64 MB
 const DEFAULT_BLOCKS: usize = 8;
 
 fn get_pool() -> &'static Mutex<GpuMemoryPool> {
-    GPU_MEMORY_POOL.get_or_init(|| {
-        Mutex::new(GpuMemoryPool::new(DEFAULT_BLOCK_SIZE, DEFAULT_BLOCKS))
-    })
+    GPU_MEMORY_POOL
+        .get_or_init(|| Mutex::new(GpuMemoryPool::new(DEFAULT_BLOCK_SIZE, DEFAULT_BLOCKS)))
 }
 
 pub fn init_pool(block_size: usize, blocks: usize) {

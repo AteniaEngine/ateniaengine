@@ -2,10 +2,10 @@
 // Executes a GPUExecutionPlan in a 100% simulated way: does not execute real
 // kernels nor use VRAM; it only accumulates symbolic times and metrics.
 
-use crate::apx9::gpu_execution_planner::{GPUExecutionPlan, GPUPlanStep};
 use crate::apx9::gpu_autotuner::GpuAutoTuner;
-use std::sync::RwLock;
+use crate::apx9::gpu_execution_planner::{GPUExecutionPlan, GPUPlanStep};
 use once_cell::sync::Lazy;
+use std::sync::RwLock;
 
 // APX 9.9: global auto-tuner based exclusively on GXE simulated times.
 static AUTOTUNER: Lazy<RwLock<GpuAutoTuner>> = Lazy::new(|| RwLock::new(GpuAutoTuner::new()));
@@ -89,7 +89,7 @@ fn simulate_step_time(step: &GPUPlanStep, seed: u32) -> f32 {
         h = h.wrapping_mul(31).wrapping_add(*b as u64);
     }
     let frac = (h % 1000) as f32 / 1000.0; // [0,1)
-    let factor = 0.95 + frac * 0.10;       // [0.95,1.05]
+    let factor = 0.95 + frac * 0.10; // [0.95,1.05]
     base *= factor;
 
     // Overhead for multiple partitions.

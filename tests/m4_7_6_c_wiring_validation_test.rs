@@ -32,12 +32,8 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::gpu::dispatch::hooks::{
-    gpu_matmul_resident_count, gpu_matmul_roundtrip_count,
-};
-use atenia_engine::nn::llama::{
-    build_llama, llama_weight_mapper, LlamaConfig, LlamaRuntime,
-};
+use atenia_engine::gpu::dispatch::hooks::{gpu_matmul_resident_count, gpu_matmul_roundtrip_count};
+use atenia_engine::nn::llama::{LlamaConfig, LlamaRuntime, build_llama, llama_weight_mapper};
 use atenia_engine::tensor::tensor::Tensor;
 use atenia_engine::v17::loader::safetensors_reader::SafetensorsReader;
 
@@ -45,8 +41,9 @@ const TOKENS: [f32; 4] = [1.0, 100.0, 200.0, 300.0];
 const ADR_004_THRESHOLD: f64 = 0.5;
 
 fn load_f64_fixture(rel_dir: &str) -> Vec<f64> {
-    let path =
-        PathBuf::from("tests/fixtures").join(rel_dir).join("expected_logits_f64.json");
+    let path = PathBuf::from("tests/fixtures")
+        .join(rel_dir)
+        .join("expected_logits_f64.json");
     let s = fs::read_to_string(&path)
         .unwrap_or_else(|_| panic!("F64 fixture missing: {}", path.display()));
     let json: serde_json::Value = serde_json::from_str(&s).expect("malformed F64 fixture");
@@ -66,7 +63,10 @@ fn run_one_model(
     expected_param_count: usize,
     vocab_size: usize,
 ) -> (f64, [bool; 4], usize, usize) {
-    println!("\n=== {} F64 re-validation under M4.7.6.c wiring ===", label);
+    println!(
+        "\n=== {} F64 re-validation under M4.7.6.c wiring ===",
+        label
+    );
 
     let path =
         env::var(safetensors_env_var).unwrap_or_else(|_| panic!("Set {}", safetensors_env_var));
@@ -83,8 +83,8 @@ fn run_one_model(
     println!("Loading weights with store_params_as_bf16 = true ...");
     let load_start = Instant::now();
     let reader = SafetensorsReader::open(Path::new(&path)).expect("open safetensors");
-    let mut mapper = llama_weight_mapper(&config, &handles.param_names, &handles.param_ids)
-        .expect("mapper");
+    let mut mapper =
+        llama_weight_mapper(&config, &handles.param_names, &handles.param_ids).expect("mapper");
     mapper.set_store_params_as_bf16(true);
     let report = mapper.load_into(&mut graph, &reader).expect("load");
     drop(reader);
@@ -297,7 +297,8 @@ fn tinyllama_m4_7_6_c_wiring_matches_f64_and_fires_gpu_counter() {
         "M4.7.6.c gate: gpu_matmul counters did not fire on TinyLlama hot path \
          (resident={}, roundtrip={}); the wiring change at graph.rs:3094 \
          did not take effect.",
-        resident, roundtrip
+        resident,
+        roundtrip
     );
 }
 

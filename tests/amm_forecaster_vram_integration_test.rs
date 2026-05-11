@@ -60,7 +60,8 @@ fn test_external_pressure_is_reasonable() {
     assert!(
         v < upper,
         "external pressure unexpectedly high: {} bytes (> {} bytes)",
-        v, upper
+        v,
+        upper
     );
 }
 

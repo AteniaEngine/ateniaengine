@@ -1,11 +1,8 @@
-use crate::gpu::{
-    nvrtc::NvrtcCompiler,
-    loader::CudaLoader,
-    runtime::GpuRuntime,
-    memory::GpuPtr,
-    launcher::GpuLauncher,
-};
 use crate::gpu::loader::CudaLoaderError;
+use crate::gpu::{
+    launcher::GpuLauncher, loader::CudaLoader, memory::GpuPtr, nvrtc::NvrtcCompiler,
+    runtime::GpuRuntime,
+};
 
 use std::ffi::c_void;
 

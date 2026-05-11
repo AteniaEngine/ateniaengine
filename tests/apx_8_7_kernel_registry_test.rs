@@ -1,6 +1,6 @@
-﻿use atenia_engine::tensor::{Tensor, Device, DType};
 use atenia_engine::apx8::kernel_registry::*;
 use atenia_engine::gpu_vec_add;
+use atenia_engine::tensor::{DType, Device, Tensor};
 
 #[test]
 fn apx_8_7_register_and_retrieve() {
@@ -11,12 +11,16 @@ fn apx_8_7_register_and_retrieve() {
 
 #[test]
 fn apx_8_7_dispatcher_uses_registered_kernel_stub() {
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "8.7"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "8.7");
+    }
 
     // En esta fase no integramos con HybridDispatcher real; usamos el registry directamente
     let mut a = Tensor::ones(vec![4], Device::CPU, DType::F32);
     let mut b = Tensor::ones(vec![4], Device::CPU, DType::F32);
-    for v in b.as_cpu_slice_mut().iter_mut() { *v = 1.0; }
+    for v in b.as_cpu_slice_mut().iter_mut() {
+        *v = 1.0;
+    }
 
     KERNEL_REGISTRY.register(KernelKey::VecAdd, gpu_vec_add);
     let kernel = KERNEL_REGISTRY.get(&KernelKey::VecAdd).unwrap();
@@ -39,7 +43,11 @@ fn apx_8_7_equivalence_cpu_vs_registry_gpu_stub() {
     let kernel = KERNEL_REGISTRY.get(&KernelKey::VecAdd).unwrap();
     kernel(&mut gpu_like, &b);
 
-    for (x, y) in cpu_res.as_cpu_slice().iter().zip(gpu_like.as_cpu_slice().iter()) {
+    for (x, y) in cpu_res
+        .as_cpu_slice()
+        .iter()
+        .zip(gpu_like.as_cpu_slice().iter())
+    {
         assert!((*x - *y).abs() < 1e-6);
     }
 }

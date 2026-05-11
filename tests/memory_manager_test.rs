@@ -1,14 +1,8 @@
-﻿use atenia_engine::amm::memory_manager::{ManagedTensor, MemoryManager};
-use atenia_engine::tensor::{Device, DType, Layout, Tensor};
+use atenia_engine::amm::memory_manager::{ManagedTensor, MemoryManager};
+use atenia_engine::tensor::{DType, Device, Layout, Tensor};
 
 fn make_tensor(len: usize, value: f32) -> Tensor {
-    let mut t = Tensor::with_layout(
-        vec![len],
-        0.0,
-        Device::CPU,
-        Layout::Contiguous,
-        DType::F32,
-    );
+    let mut t = Tensor::with_layout(vec![len], 0.0, Device::CPU, Layout::Contiguous, DType::F32);
     for v in t.as_cpu_slice_mut().iter_mut() {
         *v = value;
     }

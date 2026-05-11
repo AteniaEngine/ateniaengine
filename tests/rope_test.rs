@@ -13,8 +13,7 @@ use std::path::PathBuf;
 fn load_json(path: &PathBuf) -> serde_json::Value {
     let s = fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("could not read {}: {}", path.display(), e));
-    serde_json::from_str(&s)
-        .unwrap_or_else(|e| panic!("could not parse {}: {}", path.display(), e))
+    serde_json::from_str(&s).unwrap_or_else(|e| panic!("could not parse {}: {}", path.display(), e))
 }
 
 fn parse_usize_vec(v: &serde_json::Value) -> Vec<usize> {
@@ -148,18 +147,14 @@ fn rope_preserves_l2_norm_per_pair() {
     let _ = gb.output(rope_id);
     let mut graph = gb.build();
 
-    let input = Tensor::new_cpu(
-        vec![1, seq_len, 1, head_dim],
-        input_data.clone(),
-    );
+    let input = Tensor::new_cpu(vec![1, seq_len, 1, head_dim], input_data.clone());
     let outputs = graph.execute(vec![input]);
     let output_slice = outputs[0].as_cpu_slice();
 
     for s in 0..seq_len {
         let base = s * head_dim;
         for i in 0..half {
-            let in_norm_sq =
-                input_data[base + i].powi(2) + input_data[base + i + half].powi(2);
+            let in_norm_sq = input_data[base + i].powi(2) + input_data[base + i + half].powi(2);
             let out_norm_sq =
                 output_slice[base + i].powi(2) + output_slice[base + i + half].powi(2);
             let diff = (in_norm_sq - out_norm_sq).abs();
@@ -362,10 +357,7 @@ fn rope_applies_independently_per_head() {
     let _ = gb.output(rope_id);
     let mut graph = gb.build();
 
-    let input = Tensor::new_cpu(
-        vec![1, seq_len, n_heads, head_dim],
-        input_data,
-    );
+    let input = Tensor::new_cpu(vec![1, seq_len, n_heads, head_dim], input_data);
     let outputs = graph.execute(vec![input]);
     let out_slice = outputs[0].as_cpu_slice();
 
@@ -417,7 +409,10 @@ fn rope_integrates_with_mul_in_graph() {
     let scale = Tensor::new_cpu(shape.clone(), scale_data);
     let outputs = graph.execute(vec![input.clone(), scale]);
     assert_eq!(outputs.len(), 1, "expected one Output");
-    assert_eq!(outputs[0].shape, shape, "shape must propagate through rope+mul");
+    assert_eq!(
+        outputs[0].shape, shape,
+        "shape must propagate through rope+mul"
+    );
 
     // Independent reference: apply rope directly, then *2.
     let rope_ref = apply_rope(&input, head_dim, base_freq);

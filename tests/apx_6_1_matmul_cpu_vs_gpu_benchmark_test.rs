@@ -1,6 +1,6 @@
-use atenia_engine::matmul_dispatcher::matmul_dispatch;
+use atenia_engine::apx4::gpu_dispatch::{ApxExecTarget, dispatch_matmul};
 use atenia_engine::kernels::matmul_tiled_cpu::matmul_tiled_cpu;
-use atenia_engine::apx4::gpu_dispatch::{dispatch_matmul, ApxExecTarget};
+use atenia_engine::matmul_dispatcher::matmul_dispatch;
 use std::time::Instant;
 
 fn random_matrix(size: usize) -> Vec<f32> {

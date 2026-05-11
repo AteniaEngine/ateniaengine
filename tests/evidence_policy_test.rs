@@ -4,9 +4,9 @@
 mod v15;
 
 use v15::policy::builtin::stability_first::StabilityFirstPolicy;
-use v15::policy::policy::ExecutionPolicy;
-use v15::policy::evidence::snapshot::PolicyEvidenceSnapshot;
 use v15::policy::evidence::signals::{PolicySignal, PolicySignalKind};
+use v15::policy::evidence::snapshot::PolicyEvidenceSnapshot;
+use v15::policy::policy::ExecutionPolicy;
 use v15::policy::types::PolicyInput;
 
 fn make_pre_oom_snapshot(score: f32) -> PolicyEvidenceSnapshot {

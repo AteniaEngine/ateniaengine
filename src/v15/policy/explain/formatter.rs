@@ -1,8 +1,6 @@
 #![allow(dead_code)]
 
-use crate::v15::policy::explain::explanation::{
-    PolicyExplanation, PreferenceStatus,
-};
+use crate::v15::policy::explain::explanation::{PolicyExplanation, PreferenceStatus};
 
 /// Renders a PolicyExplanation as a stable, human-readable multiline string.
 pub fn format_explanation_text(expl: &PolicyExplanation) -> String {

@@ -1,6 +1,6 @@
 use atenia_engine::amg::graph::Graph;
 use atenia_engine::amg::nodes::{Node, NodeType};
-use atenia_engine::tensor::{Device};
+use atenia_engine::tensor::Device;
 
 fn small_test_graph() -> Graph {
     let mut nodes = Vec::new();
@@ -15,13 +15,18 @@ fn small_test_graph() -> Graph {
 
 #[test]
 fn apx_8_1_dualgraph_basic_structure() {
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "8.1"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "8.1");
+    }
     let mut g = small_test_graph();
 
     // Force an explicit build_plan for APX 8.1.
     g.build_plan();
 
-    let dg = g.dual_graph.as_ref().expect("dual_graph must be built in 8.1 mode");
+    let dg = g
+        .dual_graph
+        .as_ref()
+        .expect("dual_graph must be built in 8.1 mode");
 
     assert_eq!(dg.cpu_nodes.len(), g.nodes.len());
     assert_eq!(dg.gpu_nodes.len(), g.nodes.len());

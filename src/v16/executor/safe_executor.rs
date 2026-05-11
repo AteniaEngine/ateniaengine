@@ -32,7 +32,7 @@ impl<R: RuntimeFacade> SafeExecutor<R> {
             ExecutorStatus::Aborted => {
                 return Err(ExecutorError::Aborted(
                     "Executor is aborted; no further steps may run".to_string(),
-                ))
+                ));
             }
             ExecutorStatus::Completed | ExecutorStatus::Failed => {
                 // No further execution; treat as a no-op.

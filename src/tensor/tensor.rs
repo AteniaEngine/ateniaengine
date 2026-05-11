@@ -1,11 +1,11 @@
 //! Core tensor structure definitions.
 
+use crate::gpu::tensor::TensorGPU;
+use crate::gpu::tensor::manager::GpuTensorManager;
+use crate::tensor::disk_tier::{self, DiskTensorHandle};
 use rand::random;
 use std::f32::consts::TAU;
 use std::fmt;
-use crate::gpu::tensor::manager::GpuTensorManager;
-use crate::gpu::tensor::TensorGPU;
-use crate::tensor::disk_tier::{self, DiskTensorHandle};
 
 /// Supported data types for Atenia tensors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -523,8 +523,7 @@ impl Tensor {
 
     pub fn zeros_new_cuda(shape: &[usize]) -> Result<Self, StorageTransferError> {
         let numel: usize = shape.iter().product();
-        let gpu = TensorGPU::empty(numel, 1)
-            .map_err(|_| StorageTransferError::AllocationFailed)?;
+        let gpu = TensorGPU::empty(numel, 1).map_err(|_| StorageTransferError::AllocationFailed)?;
         let shape_vec = shape.to_vec();
         let strides = Self::compute_strides(&shape_vec, &Layout::Contiguous);
         Ok(Self {
@@ -563,7 +562,8 @@ impl Tensor {
             // (sharing preserved). CpuBf16Shared decodes through
             // `ensure_cpu`, which transitions away from sharing.
             TensorStorage::CpuShared(_) => Ok(self),
-            TensorStorage::CpuBf16(_) | TensorStorage::Disk(_)
+            TensorStorage::CpuBf16(_)
+            | TensorStorage::Disk(_)
             | TensorStorage::CpuBf16Shared(_) => self.ensure_cpu(),
             // M9.1 — CpuInt8 dequantises through `ensure_cpu` to
             // `Cpu(Vec<f32>)`. M9.2 will add a direct `CpuInt8 → Cuda`
@@ -845,31 +845,57 @@ impl Tensor {
         scales: Vec<f32>,
         group_size: usize,
     ) -> Self {
-        assert!(!shape.is_empty(),
-            "Tensor::new_cpu_int8_per_group: shape must be non-empty");
-        assert!(group_size > 0,
-            "Tensor::new_cpu_int8_per_group: group_size must be > 0");
+        assert!(
+            !shape.is_empty(),
+            "Tensor::new_cpu_int8_per_group: shape must be non-empty"
+        );
+        assert!(
+            group_size > 0,
+            "Tensor::new_cpu_int8_per_group: group_size must be > 0"
+        );
         let expected_q: usize = shape.iter().product();
         assert_eq!(
-            q.len(), expected_q,
+            q.len(),
+            expected_q,
             "Tensor::new_cpu_int8_per_group: q.len() = {} does not match product(shape) = {} (shape = {:?})",
-            q.len(), expected_q, shape,
+            q.len(),
+            expected_q,
+            shape,
         );
         let n = *shape.last().unwrap();
-        let k: usize = if shape.len() <= 1 { 1 } else { shape[..shape.len() - 1].iter().product() };
-        let num_groups = if k == 0 { 0 } else { (k + group_size - 1) / group_size };
+        let k: usize = if shape.len() <= 1 {
+            1
+        } else {
+            shape[..shape.len() - 1].iter().product()
+        };
+        let num_groups = if k == 0 {
+            0
+        } else {
+            (k + group_size - 1) / group_size
+        };
         let expected_scales = num_groups * n;
         assert_eq!(
-            scales.len(), expected_scales,
+            scales.len(),
+            expected_scales,
             "Tensor::new_cpu_int8_per_group: scales.len() = {} does not match \
              ceil(K / group_size) * N = ceil({} / {}) * {} = {} (shape = {:?})",
-            scales.len(), k, group_size, n, expected_scales, shape,
+            scales.len(),
+            k,
+            group_size,
+            n,
+            expected_scales,
+            shape,
         );
         let strides = Self::compute_strides(&shape, &Layout::Contiguous);
         let inner_shape = shape.clone();
         Self {
             shape,
-            storage: TensorStorage::CpuInt8 { q, scales, shape: inner_shape, group_size },
+            storage: TensorStorage::CpuInt8 {
+                q,
+                scales,
+                shape: inner_shape,
+                group_size,
+            },
             device: Device::CPU,
             dtype: DType::Int8,
             layout: Layout::Contiguous,
@@ -1101,16 +1127,27 @@ impl Tensor {
             // No SIMD bulk path yet; the hot-path consumer is the
             // GPU dispatch via `int8_per_group_to_bf16_in_vram`,
             // which doesn't go through this function.
-            TensorStorage::CpuInt8 { q, scales, shape: int8_shape, group_size } => {
+            TensorStorage::CpuInt8 {
+                q,
+                scales,
+                shape: int8_shape,
+                group_size,
+            } => {
                 let n = *int8_shape.last().expect("CpuInt8: shape must be non-empty");
                 let total = q.len();
                 let k = if n == 0 { 0 } else { total / n };
                 let g = *group_size;
                 let num_groups = if k == 0 { 0 } else { (k + g - 1) / g };
-                debug_assert_eq!(total, int8_shape.iter().product::<usize>(),
-                    "CpuInt8: q.len() must equal product(shape)");
-                debug_assert_eq!(scales.len(), num_groups * n,
-                    "CpuInt8: scales.len() must equal ceil(K / group_size) * N");
+                debug_assert_eq!(
+                    total,
+                    int8_shape.iter().product::<usize>(),
+                    "CpuInt8: q.len() must equal product(shape)"
+                );
+                debug_assert_eq!(
+                    scales.len(),
+                    num_groups * n,
+                    "CpuInt8: scales.len() must equal ceil(K / group_size) * N"
+                );
                 let mut out = vec![0.0_f32; total];
                 for idx in 0..total {
                     let row = idx / n;
@@ -1261,7 +1298,12 @@ impl Tensor {
             // self.storage so subsequent calls hit the Cpu
             // fast-path. The scales vector is dropped on transition
             // — the dequantised F32 values are now self-describing.
-            TensorStorage::CpuInt8 { q, scales, shape: int8_shape, group_size } => {
+            TensorStorage::CpuInt8 {
+                q,
+                scales,
+                shape: int8_shape,
+                group_size,
+            } => {
                 let n = *int8_shape.last().expect("CpuInt8: shape must be non-empty");
                 let total = q.len();
                 let k = if n == 0 { 0 } else { total / n };
@@ -1314,7 +1356,8 @@ impl Tensor {
         // will introduce a residency-aware GPU path.
         if matches!(
             self.storage,
-            TensorStorage::Disk(_) | TensorStorage::CpuBf16(_)
+            TensorStorage::Disk(_)
+                | TensorStorage::CpuBf16(_)
                 | TensorStorage::CpuBf16Shared(_)
                 | TensorStorage::CpuInt8 { .. }
         ) {
@@ -1493,7 +1536,11 @@ impl Tensor {
             return Err(());
         }
         let rows = self.shape[0];
-        let cols = if self.shape.len() > 1 { self.shape[1] } else { 1 };
+        let cols = if self.shape.len() > 1 {
+            self.shape[1]
+        } else {
+            1
+        };
         mgr.from_cpu_vec(self.as_cpu_slice(), rows, cols)
     }
 

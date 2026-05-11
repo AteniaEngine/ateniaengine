@@ -12,7 +12,14 @@ pub struct AdamW {
 }
 
 impl AdamW {
-    pub fn new(param_count: usize, lr: f32, beta1: f32, beta2: f32, eps: f32, weight_decay: f32) -> Self {
+    pub fn new(
+        param_count: usize,
+        lr: f32,
+        beta1: f32,
+        beta2: f32,
+        eps: f32,
+        weight_decay: f32,
+    ) -> Self {
         let m = vec![Vec::new(); param_count];
         let v = vec![Vec::new(); param_count];
         Self {

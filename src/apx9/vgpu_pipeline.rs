@@ -1,9 +1,9 @@
 // APX 9.20 — SIMT Pipeline (Fetch → Decode → Execute)
 // Per-warp simulated pipeline, 100% CPU-only and without real GPU.
 
+use crate::apx9::vgpu_divergence::WarpMask;
 use crate::apx9::vgpu_instr::VGPUInstr;
 use crate::apx9::vgpu_warp::VGPUWarp;
-use crate::apx9::vgpu_divergence::WarpMask;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PipelineStage {
@@ -81,7 +81,12 @@ impl VGPUPipeline {
                     warp.pc += 1;
                 }
             }
-            VGPUInstr::If { pred, then_pc, else_pc: _, join_pc } => {
+            VGPUInstr::If {
+                pred,
+                then_pc,
+                else_pc: _,
+                join_pc,
+            } => {
                 // Apply symbolic predication and push reconvergence state.
                 warp.div_stack.push(warp.mask.clone(), *join_pc);
                 warp.mask = WarpMask::from_predicate(pred);

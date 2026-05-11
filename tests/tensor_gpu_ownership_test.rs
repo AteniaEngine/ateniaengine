@@ -60,8 +60,7 @@ fn test_no_leak_on_drop() {
     // A small probe used every `SYNC_EVERY` iterations to force a driver
     // barrier: `cuMemcpyDtoH_v2` is synchronous, so roundtripping this
     // tensor flushes any in-flight work and surfaces queued frees.
-    let probe = TensorGPU::new_from_cpu(&[0.0f32, 1.0], 1, 2)
-        .expect("probe alloc must succeed");
+    let probe = TensorGPU::new_from_cpu(&[0.0f32, 1.0], 1, 2).expect("probe alloc must succeed");
     let mut probe_sink = [0.0f32; 2];
 
     const SYNC_EVERY: usize = 1_000;

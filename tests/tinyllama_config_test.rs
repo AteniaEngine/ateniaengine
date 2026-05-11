@@ -161,8 +161,8 @@ fn parse_synthetic_minimal_config() {
 #[ignore]
 fn parse_real_config_file_on_disk() {
     let path = PathBuf::from("models/tinyllama-1.1b/config.json");
-    let cfg = LlamaConfig::from_json_file(&path)
-        .expect("real on-disk config should parse and validate");
+    let cfg =
+        LlamaConfig::from_json_file(&path).expect("real on-disk config should parse and validate");
     assert_eq!(cfg.vocab_size, 32000);
     assert_eq!(cfg.num_hidden_layers, 22);
 }
@@ -200,8 +200,8 @@ fn parse_qwen2_config_without_attention_bias_field() {
       "use_sliding_window": false,
       "vocab_size": 151936
     }"#;
-    let cfg = LlamaConfig::from_json_str(json)
-        .expect("Qwen2 config without attention_bias must parse");
+    let cfg =
+        LlamaConfig::from_json_str(json).expect("Qwen2 config without attention_bias must parse");
     assert_eq!(cfg.model_type.as_deref(), Some("qwen2"));
     assert_eq!(cfg.attention_bias, None);
     // qwen2-aware default: hard-coded QKV biases on.
@@ -434,7 +434,9 @@ fn parse_llama_3_2_real_config_file_on_disk() {
     assert_eq!(cfg.vocab_size, 128_256);
     assert_eq!(cfg.num_hidden_layers, 16);
     assert_eq!(cfg.effective_head_dim(), 64);
-    let scaling = cfg.effective_rope_scaling().expect("must have llama3 scaling");
+    let scaling = cfg
+        .effective_rope_scaling()
+        .expect("must have llama3 scaling");
     match scaling {
         RopeScaling::Llama3 { factor, .. } => assert!((*factor - 32.0).abs() < 1e-6),
     }

@@ -23,11 +23,17 @@ pub struct Constraint {
 
 impl Constraint {
     pub fn hard(kind: ConstraintKind) -> Self {
-        Self { kind, severity: ConstraintSeverity::Hard }
+        Self {
+            kind,
+            severity: ConstraintSeverity::Hard,
+        }
     }
 
     pub fn soft(kind: ConstraintKind) -> Self {
-        Self { kind, severity: ConstraintSeverity::Soft }
+        Self {
+            kind,
+            severity: ConstraintSeverity::Soft,
+        }
     }
 }
 

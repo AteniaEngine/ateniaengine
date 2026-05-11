@@ -29,11 +29,10 @@
 //! M5.d.b / M5.d.c.
 
 use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::amg::weight_store::WeightStore;
 use atenia_engine::amg::graph::Graph;
+use atenia_engine::amg::weight_store::WeightStore;
 use atenia_engine::nn::llama::{
-    build_llama, generate_greedy, CollectingTokenSink, GenerationConfig, LlamaConfig,
-    LlamaRuntime,
+    CollectingTokenSink, GenerationConfig, LlamaConfig, LlamaRuntime, build_llama, generate_greedy,
 };
 use atenia_engine::tensor::Tensor;
 
@@ -59,16 +58,14 @@ fn mini_config() -> LlamaConfig {
 }
 
 fn deterministic_weight(param_index: usize, element_index: usize, numel: usize) -> f32 {
-    let seed = (param_index as u64).wrapping_mul(2654435761)
-        ^ (element_index as u64).wrapping_mul(40503);
+    let seed =
+        (param_index as u64).wrapping_mul(2654435761) ^ (element_index as u64).wrapping_mul(40503);
     let frac = ((seed % 4001) as f32) / 4001.0;
     let scaled = (frac - 0.5) * 0.4;
     scaled * (1.0 + (element_index as f32) / (numel.max(1) as f32))
 }
 
-fn build_reference(cfg: &LlamaConfig, seq: usize)
-    -> (Graph, Vec<usize>, Vec<String>)
-{
+fn build_reference(cfg: &LlamaConfig, seq: usize) -> (Graph, Vec<usize>, Vec<String>) {
     let mut gb = GraphBuilder::new();
     let token_input_id = gb.input();
     let runtime = LlamaRuntime { batch: 1, seq };
@@ -79,14 +76,17 @@ fn build_reference(cfg: &LlamaConfig, seq: usize)
         let shape = graph.nodes[node_id].output.as_ref().unwrap().shape.clone();
         let numel: usize = shape.iter().product();
         let data: Vec<f32> = if name.ends_with("layernorm.weight") || name == "model.norm.weight" {
-            (0..numel).map(|j| 1.0 + deterministic_weight(i, j, numel) * 0.1).collect()
+            (0..numel)
+                .map(|j| 1.0 + deterministic_weight(i, j, numel) * 0.1)
+                .collect()
         } else {
-            (0..numel).map(|j| deterministic_weight(i, j, numel)).collect()
+            (0..numel)
+                .map(|j| deterministic_weight(i, j, numel))
+                .collect()
         };
-        graph.overwrite_parameter(
-            node_id,
-            Tensor::new_cpu(shape, data),
-        ).unwrap();
+        graph
+            .overwrite_parameter(node_id, Tensor::new_cpu(shape, data))
+            .unwrap();
     }
     (graph, h.param_ids, h.param_names)
 }
@@ -123,9 +123,8 @@ fn greedy_loop_matches_per_step_no_cache_argmax() {
     let mut sink = CollectingTokenSink::default();
     // Trivial decode_token (returns id as decimal string).
     let decode = |id: u32| format!("[{id}]");
-    let generated = generate_greedy(
-        &cfg, &store, &prompt, &gen_cfg, decode, &mut sink,
-    ).expect("generate must succeed");
+    let generated = generate_greedy(&cfg, &store, &prompt, &gen_cfg, decode, &mut sink)
+        .expect("generate must succeed");
 
     assert_eq!(generated.len(), n_new, "loop must return n_new tokens");
     assert_eq!(sink.tokens.len(), n_new, "sink must receive n_new tokens");
@@ -142,17 +141,20 @@ fn greedy_loop_matches_per_step_no_cache_argmax() {
         // Patch the same weights (deterministic, but
         // build_reference already populated them). Just confirm
         // the param shapes match the seed run.
-        let _ = ids; let _ = names;
-        let token_input = Tensor::new_cpu(
-            vec![1, seq],
-            full_input.iter().map(|&t| t as f32).collect(),
-        );
+        let _ = ids;
+        let _ = names;
+        let token_input =
+            Tensor::new_cpu(vec![1, seq], full_input.iter().map(|&t| t as f32).collect());
         let logits = g_ref.execute(vec![token_input]).into_iter().next().unwrap();
         let logits_data = logits.copy_to_cpu_vec();
         let vocab = cfg.vocab_size;
-        let last_row = &logits_data[(seq - 1) * vocab .. seq * vocab];
-        let expected_id = last_row.iter().enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).unwrap().0 as u32;
+        let last_row = &logits_data[(seq - 1) * vocab..seq * vocab];
+        let expected_id = last_row
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .unwrap()
+            .0 as u32;
 
         assert_eq!(
             gen_id, expected_id,
@@ -193,9 +195,13 @@ fn eos_halts_generation_immediately() {
     let logits = g_ref.execute(vec![token_input]).into_iter().next().unwrap();
     let logits_data = logits.copy_to_cpu_vec();
     let vocab = cfg.vocab_size;
-    let last_row = &logits_data[(prompt.len() - 1) * vocab .. prompt.len() * vocab];
-    let first_id = last_row.iter().enumerate()
-        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).unwrap().0 as u32;
+    let last_row = &logits_data[(prompt.len() - 1) * vocab..prompt.len() * vocab];
+    let first_id = last_row
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+        .unwrap()
+        .0 as u32;
 
     let gen_cfg = GenerationConfig {
         max_new_tokens: 100,
@@ -203,12 +209,25 @@ fn eos_halts_generation_immediately() {
     };
     let mut sink = CollectingTokenSink::default();
     let generated = generate_greedy(
-        &cfg, &store, &prompt, &gen_cfg, |id| format!("[{id}]"), &mut sink,
-    ).unwrap();
+        &cfg,
+        &store,
+        &prompt,
+        &gen_cfg,
+        |id| format!("[{id}]"),
+        &mut sink,
+    )
+    .unwrap();
 
-    assert_eq!(generated, vec![first_id], "EOS must be emitted exactly once");
+    assert_eq!(
+        generated,
+        vec![first_id],
+        "EOS must be emitted exactly once"
+    );
     assert_eq!(sink.tokens.len(), 1);
-    assert!(sink.tokens[0].is_eos, "first stream event must be flagged is_eos");
+    assert!(
+        sink.tokens[0].is_eos,
+        "first stream event must be flagged is_eos"
+    );
     // EOS token should not have a rendered text fragment.
     assert!(sink.tokens[0].text.is_empty());
 }
@@ -231,8 +250,14 @@ fn max_new_tokens_caps_runaway_generation() {
     };
     let mut sink = CollectingTokenSink::default();
     let generated = generate_greedy(
-        &cfg, &store, &prompt, &gen_cfg, |id| format!("[{id}]"), &mut sink,
-    ).unwrap();
+        &cfg,
+        &store,
+        &prompt,
+        &gen_cfg,
+        |id| format!("[{id}]"),
+        &mut sink,
+    )
+    .unwrap();
 
     assert_eq!(generated.len(), cap, "must respect max_new_tokens cap");
     assert_eq!(sink.tokens.len(), cap);
@@ -253,14 +278,22 @@ fn streaming_sink_receives_each_token_in_order() {
     let (g_seed, ids, names) = build_reference(&cfg, prompt.len());
     let store = store_from_graph(&g_seed, &ids, &names);
 
-    let gen_cfg = GenerationConfig { max_new_tokens: 3, eos_token_id: 9999 };
+    let gen_cfg = GenerationConfig {
+        max_new_tokens: 3,
+        eos_token_id: 9999,
+    };
     let mut received: Vec<u32> = Vec::new();
     let generated = generate_greedy(
-        &cfg, &store, &prompt, &gen_cfg, |id| format!("[{id}]"),
+        &cfg,
+        &store,
+        &prompt,
+        &gen_cfg,
+        |id| format!("[{id}]"),
         &mut |t: &atenia_engine::nn::llama::GeneratedToken| {
             received.push(t.token_id);
         },
-    ).unwrap();
+    )
+    .unwrap();
 
     assert_eq!(received, generated);
 }

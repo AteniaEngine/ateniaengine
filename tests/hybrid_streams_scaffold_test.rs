@@ -58,12 +58,8 @@ fn advanced_streams_round_robin_order() {
     assert!(runs[2].contains("RUN stream=SsdPrefetch"));
 
     // Per-stream FIFO ordering: cpu_task1 before cpu_task2.
-    let cpu1 = runs
-        .iter()
-        .position(|l| l.contains("name=cpu_task1"));
-    let cpu2 = runs
-        .iter()
-        .position(|l| l.contains("name=cpu_task2"));
+    let cpu1 = runs.iter().position(|l| l.contains("name=cpu_task1"));
+    let cpu2 = runs.iter().position(|l| l.contains("name=cpu_task2"));
 
     match (cpu1, cpu2) {
         (Some(i1), Some(i2)) => {

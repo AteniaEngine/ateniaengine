@@ -1,5 +1,7 @@
+use atenia_engine::apx3_8::{
+    device_context::DeviceContext, kernel_dispatch::dispatch_matmul as dispatch_matmul_apx3_8,
+};
 use atenia_engine::matmul_dispatcher::matmul_dispatch;
-use atenia_engine::apx3_8::{device_context::DeviceContext, kernel_dispatch::dispatch_matmul as dispatch_matmul_apx3_8};
 use atenia_engine::tensor::Device;
 
 fn reference_matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
@@ -28,7 +30,14 @@ fn tiled_matches_reference_small_sizes() {
 
     for (i, (x, y)) in out_tiled.iter().zip(out_ref.iter()).enumerate() {
         let diff = (x - y).abs();
-        assert!(diff < 1e-4, "mismatch at {}: tiled={} ref={} diff={}", i, x, y, diff);
+        assert!(
+            diff < 1e-4,
+            "mismatch at {}: tiled={} ref={} diff={}",
+            i,
+            x,
+            y,
+            diff
+        );
     }
 }
 
@@ -51,4 +60,3 @@ fn dispatcher_uses_apx3_8_when_mode_below_6_1() {
 
     assert_eq!(out_dispatch, out_ref);
 }
-

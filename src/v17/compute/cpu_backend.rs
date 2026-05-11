@@ -40,7 +40,7 @@ impl CpuBackend {
             GuardAction::Abort => {
                 return Err(ComputeError::AbortedByGuard(
                     "execution aborted by guard".to_string(),
-                ))
+                ));
             }
             // Degrade and DeepDegrade both mean "keep running in a
             // reduced-capacity mode". v17's CPU backend does not
@@ -48,9 +48,7 @@ impl CpuBackend {
             // memory; spillover-to-disk semantics are a higher-
             // level concern); they collapse to the same Continue-
             // like branch here.
-            GuardAction::Degrade
-            | GuardAction::DeepDegrade
-            | GuardAction::Continue => {}
+            GuardAction::Degrade | GuardAction::DeepDegrade | GuardAction::Continue => {}
         }
 
         // Interpret the model bytes as a very small dense layer: we expect a

@@ -3,10 +3,10 @@
 // CPU is always the fallback. GPU runs an equivalent stub.
 
 use crate::amg::graph::Graph;
-use crate::tensor::{Tensor, Device};
-use crate::apx8::gpu_transfer_estimator::{GPUTransferEstimator, TransferEstimate};
 use crate::apx8::dualgraph::DevicePlacement;
 use crate::apx8::gpu_partition::suggest_partition;
+use crate::apx8::gpu_transfer_estimator::{GPUTransferEstimator, TransferEstimate};
+use crate::tensor::{Device, Tensor};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExecDevice {

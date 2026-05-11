@@ -175,8 +175,16 @@ pub fn execute_conv2d_backward(
     out_grad: &Tensor,
     config: &Conv2DConfig,
 ) -> Conv2DGrads {
-    assert_eq!(input.shape.len(), 4, "Conv2D backward: input must be 4D (NCHW)");
-    assert_eq!(weight.shape.len(), 4, "Conv2D backward: weight must be 4D (OIHW)");
+    assert_eq!(
+        input.shape.len(),
+        4,
+        "Conv2D backward: input must be 4D (NCHW)"
+    );
+    assert_eq!(
+        weight.shape.len(),
+        4,
+        "Conv2D backward: weight must be 4D (OIHW)"
+    );
     assert_eq!(
         out_grad.shape.len(),
         4,
@@ -264,10 +272,10 @@ pub fn execute_conv2d_backward(
                     for ic in 0..c_in {
                         for kh in 0..k_h {
                             for kw in 0..k_w {
-                                let ih_signed = (oh * stride_h) as isize + kh as isize
-                                    - pad_h as isize;
-                                let iw_signed = (ow * stride_w) as isize + kw as isize
-                                    - pad_w as isize;
+                                let ih_signed =
+                                    (oh * stride_h) as isize + kh as isize - pad_h as isize;
+                                let iw_signed =
+                                    (ow * stride_w) as isize + kw as isize - pad_w as isize;
                                 if ih_signed < 0 || iw_signed < 0 {
                                     continue;
                                 }

@@ -102,7 +102,10 @@ fn restore_old_manifest_without_hints_is_ok() {
 
     let restored = match restore_checkpoint(ckpt_root, &mut mem) {
         Ok(c) => c,
-        Err(e) => panic!("restore_checkpoint on legacy manifest should succeed: {:?}", e),
+        Err(e) => panic!(
+            "restore_checkpoint on legacy manifest should succeed: {:?}",
+            e
+        ),
     };
 
     assert_eq!(restored.entries.len(), 1);

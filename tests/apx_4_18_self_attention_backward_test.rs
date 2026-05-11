@@ -1,15 +1,24 @@
-﻿//! Equivalence check: the same self-attention graph run under
+//! Equivalence check: the same self-attention graph run under
 //! `ATENIA_APX_MODE=2.5` (no 4.x fusions) and `ATENIA_APX_MODE=4.18`
 //! (FusedSelfAttention forward) must produce bit-close gradients on
 //! `dX`, `dWq`, `dWk`, `dWv`.
 
 use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::tensor::{Tensor, Device, DType, Layout};
+use atenia_engine::tensor::{DType, Device, Layout, Tensor};
 
 fn assert_close(a: &Tensor, b: &Tensor, tol: f32) {
-    assert_eq!(a.shape, b.shape, "shape mismatch: {:?} vs {:?}", a.shape, b.shape);
+    assert_eq!(
+        a.shape, b.shape,
+        "shape mismatch: {:?} vs {:?}",
+        a.shape, b.shape
+    );
     assert_eq!(a.numel(), b.numel(), "len mismatch");
-    for (i, (va, vb)) in a.as_cpu_slice().iter().zip(b.as_cpu_slice().iter()).enumerate() {
+    for (i, (va, vb)) in a
+        .as_cpu_slice()
+        .iter()
+        .zip(b.as_cpu_slice().iter())
+        .enumerate()
+    {
         let diff = (va - vb).abs();
         assert!(
             diff <= tol,
@@ -46,9 +55,13 @@ fn build_self_attention_graph() -> (GraphBuilder, usize, usize, usize, usize) {
 fn run_mode(mode: &str) -> (Tensor, Tensor, Tensor, Tensor) {
     if mode == "naive" {
         // Baseline completamente sin fusiones APX 4.x: forzamos 2.5
-        unsafe { std::env::set_var("ATENIA_APX_MODE", "2.5"); }
+        unsafe {
+            std::env::set_var("ATENIA_APX_MODE", "2.5");
+        }
     } else {
-        unsafe { std::env::set_var("ATENIA_APX_MODE", mode); }
+        unsafe {
+            std::env::set_var("ATENIA_APX_MODE", mode);
+        }
     }
 
     let (gb, x_id, wq_id, wk_id, wv_id) = build_self_attention_graph();
@@ -59,7 +72,13 @@ fn run_mode(mode: &str) -> (Tensor, Tensor, Tensor, Tensor) {
 
     let x = Tensor::with_layout(vec![m, d], 0.5, Device::CPU, Layout::Contiguous, DType::F32);
     let wq = Tensor::with_layout(vec![d, d], 0.1, Device::CPU, Layout::Contiguous, DType::F32);
-    let wk = Tensor::with_layout(vec![d, d], -0.2, Device::CPU, Layout::Contiguous, DType::F32);
+    let wk = Tensor::with_layout(
+        vec![d, d],
+        -0.2,
+        Device::CPU,
+        Layout::Contiguous,
+        DType::F32,
+    );
     let wv = Tensor::with_layout(vec![d, d], 0.3, Device::CPU, Layout::Contiguous, DType::F32);
 
     let inputs = vec![x.clone(), wq.clone(), wk.clone(), wv.clone()];
@@ -68,10 +87,26 @@ fn run_mode(mode: &str) -> (Tensor, Tensor, Tensor, Tensor) {
     let _outs = graph.execute(inputs);
     graph.backward(out_id);
 
-    let x_t  = graph.nodes[x_id].output.as_ref().expect("x output missing").clone();
-    let wq_t = graph.nodes[wq_id].output.as_ref().expect("wq output missing").clone();
-    let wk_t = graph.nodes[wk_id].output.as_ref().expect("wk output missing").clone();
-    let wv_t = graph.nodes[wv_id].output.as_ref().expect("wv output missing").clone();
+    let x_t = graph.nodes[x_id]
+        .output
+        .as_ref()
+        .expect("x output missing")
+        .clone();
+    let wq_t = graph.nodes[wq_id]
+        .output
+        .as_ref()
+        .expect("wq output missing")
+        .clone();
+    let wk_t = graph.nodes[wk_id]
+        .output
+        .as_ref()
+        .expect("wk output missing")
+        .clone();
+    let wv_t = graph.nodes[wv_id]
+        .output
+        .as_ref()
+        .expect("wv output missing")
+        .clone();
 
     let make_grad = |node_id: usize, proto: &Tensor| -> Tensor {
         let data = graph.nodes[node_id]
@@ -91,7 +126,7 @@ fn run_mode(mode: &str) -> (Tensor, Tensor, Tensor, Tensor) {
         t
     };
 
-    let dx  = make_grad(x_id,  &x_t);
+    let dx = make_grad(x_id, &x_t);
     let dwq = make_grad(wq_id, &wq_t);
     let dwk = make_grad(wk_id, &wk_t);
     let dwv = make_grad(wv_id, &wv_t);
@@ -129,7 +164,7 @@ fn self_attention_backward_4_18_matches_naive() {
     let (dx_4_18, dwq_4_18, dwk_4_18, dwv_4_18) = run_mode("4.18");
 
     let tol = 1e-5;
-    assert_close(&dx_naive,  &dx_4_18,  tol);
+    assert_close(&dx_naive, &dx_4_18, tol);
     assert_close(&dwq_naive, &dwq_4_18, tol);
     assert_close(&dwk_naive, &dwk_4_18, tol);
     assert_close(&dwv_naive, &dwv_4_18, tol);

@@ -31,7 +31,8 @@ impl ExecutionPlanner {
 
             if !has_require {
                 return Err(PlannerError::UnplannableContract(
-                    "Contract requires stability but lacks a RequireStability constraint".to_string(),
+                    "Contract requires stability but lacks a RequireStability constraint"
+                        .to_string(),
                 ));
             }
         }
@@ -53,7 +54,9 @@ impl ExecutionPlanner {
             kind: PlanStepKind::SelectBackendCandidate,
             description: "Select a backend candidate within allowed/forbidden sets".to_string(),
             preconditions: vec!["Memory headroom is acceptable".to_string()],
-            postconditions: vec!["A backend candidate consistent with contract is identified".to_string()],
+            postconditions: vec![
+                "A backend candidate consistent with contract is identified".to_string(),
+            ],
             abortable: true,
             requires_verification: true,
         });
@@ -64,7 +67,9 @@ impl ExecutionPlanner {
                 kind: PlanStepKind::PrepareFallback,
                 description: "Prepare fallback path required by the contract".to_string(),
                 preconditions: vec!["Primary backend candidate has been selected".to_string()],
-                postconditions: vec!["Fallback path is available if primary path fails".to_string()],
+                postconditions: vec![
+                    "Fallback path is available if primary path fails".to_string(),
+                ],
                 abortable: true,
                 requires_verification: true,
             });
@@ -75,8 +80,12 @@ impl ExecutionPlanner {
         steps.push(PlanStep {
             kind: PlanStepKind::MarkTensorsMovable,
             description: "Mark tensors as conceptually movable according to contract".to_string(),
-            preconditions: vec!["Backend selection and fallback preparation (if any) are complete".to_string()],
-            postconditions: vec!["Tensors are considered movable for future execution steps".to_string()],
+            preconditions: vec![
+                "Backend selection and fallback preparation (if any) are complete".to_string(),
+            ],
+            postconditions: vec![
+                "Tensors are considered movable for future execution steps".to_string(),
+            ],
             abortable: true,
             requires_verification: true,
         });

@@ -13,11 +13,7 @@
 //! execution paths under real hardware. Those questions require
 //! end-to-end benchmarks, not plan-decision tests.
 
-use atenia_engine::apx5::apx_5_3_planner::{
-    Planner5_3,
-    NodeExecInfo,
-    LayoutDecision,
-};
+use atenia_engine::apx5::apx_5_3_planner::{LayoutDecision, NodeExecInfo, Planner5_3};
 
 fn make_info(num_elems: usize, dtype: &str, contiguous: bool) -> NodeExecInfo {
     // For this synthetic test we assume a 2D MatMul with shape [m, n]

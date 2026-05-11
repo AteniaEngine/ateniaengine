@@ -1,4 +1,4 @@
-﻿mod mini_flux_common;
+mod mini_flux_common;
 
 use atenia_engine::nn::mini_flux::MiniFluxConfig;
 use mini_flux_common::{build_trainer, default_cfg, sample_tokens, tokens_to_one_hot};
@@ -48,7 +48,10 @@ fn mini_flux_learns_identity() {
 fn logits_shape_matches_expectation() {
     let cfg = default_cfg(4);
     let logits = mini_flux_common::run_logits_forward(&cfg, sample_tokens(&cfg, 1));
-    assert_eq!(logits.shape, vec![cfg.batch_size, cfg.seq_len, cfg.vocab_size]);
+    assert_eq!(
+        logits.shape,
+        vec![cfg.batch_size, cfg.seq_len, cfg.vocab_size]
+    );
 }
 
 #[test]

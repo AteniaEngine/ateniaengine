@@ -58,8 +58,7 @@ fn probe_does_not_panic_and_returns_structured_report() {
 #[test]
 fn json_serialization_roundtrips() {
     let report = hw_probe::probe();
-    let json =
-        serde_json::to_string(&report).expect("probe report must serialize to JSON");
+    let json = serde_json::to_string(&report).expect("probe report must serialize to JSON");
     assert!(json.contains("\"probe_version\""));
     assert!(json.contains("\"system\""));
     assert!(json.contains("\"gpus\""));

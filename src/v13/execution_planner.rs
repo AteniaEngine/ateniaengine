@@ -1,6 +1,6 @@
+use super::execution_trace::ExecutionDecisionTrace;
 use super::kernel_model::KernelProfile;
 use super::memory_types::{MemorySnapshot, MemoryTier};
-use super::execution_trace::ExecutionDecisionTrace;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionTarget {
@@ -78,7 +78,10 @@ impl HybridExecutionPlanner {
 
         // Rule 3: Any tensor on SSD forces CPU execution.
         evaluated_rules.push(DecisionRule::TensorOnSsd);
-        if tensor_tiers.iter().any(|tier| matches!(tier, MemoryTier::Ssd)) {
+        if tensor_tiers
+            .iter()
+            .any(|tier| matches!(tier, MemoryTier::Ssd))
+        {
             let target = ExecutionTarget::Cpu;
             let reason = "Tensor resides on SSD".to_string();
             let winning_rule = DecisionRule::TensorOnSsd;

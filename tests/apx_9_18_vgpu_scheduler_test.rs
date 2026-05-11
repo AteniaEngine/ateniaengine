@@ -1,19 +1,31 @@
 use atenia_engine::apx9::vgpu_warp::*;
 use atenia_engine::apx9::vgpu_warp_scheduler::*;
-use atenia_engine::{tensor::Tensor, tensor::DType, tensor::Device};
+use atenia_engine::{tensor::DType, tensor::Device, tensor::Tensor};
 
 #[test]
 fn apx_9_18_structure() {
     let warp = VGPUWarp::new(32, 0);
-    let ctx = VGPUWarpCtx { warp_id: 0, warp, state: WarpState::Ready };
+    let ctx = VGPUWarpCtx {
+        warp_id: 0,
+        warp,
+        state: WarpState::Ready,
+    };
     let sch = VGPUWarpScheduler::new(vec![ctx]);
     assert_eq!(sch.warps.len(), 1);
 }
 
 #[test]
 fn apx_9_18_rr_basic() {
-    let w1 = VGPUWarpCtx { warp_id: 0, warp: VGPUWarp::new(32, 0), state: WarpState::Ready };
-    let w2 = VGPUWarpCtx { warp_id: 1, warp: VGPUWarp::new(32, 32), state: WarpState::Ready };
+    let w1 = VGPUWarpCtx {
+        warp_id: 0,
+        warp: VGPUWarp::new(32, 0),
+        state: WarpState::Ready,
+    };
+    let w2 = VGPUWarpCtx {
+        warp_id: 1,
+        warp: VGPUWarp::new(32, 32),
+        state: WarpState::Ready,
+    };
 
     let mut sch = VGPUWarpScheduler::new(vec![w1, w2]);
 
@@ -25,8 +37,16 @@ fn apx_9_18_rr_basic() {
 
 #[test]
 fn apx_9_18_skip_blocked() {
-    let w1 = VGPUWarpCtx { warp_id: 0, warp: VGPUWarp::new(32, 0), state: WarpState::Blocked };
-    let w2 = VGPUWarpCtx { warp_id: 1, warp: VGPUWarp::new(32, 32), state: WarpState::Ready };
+    let w1 = VGPUWarpCtx {
+        warp_id: 0,
+        warp: VGPUWarp::new(32, 0),
+        state: WarpState::Blocked,
+    };
+    let w2 = VGPUWarpCtx {
+        warp_id: 1,
+        warp: VGPUWarp::new(32, 32),
+        state: WarpState::Ready,
+    };
 
     let mut sch = VGPUWarpScheduler::new(vec![w1, w2]);
 
@@ -41,14 +61,26 @@ fn apx_9_18_integration_no_numeric_change() {
     let _a = Tensor::ones(vec![4], Device::CPU, DType::F32);
     let _b = Tensor::ones(vec![4], Device::CPU, DType::F32);
 
-    let w1 = VGPUWarpCtx { warp_id: 0, warp: VGPUWarp::new(32, 0), state: WarpState::Ready };
-    let w2 = VGPUWarpCtx { warp_id: 1, warp: VGPUWarp::new(32, 32), state: WarpState::Ready };
+    let w1 = VGPUWarpCtx {
+        warp_id: 0,
+        warp: VGPUWarp::new(32, 0),
+        state: WarpState::Ready,
+    };
+    let w2 = VGPUWarpCtx {
+        warp_id: 1,
+        warp: VGPUWarp::new(32, 32),
+        state: WarpState::Ready,
+    };
 
     let mut sch = VGPUWarpScheduler::new(vec![w1, w2]);
 
     // Consume all Ready warps without changing the math (we do not touch the tensors).
     while let Some(w) = sch.next_warp() {
-        assert!(w.state == WarpState::Ready || w.state == WarpState::Running || w.state == WarpState::Finished);
+        assert!(
+            w.state == WarpState::Ready
+                || w.state == WarpState::Running
+                || w.state == WarpState::Finished
+        );
         // We do nothing else here: real integration with VGpuRunner will come in APX 10.x.
         w.state = WarpState::Finished;
     }

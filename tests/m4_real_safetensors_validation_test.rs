@@ -46,8 +46,8 @@ fn validate_gpt2_safetensors_real_world() {
     println!("Path: {}", path);
 
     // 1. Parse header without crashing.
-    let reader = SafetensorsReader::open(Path::new(&path))
-        .expect("failed to parse gpt2 safetensors");
+    let reader =
+        SafetensorsReader::open(Path::new(&path)).expect("failed to parse gpt2 safetensors");
     println!("+ Parsed header successfully");
 
     // 2. Enumeration returns a non-trivial number of tensors.
@@ -61,8 +61,7 @@ fn validate_gpt2_safetensors_real_world() {
 
     // 3. Shapes are structurally valid: non-empty, all dims > 0.
     let mut total_elements: u64 = 0;
-    let mut dtype_counts: std::collections::HashMap<String, u32> =
-        std::collections::HashMap::new();
+    let mut dtype_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
 
     for entry in &entries {
         assert!(
@@ -139,8 +138,7 @@ fn validate_gpt2_safetensors_real_world() {
         .map(|v| v.abs())
         .filter(|&v| v > 0.0)
         .fold(f32::INFINITY, f32::min);
-    let mean_abs: f32 =
-        values.iter().map(|v| v.abs()).sum::<f32>() / values.len() as f32;
+    let mean_abs: f32 = values.iter().map(|v| v.abs()).sum::<f32>() / values.len() as f32;
 
     assert!(
         max_abs < 10.0,

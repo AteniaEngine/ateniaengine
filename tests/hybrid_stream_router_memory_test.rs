@@ -4,11 +4,11 @@ use std::sync::Mutex;
 use atenia_engine::v13::async_executor::AsyncExecutor;
 use atenia_engine::v13::hybrid_memory::HybridMemoryManager;
 use atenia_engine::v13::kernel_model::{KernelKind, KernelProfile};
+use atenia_engine::v13::memory_types::MoveError;
 use atenia_engine::v13::memory_types::{MemorySnapshot, MemoryTier, TierStatus};
 use atenia_engine::v13::stream_router::StreamRouter;
 use atenia_engine::v13::streams::StreamConfig;
 use atenia_engine::v13::vram_adapter::VramAdapter;
-use atenia_engine::v13::memory_types::MoveError;
 
 fn make_kernel(name: &str, kind: KernelKind) -> KernelProfile {
     KernelProfile {
@@ -105,12 +105,8 @@ fn ssd_tensor_is_moved_to_ram_before_cpu_compute() {
     let has_prefetch_run = runs
         .iter()
         .any(|l| l.contains("stream=SsdPrefetch") && l.contains("prefetch:t1"));
-    let has_transfer_run = runs
-        .iter()
-        .any(|l| l.contains("move:ssd->ram:t1"));
-    let has_compute_run = runs
-        .iter()
-        .any(|l| l.contains("name=cpu_kernel"));
+    let has_transfer_run = runs.iter().any(|l| l.contains("move:ssd->ram:t1"));
+    let has_compute_run = runs.iter().any(|l| l.contains("name=cpu_kernel"));
 
     if !has_prefetch_run || !has_transfer_run || !has_compute_run {
         panic!("expected RUN entries for prefetch, transfer, and compute");
@@ -140,7 +136,7 @@ impl VramAdapter for FakeVramAdapter {
             Err(_) => {
                 return Err(MoveError::BackendUnavailable(
                     "Failed to lock FakeVramAdapter storage".to_string(),
-                ))
+                ));
             }
         };
         guard.insert(id.to_string(), data.to_vec());
@@ -153,7 +149,7 @@ impl VramAdapter for FakeVramAdapter {
             Err(_) => {
                 return Err(MoveError::BackendUnavailable(
                     "Failed to lock FakeVramAdapter storage".to_string(),
-                ))
+                ));
             }
         };
         match guard.get(id) {
@@ -170,7 +166,7 @@ impl VramAdapter for FakeVramAdapter {
             Err(_) => {
                 return Err(MoveError::BackendUnavailable(
                     "Failed to lock FakeVramAdapter storage".to_string(),
-                ))
+                ));
             }
         };
         guard.remove(id);

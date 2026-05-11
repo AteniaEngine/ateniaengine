@@ -32,8 +32,7 @@ use atenia_engine::tensor::disk_tier::{self, DiskDtype};
 use atenia_engine::tensor::{Tensor, TensorStorage};
 
 fn test_cache_dir(label: &str) -> PathBuf {
-    let dir = std::env::temp_dir()
-        .join(format!("atenia_m4_7_4_c_{}_{}", label, Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("atenia_m4_7_4_c_{}_{}", label, Uuid::new_v4()));
     std::fs::create_dir_all(&dir).expect("create test cache dir");
     dir
 }
@@ -63,10 +62,14 @@ fn migrate_all_cpu_to_disk_spills_bf16_at_native_width() {
 
     // Down-convert the two parameters to CpuBf16 in place.
     let bits_a = bf16_from_f32(
-        &(0..32).map(|i| (i as f32) * 0.05 - 0.5).collect::<Vec<f32>>(),
+        &(0..32)
+            .map(|i| (i as f32) * 0.05 - 0.5)
+            .collect::<Vec<f32>>(),
     );
     let bits_b = bf16_from_f32(
-        &(0..16).map(|i| 1.0 + (i as f32) * 0.1).collect::<Vec<f32>>(),
+        &(0..16)
+            .map(|i| 1.0 + (i as f32) * 0.1)
+            .collect::<Vec<f32>>(),
     );
     graph.nodes[p_a]
         .output
@@ -165,9 +168,8 @@ fn migrate_all_cpu_to_disk_handles_mixed_f32_and_bf16() {
     // Force the third one onto disk *before* the migration call,
     // so the migration must skip it.
     let already_disk_dir = test_cache_dir("already_on_disk_seed");
-    let pre_handle =
-        disk_tier::write_f32_tensor(&already_disk_dir, &[9.0, 8.0, 7.0, 6.0, 5.0])
-            .expect("seed disk file");
+    let pre_handle = disk_tier::write_f32_tensor(&already_disk_dir, &[9.0, 8.0, 7.0, 6.0, 5.0])
+        .expect("seed disk file");
     graph.nodes[p_already_disk]
         .output
         .as_mut()

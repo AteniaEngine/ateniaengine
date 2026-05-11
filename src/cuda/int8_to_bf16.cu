@@ -18,6 +18,7 @@
 // would skip the materialisation; M9.0-A measures the worst case.
 
 #include <cuda_runtime.h>
+#include "cuda_common.h"
 #include <stdint.h>
 
 extern "C" __global__ void int8_to_bf16_per_channel_kernel(

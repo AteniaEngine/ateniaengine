@@ -1,12 +1,12 @@
-use crate::v13::checkpoint::drift::DriftReport;
 use crate::v13::checkpoint::WarmStartPlan;
-use crate::v13::self_trainer::{
-    BackendChoice, ExecutionContext, SelfTrainer,
-};
+use crate::v13::checkpoint::drift::DriftReport;
+use crate::v13::self_trainer::{BackendChoice, ExecutionContext, SelfTrainer};
 use crate::v13::self_trainer_integration::{
-    record_from_warm_start, recommend_for_next_tick, ExecResult,
+    ExecResult, recommend_for_next_tick, record_from_warm_start,
 };
-use crate::v13::self_trainer_persistence::{load_trainer_from_path, save_trainer_to_path, PersistError};
+use crate::v13::self_trainer_persistence::{
+    PersistError, load_trainer_from_path, save_trainer_to_path,
+};
 
 #[derive(Debug, Clone)]
 pub struct AutoTrainerConfig {

@@ -1,5 +1,5 @@
-﻿use atenia_engine::tensor::{Tensor, Device, DType};
 use atenia_engine::gpu_vec_add;
+use atenia_engine::tensor::{DType, Device, Tensor};
 
 #[test]
 fn apx_8_6_gpu_vec_add_structure() {
@@ -10,7 +10,9 @@ fn apx_8_6_gpu_vec_add_structure() {
 
 #[test]
 fn apx_8_6_gpu_vec_add_equivalence() {
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "8.6"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "8.6");
+    }
 
     let mut a = Tensor::ones(vec![8], Device::CPU, DType::F32);
     let mut b = Tensor::ones(vec![8], Device::CPU, DType::F32);
@@ -29,7 +31,9 @@ fn apx_8_6_gpu_vec_add_equivalence() {
 
 #[test]
 fn apx_8_6_gpu_vec_add_cpu_coherence() {
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "8.6"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "8.6");
+    }
 
     let mut a = Tensor::ones(vec![8], Device::CPU, DType::F32);
     let mut b = Tensor::ones(vec![8], Device::CPU, DType::F32);

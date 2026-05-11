@@ -24,10 +24,15 @@ fn test_qkv_fusion_detects() {
     let g: Graph = gb.build();
 
     // Verify that at least one FusedQKV was registered in fused_ops.
-    let has_qkv = g
-        .fused_ops
-        .values()
-        .any(|fop| matches!(fop, atenia_engine::apx4_13::fusion_engine::FusedOp::FusedQKV { .. }));
+    let has_qkv = g.fused_ops.values().any(|fop| {
+        matches!(
+            fop,
+            atenia_engine::apx4_13::fusion_engine::FusedOp::FusedQKV { .. }
+        )
+    });
 
-    assert!(has_qkv, "Expected at least one FusedQKV op detected in fused_ops");
+    assert!(
+        has_qkv,
+        "Expected at least one FusedQKV op detected in fused_ops"
+    );
 }

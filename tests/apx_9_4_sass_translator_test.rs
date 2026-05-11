@@ -8,11 +8,24 @@ fn apx_9_4_translates_valid_ptx() {
         name: "vecadd".into(),
         threads: 256,
         ops: vec![
-            GpuOp::Load  { dst: "%f1".into(), src: "%A".into() },
-            GpuOp::Load  { dst: "%f2".into(), src: "%B".into() },
-            GpuOp::Add   { dst: "%f3".into(), a: "%f1".into(), b: "%f2".into() },
-            GpuOp::Store { dst: "%Out".into(), src: "%f3".into() },
-        ]
+            GpuOp::Load {
+                dst: "%f1".into(),
+                src: "%A".into(),
+            },
+            GpuOp::Load {
+                dst: "%f2".into(),
+                src: "%B".into(),
+            },
+            GpuOp::Add {
+                dst: "%f3".into(),
+                a: "%f1".into(),
+                b: "%f2".into(),
+            },
+            GpuOp::Store {
+                dst: "%Out".into(),
+                src: "%f3".into(),
+            },
+        ],
     };
 
     let ptx = PtxEmitter::emit(&ir);

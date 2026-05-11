@@ -195,8 +195,7 @@ impl ShardedSafetensorsReader {
         mapper: &WeightMapper,
     ) -> Result<LoadReport, LoaderError> {
         let mut report = LoadReport::default();
-        let mut satisfied: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
+        let mut satisfied: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         for shard_filename in self.index.shard_filenames() {
             let path = self.index.shard_path(&shard_filename);

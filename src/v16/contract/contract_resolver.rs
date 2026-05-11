@@ -2,8 +2,8 @@
 
 use crate::v15::policy::types::DecisionBias;
 
-use super::contract_errors::ContractError;
 use super::constraints::{Constraint, ConstraintKind, Constraints, RuntimeState};
+use super::contract_errors::ContractError;
 use super::execution_contract::{ExecutionBackend, ExecutionContract};
 
 pub struct ContractResolver;
@@ -41,7 +41,8 @@ impl ContractResolver {
 
         // Require stability when the system is unstable or has recovered recently, or when
         // the bias strongly favors stability.
-        let require_stability = state.recent_recovery || !state.is_stable || bias.stability_weight >= 0.8;
+        let require_stability =
+            state.recent_recovery || !state.is_stable || bias.stability_weight >= 0.8;
         if require_stability {
             constraints_items.push(Constraint::hard(ConstraintKind::RequireStability));
         }
@@ -50,14 +51,20 @@ impl ContractResolver {
         let mut max_aggressiveness = base_aggressiveness;
         if state.memory_headroom < 0.5 || !state.is_stable {
             max_aggressiveness = max_aggressiveness.min(0.5);
-            constraints_items.push(Constraint::soft(ConstraintKind::LimitAggressiveness { max: 0.5 }));
+            constraints_items.push(Constraint::soft(ConstraintKind::LimitAggressiveness {
+                max: 0.5,
+            }));
         }
 
         // Memory headroom constraint (hard if extremely low, soft otherwise).
         if state.memory_headroom < 0.2 {
-            constraints_items.push(Constraint::hard(ConstraintKind::MemoryHeadroom { min: state.memory_headroom }));
+            constraints_items.push(Constraint::hard(ConstraintKind::MemoryHeadroom {
+                min: state.memory_headroom,
+            }));
         } else {
-            constraints_items.push(Constraint::soft(ConstraintKind::MemoryHeadroom { min: state.memory_headroom }));
+            constraints_items.push(Constraint::soft(ConstraintKind::MemoryHeadroom {
+                min: state.memory_headroom,
+            }));
         }
 
         // Backend constraints.

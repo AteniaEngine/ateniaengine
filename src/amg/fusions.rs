@@ -1,6 +1,6 @@
-use crate::tensor::{Tensor, Layout};
 use crate::nn::linear as nn_linear;
 use crate::nn::softmax as nn_softmax;
+use crate::tensor::{Layout, Tensor};
 
 /// APX 6.10: auxiliary forward path for full attention.
 /// Does NOT record BackOps and does NOT touch graph tensors.
@@ -46,11 +46,5 @@ fn transpose_2d(t: &Tensor) -> Tensor {
         }
     }
     let new_shape = vec![cols, rows];
-    Tensor::new_cpu_with_layout(
-        new_shape,
-        data,
-        t.device,
-        t.dtype,
-        Layout::Contiguous,
-    )
+    Tensor::new_cpu_with_layout(new_shape, data, t.device, t.dtype, Layout::Contiguous)
 }

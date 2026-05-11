@@ -1,5 +1,5 @@
-use crate::v17::compute::tensor::Tensor;
 use crate::v17::cnn::conv2d::AbortFlag;
+use crate::v17::compute::tensor::Tensor;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BiasError {
@@ -38,9 +38,13 @@ pub fn add_bias(
     let mut out_data = input.data.clone();
 
     for n_idx in 0..n {
-        if abort_flag.is_aborted() { return Err(BiasError::Aborted); }
+        if abort_flag.is_aborted() {
+            return Err(BiasError::Aborted);
+        }
         for c_idx in 0..c {
-            if abort_flag.is_aborted() { return Err(BiasError::Aborted); }
+            if abort_flag.is_aborted() {
+                return Err(BiasError::Aborted);
+            }
             let b = bias.data[c_idx];
             for h_idx in 0..h {
                 for w_idx in 0..w {
@@ -51,5 +55,8 @@ pub fn add_bias(
         }
     }
 
-    Ok(Tensor { shape: shape.clone(), data: out_data })
+    Ok(Tensor {
+        shape: shape.clone(),
+        data: out_data,
+    })
 }

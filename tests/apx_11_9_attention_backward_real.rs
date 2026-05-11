@@ -1,5 +1,5 @@
-use atenia_engine::gpu::tensor::manager::GpuTensorManager;
 use atenia_engine::gpu::autodiff::attention_backward::AttentionBackwardGPU;
+use atenia_engine::gpu::tensor::manager::GpuTensorManager;
 
 #[test]
 fn test_attention_backward_real_gpu() {
@@ -36,17 +36,11 @@ fn test_attention_backward_real_gpu() {
         Err(_) => return,
     };
 
-    let (d_q_gpu, d_k_gpu, d_v_gpu) = match AttentionBackwardGPU::run(
-        &mgr,
-        &q_gpu,
-        &k_gpu,
-        &v_gpu,
-        &att_gpu,
-        &dout_gpu,
-    ) {
-        Ok(v) => v,
-        Err(_) => return,
-    };
+    let (d_q_gpu, d_k_gpu, d_v_gpu) =
+        match AttentionBackwardGPU::run(&mgr, &q_gpu, &k_gpu, &v_gpu, &att_gpu, &dout_gpu) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
 
     let d_q = match mgr.to_cpu_vec(&d_q_gpu) {
         Ok(v) => v,

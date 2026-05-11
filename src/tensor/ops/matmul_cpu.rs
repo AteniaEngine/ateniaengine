@@ -4,21 +4,25 @@ use crate::tensor::{Layout, Tensor};
 pub fn matmul_parallel(a: &Tensor, b: &Tensor) -> Tensor {
     assert_eq!(a.shape.len(), 2, "matmul_parallel: lhs must be 2D");
     assert_eq!(b.shape.len(), 2, "matmul_parallel: rhs must be 2D");
-    assert_eq!(a.shape[1], b.shape[0], "matmul_parallel: inner dims must match");
+    assert_eq!(
+        a.shape[1], b.shape[0],
+        "matmul_parallel: inner dims must match"
+    );
 
     let m = a.shape[0];
     let k = a.shape[1];
     let n = b.shape[1];
 
-    let mut out = Tensor::with_layout(
-        vec![m, n],
-        0.0,
-        a.device,
-        Layout::Contiguous,
-        a.dtype,
-    );
+    let mut out = Tensor::with_layout(vec![m, n], 0.0, a.device, Layout::Contiguous, a.dtype);
 
-    matmul_dispatch(a.as_cpu_slice(), b.as_cpu_slice(), out.as_cpu_slice_mut(), m, k, n);
+    matmul_dispatch(
+        a.as_cpu_slice(),
+        b.as_cpu_slice(),
+        out.as_cpu_slice_mut(),
+        m,
+        k,
+        n,
+    );
 
     out
 }

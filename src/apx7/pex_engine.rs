@@ -4,8 +4,8 @@
 use std::sync::Arc;
 use std::thread;
 
-use crossbeam_deque::{Injector, Steal};
 use crate::apx7::dynamic_load::get_last_snapshot;
+use crossbeam_deque::{Injector, Steal};
 
 /// Simple parallel task executor (PEX v1).
 pub struct PEXExecutor {
@@ -66,13 +66,15 @@ impl PEXWorkStealing {
             for _tid in 0..threads_to_use {
                 let g = global.clone();
 
-                scope.spawn(move || loop {
-                    match g.steal() {
-                        Steal::Success(task) => match task {
-                            PEXTask::Tile(job) => job(),
-                        },
-                        Steal::Retry => continue,
-                        Steal::Empty => break,
+                scope.spawn(move || {
+                    loop {
+                        match g.steal() {
+                            Steal::Success(task) => match task {
+                                PEXTask::Tile(job) => job(),
+                            },
+                            Steal::Retry => continue,
+                            Steal::Empty => break,
+                        }
                     }
                 });
             }

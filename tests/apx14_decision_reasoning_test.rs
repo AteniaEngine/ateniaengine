@@ -4,20 +4,14 @@ mod v14;
 use v14::memory::memory_layer::MemoryLayer;
 use v14::memory::pressure_snapshot::{MemoryRiskLevel, PressureSnapshot};
 use v14::reasoning::decision_event::DecisionEventKind;
-use v14::reasoning::reasoning_factors::ReasoningFactors;
 use v14::reasoning::decision_reasoner::DecisionReasoner;
+use v14::reasoning::reasoning_factors::ReasoningFactors;
 
 #[test]
 fn records_decision_with_factors_and_exports_stable_json() {
     let mut reasoner = DecisionReasoner::new();
 
-    let snapshot = PressureSnapshot::new(
-        MemoryLayer::VRAM,
-        900,
-        1000,
-        0.2,
-        0,
-    );
+    let snapshot = PressureSnapshot::new(MemoryLayer::VRAM, 900, 1000, 0.2, 0);
 
     let factors = ReasoningFactors::new(
         Some(snapshot),

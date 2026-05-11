@@ -43,12 +43,8 @@ impl PolicySimulator {
                     evidence,
                 );
 
-                let sim_result = SimulationResult::new(
-                    policy.name(),
-                    final_bias,
-                    explanation,
-                    &base_bias,
-                );
+                let sim_result =
+                    SimulationResult::new(policy.name(), final_bias, explanation, &base_bias);
 
                 results.push(sim_result);
             }

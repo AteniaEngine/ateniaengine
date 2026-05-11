@@ -64,9 +64,7 @@ impl HybridMemoryManager {
                 let path = self.cache.blob_path(id);
                 // TODO: introduce a real compression policy; for now we always
                 // write uncompressed data to keep behavior identical.
-                let meta = self
-                    .cache
-                    .write_blob(&path, &data, CompressionKind::None)?;
+                let meta = self.cache.write_blob(&path, &data, CompressionKind::None)?;
                 StorageBacking::SsdFile {
                     path,
                     compression: Some(meta),
@@ -101,9 +99,7 @@ impl HybridMemoryManager {
     }
 
     pub fn tensor_len_bytes(&self, id: &str) -> Option<usize> {
-        self.tensors
-            .get(id)
-            .map(|r| r.footprint.bytes as usize)
+        self.tensors.get(id).map(|r| r.footprint.bytes as usize)
     }
 
     pub fn ids_for_checkpoint(&self) -> Vec<String> {
@@ -123,9 +119,7 @@ impl HybridMemoryManager {
     }
 
     pub fn get_desired_tier_hint(&self, id: &str) -> Option<MemoryTier> {
-        self.hints
-            .get(id)
-            .and_then(|h| h.desired_tier)
+        self.hints.get(id).and_then(|h| h.desired_tier)
     }
 
     pub fn set_last_plan_summary(&mut self, id: &str, summary: Option<String>) {
@@ -155,7 +149,7 @@ impl HybridMemoryManager {
             None => {
                 return Err(CacheError::Io(
                     "Persistent cache not attached to HybridMemoryManager".to_string(),
-                ))
+                ));
             }
         };
 
@@ -174,7 +168,7 @@ impl HybridMemoryManager {
             None => {
                 return Err(CacheError::Io(
                     "Persistent cache not attached to HybridMemoryManager".to_string(),
-                ))
+                ));
             }
         };
 
@@ -196,11 +190,7 @@ impl HybridMemoryManager {
     ) -> Result<MovePlan, MoveError> {
         let residence = match self.tensors.get(id) {
             Some(r) => r,
-            None => {
-                return Err(MoveError::Unsupported(
-                    "Tensor not registered".to_string(),
-                ))
-            }
+            None => return Err(MoveError::Unsupported("Tensor not registered".to_string())),
         };
 
         if residence.tier == target {
@@ -250,11 +240,7 @@ impl HybridMemoryManager {
     pub fn apply_move(&mut self, id: &str, plan: &MovePlan) -> Result<(), MoveError> {
         let residence = match self.tensors.get_mut(id) {
             Some(r) => r,
-            None => {
-                return Err(MoveError::Unsupported(
-                    "Tensor not registered".to_string(),
-                ))
-            }
+            None => return Err(MoveError::Unsupported("Tensor not registered".to_string())),
         };
 
         if residence.tier == plan.to {
@@ -269,20 +255,12 @@ impl HybridMemoryManager {
                 self.cache.ensure_dir()?;
                 let path = self.cache.blob_path(id);
                 // TODO: introduce a compression policy; default is no compression.
-                let meta = self
-                    .cache
-                    .write_blob(&path, data, CompressionKind::None)?;
+                let meta = self.cache.write_blob(&path, data, CompressionKind::None)?;
 
                 if let Some(pcache) = &self.persistent {
                     let logical_len = data.len();
                     let key = format!("tensor:{}:len{}", id, logical_len);
-                    let _ = pcache.put_blob(
-                        CacheKind::Tensor,
-                        &key,
-                        data,
-                        0,
-                        true,
-                    );
+                    let _ = pcache.put_blob(CacheKind::Tensor, &key, data, 0, true);
                 }
 
                 *data = Vec::new();
@@ -371,13 +349,7 @@ impl HybridMemoryManager {
 
                 if let Some(pcache) = &self.persistent {
                     let key = format!("tensor:{}:len{}", id, residence.footprint.bytes as usize);
-                    let _ = pcache.put_blob(
-                        CacheKind::Tensor,
-                        &key,
-                        &bytes,
-                        0,
-                        true,
-                    );
+                    let _ = pcache.put_blob(CacheKind::Tensor, &key, &bytes, 0, true);
                 }
 
                 let _ = self.vram.free(key);

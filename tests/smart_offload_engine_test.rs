@@ -58,7 +58,7 @@ impl VramAdapter for FakeVramAdapter {
             Err(_) => {
                 return Err(MoveError::BackendUnavailable(
                     "Failed to lock FakeVramAdapter storage".to_string(),
-                ))
+                ));
             }
         };
         guard.insert(id.to_string(), data.to_vec());
@@ -71,7 +71,7 @@ impl VramAdapter for FakeVramAdapter {
             Err(_) => {
                 return Err(MoveError::BackendUnavailable(
                     "Failed to lock FakeVramAdapter storage".to_string(),
-                ))
+                ));
             }
         };
         match guard.get(id) {
@@ -88,7 +88,7 @@ impl VramAdapter for FakeVramAdapter {
             Err(_) => {
                 return Err(MoveError::BackendUnavailable(
                     "Failed to lock FakeVramAdapter storage".to_string(),
-                ))
+                ));
             }
         };
         guard.remove(id);

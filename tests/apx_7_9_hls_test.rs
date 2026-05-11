@@ -1,6 +1,6 @@
-﻿use atenia_engine::amg::graph::Graph;
+use atenia_engine::amg::graph::Graph;
 use atenia_engine::amg::nodes::{Node, NodeType};
-use atenia_engine::tensor::{Tensor, Device, Layout};
+use atenia_engine::tensor::{Device, Layout, Tensor};
 
 fn max_abs_diff(a: &Tensor, b: &Tensor) -> f32 {
     a.as_cpu_slice()
@@ -73,7 +73,13 @@ fn make_two_layer_graph() -> Graph {
 }
 
 fn make_two_layer_inputs() -> Vec<Tensor> {
-    let x = Tensor::with_layout(vec![8, 8], 1.0, Device::CPU, Layout::Contiguous, atenia_engine::tensor::DType::F32);
+    let x = Tensor::with_layout(
+        vec![8, 8],
+        1.0,
+        Device::CPU,
+        Layout::Contiguous,
+        atenia_engine::tensor::DType::F32,
+    );
     vec![x]
 }
 
@@ -81,11 +87,15 @@ fn make_two_layer_inputs() -> Vec<Tensor> {
 fn apx_7_9_hls_equivalence_vs_7_8() {
     let inputs = make_two_layer_inputs();
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.8"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.8");
+    }
     let mut g_tlo = make_two_layer_graph();
     let out_tlo = g_tlo.execute(inputs.clone());
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.9"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.9");
+    }
     let mut g_hls = make_two_layer_graph();
     let out_hls = g_hls.execute(inputs);
 
@@ -115,7 +125,13 @@ fn apx_7_9_hls_performance_sanity() {
     }
 
     fn make_input() -> Vec<Tensor> {
-        let x = Tensor::with_layout(vec![32, 32], 1.0, Device::CPU, Layout::Contiguous, atenia_engine::tensor::DType::F32);
+        let x = Tensor::with_layout(
+            vec![32, 32],
+            1.0,
+            Device::CPU,
+            Layout::Contiguous,
+            atenia_engine::tensor::DType::F32,
+        );
         vec![x]
     }
 
@@ -131,11 +147,15 @@ fn apx_7_9_hls_performance_sanity() {
     let width = 6;
     let inputs = make_input();
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.8"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.8");
+    }
     let mut g_tlo = make_wide_graph(width);
     let t_tlo = now_ms(|| g_tlo.execute(inputs.clone()));
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.9"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.9");
+    }
     let mut g_hls = make_wide_graph(width);
     let t_hls = now_ms(|| g_hls.execute(inputs));
 

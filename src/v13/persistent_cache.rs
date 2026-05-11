@@ -127,7 +127,7 @@ impl PersistentHybridCache {
                 return Err(CacheError::Io(format!(
                     "Failed to open cache blob {:?}: {}",
                     &bin_path, e
-                )))
+                )));
             }
         };
         let mut buf = Vec::new();
@@ -182,7 +182,7 @@ impl PersistentHybridCache {
                 return Err(CacheError::Io(format!(
                     "Failed to open cache meta {:?}: {}",
                     path, e
-                )))
+                )));
             }
         };
 
@@ -245,7 +245,7 @@ fn parse_meta(contents: &str) -> Result<CacheEntryMeta, CacheError> {
                 return Err(CacheError::Corrupt(format!(
                     "Invalid meta line (no '='): {}",
                     trimmed
-                )))
+                )));
             }
         };
         let (k, v) = trimmed.split_at(eq_pos);
@@ -256,78 +256,58 @@ fn parse_meta(contents: &str) -> Result<CacheEntryMeta, CacheError> {
                 kind = match str_to_kind(v) {
                     Some(knd) => Some(knd),
                     None => {
-                        return Err(CacheError::Corrupt(format!(
-                            "Unknown kind in meta: {}",
-                            v
-                        )))
+                        return Err(CacheError::Corrupt(format!("Unknown kind in meta: {}", v)));
                     }
                 };
             }
-            "len" => {
-                match v.parse::<usize>() {
-                    Ok(n) => len_bytes = Some(n),
-                    Err(e) => {
-                        return Err(CacheError::Corrupt(format!(
-                            "Invalid len in meta: {} ({})",
-                            v, e
-                        )))
-                    }
+            "len" => match v.parse::<usize>() {
+                Ok(n) => len_bytes = Some(n),
+                Err(e) => {
+                    return Err(CacheError::Corrupt(format!(
+                        "Invalid len in meta: {} ({})",
+                        v, e
+                    )));
                 }
-            }
-            "checksum32" => {
-                match v.parse::<u32>() {
-                    Ok(n) => checksum32_val = Some(n),
-                    Err(e) => {
-                        return Err(CacheError::Corrupt(format!(
-                            "Invalid checksum32 in meta: {} ({})",
-                            v, e
-                        )))
-                    }
+            },
+            "checksum32" => match v.parse::<u32>() {
+                Ok(n) => checksum32_val = Some(n),
+                Err(e) => {
+                    return Err(CacheError::Corrupt(format!(
+                        "Invalid checksum32 in meta: {} ({})",
+                        v, e
+                    )));
                 }
-            }
-            "created_unix" => {
-                match v.parse::<u64>() {
-                    Ok(n) => created_unix = Some(n),
-                    Err(e) => {
-                        return Err(CacheError::Corrupt(format!(
-                            "Invalid created_unix in meta: {} ({})",
-                            v, e
-                        )))
-                    }
+            },
+            "created_unix" => match v.parse::<u64>() {
+                Ok(n) => created_unix = Some(n),
+                Err(e) => {
+                    return Err(CacheError::Corrupt(format!(
+                        "Invalid created_unix in meta: {} ({})",
+                        v, e
+                    )));
                 }
-            }
+            },
             _ => {
                 // Unknown key: treat as corrupt to keep format strict.
-                return Err(CacheError::Corrupt(format!(
-                    "Unknown key in meta: {}",
-                    k
-                )));
+                return Err(CacheError::Corrupt(format!("Unknown key in meta: {}", k)));
             }
         }
     }
 
     let k = match kind {
         Some(k) => k,
-        None => {
-            return Err(CacheError::Corrupt(
-                "Missing kind in meta".to_string(),
-            ))
-        }
+        None => return Err(CacheError::Corrupt("Missing kind in meta".to_string())),
     };
     let l = match len_bytes {
         Some(v) => v,
-        None => {
-            return Err(CacheError::Corrupt(
-                "Missing len in meta".to_string(),
-            ))
-        }
+        None => return Err(CacheError::Corrupt("Missing len in meta".to_string())),
     };
     let c = match checksum32_val {
         Some(v) => v,
         None => {
             return Err(CacheError::Corrupt(
                 "Missing checksum32 in meta".to_string(),
-            ))
+            ));
         }
     };
     let cu = match created_unix {
@@ -335,7 +315,7 @@ fn parse_meta(contents: &str) -> Result<CacheEntryMeta, CacheError> {
         None => {
             return Err(CacheError::Corrupt(
                 "Missing created_unix in meta".to_string(),
-            ))
+            ));
         }
     };
 

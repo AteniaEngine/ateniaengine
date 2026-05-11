@@ -1,6 +1,6 @@
+use atenia_engine::gpu::loader::compat_layer::CompatLoader;
 use atenia_engine::gpu::loader::{CudaLoader, CudaLoaderError};
 use atenia_engine::gpu::nvrtc::NvrtcCompiler;
-use atenia_engine::gpu::loader::compat_layer::CompatLoader;
 
 /// APX 12.x: smoke test of the PTX module cache using a "real" kernel.
 #[test]

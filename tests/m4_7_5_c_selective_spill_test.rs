@@ -33,8 +33,7 @@ use atenia_engine::tensor::disk_tier::{self, DiskDtype};
 use atenia_engine::tensor::{Tensor, TensorStorage};
 
 fn test_cache_dir(label: &str) -> PathBuf {
-    let dir = std::env::temp_dir()
-        .join(format!("atenia_m4_7_5_c_{}_{}", label, Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("atenia_m4_7_5_c_{}_{}", label, Uuid::new_v4()));
     std::fs::create_dir_all(&dir).expect("create test cache dir");
     dir
 }
@@ -75,17 +74,18 @@ fn selective_spills_only_requested_ids() {
     assert!(report.failures.is_empty());
 
     // p0, p2, p4 stay Cpu; p1, p3 are Disk.
-    for (id, expected_disk) in
-        [(p0, false), (p1, true), (p2, false), (p3, true), (p4, false)]
-    {
+    for (id, expected_disk) in [
+        (p0, false),
+        (p1, true),
+        (p2, false),
+        (p3, true),
+        (p4, false),
+    ] {
         let storage = &graph.nodes[id].output.as_ref().unwrap().storage;
         match (expected_disk, storage) {
             (true, TensorStorage::Disk(_)) => {}
             (false, TensorStorage::Cpu(_)) => {}
-            (e, other) => panic!(
-                "id {} expected disk={}, got {:?}",
-                id, e, other
-            ),
+            (e, other) => panic!("id {} expected disk={}, got {:?}", id, e, other),
         }
     }
 
@@ -222,10 +222,7 @@ fn selective_skips_out_of_range_and_disk_already() {
     // and an out-of-range id (skip-OOR).
     let n_nodes = graph.nodes.len();
     let report = graph
-        .migrate_selected_cpu_to_disk(
-            &[p_cpu, p_already_disk, n_nodes + 7],
-            &dir,
-        )
+        .migrate_selected_cpu_to_disk(&[p_cpu, p_already_disk, n_nodes + 7], &dir)
         .expect("selective ok");
 
     assert_eq!(report.tensors_migrated, 1);
@@ -250,10 +247,14 @@ fn migrate_all_cpu_to_disk_bit_exact_after_refactor() {
     let mut graph = gb.build();
 
     let bits_a = bf16_from_f32(
-        &(0..32).map(|i| (i as f32) * 0.05 - 0.5).collect::<Vec<f32>>(),
+        &(0..32)
+            .map(|i| (i as f32) * 0.05 - 0.5)
+            .collect::<Vec<f32>>(),
     );
     let bits_b = bf16_from_f32(
-        &(0..16).map(|i| 1.0 + (i as f32) * 0.1).collect::<Vec<f32>>(),
+        &(0..16)
+            .map(|i| 1.0 + (i as f32) * 0.1)
+            .collect::<Vec<f32>>(),
     );
     graph.nodes[p_a]
         .output

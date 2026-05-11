@@ -277,10 +277,7 @@ mod linux {
     /// Read the AC online state from a `Mains` path (or fall back
     /// to the battery's `status` file). `Some(true)` means on
     /// battery (unplugged); `Some(false)` means plugged in.
-    pub fn read_on_battery(
-        ac_path: Option<&Path>,
-        bat_path: Option<&Path>,
-    ) -> Option<bool> {
+    pub fn read_on_battery(ac_path: Option<&Path>, bat_path: Option<&Path>) -> Option<bool> {
         // Primary signal: AC/online is `"1"` or `"0"`.
         if let Some(ac) = ac_path {
             if let Some(s) = read_trimmed(&ac.join("online")) {
@@ -325,11 +322,8 @@ impl BatteryProbeApi for BatteryProbe {
             });
         }
 
-        let battery_level = bat_path
-            .as_ref()
-            .and_then(|p| linux::read_battery_level(p));
-        let on_battery =
-            linux::read_on_battery(ac_path.as_deref(), bat_path.as_deref());
+        let battery_level = bat_path.as_ref().and_then(|p| linux::read_battery_level(p));
+        let on_battery = linux::read_on_battery(ac_path.as_deref(), bat_path.as_deref());
 
         Ok(BatterySnapshot {
             on_battery,

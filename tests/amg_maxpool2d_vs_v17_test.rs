@@ -1,4 +1,4 @@
-﻿//! Forward-equivalence tests: AMG's `MaxPool2D` vs v17's `maxpool2d_cpu`.
+//! Forward-equivalence tests: AMG's `MaxPool2D` vs v17's `maxpool2d_cpu`.
 //!
 //! Both implementations operate on NCHW layouts with identical
 //! iteration order (`kh` outer, `kw` inner) and strict `>` comparison
@@ -17,7 +17,7 @@ use atenia_engine::amg::nodes::MaxPool2DConfig;
 use atenia_engine::amg::ops::maxpool2d::execute_maxpool2d as amg_maxpool2d;
 use atenia_engine::tensor::Tensor as AmgTensor;
 use atenia_engine::v17::cnn::conv2d::AbortFlag;
-use atenia_engine::v17::cnn::maxpool2d::{maxpool2d_cpu as v17_maxpool2d, MaxPool2DParams};
+use atenia_engine::v17::cnn::maxpool2d::{MaxPool2DParams, maxpool2d_cpu as v17_maxpool2d};
 use atenia_engine::v17::compute::tensor::Tensor as V17Tensor;
 
 const TOLERANCE: f32 = 1e-5;
@@ -74,8 +74,7 @@ fn maxpool2d_2x2_stride2_no_padding() {
         padding: (0, 0),
     };
     let flag = AbortFlag::new();
-    let v17_out = v17_maxpool2d(&v17_input, &v17_params, &flag)
-        .expect("v17 maxpool2d failed");
+    let v17_out = v17_maxpool2d(&v17_input, &v17_params, &flag).expect("v17 maxpool2d failed");
 
     assert_eq!(amg_out.shape, v17_out.shape, "shape mismatch");
     assert_close(
@@ -109,8 +108,7 @@ fn maxpool2d_2x2_with_padding_stride1() {
         padding: (1, 1),
     };
     let flag = AbortFlag::new();
-    let v17_out = v17_maxpool2d(&v17_input, &v17_params, &flag)
-        .expect("v17 maxpool2d failed");
+    let v17_out = v17_maxpool2d(&v17_input, &v17_params, &flag).expect("v17 maxpool2d failed");
 
     assert_eq!(amg_out.shape, v17_out.shape, "shape mismatch");
     assert_close(

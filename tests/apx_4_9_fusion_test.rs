@@ -1,6 +1,6 @@
-﻿use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::amg::nodes::{NodeType, ActType};
-use atenia_engine::tensor::{Tensor, Device};
+use atenia_engine::amg::builder::GraphBuilder;
+use atenia_engine::amg::nodes::{ActType, NodeType};
+use atenia_engine::tensor::{Device, Tensor};
 
 #[test]
 fn test_apx_4_9_detecta_y_fusiona_cadena() {
@@ -51,8 +51,8 @@ fn test_apx_4_9_detecta_y_fusiona_cadena() {
 
 #[test]
 fn test_apx_4_9_equivalencia_numerica() {
-    use atenia_engine::nn::linear::linear as linear_op;
     use atenia_engine::nn::activations::silu;
+    use atenia_engine::nn::linear::linear as linear_op;
 
     let x = Tensor::randn(&[1, 32], Device::CPU);
     let w1 = Tensor::randn(&[32, 32], Device::CPU);

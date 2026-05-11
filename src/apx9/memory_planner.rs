@@ -28,7 +28,10 @@ impl GPUMemoryPlanner {
     pub fn new(total_vram_sim: usize) -> Self {
         // Simulated heap: empty vector with optional capacity.
         let heap = Vec::with_capacity(total_vram_sim);
-        Self { total_vram_sim, heap }
+        Self {
+            total_vram_sim,
+            heap,
+        }
     }
 
     /// Estimate bytes required by a tensor (including dtype).
@@ -77,9 +80,14 @@ impl GPUMemoryPlanner {
             }
 
             // Block assignment (normal or symbolic "large").
-            let alloc_size = if sz >= LARGE_BLOCK_THRESHOLD_BYTES { sz } else { sz };
+            let alloc_size = if sz >= LARGE_BLOCK_THRESHOLD_BYTES {
+                sz
+            } else {
+                sz
+            };
 
-            let (offset, assigned) = allocate_from_free_list(&mut free_list, &mut next_offset, alloc_size);
+            let (offset, assigned) =
+                allocate_from_free_list(&mut free_list, &mut next_offset, alloc_size);
             current_usage += assigned;
 
             if current_usage > plan.temp_peak {
@@ -89,7 +97,11 @@ impl GPUMemoryPlanner {
                 plan.total_required = next_offset;
             }
 
-            plan.assignments.push(MemAssign { node_id: idx, offset, size: assigned });
+            plan.assignments.push(MemAssign {
+                node_id: idx,
+                offset,
+                size: assigned,
+            });
             offsets[idx] = Some(offset);
 
             // Very simple reuse heuristic: in an A->B->C chain, free the

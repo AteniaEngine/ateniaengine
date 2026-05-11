@@ -34,7 +34,7 @@
 
 use std::sync::Mutex;
 
-use sysinfo::{Pid, System, MINIMUM_CPU_UPDATE_INTERVAL};
+use sysinfo::{MINIMUM_CPU_UPDATE_INTERVAL, Pid, System};
 
 /// Snapshot of CPU state at a single point in time, from this
 /// process's perspective.
@@ -120,8 +120,8 @@ impl CpuProbe {
     /// cannot be resolved by sysinfo at all. Every other failure mode
     /// is deferred to [`snapshot`](Self::snapshot).
     pub fn new() -> Result<Self, CpuProbeError> {
-        let own_pid = sysinfo::get_current_pid()
-            .map_err(|e| CpuProbeError::PidUnavailable(e.to_string()))?;
+        let own_pid =
+            sysinfo::get_current_pid().map_err(|e| CpuProbeError::PidUnavailable(e.to_string()))?;
         let num_cpus = num_cpus::get().max(1);
 
         let mut sys = System::new();

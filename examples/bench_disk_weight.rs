@@ -180,11 +180,7 @@ fn main() {
         let restored = match disk_tier::read_bf16_tensor(&handle) {
             Ok(v) => v,
             Err(e) => {
-                eprintln!(
-                    "FATAL: read_bf16_tensor failed on iter {}: {}",
-                    i + 1,
-                    e
-                );
+                eprintln!("FATAL: read_bf16_tensor failed on iter {}: {}", i + 1, e);
                 std::process::exit(2);
             }
         };
@@ -261,14 +257,8 @@ fn main() {
 
     let n_matmuls = 280_usize;
 
-    println!(
-        "      Per-matmul read (cold):       {:7.1} ms",
-        cold_ms
-    );
-    println!(
-        "      Per-matmul read (warm avg):   {:7.1} ms",
-        warm_ms
-    );
+    println!("      Per-matmul read (cold):       {:7.1} ms", cold_ms);
+    println!("      Per-matmul read (warm avg):   {:7.1} ms", warm_ms);
     println!();
     println!("      Worst case: every matmul cold-reads from NVMe");
     println!(
@@ -297,9 +287,7 @@ fn main() {
     if cold_ms <= 50.0 {
         println!("Decision:              PLAN A (proceed M7.1 → M7.3 directly)");
     } else if cold_ms >= 200.0 {
-        println!(
-            "Decision:              PLAN B (insert M7.4 cache + prefetch first)"
-        );
+        println!("Decision:              PLAN B (insert M7.4 cache + prefetch first)");
     } else {
         println!(
             "Decision:              GREY ZONE ({:.1} ms is between thresholds; \

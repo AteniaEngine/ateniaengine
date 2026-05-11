@@ -138,8 +138,9 @@ impl TensorPlacementEngine {
                 decision.reason = "RAM pressure is very high and tensor is huge but not compute-heavy; placing tensor on SSD as last resort".to_string();
             } else {
                 decision.target = PlacementTarget::Ram;
-                decision.reason = "Tensor is huge and RAM pressure is acceptable; placing tensor in RAM"
-                    .to_string();
+                decision.reason =
+                    "Tensor is huge and RAM pressure is acceptable; placing tensor in RAM"
+                        .to_string();
             }
             return decision;
         }

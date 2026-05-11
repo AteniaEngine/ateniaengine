@@ -1,6 +1,6 @@
 use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::optim::adamw::AdamW;
-use atenia_engine::tensor::{Device, DType, Layout, Tensor};
+use atenia_engine::tensor::{DType, Device, Layout, Tensor};
 use atenia_engine::training::trainer_v2::TrainerV2;
 
 fn tensor_from_vec(values: &[f32]) -> Tensor {
@@ -78,5 +78,8 @@ fn main() {
         .expect("falta tensor b")
         .as_cpu_slice()[0];
 
-    println!("Entrenamiento terminado. w ≈ {:.4}, b ≈ {:.4}", final_w, final_b);
+    println!(
+        "Entrenamiento terminado. w ≈ {:.4}, b ≈ {:.4}",
+        final_w, final_b
+    );
 }

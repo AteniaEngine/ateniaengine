@@ -1,7 +1,7 @@
-﻿mod mini_flux_common;
+mod mini_flux_common;
 
 use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::nn::mini_flux::{build_mini_flux_language_model, MiniFluxConfig};
+use atenia_engine::nn::mini_flux::{MiniFluxConfig, build_mini_flux_language_model};
 use mini_flux_common::{build_language_trainer, default_cfg, next_token_targets, sample_tokens};
 
 #[test]
@@ -24,7 +24,10 @@ fn language_logits_shape_is_correct() {
     let tokens = sample_tokens(&cfg, 0);
     let outputs = graph.execute(vec![tokens]);
     let logits = outputs.into_iter().next().expect("missing logits");
-    assert_eq!(logits.shape, vec![cfg.batch_size, cfg.seq_len, cfg.vocab_size]);
+    assert_eq!(
+        logits.shape,
+        vec![cfg.batch_size, cfg.seq_len, cfg.vocab_size]
+    );
 }
 
 #[test]

@@ -1,14 +1,14 @@
 //! Atenia Model Graph definitions and execution helpers.
 
-pub mod nodes;
 pub mod builder;
-pub mod graph;
-pub mod scheduler;
 pub mod chunking;
-pub mod grad_store;
 pub mod fusions;
+pub mod grad_store;
+pub mod graph;
+pub mod nodes;
 pub mod ops;
 pub mod reactive;
+pub mod scheduler;
 
 // M5.c.2.a — Arc-backed shared parameter store. Lets the
 // prefill and decode `Graph` instances reference the same

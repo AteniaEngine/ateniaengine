@@ -312,10 +312,7 @@ pub fn default_cache_dir() -> PathBuf {
 /// is left behind (Rust's `fs::write` does not create partial
 /// files reliably across platforms, but any partial file is a
 /// candidate for the next GC sweep anyway).
-pub fn write_f32_tensor(
-    cache_dir: &Path,
-    data: &[f32],
-) -> io::Result<DiskTensorHandle> {
+pub fn write_f32_tensor(cache_dir: &Path, data: &[f32]) -> io::Result<DiskTensorHandle> {
     fs::create_dir_all(cache_dir)?;
 
     let name = format!("tensor_{}.bin", Uuid::new_v4());
@@ -359,10 +356,7 @@ pub fn write_f32_tensor(
 /// footprint win on disk too — a 13B-class checkpoint stays at
 /// ~26 GB on disk under BF16 spill instead of inflating to ~52 GB
 /// via F32 upcast.
-pub fn write_bf16_tensor(
-    cache_dir: &Path,
-    data: &[u16],
-) -> io::Result<DiskTensorHandle> {
+pub fn write_bf16_tensor(cache_dir: &Path, data: &[u16]) -> io::Result<DiskTensorHandle> {
     fs::create_dir_all(cache_dir)?;
 
     let name = format!("tensor_{}.bin", Uuid::new_v4());
@@ -486,10 +480,7 @@ pub fn read_f32_tensor(handle: &DiskTensorHandle) -> io::Result<Vec<f32>> {
     // beyond 4 bytes; the byte-view re-interpretation imposes no
     // additional constraint.
     let out_bytes = unsafe {
-        std::slice::from_raw_parts_mut(
-            out.as_mut_ptr() as *mut u8,
-            std::mem::size_of_val(&*out),
-        )
+        std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, std::mem::size_of_val(&*out))
     };
     stream_read_exact_into_bytes(handle.path(), expected_bytes, out_bytes)?;
     Ok(out)
@@ -528,10 +519,7 @@ pub fn read_bf16_tensor(handle: &DiskTensorHandle) -> io::Result<Vec<u16>> {
     // re-interpretation, with width 2 instead of 4. `u16` has
     // alignment 2; the byte-view imposes no additional constraint.
     let out_bytes = unsafe {
-        std::slice::from_raw_parts_mut(
-            out.as_mut_ptr() as *mut u8,
-            std::mem::size_of_val(&*out),
-        )
+        std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, std::mem::size_of_val(&*out))
     };
     stream_read_exact_into_bytes(handle.path(), expected_bytes, out_bytes)?;
     Ok(out)
@@ -559,10 +547,7 @@ pub fn read_bf16_tensor(handle: &DiskTensorHandle) -> io::Result<Vec<u16>> {
 ///
 /// On any I/O / size error the buffer contents are unspecified
 /// (the caller should treat the dispatch as failed and fall back).
-pub fn read_bf16_raw_bytes(
-    handle: &DiskTensorHandle,
-    out_bytes: &mut [u8],
-) -> io::Result<()> {
+pub fn read_bf16_raw_bytes(handle: &DiskTensorHandle, out_bytes: &mut [u8]) -> io::Result<()> {
     if handle.dtype() != DiskDtype::BF16 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -601,10 +586,7 @@ pub fn read_bf16_raw_bytes(
 /// Errors from [`fs::remove_file`] are swallowed per-entry
 /// (best-effort GC, same policy as [`InnerDiskFile::Drop`]);
 /// errors from [`fs::read_dir`] and reading `metadata` propagate.
-pub fn gc_orphan_disk_tensors(
-    cache_dir: &Path,
-    max_age_minutes: u64,
-) -> io::Result<usize> {
+pub fn gc_orphan_disk_tensors(cache_dir: &Path, max_age_minutes: u64) -> io::Result<usize> {
     gc_orphan_disk_tensors_older_than(
         cache_dir,
         Duration::from_secs(max_age_minutes.saturating_mul(60)),
@@ -688,8 +670,7 @@ mod tests {
     /// Cleanup is best-effort (`remove_dir_all` at the end); the
     /// GC and/or OS will sweep leftovers in a pinch.
     fn test_cache_dir(label: &str) -> PathBuf {
-        let dir = std::env::temp_dir()
-            .join(format!("atenia_test_{}_{}", label, Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("atenia_test_{}_{}", label, Uuid::new_v4()));
         fs::create_dir_all(&dir).expect("create test cache dir");
         dir
     }
@@ -878,11 +859,8 @@ mod tests {
 
         // Threshold just under the sleep: anything older than 10ms
         // is "old enough". Our file is 50ms+ old, gets swept.
-        let removed = gc_orphan_disk_tensors_older_than(
-            &dir,
-            Duration::from_millis(10),
-        )
-        .expect("gc must succeed");
+        let removed = gc_orphan_disk_tensors_older_than(&dir, Duration::from_millis(10))
+            .expect("gc must succeed");
         assert_eq!(removed, 1, "gc should have removed the stale file");
         assert!(!path.exists(), "file should be gone after gc");
 
@@ -897,8 +875,7 @@ mod tests {
 
         // Threshold of 10 minutes — our just-written file is way
         // younger than that. GC must leave it alone.
-        let removed =
-            gc_orphan_disk_tensors(&dir, 10).expect("gc must succeed");
+        let removed = gc_orphan_disk_tensors(&dir, 10).expect("gc must succeed");
         assert_eq!(removed, 0, "gc must not touch fresh files");
         assert!(path.exists(), "file must still exist");
 
@@ -916,11 +893,8 @@ mod tests {
 
         // Wait for it to age, then GC with tiny threshold.
         thread::sleep(Duration::from_millis(50));
-        let removed = gc_orphan_disk_tensors_older_than(
-            &dir,
-            Duration::from_millis(10),
-        )
-        .expect("gc must succeed");
+        let removed = gc_orphan_disk_tensors_older_than(&dir, Duration::from_millis(10))
+            .expect("gc must succeed");
 
         assert_eq!(removed, 0, "gc must ignore files that are not tensor_*.bin");
         assert!(
@@ -935,11 +909,9 @@ mod tests {
     #[test]
     fn test_gc_on_missing_directory_is_ok() {
         // If the cache dir does not exist yet, GC is a no-op.
-        let dir = std::env::temp_dir()
-            .join(format!("atenia_test_missing_{}", Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("atenia_test_missing_{}", Uuid::new_v4()));
         assert!(!dir.exists(), "pre-condition: dir must not exist");
-        let removed =
-            gc_orphan_disk_tensors(&dir, 10).expect("gc must return Ok on missing dir");
+        let removed = gc_orphan_disk_tensors(&dir, 10).expect("gc must return Ok on missing dir");
         assert_eq!(removed, 0);
     }
 
@@ -1051,8 +1023,7 @@ mod tests {
         // BF16 write path does not regress the cleanup contract.
         let dir = test_cache_dir("bf16_drop");
         let path_holder = {
-            let handle =
-                write_bf16_tensor(&dir, &[0xBF80_u16; 8]).expect("write ok");
+            let handle = write_bf16_tensor(&dir, &[0xBF80_u16; 8]).expect("write ok");
             let p = handle.path().to_path_buf();
             assert!(p.exists());
             p

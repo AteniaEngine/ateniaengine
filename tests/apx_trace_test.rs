@@ -1,6 +1,6 @@
-﻿use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::nn::mini_flux::{build_mini_flux_language_model, MiniFluxConfig};
-use atenia_engine::tensor::{Device, DType, Layout, Tensor};
+use atenia_engine::amg::builder::GraphBuilder;
+use atenia_engine::nn::mini_flux::{MiniFluxConfig, build_mini_flux_language_model};
+use atenia_engine::tensor::{DType, Device, Layout, Tensor};
 
 #[test]
 fn apx_25_traces_show_parallelism() {
@@ -31,9 +31,7 @@ fn apx_25_traces_show_parallelism() {
             for (id, node) in g.nodes.iter().enumerate() {
                 eprintln!(
                     "[DUMP] NODE {}: {:?} | inputs={:?}",
-                    id,
-                    node.node_type,
-                    node.inputs
+                    id, node.node_type, node.inputs
                 );
             }
         }
@@ -47,13 +45,8 @@ fn apx_25_traces_show_parallelism() {
     };
 
     // Build simple integer-like tokens [0, vocab)
-    let mut input = Tensor::with_layout(
-        vec![1, 4],
-        0.0,
-        Device::CPU,
-        Layout::Contiguous,
-        DType::F32,
-    );
+    let mut input =
+        Tensor::with_layout(vec![1, 4], 0.0, Device::CPU, Layout::Contiguous, DType::F32);
     for s in 0..4usize {
         input.as_cpu_slice_mut()[s] = (s % 16) as f32;
     }

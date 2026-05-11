@@ -1,6 +1,6 @@
-﻿use atenia_engine::amg::graph::Graph;
+use atenia_engine::amg::graph::Graph;
 use atenia_engine::amg::nodes::{Node, NodeType};
-use atenia_engine::tensor::{Tensor, Device, Layout};
+use atenia_engine::tensor::{Device, Layout, Tensor};
 
 fn make_branch_graph() -> Graph {
     // Graph with two branches that merge into an Output.
@@ -24,9 +24,27 @@ fn make_branch_graph() -> Graph {
 }
 
 fn make_branch_inputs() -> Vec<Tensor> {
-    let x = Tensor::with_layout(vec![8, 8], 1.0, Device::CPU, Layout::Contiguous, atenia_engine::tensor::DType::F32);
-    let wa = Tensor::with_layout(vec![8, 8], 0.5, Device::CPU, Layout::Contiguous, atenia_engine::tensor::DType::F32);
-    let wb = Tensor::with_layout(vec![8, 8], 0.5, Device::CPU, Layout::Contiguous, atenia_engine::tensor::DType::F32);
+    let x = Tensor::with_layout(
+        vec![8, 8],
+        1.0,
+        Device::CPU,
+        Layout::Contiguous,
+        atenia_engine::tensor::DType::F32,
+    );
+    let wa = Tensor::with_layout(
+        vec![8, 8],
+        0.5,
+        Device::CPU,
+        Layout::Contiguous,
+        atenia_engine::tensor::DType::F32,
+    );
+    let wb = Tensor::with_layout(
+        vec![8, 8],
+        0.5,
+        Device::CPU,
+        Layout::Contiguous,
+        atenia_engine::tensor::DType::F32,
+    );
     vec![x, wa, wb]
 }
 
@@ -45,14 +63,18 @@ fn apx_7_6_hpge_equivalence_with_sequential() {
     let wa = inputs.remove(0);
     let wb = inputs.remove(0);
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.4"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.4");
+    }
     let mut g_seq = make_branch_graph();
     // 1 and 2 are parameters in make_branch_graph.
     g_seq.nodes[1].set_output(wa.clone());
     g_seq.nodes[2].set_output(wb.clone());
     let out_seq = g_seq.execute(vec![x.clone()]);
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.6"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.6");
+    }
     let mut g_prio = make_branch_graph();
     g_prio.nodes[1].set_output(wa);
     g_prio.nodes[2].set_output(wb);
@@ -78,13 +100,17 @@ fn apx_7_6_hpge_performance_sanity() {
         t0.elapsed().as_secs_f64() * 1000.0
     }
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.4"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.4");
+    }
     let mut g_seq = make_branch_graph();
     g_seq.nodes[1].set_output(wa.clone());
     g_seq.nodes[2].set_output(wb.clone());
     let t_seq = now_ms(|| g_seq.execute(vec![x.clone()]));
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.6"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.6");
+    }
     let mut g_prio = make_branch_graph();
     g_prio.nodes[1].set_output(wa);
     g_prio.nodes[2].set_output(wb);

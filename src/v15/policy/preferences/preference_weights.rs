@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
-use crate::v15::policy::evidence::snapshot::PolicyEvidenceSnapshot;
 use crate::v15::policy::evidence::signals::PolicySignalKind;
+use crate::v15::policy::evidence::snapshot::PolicyEvidenceSnapshot;
 use crate::v15::policy::preferences::user_preferences::UserPreferences;
 use crate::v15::policy::types::DecisionBias;
 
@@ -27,8 +27,7 @@ pub fn apply_user_preferences(
                         risk_score = signal.score;
                     }
                 }
-                PolicySignalKind::HighMemoryPressure
-                | PolicySignalKind::FragmentationWarning => {
+                PolicySignalKind::HighMemoryPressure | PolicySignalKind::FragmentationWarning => {
                     // Memory-related risk also contributes, but slightly less.
                     let contrib = 0.7 * signal.score;
                     if contrib > risk_score {

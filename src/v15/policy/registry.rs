@@ -6,7 +6,7 @@ use std::sync::Arc;
 use super::policy::ExecutionPolicy;
 
 pub struct PolicyRegistry {
-    policies: HashMap<&'static str, Arc<dyn ExecutionPolicy>>, 
+    policies: HashMap<&'static str, Arc<dyn ExecutionPolicy>>,
 }
 
 impl PolicyRegistry {

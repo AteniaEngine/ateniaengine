@@ -241,10 +241,9 @@ pub const CPU_SELF_CONTRIBUTION_MIN: f32 = 0.50;
 /// changes behavior, it only adds diagnostic context to the log.
 pub fn format_gpu_util_fragment(conditions: &GuardConditions) -> String {
     match (conditions.gpu_util_total, conditions.gpu_util_self) {
-        (Some(total), Some(self_)) => format!(
-            " gpu_util_total={:.2}, gpu_util_self={:.2},",
-            total, self_
-        ),
+        (Some(total), Some(self_)) => {
+            format!(" gpu_util_total={:.2}, gpu_util_self={:.2},", total, self_)
+        }
         _ => " gpu_util=n/a,".to_string(),
     }
 }
@@ -390,9 +389,7 @@ pub const DEEP_DEGRADE_RAM_THRESHOLD: f32 = 0.85;
 /// always safe).
 pub fn dual_memory_pressure(conditions: &GuardConditions) -> bool {
     match (conditions.vram_pressure, conditions.ram_pressure) {
-        (Some(v), Some(r)) => {
-            v > DEEP_DEGRADE_VRAM_THRESHOLD && r > DEEP_DEGRADE_RAM_THRESHOLD
-        }
+        (Some(v), Some(r)) => v > DEEP_DEGRADE_VRAM_THRESHOLD && r > DEEP_DEGRADE_RAM_THRESHOLD,
         _ => false,
     }
 }
@@ -414,10 +411,7 @@ pub fn dual_memory_pressure(conditions: &GuardConditions) -> bool {
 pub fn format_memory_fragment(conditions: &GuardConditions) -> String {
     let total = conditions.memory_pressure;
     match (conditions.vram_pressure, conditions.ram_pressure) {
-        (Some(v), Some(r)) => format!(
-            " memory=vram={:.2},ram={:.2},total={:.2},",
-            v, r, total
-        ),
+        (Some(v), Some(r)) => format!(" memory=vram={:.2},ram={:.2},total={:.2},", v, r, total),
         (Some(v), None) => format!(" memory=vram={:.2},total={:.2},", v, total),
         (None, Some(r)) => format!(" memory=ram={:.2},total={:.2},", r, total),
         (None, None) => " memory=n/a,".to_string(),
@@ -792,8 +786,5 @@ pub enum ExecutionAbortReason {
     /// illegal given the current `ExecutionContract` (e.g. continuing
     /// under a pre-OOM signal while stability is required). The
     /// message comes from `GuardError::IllegalAction`.
-    GuardEvaluationFailed {
-        at_node: usize,
-        message: String,
-    },
+    GuardEvaluationFailed { at_node: usize, message: String },
 }

@@ -42,20 +42,30 @@ pub fn decide_pgl(m: usize, k: usize, n: usize, threads: usize) -> PGLDecision {
     let flops = (m * k * n) as f64;
 
     if flops < 5e7 {
-        return PGLDecision { strategy: PGLStrategy::Seq };
+        return PGLDecision {
+            strategy: PGLStrategy::Seq,
+        };
     }
 
     if flops < 5e8 {
         if threads <= 8 {
-            return PGLDecision { strategy: PGLStrategy::Pex };
+            return PGLDecision {
+                strategy: PGLStrategy::Pex,
+            };
         } else {
-            return PGLDecision { strategy: PGLStrategy::WorkStealing };
+            return PGLDecision {
+                strategy: PGLStrategy::WorkStealing,
+            };
         }
     }
 
     if threads >= 8 {
-        PGLDecision { strategy: PGLStrategy::WorkStealing }
+        PGLDecision {
+            strategy: PGLStrategy::WorkStealing,
+        }
     } else {
-        PGLDecision { strategy: PGLStrategy::Pex }
+        PGLDecision {
+            strategy: PGLStrategy::Pex,
+        }
     }
 }

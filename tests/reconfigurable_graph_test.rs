@@ -33,8 +33,7 @@ fn make_kernel(name: &str, kind: KernelKind) -> KernelProfile {
 }
 
 fn node_targets(plan: &GraphPlacementPlan) -> Vec<(u64, ExecutionTarget)> {
-    plan
-        .placements
+    plan.placements
         .iter()
         .map(|p| (p.node_id, p.target))
         .collect()
@@ -76,8 +75,7 @@ fn graph_can_replan_with_different_snapshots() {
 
     // High VRAM pressure forces CPU fallback for GPU-friendly kernels.
     assert!(
-        targets_b[0].1 == ExecutionTarget::CpuFallback
-            || targets_b[0].1 == ExecutionTarget::Cpu
+        targets_b[0].1 == ExecutionTarget::CpuFallback || targets_b[0].1 == ExecutionTarget::Cpu
     );
     assert_eq!(targets_b[1].1, ExecutionTarget::Cpu);
 

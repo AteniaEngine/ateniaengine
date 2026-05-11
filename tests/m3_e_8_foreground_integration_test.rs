@@ -21,16 +21,14 @@
 //!    calls invoke each probe exactly once per cache miss, zero
 //!    times during cache hits.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use atenia_engine::amm::cpu_probe::{CpuProbeApi, CpuProbeError, CpuSnapshot};
 use atenia_engine::amm::foreground_probe::{
     ForegroundProbeApi, ForegroundProbeError, ForegroundSnapshot,
 };
-use atenia_engine::amm::gpu_util_probe::{
-    GpuUtilProbeApi, GpuUtilProbeError, GpuUtilSnapshot,
-};
+use atenia_engine::amm::gpu_util_probe::{GpuUtilProbeApi, GpuUtilProbeError, GpuUtilSnapshot};
 use atenia_engine::amm::signal_bus::SignalBus;
 
 // --- mock probes --------------------------------------------------
@@ -145,8 +143,14 @@ fn test_foreground_field_populated_as_atenia() {
     let cpu = Arc::new(FixedCpuProbe::new(0.10, 0.05));
     let gpu = Arc::new(FixedGpuUtilProbe::new(0.20, 0.10));
     let fg = Arc::new(FixedForegroundProbe::new(Some(true)));
-    let bus =
-        SignalBus::with_probes(Some(cpu.clone()), Some(gpu.clone()), Some(fg.clone()), None, None, None);
+    let bus = SignalBus::with_probes(
+        Some(cpu.clone()),
+        Some(gpu.clone()),
+        Some(fg.clone()),
+        None,
+        None,
+        None,
+    );
 
     let Some(c) = bus.collect_guard_conditions() else {
         println!(
@@ -228,8 +232,14 @@ fn test_foreground_failure_does_not_contaminate_other_signals() {
     let cpu = Arc::new(FixedCpuProbe::new(0.55, 0.25));
     let gpu = Arc::new(FixedGpuUtilProbe::new(0.33, 0.11));
     let fg = Arc::new(FailingForegroundProbe::new());
-    let bus =
-        SignalBus::with_probes(Some(cpu.clone()), Some(gpu.clone()), Some(fg.clone()), None, None, None);
+    let bus = SignalBus::with_probes(
+        Some(cpu.clone()),
+        Some(gpu.clone()),
+        Some(fg.clone()),
+        None,
+        None,
+        None,
+    );
 
     let Some(c) = bus.collect_guard_conditions() else {
         println!(
@@ -258,8 +268,14 @@ fn test_cache_monotonicity_with_all_three_probes() {
     let cpu = Arc::new(FixedCpuProbe::new(0.20, 0.10));
     let gpu = Arc::new(FixedGpuUtilProbe::new(0.33, 0.11));
     let fg = Arc::new(FixedForegroundProbe::new(Some(true)));
-    let bus =
-        SignalBus::with_probes(Some(cpu.clone()), Some(gpu.clone()), Some(fg.clone()), None, None, None);
+    let bus = SignalBus::with_probes(
+        Some(cpu.clone()),
+        Some(gpu.clone()),
+        Some(fg.clone()),
+        None,
+        None,
+        None,
+    );
 
     // First call: populates the cache (if memory probe works).
     let first = bus.collect_guard_conditions();
@@ -290,8 +306,16 @@ fn test_cache_monotonicity_with_all_three_probes() {
         probes_after_first,
         "probe_calls_count must stay flat during cached burst"
     );
-    assert_eq!(cpu.calls(), cpu_calls_after_first, "CPU probe must not re-fire");
-    assert_eq!(gpu.calls(), gpu_calls_after_first, "GPU probe must not re-fire");
+    assert_eq!(
+        cpu.calls(),
+        cpu_calls_after_first,
+        "CPU probe must not re-fire"
+    );
+    assert_eq!(
+        gpu.calls(),
+        gpu_calls_after_first,
+        "GPU probe must not re-fire"
+    );
     assert_eq!(
         fg.calls(),
         fg_calls_after_first,

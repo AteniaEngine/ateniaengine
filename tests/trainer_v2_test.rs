@@ -1,6 +1,6 @@
-﻿use atenia_engine::amg::builder::GraphBuilder;
+use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::optim::adamw::AdamW;
-use atenia_engine::tensor::{Device, DType, Layout, Tensor};
+use atenia_engine::tensor::{DType, Device, Layout, Tensor};
 use atenia_engine::training::trainer_v2::TrainerV2;
 
 fn scalar(value: f32) -> Tensor {
@@ -39,5 +39,8 @@ fn trainer_v2_reduces_loss_on_linear_problem() {
 
     let first = *losses.first().unwrap();
     let last = *losses.last().unwrap();
-    assert!(last < first, "loss did not decrease: first={first}, last={last}");
+    assert!(
+        last < first,
+        "loss did not decrease: first={first}, last={last}"
+    );
 }

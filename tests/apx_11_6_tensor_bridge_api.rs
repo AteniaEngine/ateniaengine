@@ -1,5 +1,5 @@
-﻿use atenia_engine::tensor::{Tensor, Device, DType};
 use atenia_engine::gpu::tensor::manager::GpuTensorManager;
+use atenia_engine::tensor::{DType, Device, Tensor};
 
 #[test]
 fn test_tensor_bridge_api() {

@@ -35,12 +35,10 @@
 //! transfers to real models because the math is the same.
 
 use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::amg::weight_store::WeightStore;
-use atenia_engine::amg::kv_cache::KvCacheBuildSpec;
 use atenia_engine::amg::graph::Graph;
-use atenia_engine::nn::llama::{
-    build_llama, build_llama_with_store, LlamaConfig, LlamaRuntime,
-};
+use atenia_engine::amg::kv_cache::KvCacheBuildSpec;
+use atenia_engine::amg::weight_store::WeightStore;
+use atenia_engine::nn::llama::{LlamaConfig, LlamaRuntime, build_llama, build_llama_with_store};
 use atenia_engine::tensor::Tensor;
 
 /// Tiny MHA Llama config: 2 layers × 2 heads × head_dim 4 →
@@ -74,8 +72,8 @@ fn mini_config() -> LlamaConfig {
 /// index and element index keeps the test self-contained
 /// (no rand crate, fully reproducible across runs).
 fn deterministic_weight(param_index: usize, element_index: usize, numel: usize) -> f32 {
-    let seed = (param_index as u64).wrapping_mul(2654435761)
-        ^ (element_index as u64).wrapping_mul(40503);
+    let seed =
+        (param_index as u64).wrapping_mul(2654435761) ^ (element_index as u64).wrapping_mul(40503);
     // Map the hash into a small float interval so RmsNorm and
     // softmax stay numerically well-behaved. Values in
     // ~ [-0.2, 0.2] keep the layer outputs O(1).
@@ -101,14 +99,15 @@ fn fill_graph_with_deterministic_weights(
         // small random — keeps the RMSNorm scale sensible.
         let _ = name;
         let final_data = if name.ends_with("layernorm.weight") || name == "model.norm.weight" {
-            (0..numel).map(|j| 1.0 + deterministic_weight(i, j, numel) * 0.1).collect()
+            (0..numel)
+                .map(|j| 1.0 + deterministic_weight(i, j, numel) * 0.1)
+                .collect()
         } else {
             data
         };
-        graph.overwrite_parameter(
-            node_id,
-            Tensor::new_cpu(shape, final_data),
-        ).expect("overwrite_parameter failed");
+        graph
+            .overwrite_parameter(node_id, Tensor::new_cpu(shape, final_data))
+            .expect("overwrite_parameter failed");
     }
 }
 
@@ -128,7 +127,11 @@ fn build_reference_graph(cfg: &LlamaConfig, seq: usize) -> (Graph, Vec<usize>, V
 /// the test doesn't depend on `extract_from_graph` (covered
 /// by M5.c.2.b's own tests).
 fn read_param_data(graph: &Graph, node_id: usize) -> Vec<f32> {
-    graph.nodes[node_id].output.as_ref().unwrap().copy_to_cpu_vec()
+    graph.nodes[node_id]
+        .output
+        .as_ref()
+        .unwrap()
+        .copy_to_cpu_vec()
 }
 
 fn build_store_from_reference(
@@ -147,20 +150,27 @@ fn build_store_from_reference(
 
 fn argmax_per_position(logits: &Tensor) -> Vec<usize> {
     let shape = &logits.shape;
-    let batch = shape[0]; let seq = shape[1]; let vocab = shape[2];
+    let batch = shape[0];
+    let seq = shape[1];
+    let vocab = shape[2];
     assert_eq!(batch, 1);
     let data = logits.copy_to_cpu_vec();
-    (0..seq).map(|s| {
-        let row = &data[s * vocab .. (s + 1) * vocab];
-        row.iter().enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-            .map(|(i, _)| i)
-            .unwrap()
-    }).collect()
+    (0..seq)
+        .map(|s| {
+            let row = &data[s * vocab..(s + 1) * vocab];
+            row.iter()
+                .enumerate()
+                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                .map(|(i, _)| i)
+                .unwrap()
+        })
+        .collect()
 }
 
 fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs())
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| (x - y).abs())
         .fold(0.0_f32, |acc, d| acc.max(d))
 }
 
@@ -176,7 +186,11 @@ fn no_cache_path_matches_build_llama_bit_exact() {
 
     // Reference: classic build_llama with deterministic weights.
     let (mut g_ref, ref_ids, ref_names) = build_reference_graph(&cfg, seq);
-    let logits_ref = g_ref.execute(vec![tokens.clone()]).into_iter().next().unwrap();
+    let logits_ref = g_ref
+        .execute(vec![tokens.clone()])
+        .into_iter()
+        .next()
+        .unwrap();
 
     // Cached path with kv_cache = None: same architecture, same
     // weights through the WeightStore.
@@ -191,12 +205,20 @@ fn no_cache_path_matches_build_llama_bit_exact() {
     let logits_shared = g_shared.execute(vec![tokens]).into_iter().next().unwrap();
 
     assert_eq!(logits_ref.shape, logits_shared.shape);
-    let diff = max_abs_diff(&logits_ref.copy_to_cpu_vec(), &logits_shared.copy_to_cpu_vec());
-    assert!(diff < 1e-6,
-        "no-cache parity: max-abs logit diff {diff:.3e} exceeds 1e-6 tolerance");
+    let diff = max_abs_diff(
+        &logits_ref.copy_to_cpu_vec(),
+        &logits_shared.copy_to_cpu_vec(),
+    );
+    assert!(
+        diff < 1e-6,
+        "no-cache parity: max-abs logit diff {diff:.3e} exceeds 1e-6 tolerance"
+    );
 
     // Argmax must match exactly.
-    assert_eq!(argmax_per_position(&logits_ref), argmax_per_position(&logits_shared));
+    assert_eq!(
+        argmax_per_position(&logits_ref),
+        argmax_per_position(&logits_shared)
+    );
 }
 
 // ============================================================
@@ -211,7 +233,11 @@ fn empty_cache_path_matches_no_cache_at_every_position() {
 
     // Reference (no-cache).
     let (mut g_ref, ref_ids, ref_names) = build_reference_graph(&cfg, seq);
-    let logits_ref = g_ref.execute(vec![tokens.clone()]).into_iter().next().unwrap();
+    let logits_ref = g_ref
+        .execute(vec![tokens.clone()])
+        .into_iter()
+        .next()
+        .unwrap();
 
     // Cache-aware path with cached_len = 0. Concat against an
     // empty cache, RoPE offset = 0, mask shape [1,1,4,4]. Should
@@ -221,21 +247,30 @@ fn empty_cache_path_matches_no_cache_at_every_position() {
     let token_input_id = gb.input();
     let runtime = LlamaRuntime { batch: 1, seq };
     let spec = KvCacheBuildSpec { cached_len: 0 };
-    let h = build_llama_with_store(
-        &mut gb, &cfg, &runtime, token_input_id, &store, Some(&spec),
-    ).expect("build_llama_with_store(empty cache) must succeed");
+    let h = build_llama_with_store(&mut gb, &cfg, &runtime, token_input_id, &store, Some(&spec))
+        .expect("build_llama_with_store(empty cache) must succeed");
     let _ = gb.output(h.logits_id);
     let mut g_cache = gb.build();
     let logits_cache = g_cache.execute(vec![tokens]).into_iter().next().unwrap();
 
-    let diff = max_abs_diff(&logits_ref.copy_to_cpu_vec(), &logits_cache.copy_to_cpu_vec());
-    assert!(diff < 1e-3,
-        "empty-cache parity: max-abs logit diff {diff:.3e} exceeds R2 1e-3 tolerance");
-    assert_eq!(argmax_per_position(&logits_ref), argmax_per_position(&logits_cache),
-        "empty-cache argmax must match no-cache argmax at every position");
+    let diff = max_abs_diff(
+        &logits_ref.copy_to_cpu_vec(),
+        &logits_cache.copy_to_cpu_vec(),
+    );
+    assert!(
+        diff < 1e-3,
+        "empty-cache parity: max-abs logit diff {diff:.3e} exceeds R2 1e-3 tolerance"
+    );
+    assert_eq!(
+        argmax_per_position(&logits_ref),
+        argmax_per_position(&logits_cache),
+        "empty-cache argmax must match no-cache argmax at every position"
+    );
 
     // Sanity: handles surface populated.
-    let kv = h.kv_handles.expect("kv_handles must be Some when build had cache spec");
+    let kv = h
+        .kv_handles
+        .expect("kv_handles must be Some when build had cache spec");
     assert_eq!(kv.per_layer.len(), cfg.num_hidden_layers);
 }
 
@@ -253,37 +288,54 @@ fn prefill_then_decode_steps_match_no_cache_reference_r2() {
     // Reference forward at full length seq=4, no cache.
     let tokens_full: Vec<f32> = (0..total_len).map(|i| i as f32).collect();
     let (mut g_ref, ref_ids, ref_names) = build_reference_graph(&cfg, total_len);
-    let tokens_full_tensor =
-        Tensor::new_cpu(vec![1, total_len], tokens_full.clone());
-    let logits_ref = g_ref.execute(vec![tokens_full_tensor]).into_iter().next().unwrap();
+    let tokens_full_tensor = Tensor::new_cpu(vec![1, total_len], tokens_full.clone());
+    let logits_ref = g_ref
+        .execute(vec![tokens_full_tensor])
+        .into_iter()
+        .next()
+        .unwrap();
     let logits_ref_data = logits_ref.copy_to_cpu_vec();
     let vocab = cfg.vocab_size;
 
     let store = build_store_from_reference(&g_ref, &ref_ids, &ref_names);
 
     // ---- Prefill at seq=prefill_len, cached_len=0 ----
-    let prefill_tokens =
-        Tensor::new_cpu(vec![1, prefill_len], tokens_full[..prefill_len].to_vec());
+    let prefill_tokens = Tensor::new_cpu(vec![1, prefill_len], tokens_full[..prefill_len].to_vec());
     let mut gb_p = GraphBuilder::new();
     let token_in_p = gb_p.input();
-    let runtime_p = LlamaRuntime { batch: 1, seq: prefill_len };
+    let runtime_p = LlamaRuntime {
+        batch: 1,
+        seq: prefill_len,
+    };
     let spec_p = KvCacheBuildSpec { cached_len: 0 };
     let h_p = build_llama_with_store(
-        &mut gb_p, &cfg, &runtime_p, token_in_p, &store, Some(&spec_p),
-    ).expect("prefill build");
+        &mut gb_p,
+        &cfg,
+        &runtime_p,
+        token_in_p,
+        &store,
+        Some(&spec_p),
+    )
+    .expect("prefill build");
     let _ = gb_p.output(h_p.logits_id);
     let mut g_p = gb_p.build();
-    let logits_p = g_p.execute(vec![prefill_tokens]).into_iter().next().unwrap();
+    let logits_p = g_p
+        .execute(vec![prefill_tokens])
+        .into_iter()
+        .next()
+        .unwrap();
     let logits_p_data = logits_p.copy_to_cpu_vec();
 
     // Compare prefill logits at positions 0..prefill_len with
     // reference at the same positions.
     for pos in 0..prefill_len {
-        let r = &logits_ref_data[pos * vocab .. (pos + 1) * vocab];
-        let p = &logits_p_data[pos * vocab .. (pos + 1) * vocab];
+        let r = &logits_ref_data[pos * vocab..(pos + 1) * vocab];
+        let p = &logits_p_data[pos * vocab..(pos + 1) * vocab];
         let diff = max_abs_diff(r, p);
-        assert!(diff < 1e-3,
-            "prefill position {pos}: max-abs diff {diff:.3e} > 1e-3");
+        assert!(
+            diff < 1e-3,
+            "prefill position {pos}: max-abs diff {diff:.3e} > 1e-3"
+        );
     }
 
     // Harvest K_full, V_full per layer from the prefill graph.
@@ -291,10 +343,16 @@ fn prefill_then_decode_steps_match_no_cache_reference_r2() {
     let mut cache_k_per_layer: Vec<Tensor> = Vec::with_capacity(kv_p.per_layer.len());
     let mut cache_v_per_layer: Vec<Tensor> = Vec::with_capacity(kv_p.per_layer.len());
     for layer in &kv_p.per_layer {
-        let k = g_p.nodes[layer.k_full_node_id].output.as_ref()
-            .expect("k_full not materialised").clone();
-        let v = g_p.nodes[layer.v_full_node_id].output.as_ref()
-            .expect("v_full not materialised").clone();
+        let k = g_p.nodes[layer.k_full_node_id]
+            .output
+            .as_ref()
+            .expect("k_full not materialised")
+            .clone();
+        let v = g_p.nodes[layer.v_full_node_id]
+            .output
+            .as_ref()
+            .expect("v_full not materialised")
+            .clone();
         cache_k_per_layer.push(k);
         cache_v_per_layer.push(v);
     }
@@ -315,8 +373,14 @@ fn prefill_then_decode_steps_match_no_cache_reference_r2() {
         let runtime_d = LlamaRuntime { batch: 1, seq: 1 };
         let spec_d = KvCacheBuildSpec { cached_len };
         let h_d = build_llama_with_store(
-            &mut gb_d, &cfg, &runtime_d, token_in_d, &store, Some(&spec_d),
-        ).expect("decode build");
+            &mut gb_d,
+            &cfg,
+            &runtime_d,
+            token_in_d,
+            &store,
+            Some(&spec_d),
+        )
+        .expect("decode build");
         let _ = gb_d.output(h_d.logits_id);
         let mut g_d = gb_d.build();
 
@@ -334,30 +398,50 @@ fn prefill_then_decode_steps_match_no_cache_reference_r2() {
         assert_eq!(logits_d.shape, vec![1, 1, vocab]);
 
         // Compare to reference logits at the same absolute position.
-        let r = &logits_ref_data[cached_len * vocab .. (cached_len + 1) * vocab];
+        let r = &logits_ref_data[cached_len * vocab..(cached_len + 1) * vocab];
         let p = &logits_d_data;
         let diff = max_abs_diff(r, p);
-        assert!(diff < 1e-3,
-            "decode step {step} (cached_len={cached_len}): max-abs diff {diff:.3e} > 1e-3");
+        assert!(
+            diff < 1e-3,
+            "decode step {step} (cached_len={cached_len}): max-abs diff {diff:.3e} > 1e-3"
+        );
 
         // Argmax must match position-wise.
-        let r_amax = r.iter().enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).unwrap().0;
-        let p_amax = p.iter().enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).unwrap().0;
-        assert_eq!(r_amax, p_amax,
-            "decode step {step}: argmax mismatch (ref={r_amax}, decode={p_amax})");
+        let r_amax = r
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .unwrap()
+            .0;
+        let p_amax = p
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .unwrap()
+            .0;
+        assert_eq!(
+            r_amax, p_amax,
+            "decode step {step}: argmax mismatch (ref={r_amax}, decode={p_amax})"
+        );
 
         // Harvest K_full, V_full for next step's cache.
         for (layer_idx, layer) in kv_d.per_layer.iter().enumerate() {
-            cache_k_per_layer[layer_idx] = g_d.nodes[layer.k_full_node_id].output
-                .as_ref().expect("k_full").clone();
-            cache_v_per_layer[layer_idx] = g_d.nodes[layer.v_full_node_id].output
-                .as_ref().expect("v_full").clone();
+            cache_k_per_layer[layer_idx] = g_d.nodes[layer.k_full_node_id]
+                .output
+                .as_ref()
+                .expect("k_full")
+                .clone();
+            cache_v_per_layer[layer_idx] = g_d.nodes[layer.v_full_node_id]
+                .output
+                .as_ref()
+                .expect("v_full")
+                .clone();
         }
     }
 
     // After all decode steps, cache should have grown to total_len.
-    assert_eq!(cache_k_per_layer[0].shape[2], total_len,
-        "K cache final length should equal total_len after {n_decode_steps} steps");
+    assert_eq!(
+        cache_k_per_layer[0].shape[2], total_len,
+        "K cache final length should equal total_len after {n_decode_steps} steps"
+    );
 }

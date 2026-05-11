@@ -1,5 +1,5 @@
-use crate::v17::compute::tensor::Tensor;
 use crate::v17::cnn::conv2d::AbortFlag;
+use crate::v17::compute::tensor::Tensor;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActivationError {
@@ -8,10 +8,7 @@ pub enum ActivationError {
 }
 
 /// Elementwise ReLU activation: max(x, 0.0), without mutating the input.
-pub fn relu(
-    input: &Tensor,
-    abort_flag: &AbortFlag,
-) -> Result<Tensor, ActivationError> {
+pub fn relu(input: &Tensor, abort_flag: &AbortFlag) -> Result<Tensor, ActivationError> {
     if abort_flag.is_aborted() {
         return Err(ActivationError::Aborted);
     }
@@ -28,5 +25,8 @@ pub fn relu(
         out_data[i] = if x < 0.0 { 0.0 } else { x };
     }
 
-    Ok(Tensor { shape, data: out_data })
+    Ok(Tensor {
+        shape,
+        data: out_data,
+    })
 }

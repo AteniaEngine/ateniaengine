@@ -194,7 +194,10 @@ fn speculation_never_violates_contract_abortability() {
     let mut exec = SpeculativeExecutor::new(&plan, ctx);
 
     let result = exec.run();
-    assert!(matches!(result, Err(SpeculativeError::ContractViolation(_))));
+    assert!(matches!(
+        result,
+        Err(SpeculativeError::ContractViolation(_))
+    ));
 }
 
 #[test]

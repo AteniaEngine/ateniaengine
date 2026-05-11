@@ -18,7 +18,9 @@ fn apx_12_3_autotuner_basic() {
 fn apx_12_3_cpu_fallback_mode() {
     use atenia_engine::gpu::autotuner::*;
 
-    fn runner(_: (u32, u32, u32, u32)) -> f32 { 1.0 }
+    fn runner(_: (u32, u32, u32, u32)) -> f32 {
+        1.0
+    }
 
     let r = autotune_matmul(128, 89, &runner, false);
     assert_eq!(r.block_x, 16);

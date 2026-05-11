@@ -1,10 +1,10 @@
 // APX 9.17 / 9.19 / 9.20 — SIMT Warp Model (Lanes, Warp Masks, Divergence, Pipeline)
 // Simulated SIMT model, 100% CPU-only, without real GPU nor parallelism.
 
-use crate::apx9::vgpu_divergence::{WarpMask, DivergenceStack};
-use crate::apx9::vgpu_scoreboard::VGPUScoreboard;
-use crate::apx9::vgpu_pipeline::PipelineStage;
+use crate::apx9::vgpu_divergence::{DivergenceStack, WarpMask};
 use crate::apx9::vgpu_instr::VGPUInstr;
+use crate::apx9::vgpu_pipeline::PipelineStage;
+use crate::apx9::vgpu_scoreboard::VGPUScoreboard;
 
 #[derive(Debug, Clone)]
 pub struct VGPULane {

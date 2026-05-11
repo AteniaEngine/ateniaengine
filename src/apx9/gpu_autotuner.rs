@@ -15,7 +15,11 @@ impl GpuAutoTuner {
     }
 
     pub fn record(&mut self, size: usize, cpu_t: u64, gpu_t: u64) {
-        self.samples.push(GpuTunerSample { size, cpu_time_us: cpu_t, gpu_time_us: gpu_t });
+        self.samples.push(GpuTunerSample {
+            size,
+            cpu_time_us: cpu_t,
+            gpu_time_us: gpu_t,
+        });
     }
 
     pub fn decide(&self, size: usize) -> GpuDecision {
@@ -28,14 +32,16 @@ impl GpuAutoTuner {
         let mut count = 0.0;
 
         for s in &self.samples {
-            if (s.size as i32 - size as i32).abs() < (size/2) as i32 {
+            if (s.size as i32 - size as i32).abs() < (size / 2) as i32 {
                 cpu_avg += s.cpu_time_us as f64;
                 gpu_avg += s.gpu_time_us as f64;
                 count += 1.0;
             }
         }
 
-        if count < 1.0 { return GpuDecision::Cpu; }
+        if count < 1.0 {
+            return GpuDecision::Cpu;
+        }
 
         cpu_avg /= count;
         gpu_avg /= count;

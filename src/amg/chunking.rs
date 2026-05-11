@@ -63,13 +63,7 @@ pub fn merge_chunks(chunks: Vec<Tensor>, original_shape: Vec<usize>) -> Tensor {
         data.extend_from_slice(c.as_cpu_slice());
     }
 
-    let mut out = Tensor::new_cpu_with_layout(
-        original_shape,
-        data,
-        device,
-        dtype,
-        layout,
-    );
+    let mut out = Tensor::new_cpu_with_layout(original_shape, data, device, dtype, layout);
     out.strides = strides;
     out
 }

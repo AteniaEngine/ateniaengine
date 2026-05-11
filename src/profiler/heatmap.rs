@@ -8,7 +8,10 @@ pub struct HeatEntry {
 
 impl HeatEntry {
     pub fn new() -> Self {
-        Self { count: 0, avg_ms: 0.0 }
+        Self {
+            count: 0,
+            avg_ms: 0.0,
+        }
     }
 
     pub fn update(&mut self, time_ms: f32) {

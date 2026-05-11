@@ -1,4 +1,4 @@
-use atenia_engine::apx7::dynamic_load::{sample_system_load, choose_strategy};
+use atenia_engine::apx7::dynamic_load::{choose_strategy, sample_system_load};
 
 #[test]
 #[ignore = "benchmark — run with cargo test -- --ignored"]
@@ -12,8 +12,6 @@ fn apx_7_4_dynamic_bench() {
 
     println!(
         "[APX 7.4] load={:.1}% threads={} -> strategy={}",
-        snap.cpu_load,
-        snap.threads_available,
-        strategy,
+        snap.cpu_load, snap.threads_available, strategy,
     );
 }

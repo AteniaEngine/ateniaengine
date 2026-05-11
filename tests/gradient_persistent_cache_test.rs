@@ -1,8 +1,6 @@
 use std::fs;
 
-use atenia_engine::v13::autograd::{
-    persist_grads_after_backward, warm_grads_before_backward,
-};
+use atenia_engine::v13::autograd::{persist_grads_after_backward, warm_grads_before_backward};
 use atenia_engine::v13::hybrid_memory::HybridMemoryManager;
 use atenia_engine::v13::memory_types::{MemoryTier, MoveError, StorageBacking};
 use atenia_engine::v13::persistent_cache::{CacheKind, PersistentHybridCache};
@@ -34,7 +32,7 @@ impl VramAdapter for FakeVramAdapter {
             Err(_) => {
                 return Err(MoveError::BackendUnavailable(
                     "Failed to lock FakeVramAdapter storage".to_string(),
-                ))
+                ));
             }
         };
         guard.insert(id.to_string(), data.to_vec());
@@ -47,7 +45,7 @@ impl VramAdapter for FakeVramAdapter {
             Err(_) => {
                 return Err(MoveError::BackendUnavailable(
                     "Failed to lock FakeVramAdapter storage".to_string(),
-                ))
+                ));
             }
         };
         match guard.get(id) {
@@ -64,7 +62,7 @@ impl VramAdapter for FakeVramAdapter {
             Err(_) => {
                 return Err(MoveError::BackendUnavailable(
                     "Failed to lock FakeVramAdapter storage".to_string(),
-                ))
+                ));
             }
         };
         guard.remove(id);
@@ -122,7 +120,10 @@ fn persist_and_restore_gradient_roundtrip() {
         Some(StorageBacking::Ram(restored_bytes)) => {
             assert_eq!(restored_bytes, &bytes);
         }
-        other => panic!("expected RAM backing for restored gradient, got {:?}", other),
+        other => panic!(
+            "expected RAM backing for restored gradient, got {:?}",
+            other
+        ),
     }
 
     let _ = fs::remove_dir_all(root);

@@ -1,7 +1,7 @@
-﻿use atenia_engine::amg::builder::GraphBuilder;
+use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::amg::graph::Graph;
 use atenia_engine::nn::linear as nn_linear;
-use atenia_engine::tensor::{Tensor, Device, DType, Layout};
+use atenia_engine::tensor::{DType, Device, Layout, Tensor};
 
 fn build_qkv_sum_graph() -> (Graph, usize, usize, usize, usize, usize, usize, usize) {
     let mut gb = GraphBuilder::new();
@@ -24,9 +24,18 @@ fn build_qkv_sum_graph() -> (Graph, usize, usize, usize, usize, usize, usize, us
 }
 
 fn assert_close(a: &Tensor, b: &Tensor, tol: f32) {
-    assert_eq!(a.shape, b.shape, "shape mismatch: {:?} vs {:?}", a.shape, b.shape);
+    assert_eq!(
+        a.shape, b.shape,
+        "shape mismatch: {:?} vs {:?}",
+        a.shape, b.shape
+    );
     assert_eq!(a.numel(), b.numel(), "len mismatch");
-    for (i, (va, vb)) in a.as_cpu_slice().iter().zip(b.as_cpu_slice().iter()).enumerate() {
+    for (i, (va, vb)) in a
+        .as_cpu_slice()
+        .iter()
+        .zip(b.as_cpu_slice().iter())
+        .enumerate()
+    {
         let diff = (va - vb).abs();
         assert!(
             diff <= tol,
@@ -69,7 +78,13 @@ fn test_qkv_backward_math_matches_naive() {
 
     let x = Tensor::with_layout(vec![m, k], 0.5, Device::CPU, Layout::Contiguous, DType::F32);
     let wq = Tensor::with_layout(vec![k, n], 0.1, Device::CPU, Layout::Contiguous, DType::F32);
-    let wk = Tensor::with_layout(vec![k, n], -0.2, Device::CPU, Layout::Contiguous, DType::F32);
+    let wk = Tensor::with_layout(
+        vec![k, n],
+        -0.2,
+        Device::CPU,
+        Layout::Contiguous,
+        DType::F32,
+    );
     let wv = Tensor::with_layout(vec![k, n], 0.3, Device::CPU, Layout::Contiguous, DType::F32);
 
     let inputs = vec![x.clone(), wq.clone(), wk.clone(), wv.clone()];
@@ -136,7 +151,7 @@ fn test_qkv_backward_math_matches_naive() {
     };
 
     // Naive gradients obtained via helper (logical equivalent to case 4.16).
-    let dx_naive  = make_grad(x_id,  &x_t);
+    let dx_naive = make_grad(x_id, &x_t);
     let dwq_naive = make_grad(wq_id, &wq_t);
     let dwk_naive = make_grad(wk_id, &wk_t);
     let dwv_naive = make_grad(wv_id, &wv_t);

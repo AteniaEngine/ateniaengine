@@ -1,4 +1,4 @@
-﻿use atenia_engine::nn::normalization::rmsnorm_backward_parallel;
+use atenia_engine::nn::normalization::rmsnorm_backward_parallel;
 use atenia_engine::nn::softmax::softmax_backward_parallel;
 use atenia_engine::tensor::{Device, Tensor};
 
@@ -8,15 +8,9 @@ fn tensor_from_vec(data: Vec<f32>, shape: &[usize]) -> Tensor {
 
 #[test]
 fn test_parallel_softmax_backward_shapes() {
-    let prob = tensor_from_vec(
-        vec![0.2, 0.3, 0.5, 0.1, 0.1, 0.8],
-        &[2, 3],
-    );
+    let prob = tensor_from_vec(vec![0.2, 0.3, 0.5, 0.1, 0.1, 0.8], &[2, 3]);
 
-    let grad = tensor_from_vec(
-        vec![0.1, -0.2, 0.3, 0.5, -0.3, 0.1],
-        &[2, 3],
-    );
+    let grad = tensor_from_vec(vec![0.1, -0.2, 0.3, 0.5, -0.3, 0.1], &[2, 3]);
 
     let out = softmax_backward_parallel(&prob, &grad);
 

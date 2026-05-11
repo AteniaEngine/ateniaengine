@@ -76,9 +76,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use atenia_engine::demo::{
-    argmax_row, build_and_load_llama, make_context, LlamaLoadMetrics,
-};
+use atenia_engine::demo::{LlamaLoadMetrics, argmax_row, build_and_load_llama, make_context};
 use atenia_engine::nn::llama::LlamaRuntime;
 use atenia_engine::tensor::tensor::Tensor;
 
@@ -118,7 +116,10 @@ fn cache_dir_for(label: &str) -> PathBuf {
 /// pre-M4.9.b progress prints.
 fn build_and_load_13b(
     model_dir: &std::path::Path,
-) -> (atenia_engine::amg::graph::Graph, atenia_engine::nn::llama::LlamaConfig) {
+) -> (
+    atenia_engine::amg::graph::Graph,
+    atenia_engine::nn::llama::LlamaConfig,
+) {
     let runtime = LlamaRuntime { batch: 1, seq: 1 };
     let (graph, _store, metrics): (
         atenia_engine::amg::graph::Graph,
@@ -215,9 +216,7 @@ fn llama2_13b_mode_b_autonomous_trigger_fires_under_high_pressure() {
     let high_ctx = make_context(cache_dir.clone(), /*high_pressure=*/ true);
     graph.set_reactive_context(high_ctx);
 
-    println!(
-        "\n[Mode B] Triggering autonomous DeepDegrade via high-pressure probes ..."
-    );
+    println!("\n[Mode B] Triggering autonomous DeepDegrade via high-pressure probes ...");
     let tokens = Tensor::new_cpu(vec![1, 1], TOKENS.to_vec());
     let trigger_start = Instant::now();
 
@@ -239,7 +238,11 @@ fn llama2_13b_mode_b_autonomous_trigger_fires_under_high_pressure() {
     let spill_bytes = total_bytes_in(&cache_dir);
     println!(
         "    catch_unwind result: {} after {:.2}s",
-        if exec_result.is_ok() { "OK (full forward)" } else { "panic absorbed (M4.7.5.e gap)" },
+        if exec_result.is_ok() {
+            "OK (full forward)"
+        } else {
+            "panic absorbed (M4.7.5.e gap)"
+        },
         trigger_secs,
     );
     println!(
@@ -266,7 +269,8 @@ fn llama2_13b_mode_b_autonomous_trigger_fires_under_high_pressure() {
         spill_bytes > 0,
         "Mode B fired DeepDegrade ({} events) but cache dir is empty ({} bytes); \
          the spill primitive returned without writing anything",
-        dd_events, spill_bytes,
+        dd_events,
+        spill_bytes,
     );
 
     println!(
@@ -335,9 +339,7 @@ fn llama2_13b_mode_c_forced_lru_spill_preserves_argmax() {
     );
 
     // ----- Force the M4.7.5.d 50 % LRU spill -----
-    println!(
-        "\n[Mode C] Forcing deep_degrade_with_lru (SPILL_FRACTION = 0.5) ..."
-    );
+    println!("\n[Mode C] Forcing deep_degrade_with_lru (SPILL_FRACTION = 0.5) ...");
     let spill_start = Instant::now();
     let migration = graph
         .deep_degrade_with_lru(&cache_dir)
@@ -364,7 +366,8 @@ fn llama2_13b_mode_c_forced_lru_spill_preserves_argmax() {
     assert!(
         migration.tensors_migrated < lru_size,
         "Mode C must spill SELECTIVELY: migrated={} >= LRU size={}",
-        migration.tensors_migrated, lru_size
+        migration.tensors_migrated,
+        lru_size
     );
 
     // ----- Pass 2: post-spill forward, lazy restore -----

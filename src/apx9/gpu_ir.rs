@@ -24,11 +24,28 @@ pub enum GpuIrType {
 #[derive(Debug, Clone)]
 pub enum GpuIrStmt {
     Comment(String),
-    Load { dst: String, src: String },
-    Store { dst: String, src: String },
-    AddF32 { dst: String, a: String, b: String },
-    MulF32 { dst: String, a: String, b: String },
-    LocalVar { name: String, ty: GpuIrType },
+    Load {
+        dst: String,
+        src: String,
+    },
+    Store {
+        dst: String,
+        src: String,
+    },
+    AddF32 {
+        dst: String,
+        a: String,
+        b: String,
+    },
+    MulF32 {
+        dst: String,
+        a: String,
+        b: String,
+    },
+    LocalVar {
+        name: String,
+        ty: GpuIrType,
+    },
 
     // Thread control (abstract)
     ThreadIdxX(String),
@@ -46,7 +63,11 @@ pub enum GpuIrStmt {
 
 impl GpuIrKernel {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), params: vec![], body: vec![] }
+        Self {
+            name: name.into(),
+            params: vec![],
+            body: vec![],
+        }
     }
 }
 

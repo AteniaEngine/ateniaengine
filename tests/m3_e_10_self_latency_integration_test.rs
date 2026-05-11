@@ -34,9 +34,7 @@ use atenia_engine::amm::signal_bus::SignalBus;
 use atenia_engine::tensor::{DType, Device, Layout, Tensor};
 use atenia_engine::v15::policy::types::DecisionBias;
 use atenia_engine::v16::contract::constraints::{Constraints, RuntimeState};
-use atenia_engine::v16::contract::execution_contract::{
-    ExecutionBackend, ExecutionContract,
-};
+use atenia_engine::v16::contract::execution_contract::{ExecutionBackend, ExecutionContract};
 use atenia_engine::v16::guards::execution_guard::ExecutionGuard;
 use atenia_engine::v16::guards::guard_action::GuardAction;
 use atenia_engine::v16::guards::guard_conditions::GuardConditions;
@@ -85,13 +83,8 @@ impl ExecutionGuard for AlwaysContinueGuard {
 fn build_small_matmul_graph() -> atenia_engine::amg::graph::Graph {
     let mut gb = GraphBuilder::new();
     let input_id = gb.input();
-    let mut weight = Tensor::with_layout(
-        vec![2, 2],
-        0.0,
-        Device::CPU,
-        Layout::Contiguous,
-        DType::F32,
-    );
+    let mut weight =
+        Tensor::with_layout(vec![2, 2], 0.0, Device::CPU, Layout::Contiguous, DType::F32);
     weight.set_cpu_data(vec![1.0, 0.0, 0.0, 1.0]);
     let w_id = gb.parameter(weight);
     let mm_id = gb.matmul(input_id, w_id);
@@ -100,13 +93,7 @@ fn build_small_matmul_graph() -> atenia_engine::amg::graph::Graph {
 }
 
 fn make_input_tensor() -> Tensor {
-    let mut t = Tensor::with_layout(
-        vec![2, 2],
-        0.0,
-        Device::CPU,
-        Layout::Contiguous,
-        DType::F32,
-    );
+    let mut t = Tensor::with_layout(vec![2, 2], 0.0, Device::CPU, Layout::Contiguous, DType::F32);
     t.set_cpu_data(vec![1.0, 2.0, 3.0, 4.0]);
     t
 }
@@ -148,11 +135,7 @@ fn test_latency_context_populated_when_baseline_ready() {
         "current not ~50ms: {}",
         current
     );
-    assert!(
-        (ratio - 1.0).abs() < 0.1,
-        "ratio not ~1.0: {}",
-        ratio
-    );
+    assert!((ratio - 1.0).abs() < 0.1, "ratio not ~1.0: {}", ratio);
 }
 
 #[test]
@@ -242,7 +225,9 @@ fn test_latency_spike_flag_now_reflects_reality() {
 
     monitor.record_latency(Duration::from_millis(500));
 
-    let c_post = bus.collect_guard_conditions().expect("probe must still work");
+    let c_post = bus
+        .collect_guard_conditions()
+        .expect("probe must still work");
     assert!(
         c_post.latency_spike,
         "latency_spike must flip to true after a 10x sample"

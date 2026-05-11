@@ -1,5 +1,5 @@
-use atenia_engine::gpu::nvrtc::NvrtcCompiler;
 use atenia_engine::gpu::kernel::KernelNormalizer;
+use atenia_engine::gpu::nvrtc::NvrtcCompiler;
 
 /// APX 12.0: basic test for kernel normalization + NVRTC compilation.
 #[test]
@@ -36,7 +36,10 @@ fn apx_12_0_kernel_normalization_basic() {
     let ptx = program.ptx;
 
     // Verify basic PTX header.
-    assert!(ptx.contains(".version"), "PTX should contain .version header");
+    assert!(
+        ptx.contains(".version"),
+        "PTX should contain .version header"
+    );
     assert!(ptx.contains(".target"), "PTX should contain .target header");
     assert!(
         ptx.contains(".address_size 64"),

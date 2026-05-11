@@ -1,5 +1,5 @@
-use atenia_engine::gpu::tensor::manager::GpuTensorManager;
 use atenia_engine::gpu::autodiff::matmul_backward::MatMulBackwardGPU;
+use atenia_engine::gpu::tensor::manager::GpuTensorManager;
 
 #[test]
 fn test_matmul_backward_real_gpu() {
@@ -9,20 +9,11 @@ fn test_matmul_backward_real_gpu() {
     };
 
     // small matrices for sanity check
-    let a = vec![
-        1.0f32, 2.0,
-        3.0, 4.0,
-    ]; // [2x2]
+    let a = vec![1.0f32, 2.0, 3.0, 4.0]; // [2x2]
 
-    let b = vec![
-        5.0f32, 6.0,
-        7.0, 8.0,
-    ]; // [2x2]
+    let b = vec![5.0f32, 6.0, 7.0, 8.0]; // [2x2]
 
-    let dout = vec![
-        1.0f32, 1.0,
-        1.0, 1.0,
-    ]; // [2x2]
+    let dout = vec![1.0f32, 1.0, 1.0, 1.0]; // [2x2]
 
     let a_gpu = match mgr.from_cpu_vec(&a, 2, 2) {
         Ok(v) => v,

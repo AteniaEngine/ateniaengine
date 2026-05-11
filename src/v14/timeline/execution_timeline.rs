@@ -25,7 +25,10 @@ impl ExecutionTimeline {
     pub fn record(&mut self, event: TimelineEvent) {
         let ts = self.next_timestamp;
         self.next_timestamp = self.next_timestamp.saturating_add(1);
-        self.events.push(RecordedEvent { timestamp: ts, event });
+        self.events.push(RecordedEvent {
+            timestamp: ts,
+            event,
+        });
     }
 
     pub fn reset(&mut self) {
@@ -78,7 +81,11 @@ impl ExecutionTimeline {
                     escape_json_string(device, &mut out);
                     out.push_str("\"");
                 }
-                TimelineEvent::MemoryTransfer { src_device, dst_device, bytes } => {
+                TimelineEvent::MemoryTransfer {
+                    src_device,
+                    dst_device,
+                    bytes,
+                } => {
                     out.push('"');
                     out.push_str("MemoryTransfer");
                     out.push_str("\",");

@@ -1,11 +1,16 @@
-﻿use atenia_engine::tensor::tensor::{Device, DType, Tensor};
+use atenia_engine::tensor::tensor::{DType, Device, Tensor};
 
 #[test]
 fn creates_cpu_tensor() {
     let tensor = Tensor::new(vec![2, 3], 1.0, Device::CPU, DType::F32);
     assert_eq!(tensor.device, Device::CPU);
     assert_eq!(tensor.numel(), 6);
-    assert!(tensor.as_cpu_slice().iter().all(|&v| (v - 1.0).abs() < f32::EPSILON));
+    assert!(
+        tensor
+            .as_cpu_slice()
+            .iter()
+            .all(|&v| (v - 1.0).abs() < f32::EPSILON)
+    );
 }
 
 #[test]

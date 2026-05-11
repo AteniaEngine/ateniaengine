@@ -1,9 +1,9 @@
 #[derive(Debug, Clone)]
 pub struct KernelPerf {
-    pub size: usize,          // typical size, e.g. 128, 256, 512, 1024
-    pub baseline_us: u128,    // APX 3.8 baseline time
-    pub micro64_us: u128,     // 6.4 microkernel time
-    pub selected: String,     // "baseline" | "micro64"
+    pub size: usize,       // typical size, e.g. 128, 256, 512, 1024
+    pub baseline_us: u128, // APX 3.8 baseline time
+    pub micro64_us: u128,  // 6.4 microkernel time
+    pub selected: String,  // "baseline" | "micro64"
 }
 
 #[derive(Debug, Clone)]
@@ -28,7 +28,11 @@ impl RuntimeProfile {
         let mut best = None;
         let mut best_diff = usize::MAX;
         for e in &self.entries {
-            let diff = if e.size > size { e.size - size } else { size - e.size };
+            let diff = if e.size > size {
+                e.size - size
+            } else {
+                size - e.size
+            };
             if diff < best_diff {
                 best_diff = diff;
                 best = Some(e.selected.clone());

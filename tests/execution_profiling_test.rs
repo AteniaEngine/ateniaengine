@@ -110,10 +110,12 @@ fn profiling_reflects_backend_selection_and_is_optional() {
     let input = Tensor::new(vec![2, 1], vec![1.0, -1.0]).expect("input");
     let output = Tensor::new(vec![2, 1], vec![2.0, 3.0]).expect("output");
 
-    let cpu_profile = ExecutionProfiler::profile(&plan, &executed, BackendKind::Cpu, &input, &output)
-        .expect("cpu");
-    let gpu_profile = ExecutionProfiler::profile(&plan, &executed, BackendKind::Gpu, &input, &output)
-        .expect("gpu");
+    let cpu_profile =
+        ExecutionProfiler::profile(&plan, &executed, BackendKind::Cpu, &input, &output)
+            .expect("cpu");
+    let gpu_profile =
+        ExecutionProfiler::profile(&plan, &executed, BackendKind::Gpu, &input, &output)
+            .expect("gpu");
 
     assert_ne!(cpu_profile.to_json(), gpu_profile.to_json());
 }

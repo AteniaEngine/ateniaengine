@@ -37,16 +37,16 @@ use atenia_engine::amg::weight_store::SharedParam;
 use atenia_engine::cuda::cuda_available;
 use atenia_engine::cuda::matmul::vram_bf16_matmul_count;
 use atenia_engine::gpu::dispatch::hooks::try_gpu_matmul;
-use atenia_engine::gpu::tier_plan::{plan, TensorMeta, Tier, TierPlanInput};
-use atenia_engine::tensor::tensor::{f32_to_bf16_bits, Tensor};
+use atenia_engine::gpu::tier_plan::{TensorMeta, Tier, TierPlanInput, plan};
+use atenia_engine::tensor::tensor::{Tensor, f32_to_bf16_bits};
 use atenia_engine::tensor::{DType, TensorStorage};
 use atenia_engine::v17::loader::safetensors_reader::SafetensorsReader;
 use atenia_engine::v17::loader::weight_mapper::{
-    vram_bf16_fast_path_count, vram_bf16_slow_path_count, vram_fast_path_count,
-    vram_slow_path_count, LoadTransform, WeightMapper,
+    LoadTransform, WeightMapper, vram_bf16_fast_path_count, vram_bf16_slow_path_count,
+    vram_fast_path_count, vram_slow_path_count,
 };
-use safetensors::tensor::TensorView;
 use safetensors::Dtype as StDtype;
+use safetensors::tensor::TensorView;
 
 /// Process-wide serialisation for tests that touch
 /// `ATENIA_M8_BF16_KERNEL` and global counters. The flag is a
@@ -162,8 +162,7 @@ fn m8_4_loader_routes_proj_weight_to_bf16_vram_under_flag() {
     let buf = build_multi_bf16_safetensors(&entries);
     let reader = SafetensorsReader::from_bytes(buf).expect("reader");
     let (mut graph, param_ids, param_names) = build_graph_for_entries(&entries);
-    let mapper =
-        WeightMapper::from_param_names_and_ids(&param_names, &param_ids).unwrap();
+    let mapper = WeightMapper::from_param_names_and_ids(&param_names, &param_ids).unwrap();
 
     // Plan with abundant VRAM so the proj weight lands on Vram.
     // `kernel_dtype: BF16` is the M8.3 input that lets the planner
@@ -201,7 +200,8 @@ fn m8_4_loader_routes_proj_weight_to_bf16_vram_under_flag() {
     );
     // M6 F32 fast-path must NOT have advanced.
     assert_eq!(
-        m6_after, m6_before,
+        m6_after,
+        m6_before,
         "vram_fast_path_count must not advance under M8.4 flag (got delta {})",
         m6_after - m6_before
     );
@@ -234,11 +234,7 @@ fn m8_4_loader_routes_proj_weight_to_bf16_vram_under_flag() {
     let downloaded = gpu
         .to_cpu_bf16_bits()
         .expect("to_cpu_bf16_bits on BF16-resident gpu");
-    let src_bits: Vec<u16> = entries[0]
-        .2
-        .iter()
-        .map(|&v| f32_to_bf16_bits(v))
-        .collect();
+    let src_bits: Vec<u16> = entries[0].2.iter().map(|&v| f32_to_bf16_bits(v)).collect();
     assert_eq!(downloaded, src_bits);
 }
 
@@ -272,8 +268,7 @@ fn m8_4_default_loader_keeps_f32_path_with_no_flag() {
     let buf = build_multi_bf16_safetensors(&entries);
     let reader = SafetensorsReader::from_bytes(buf).expect("reader");
     let (mut graph, param_ids, param_names) = build_graph_for_entries(&entries);
-    let mapper =
-        WeightMapper::from_param_names_and_ids(&param_names, &param_ids).unwrap();
+    let mapper = WeightMapper::from_param_names_and_ids(&param_names, &param_ids).unwrap();
 
     let plan_input = TierPlanInput {
         tensors: make_metas(&entries),
@@ -307,7 +302,8 @@ fn m8_4_default_loader_keeps_f32_path_with_no_flag() {
     );
     // BF16 fast-path must NOT have advanced.
     assert_eq!(
-        m8_after, m8_before,
+        m8_after,
+        m8_before,
         "vram_bf16_fast_path_count must stay flat without the flag (got delta {})",
         m8_after - m8_before
     );
@@ -353,8 +349,7 @@ fn m8_4_dispatcher_routes_bf16_resident_to_cuda_matmul_bf16() {
         .collect();
 
     // BF16-encode `b` and upload via the M8.1 primitive.
-    let b_bf16: Vec<u16> =
-        b_host_f32.iter().map(|&v| f32_to_bf16_bits(v)).collect();
+    let b_bf16: Vec<u16> = b_host_f32.iter().map(|&v| f32_to_bf16_bits(v)).collect();
     let gpu = atenia_engine::cuda::bf16_to_f32::bf16_to_vram_no_upcast(&b_bf16, &[k, n])
         .expect("bf16_to_vram_no_upcast on a CUDA host");
     let b_tensor = Tensor::from_cuda_gpu(vec![k, n], gpu);
@@ -460,8 +455,7 @@ fn m8_4b_loader_routes_proj_weight_with_transforms_to_bf16_vram_under_flag() {
     // Build the mapper and register a Transpose2D transform on
     // the proj weight — this is the canonical Llama _proj.weight
     // recipe per `compute_transforms_for_name`.
-    let mut mapper =
-        WeightMapper::from_param_names_and_ids(&param_names, &param_ids).unwrap();
+    let mut mapper = WeightMapper::from_param_names_and_ids(&param_names, &param_ids).unwrap();
     mapper
         .set_transforms("w_proj.weight", vec![LoadTransform::Transpose2D])
         .expect("set Transpose2D transform");
@@ -505,7 +499,8 @@ fn m8_4b_loader_routes_proj_weight_with_transforms_to_bf16_vram_under_flag() {
         m8_slow_after - m8_slow_before
     );
     assert_eq!(
-        m8_fast_after, m8_fast_before,
+        m8_fast_after,
+        m8_fast_before,
         "vram_bf16_fast_path_count must NOT advance with transforms registered \
          (got delta {})",
         m8_fast_after - m8_fast_before

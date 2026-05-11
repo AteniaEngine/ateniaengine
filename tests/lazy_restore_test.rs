@@ -123,14 +123,18 @@ fn on_demand_materialization_is_correct() {
         panic!("ensure_materialized should succeed: {:?}", e);
     }
 
-    let state_after = lazy::state_for_test(id).expect("lazy state should be present after materialization");
+    let state_after =
+        lazy::state_for_test(id).expect("lazy state should be present after materialization");
     assert_eq!(state_after, lazy::LazyState::Materialized);
 
     match mem.backing_for_test(id) {
         Some(atenia_engine::v13::memory_types::StorageBacking::Ram(restored_bytes)) => {
             assert_eq!(restored_bytes, &bytes);
         }
-        other => panic!("expected RAM backing after lazy materialization, got {:?}", other),
+        other => panic!(
+            "expected RAM backing after lazy materialization, got {:?}",
+            other
+        ),
     }
 
     let _ = fs::remove_dir_all(cache_root);
@@ -182,7 +186,9 @@ fn lazy_restore_preserves_hints_and_drift() {
 
     // Hints must be present on the manager.
     assert_eq!(mem.get_desired_tier_hint(id), Some(MemoryTier::Vram));
-    let summary = mem.get_last_plan_summary(id).expect("plan summary should be present");
+    let summary = mem
+        .get_last_plan_summary(id)
+        .expect("plan summary should be present");
     assert!(summary.contains("GPU"));
 
     // Drift must be recorded and remain valid after materialization.
@@ -202,7 +208,10 @@ fn lazy_restore_preserves_hints_and_drift() {
                 assert_eq!(*desired, MemoryTier::Vram);
                 saw_missing_backend = true;
             }
-            atenia_engine::v13::checkpoint::drift::CheckpointDrift::TierDowngrade { desired, restored } => {
+            atenia_engine::v13::checkpoint::drift::CheckpointDrift::TierDowngrade {
+                desired,
+                restored,
+            } => {
                 assert_eq!(*desired, MemoryTier::Vram);
                 assert_eq!(*restored, MemoryTier::Ram);
                 saw_tier_downgrade = true;
@@ -224,7 +233,9 @@ fn lazy_restore_preserves_hints_and_drift() {
     }
 
     assert_eq!(mem.get_desired_tier_hint(id), Some(MemoryTier::Vram));
-    let summary_after = mem.get_last_plan_summary(id).expect("plan summary should be present after materialization");
+    let summary_after = mem
+        .get_last_plan_summary(id)
+        .expect("plan summary should be present after materialization");
     assert!(summary_after.contains("GPU"));
 
     let _ = fs::remove_dir_all(cache_root);

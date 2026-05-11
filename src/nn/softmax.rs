@@ -15,13 +15,7 @@ pub fn softmax_last_dim(x: &Tensor) -> Tensor {
 
     let cols = last_dim;
 
-    let mut out = Tensor::with_layout(
-        x.shape.clone(),
-        0.0,
-        x.device,
-        Layout::Contiguous,
-        x.dtype,
-    );
+    let mut out = Tensor::with_layout(x.shape.clone(), 0.0, x.device, Layout::Contiguous, x.dtype);
 
     let x_data = x.as_cpu_slice();
     out.as_cpu_slice_mut()
@@ -60,7 +54,10 @@ pub fn softmax_last_dim(x: &Tensor) -> Tensor {
 // ================================================================
 #[allow(dead_code)]
 pub fn softmax_backward_parallel(prob: &Tensor, grad_out: &Tensor) -> Tensor {
-    assert!(prob.shape.len() >= 1, "softmax_backward_parallel: tensor must have at least 1 dim");
+    assert!(
+        prob.shape.len() >= 1,
+        "softmax_backward_parallel: tensor must have at least 1 dim"
+    );
     let cols = *prob
         .shape
         .last()

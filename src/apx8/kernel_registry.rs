@@ -7,9 +7,9 @@ use std::sync::RwLock;
 
 use once_cell::sync::Lazy;
 
-use crate::tensor::Tensor;
 use crate::apx8::kernel_generator::{GpuKernelOp, GpuKernelTemplate};
 use crate::apx9::gpu_codegen_real::RealKernel;
+use crate::tensor::Tensor;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum KernelKey {

@@ -19,13 +19,12 @@ impl SimulationResult {
         explanation: PolicyExplanation,
         base_bias_before_prefs: &DecisionBias,
     ) -> Self {
-        let more_conservative_than_base =
-            bias.stability_weight >= base_bias_before_prefs.stability_weight
-                && bias.risk_weight <= base_bias_before_prefs.risk_weight;
+        let more_conservative_than_base = bias.stability_weight
+            >= base_bias_before_prefs.stability_weight
+            && bias.risk_weight <= base_bias_before_prefs.risk_weight;
 
-        let more_aggressive_than_base =
-            bias.latency_weight > base_bias_before_prefs.latency_weight
-                && bias.risk_weight >= base_bias_before_prefs.risk_weight;
+        let more_aggressive_than_base = bias.latency_weight > base_bias_before_prefs.latency_weight
+            && bias.risk_weight >= base_bias_before_prefs.risk_weight;
 
         SimulationResult {
             policy_name: policy_name.to_string(),

@@ -2,19 +2,13 @@ use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::amg::graph::Graph;
 use atenia_engine::cpu_features::cpu_features;
 use atenia_engine::data::tinydata::{
-    build_vocab,
-    encode_text,
-    load_text_dataset,
-    make_batches,
-    Vocab,
+    Vocab, build_vocab, encode_text, load_text_dataset, make_batches,
 };
 use atenia_engine::nn::mini_flux::{
-    build_language_training_graph,
-    build_mini_flux_language_model,
-    MiniFluxConfig,
+    MiniFluxConfig, build_language_training_graph, build_mini_flux_language_model,
 };
 use atenia_engine::optim::adamw::AdamW;
-use atenia_engine::tensor::{Device, DType, Layout, Tensor};
+use atenia_engine::tensor::{DType, Device, Layout, Tensor};
 use atenia_engine::training::trainer_v2::TrainerV2;
 
 const DATA_PATH: &str = "data/tiny_shakespeare.txt";
@@ -50,7 +44,10 @@ fn main() {
     };
 
     let batches = make_batches(encoded.clone(), cfg.seq_len, cfg.batch_size);
-    assert!(!batches.is_empty(), "dataset too small for requested configuration");
+    assert!(
+        !batches.is_empty(),
+        "dataset too small for requested configuration"
+    );
 
     let (graph, param_ids, _param_names) = build_language_training_graph(&cfg);
     let optim = AdamW::new(param_ids.len(), 0.008, 0.9, 0.999, 1e-8, 0.0);
@@ -67,7 +64,8 @@ fn main() {
 
     let mut infer_builder = GraphBuilder::new();
     let tokens_id = infer_builder.input();
-    let (logits_id, infer_param_ids, _infer_param_names) = build_mini_flux_language_model(&mut infer_builder, &cfg, tokens_id);
+    let (logits_id, infer_param_ids, _infer_param_names) =
+        build_mini_flux_language_model(&mut infer_builder, &cfg, tokens_id);
     infer_builder.output(logits_id);
     let mut infer_graph = infer_builder.build();
 

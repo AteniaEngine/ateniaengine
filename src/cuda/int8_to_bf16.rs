@@ -53,8 +53,7 @@ pub fn cuda_int8_resident_count() -> usize {
 /// [`INT8_RESIDENT_COUNT`]. Same role as
 /// `crate::cuda::bf16_to_f32::BF16_COUNTER_TEST_LOCK`.
 #[cfg(test)]
-pub(crate) static INT8_COUNTER_TEST_LOCK: std::sync::Mutex<()> =
-    std::sync::Mutex::new(());
+pub(crate) static INT8_COUNTER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[link(name = "int8_to_bf16", kind = "static")]
 unsafe extern "C" {
@@ -78,12 +77,7 @@ unsafe extern "C" {
 
 #[link(name = "cudart")]
 unsafe extern "C" {
-    fn cudaMemcpy(
-        dst: *mut c_void,
-        src: *const c_void,
-        count: usize,
-        kind: c_int,
-    ) -> c_int;
+    fn cudaMemcpy(dst: *mut c_void, src: *const c_void, count: usize, kind: c_int) -> c_int;
 }
 
 unsafe extern "C" {
@@ -103,7 +97,9 @@ struct ScratchAllocs {
 
 impl ScratchAllocs {
     fn new() -> Self {
-        Self { ptrs: Vec::with_capacity(2) }
+        Self {
+            ptrs: Vec::with_capacity(2),
+        }
     }
 
     fn alloc(&mut self, bytes: usize) -> Option<*mut c_void> {
@@ -146,11 +142,7 @@ impl Drop for ScratchAllocs {
 /// failure) returns `None` and the counter is **not** advanced —
 /// every transient buffer is freed via `ScratchAllocs::Drop` and
 /// `TensorGPU::Drop` regardless of the early-return path.
-pub fn int8_to_bf16_in_vram(
-    q: &[i8],
-    scales: &[f32],
-    shape: &[usize],
-) -> Option<TensorGPU> {
+pub fn int8_to_bf16_in_vram(q: &[i8], scales: &[f32], shape: &[usize]) -> Option<TensorGPU> {
     if !super::cuda_available() {
         return None;
     }
@@ -323,8 +315,11 @@ mod tests {
         let scales = vec![1.0_f32; 3];
         let r = int8_to_bf16_in_vram(&q, &scales, &[2, 3]);
         assert!(r.is_none(), "must return None on q.len() mismatch");
-        assert_eq!(cuda_int8_resident_count(), before,
-            "counter must not advance on mismatched input");
+        assert_eq!(
+            cuda_int8_resident_count(),
+            before,
+            "counter must not advance on mismatched input"
+        );
     }
 
     #[test]
@@ -336,8 +331,11 @@ mod tests {
         let scales = vec![1.0_f32; 2];
         let r = int8_to_bf16_in_vram(&q, &scales, &[2, 3]);
         assert!(r.is_none(), "must return None on scales.len() mismatch");
-        assert_eq!(cuda_int8_resident_count(), before,
-            "counter must not advance on mismatched input");
+        assert_eq!(
+            cuda_int8_resident_count(),
+            before,
+            "counter must not advance on mismatched input"
+        );
     }
 
     #[test]
@@ -362,25 +360,20 @@ mod tests {
 
         // Small but non-trivial shape: K=4, N=3.
         let shape = [4, 3];
-        let q: Vec<i8> = vec![
-             10,  -5,  20,
-            -127,   0,  64,
-              5,  100, -64,
-             32,   -1,   1,
-        ];
+        let q: Vec<i8> = vec![10, -5, 20, -127, 0, 64, 5, 100, -64, 32, -1, 1];
         let scales: Vec<f32> = vec![0.1, 0.05, 0.025];
 
         let before = cuda_int8_resident_count();
         let gpu = int8_to_bf16_in_vram(&q, &scales, &shape)
             .expect("upload must succeed on CUDA-equipped host");
         assert_eq!(
-            cuda_int8_resident_count(), before + 1,
+            cuda_int8_resident_count(),
+            before + 1,
             "counter must advance by exactly 1"
         );
 
         // Download BF16 bits and compare against host dequant.
-        let bits = gpu.to_cpu_bf16_bits()
-            .expect("BF16 download must succeed");
+        let bits = gpu.to_cpu_bf16_bits().expect("BF16 download must succeed");
         assert_eq!(bits.len(), q.len());
 
         // Host dequant: (q[k,n] as f32) * scales[n], then BF16 truncate.

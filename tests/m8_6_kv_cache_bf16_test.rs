@@ -39,11 +39,11 @@
 use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::amg::graph::Graph;
 use atenia_engine::amg::kv_cache::{
-    cast_kv_cell_bf16_to_f32, cast_kv_cell_f32_to_bf16, KvCacheConfig, KvCellDtype,
+    KvCacheConfig, KvCellDtype, cast_kv_cell_bf16_to_f32, cast_kv_cell_f32_to_bf16,
 };
 use atenia_engine::amg::weight_store::WeightStore;
 use atenia_engine::nn::llama::{
-    build_llama, generate_greedy, CollectingTokenSink, GenerationConfig, LlamaConfig, LlamaRuntime,
+    CollectingTokenSink, GenerationConfig, LlamaConfig, LlamaRuntime, build_llama, generate_greedy,
 };
 use atenia_engine::tensor::{Tensor, TensorStorage};
 
@@ -76,8 +76,8 @@ fn mini_config() -> LlamaConfig {
 /// numerics here line up with the ones documented for that
 /// suite.
 fn deterministic_weight(param_index: usize, element_index: usize, numel: usize) -> f32 {
-    let seed = (param_index as u64).wrapping_mul(2654435761)
-        ^ (element_index as u64).wrapping_mul(40503);
+    let seed =
+        (param_index as u64).wrapping_mul(2654435761) ^ (element_index as u64).wrapping_mul(40503);
     let frac = ((seed % 4001) as f32) / 4001.0;
     let scaled = (frac - 0.5) * 0.4;
     scaled * (1.0 + (element_index as f32) / (numel.max(1) as f32))
@@ -94,9 +94,13 @@ fn build_reference(cfg: &LlamaConfig, seq: usize) -> (Graph, Vec<usize>, Vec<Str
         let shape = graph.nodes[node_id].output.as_ref().unwrap().shape.clone();
         let numel: usize = shape.iter().product();
         let data: Vec<f32> = if name.ends_with("layernorm.weight") || name == "model.norm.weight" {
-            (0..numel).map(|j| 1.0 + deterministic_weight(i, j, numel) * 0.1).collect()
+            (0..numel)
+                .map(|j| 1.0 + deterministic_weight(i, j, numel) * 0.1)
+                .collect()
         } else {
-            (0..numel).map(|j| deterministic_weight(i, j, numel)).collect()
+            (0..numel)
+                .map(|j| deterministic_weight(i, j, numel))
+                .collect()
         };
         graph
             .overwrite_parameter(node_id, Tensor::new_cpu(shape, data))
@@ -121,8 +125,7 @@ fn run_greedy(store: &WeightStore, cfg: &LlamaConfig, prompt: &[u32], n_new: usi
     };
     let mut sink = CollectingTokenSink::default();
     let decode = |id: u32| format!("[{id}]");
-    generate_greedy(cfg, store, prompt, &gen_cfg, decode, &mut sink)
-        .expect("generate must succeed")
+    generate_greedy(cfg, store, prompt, &gen_cfg, decode, &mut sink).expect("generate must succeed")
 }
 
 #[test]
@@ -142,10 +145,14 @@ fn bf16_kv_cache_argmax_parity_vs_f32_baseline() {
     // M8.6.1: BF16 ledger is the default. Force the legacy
     // F32 path first to capture the baseline, then unset to
     // exercise the new default (BF16 ledger).
-    unsafe { std::env::set_var("ATENIA_LEGACY_F32_KV_CACHE", "1"); }
+    unsafe {
+        std::env::set_var("ATENIA_LEGACY_F32_KV_CACHE", "1");
+    }
     let baseline = run_greedy(&store, &cfg, &prompt, n_new);
 
-    unsafe { std::env::remove_var("ATENIA_LEGACY_F32_KV_CACHE"); }
+    unsafe {
+        std::env::remove_var("ATENIA_LEGACY_F32_KV_CACHE");
+    }
     let with_bf16 = run_greedy(&store, &cfg, &prompt, n_new);
 
     assert_eq!(
@@ -172,7 +179,11 @@ fn kv_cache_config_bytes_per_token_halves_under_bf16() {
         ..f32_cfg
     };
 
-    assert_eq!(f32_cfg.bytes_per_token(), 1_638_400, "F32: 1.5625 MiB/token");
+    assert_eq!(
+        f32_cfg.bytes_per_token(),
+        1_638_400,
+        "F32: 1.5625 MiB/token"
+    );
     assert_eq!(bf16_cfg.bytes_per_token(), 819_200, "BF16: 0.78 MiB/token");
     assert_eq!(
         bf16_cfg.bytes_per_token() * 2,
@@ -184,7 +195,10 @@ fn kv_cache_config_bytes_per_token_halves_under_bf16() {
     // savings the ROADMAP claims for D62 falls out of this
     // arithmetic directly.
     let savings_at_2048 = (f32_cfg.bytes_per_token() - bf16_cfg.bytes_per_token()) * 2048;
-    assert_eq!(savings_at_2048, 1_677_721_600, "savings at seq=2048 = 1.6 GiB");
+    assert_eq!(
+        savings_at_2048, 1_677_721_600,
+        "savings at seq=2048 = 1.6 GiB"
+    );
 }
 
 #[test]
@@ -270,10 +284,14 @@ fn bf16_kv_logits_drift_under_adr_004_threshold() {
     // synthetic mini-Llama is ~10⁻⁴ in single-op M4.7.2 land;
     // M8.6 adds a single BF16 truncation per cache write so
     // 0.5 holds with several orders of magnitude of margin.
-    unsafe { std::env::set_var("ATENIA_LEGACY_F32_KV_CACHE", "1"); }
+    unsafe {
+        std::env::set_var("ATENIA_LEGACY_F32_KV_CACHE", "1");
+    }
     let baseline = run_greedy(&store, &cfg, &prompt, n_new);
 
-    unsafe { std::env::remove_var("ATENIA_LEGACY_F32_KV_CACHE"); }
+    unsafe {
+        std::env::remove_var("ATENIA_LEGACY_F32_KV_CACHE");
+    }
     let with_bf16 = run_greedy(&store, &cfg, &prompt, n_new);
 
     for (k, (&a, &b)) in baseline.iter().zip(with_bf16.iter()).enumerate() {

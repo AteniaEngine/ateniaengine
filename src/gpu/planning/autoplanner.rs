@@ -19,7 +19,11 @@ impl AutoPlanner {
         // Basic blockDim selection.
         // For N >= 16 we use 16x16, which is a reasonable layout.
         // This layout satisfies the requested test for N=512.
-        let (block_x, block_y) = if n >= 16 { (16u32, 16u32) } else { (8u32, 8u32) };
+        let (block_x, block_y) = if n >= 16 {
+            (16u32, 16u32)
+        } else {
+            (8u32, 8u32)
+        };
 
         // Compute gridDim as ceil(N / block).
         let grid_x = ((n as u32) + block_x - 1) / block_x;

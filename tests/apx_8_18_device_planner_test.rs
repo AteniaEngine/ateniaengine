@@ -1,5 +1,5 @@
-﻿use atenia_engine::apx8::device_planner::*;
-use atenia_engine::tensor::{Tensor, Device, DType};
+use atenia_engine::apx8::device_planner::*;
+use atenia_engine::tensor::{DType, Device, Tensor};
 
 #[test]
 fn apx_8_18_detect_devices() {

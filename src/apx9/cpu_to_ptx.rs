@@ -44,7 +44,10 @@ impl CPUToPTX {
 
         code.push_str("    // Body (mocked from IR, expanded later)\n");
 
-        let is_vec_add = ir.ops.iter().any(|op| matches!(op, KernelOp::Compute(s) if s == "Add"));
+        let is_vec_add = ir
+            .ops
+            .iter()
+            .any(|op| matches!(op, KernelOp::Compute(s) if s == "Add"));
 
         if is_vec_add {
             code.push_str("    // VecAdd\n");

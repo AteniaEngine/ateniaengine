@@ -55,10 +55,7 @@ pub struct VramSnapshot {
 /// Fails loudly if more than one GPU is present.
 pub fn read_nvidia_vram_free_bytes() -> Result<u64, VramProbeError> {
     let output = Command::new("nvidia-smi")
-        .args([
-            "--query-gpu=memory.free",
-            "--format=csv,noheader,nounits",
-        ])
+        .args(["--query-gpu=memory.free", "--format=csv,noheader,nounits"])
         .output()
         .map_err(|e| match e.kind() {
             io::ErrorKind::NotFound => VramProbeError::NvidiaSmiNotFound,

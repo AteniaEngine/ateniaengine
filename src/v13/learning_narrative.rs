@@ -96,8 +96,7 @@ pub fn build_narrative(
 
     let p2 = format!(
         "The decision is based on {} under similar memory conditions. {}",
-        success_phrase,
-        drift_phrase,
+        success_phrase, drift_phrase,
     );
 
     // Paragraph 3: factors, in deterministic order.

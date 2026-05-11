@@ -20,7 +20,7 @@
 //! boundary behavior, and share boundary behavior.
 
 use atenia_engine::amg::reactive::{
-    cpu_saturated_externally, CPU_PRESSURE_TOTAL_THRESHOLD, CPU_SELF_CONTRIBUTION_MIN,
+    CPU_PRESSURE_TOTAL_THRESHOLD, CPU_SELF_CONTRIBUTION_MIN, cpu_saturated_externally,
 };
 use atenia_engine::v16::guards::guard_conditions::GuardConditions;
 

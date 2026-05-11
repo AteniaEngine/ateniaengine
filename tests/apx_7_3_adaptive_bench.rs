@@ -1,5 +1,5 @@
-use atenia_engine::tensor::{Tensor, Device};
 use atenia_engine::apx7::adaptive_pgl::{ADAPTIVE_BUCKETS, bucket_for};
+use atenia_engine::tensor::{Device, Tensor};
 
 #[inline(always)]
 fn now_ms<F, T>(f: F) -> f64

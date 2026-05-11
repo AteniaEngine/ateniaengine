@@ -1,14 +1,8 @@
+use crate::gpu::loader::{CudaLoaderError, compat_layer::CompatLoader};
 use crate::gpu::{
-    nvrtc::NvrtcCompiler,
-    loader::CudaLoader,
-    runtime::GpuRuntime,
-    memory::GpuPtr,
-    launcher::GpuLauncher,
-    kernel::KernelNormalizer,
-    planning::AutoPlanner,
-    autotuner,
+    autotuner, kernel::KernelNormalizer, launcher::GpuLauncher, loader::CudaLoader, memory::GpuPtr,
+    nvrtc::NvrtcCompiler, planning::AutoPlanner, runtime::GpuRuntime,
 };
-use crate::gpu::loader::{compat_layer::CompatLoader, CudaLoaderError};
 
 use std::ffi::c_void;
 use std::mem;
@@ -16,9 +10,7 @@ use std::mem;
 pub struct MatMulOp;
 
 impl MatMulOp {
-    pub fn run(a: &GpuPtr, b: &GpuPtr, c: &GpuPtr,
-               _m: usize, _k: usize, n: usize) {
-
+    pub fn run(a: &GpuPtr, b: &GpuPtr, c: &GpuPtr, _m: usize, _k: usize, n: usize) {
         let compiler = NvrtcCompiler::new().unwrap();
         let loader = CudaLoader::new().unwrap();
         let rt = GpuRuntime::new().unwrap();
@@ -65,10 +57,14 @@ impl MatMulOp {
                 println!("[PTX][{:02}] {}", i, line);
             }
             println!("[MATMUL] --- PTX END (preview) ---");
-            println!("[MATMUL] PTX contains '.visible .entry matmul_kernel'? {}",
-                     ptx_str.contains(".visible .entry matmul_kernel"));
-            println!("[MATMUL] PTX contains 'matmul_kernel'? {}",
-                     ptx_str.contains("matmul_kernel"));
+            println!(
+                "[MATMUL] PTX contains '.visible .entry matmul_kernel'? {}",
+                ptx_str.contains(".visible .entry matmul_kernel")
+            );
+            println!(
+                "[MATMUL] PTX contains 'matmul_kernel'? {}",
+                ptx_str.contains("matmul_kernel")
+            );
             println!("[MATMUL] Calling cuModuleLoadData...");
             println!("[MATMUL-DEBUG] PTX length = {} bytes", ptx_str.len());
         }
@@ -160,35 +156,17 @@ impl MatMulOp {
 
         if debug {
             eprintln!("[MATMUL-DEBUG] Launching matmul_kernel...");
-            eprintln!(
-                "[MATMUL-DEBUG] grid=({}, {}, {})",
-                grid_x, grid_y, grid_z
-            );
+            eprintln!("[MATMUL-DEBUG] grid=({}, {}, {})", grid_x, grid_y, grid_z);
             eprintln!(
                 "[MATMUL-DEBUG] block=({}, {}, {})",
                 block_x, block_y, block_z
             );
-            eprintln!(
-                "[MATMUL-DEBUG] shared_mem={}",
-                shared_mem_bytes
-            );
-            eprintln!(
-                "[MATMUL-DEBUG] param_count={}",
-                args.len()
-            );
+            eprintln!("[MATMUL-DEBUG] shared_mem={}", shared_mem_bytes);
+            eprintln!("[MATMUL-DEBUG] param_count={}", args.len());
 
-            eprintln!(
-                "[MATMUL-DEBUG] arg0=A.ptr=0x{:x} size={}",
-                a.ptr, a.size
-            );
-            eprintln!(
-                "[MATMUL-DEBUG] arg1=B.ptr=0x{:x} size={}",
-                b.ptr, b.size
-            );
-            eprintln!(
-                "[MATMUL-DEBUG] arg2=C.ptr=0x{:x} size={}",
-                c.ptr, c.size
-            );
+            eprintln!("[MATMUL-DEBUG] arg0=A.ptr=0x{:x} size={}", a.ptr, a.size);
+            eprintln!("[MATMUL-DEBUG] arg1=B.ptr=0x{:x} size={}", b.ptr, b.size);
+            eprintln!("[MATMUL-DEBUG] arg2=C.ptr=0x{:x} size={}", c.ptr, c.size);
             eprintln!(
                 "[MATMUL-DEBUG] arg3=N (host)={} bytes={}",
                 n_i32,

@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use crate::amg::graph::Graph;
 use crate::amg::reactive::ExecutionAbortReason;
-use crate::apx7::hls_deep::{compute_depth, build_superlevels};
+use crate::apx7::hls_deep::{build_superlevels, compute_depth};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ULEStrategy {

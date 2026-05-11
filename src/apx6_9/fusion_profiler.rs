@@ -12,7 +12,9 @@ pub struct FusionProfiler {
 
 impl FusionProfiler {
     pub fn new() -> Self {
-        Self { records: HashMap::new() }
+        Self {
+            records: HashMap::new(),
+        }
     }
 
     pub fn record(&mut self, op: &str, unfused: u64, fused: u64) {

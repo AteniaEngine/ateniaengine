@@ -11,7 +11,9 @@ pub struct VGPUScoreboard {
 
 impl VGPUScoreboard {
     pub fn new(num_regs: usize) -> Self {
-        Self { reg_busy: vec![false; num_regs] }
+        Self {
+            reg_busy: vec![false; num_regs],
+        }
     }
 
     pub fn mark_write(&mut self, reg: usize) {

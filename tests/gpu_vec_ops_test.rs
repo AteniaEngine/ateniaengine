@@ -1,6 +1,6 @@
 use atenia_engine::gpu::{
     memory::GpuMemoryEngine,
-    ops::{vec_add::VecAddOp, vec_mul::VecMulOp, scalar_add::ScalarAddOp},
+    ops::{scalar_add::ScalarAddOp, vec_add::VecAddOp, vec_mul::VecMulOp},
 };
 
 fn cpu_vec_add(a: &[f32], b: &[f32]) -> Vec<f32> {

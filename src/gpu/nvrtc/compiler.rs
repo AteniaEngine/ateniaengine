@@ -1,8 +1,8 @@
-use std::ffi::{CString, CStr};
+use libloading::{Library, Symbol};
+use std::ffi::{CStr, CString};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::ptr;
-use libloading::{Library, Symbol};
 
 use super::{NvrtcError, cache::KernelCache};
 use crate::gpu::arch::CudaArchDetector;
@@ -41,9 +41,15 @@ fn cuda_root() -> Option<String> {
     let mut versions: Vec<((u32, u32), PathBuf)> = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        let Some(rest) = name.strip_prefix('v') else { continue };
-        let Some((maj, min)) = rest.split_once('.') else { continue };
-        let (Ok(m), Ok(n)) = (maj.parse::<u32>(), min.parse::<u32>()) else { continue };
+        let Some(rest) = name.strip_prefix('v') else {
+            continue;
+        };
+        let Some((maj, min)) = rest.split_once('.') else {
+            continue;
+        };
+        let (Ok(m), Ok(n)) = (maj.parse::<u32>(), min.parse::<u32>()) else {
+            continue;
+        };
         versions.push(((m, n), entry.path()));
     }
     versions.sort_by(|a, b| b.0.cmp(&a.0));
@@ -175,9 +181,12 @@ impl NvrtcCompiler {
         })
     }
 
-    pub fn compile(&self, source: &str, kernel_name: &str, arch: &str)
-        -> Result<NvrtcProgram, NvrtcError>
-    {
+    pub fn compile(
+        &self,
+        source: &str,
+        kernel_name: &str,
+        arch: &str,
+    ) -> Result<NvrtcProgram, NvrtcError> {
         // Important: do not read from the cache here to avoid reusing PTX
         // generated with old kernel signatures. Always compile.
 
@@ -199,31 +208,38 @@ impl NvrtcCompiler {
             type GetLogFn = unsafe extern "C" fn(NvrtcProgramT, *mut i8) -> i32;
             type DestroyFn = unsafe extern "C" fn(*mut NvrtcProgramT) -> i32;
 
-            let create: Symbol<CreateFn> = self.lib
+            let create: Symbol<CreateFn> = self
+                .lib
                 .get(b"nvrtcCreateProgram\0")
                 .map_err(|_| NvrtcError::MissingSymbol("nvrtcCreateProgram".into()))?;
 
-            let compile: Symbol<CompileFn> = self.lib
+            let compile: Symbol<CompileFn> = self
+                .lib
                 .get(b"nvrtcCompileProgram\0")
                 .map_err(|_| NvrtcError::MissingSymbol("nvrtcCompileProgram".into()))?;
 
-            let get_ptx_size: Symbol<GetPtxSizeFn> = self.lib
+            let get_ptx_size: Symbol<GetPtxSizeFn> = self
+                .lib
                 .get(b"nvrtcGetPTXSize\0")
                 .map_err(|_| NvrtcError::MissingSymbol("nvrtcGetPTXSize".into()))?;
 
-            let get_ptx: Symbol<GetPtxFn> = self.lib
+            let get_ptx: Symbol<GetPtxFn> = self
+                .lib
                 .get(b"nvrtcGetPTX\0")
                 .map_err(|_| NvrtcError::MissingSymbol("nvrtcGetPTX".into()))?;
 
-            let get_log_size: Symbol<GetLogSizeFn> = self.lib
+            let get_log_size: Symbol<GetLogSizeFn> = self
+                .lib
                 .get(b"nvrtcGetProgramLogSize\0")
                 .map_err(|_| NvrtcError::MissingSymbol("nvrtcGetProgramLogSize".into()))?;
 
-            let get_log: Symbol<GetLogFn> = self.lib
+            let get_log: Symbol<GetLogFn> = self
+                .lib
                 .get(b"nvrtcGetProgramLog\0")
                 .map_err(|_| NvrtcError::MissingSymbol("nvrtcGetProgramLog".into()))?;
 
-            let destroy: Symbol<DestroyFn> = self.lib
+            let destroy: Symbol<DestroyFn> = self
+                .lib
                 .get(b"nvrtcDestroyProgram\0")
                 .map_err(|_| NvrtcError::MissingSymbol("nvrtcDestroyProgram".into()))?;
 
@@ -244,7 +260,9 @@ impl NvrtcCompiler {
                 header_names,
             );
             if create_res != NVRTC_SUCCESS || prog.is_null() {
-                return Err(NvrtcError::CompilationError("Failed to create NVRTC program".into()));
+                return Err(NvrtcError::CompilationError(
+                    "Failed to create NVRTC program".into(),
+                ));
             }
 
             // Options: allow arch="auto" for dynamic detection.
@@ -274,18 +292,13 @@ impl NvrtcCompiler {
             //   --relocatable-device-code=true
             //   --fmad=false
             // (No --gpu-code=sm_XX nor variants.)
-            opt_cstrings.push(
-                CString::new(format!("--gpu-architecture={}", arch_to_use)).unwrap(),
-            );
+            opt_cstrings.push(CString::new(format!("--gpu-architecture={}", arch_to_use)).unwrap());
             opt_cstrings.push(CString::new("--std=c++17").unwrap());
             opt_cstrings.push(CString::new("--device-c").unwrap());
             opt_cstrings.push(CString::new("--relocatable-device-code=true").unwrap());
             opt_cstrings.push(CString::new("--fmad=false").unwrap());
 
-            let opt_ptrs: Vec<*const i8> = opt_cstrings
-                .iter()
-                .map(|s| s.as_ptr())
-                .collect();
+            let opt_ptrs: Vec<*const i8> = opt_cstrings.iter().map(|s| s.as_ptr()).collect();
 
             let res = compile(prog, opt_ptrs.len() as i32, opt_ptrs.as_ptr());
             if res != NVRTC_SUCCESS {
@@ -309,7 +322,9 @@ impl NvrtcCompiler {
             let size_res = get_ptx_size(prog, &mut size);
             if size_res != NVRTC_SUCCESS || size == 0 {
                 let _ = destroy(&mut prog);
-                return Err(NvrtcError::CompilationError("Failed to get PTX size".into()));
+                return Err(NvrtcError::CompilationError(
+                    "Failed to get PTX size".into(),
+                ));
             }
 
             let mut buffer = vec![0i8; size];
@@ -335,9 +350,12 @@ impl NvrtcCompiler {
 
     /// Explicit variant: compile `source` with an exact set of NVRTC flags
     /// provided by the caller. Does not apply additional architecture logic.
-    pub fn compile_with_flags(&self, source: &str, kernel_name: &str, flags: &[&str])
-        -> Result<NvrtcProgram, NvrtcError>
-    {
+    pub fn compile_with_flags(
+        &self,
+        source: &str,
+        kernel_name: &str,
+        flags: &[&str],
+    ) -> Result<NvrtcProgram, NvrtcError> {
         // Important: do NOT use the input cache here to avoid reusing PTX
         // generated with a different kernel signature. Always compile.
 
@@ -359,31 +377,38 @@ impl NvrtcCompiler {
             type GetLogFn = unsafe extern "C" fn(NvrtcProgramT, *mut i8) -> i32;
             type DestroyFn = unsafe extern "C" fn(*mut NvrtcProgramT) -> i32;
 
-            let create: Symbol<CreateFn> = self.lib
+            let create: Symbol<CreateFn> = self
+                .lib
                 .get(b"nvrtcCreateProgram\0")
                 .map_err(|_| NvrtcError::MissingSymbol("nvrtcCreateProgram".into()))?;
 
-            let compile: Symbol<CompileFn> = self.lib
+            let compile: Symbol<CompileFn> = self
+                .lib
                 .get(b"nvrtcCompileProgram\0")
                 .map_err(|_| NvrtcError::MissingSymbol("nvrtcCompileProgram".into()))?;
 
-            let get_ptx_size: Symbol<GetPtxSizeFn> = self.lib
+            let get_ptx_size: Symbol<GetPtxSizeFn> = self
+                .lib
                 .get(b"nvrtcGetPTXSize\0")
                 .map_err(|_| NvrtcError::MissingSymbol("nvrtcGetPTXSize".into()))?;
 
-            let get_ptx: Symbol<GetPtxFn> = self.lib
+            let get_ptx: Symbol<GetPtxFn> = self
+                .lib
                 .get(b"nvrtcGetPTX\0")
                 .map_err(|_| NvrtcError::MissingSymbol("nvrtcGetPTX".into()))?;
 
-            let get_log_size: Symbol<GetLogSizeFn> = self.lib
+            let get_log_size: Symbol<GetLogSizeFn> = self
+                .lib
                 .get(b"nvrtcGetProgramLogSize\0")
                 .map_err(|_| NvrtcError::MissingSymbol("nvrtcGetProgramLogSize".into()))?;
 
-            let get_log: Symbol<GetLogFn> = self.lib
+            let get_log: Symbol<GetLogFn> = self
+                .lib
                 .get(b"nvrtcGetProgramLog\0")
                 .map_err(|_| NvrtcError::MissingSymbol("nvrtcGetProgramLog".into()))?;
 
-            let destroy: Symbol<DestroyFn> = self.lib
+            let destroy: Symbol<DestroyFn> = self
+                .lib
                 .get(b"nvrtcDestroyProgram\0")
                 .map_err(|_| NvrtcError::MissingSymbol("nvrtcDestroyProgram".into()))?;
 
@@ -404,7 +429,9 @@ impl NvrtcCompiler {
                 header_names,
             );
             if create_res != NVRTC_SUCCESS || prog.is_null() {
-                return Err(NvrtcError::CompilationError("Failed to create NVRTC program".into()));
+                return Err(NvrtcError::CompilationError(
+                    "Failed to create NVRTC program".into(),
+                ));
             }
 
             // Build CStrings from the provided flags.
@@ -412,10 +439,7 @@ impl NvrtcCompiler {
             for f in flags {
                 opt_cstrings.push(CString::new(*f).unwrap());
             }
-            let opt_ptrs: Vec<*const i8> = opt_cstrings
-                .iter()
-                .map(|s| s.as_ptr())
-                .collect();
+            let opt_ptrs: Vec<*const i8> = opt_cstrings.iter().map(|s| s.as_ptr()).collect();
 
             let res = compile(prog, opt_ptrs.len() as i32, opt_ptrs.as_ptr());
             if res != NVRTC_SUCCESS {
@@ -439,7 +463,9 @@ impl NvrtcCompiler {
             let size_res = get_ptx_size(prog, &mut size);
             if size_res != NVRTC_SUCCESS || size == 0 {
                 let _ = destroy(&mut prog);
-                return Err(NvrtcError::CompilationError("Failed to get PTX size".into()));
+                return Err(NvrtcError::CompilationError(
+                    "Failed to get PTX size".into(),
+                ));
             }
 
             let mut buffer = vec![0i8; size];

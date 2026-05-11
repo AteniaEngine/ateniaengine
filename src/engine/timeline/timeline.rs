@@ -3,9 +3,9 @@
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
+use crate::engine::fingerprint::ExecFingerprint;
 use crate::engine::timeline::buffer::TimelineBuffer;
 use crate::engine::timeline::event::TimelineEvent;
-use crate::engine::fingerprint::ExecFingerprint;
 
 #[derive(Clone)]
 pub struct LaunchTimeline {
@@ -49,13 +49,7 @@ impl LaunchTimeline {
 
     pub fn last_fingerprint(&self) -> Option<u64> {
         let evt = self.last()?;
-        let fp = ExecFingerprint::new(
-            evt.name,
-            evt.grid,
-            evt.block,
-            evt.shared_mem,
-            evt.params,
-        );
+        let fp = ExecFingerprint::new(evt.name, evt.grid, evt.block, evt.shared_mem, evt.params);
         Some(fp.hash64())
     }
 }

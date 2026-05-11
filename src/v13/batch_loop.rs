@@ -12,7 +12,10 @@ pub struct BatchLoopRunner {
 
 impl BatchLoopRunner {
     pub fn new(offload: SmartOffloadEngine, graph_exec: GraphExecutor) -> Self {
-        BatchLoopRunner { offload, graph_exec }
+        BatchLoopRunner {
+            offload,
+            graph_exec,
+        }
     }
 
     pub fn run_ticks(
@@ -27,11 +30,12 @@ impl BatchLoopRunner {
             let tick = i as u64;
 
             // Mark tick start.
-            exec.timeline
-                .push(format!("TICK_START tick={}", i));
+            exec.timeline.push(format!("TICK_START tick={}", i));
 
             // Enqueue and run the graph for this snapshot.
-            let _ = self.graph_exec.enqueue_graph(graph, exec, mem, snapshot, gpu_available);
+            let _ = self
+                .graph_exec
+                .enqueue_graph(graph, exec, mem, snapshot, gpu_available);
             exec.run_to_completion();
 
             // Collect unique tensor ids from the graph.
@@ -47,9 +51,7 @@ impl BatchLoopRunner {
             let id_refs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
 
             // Plan offloads for this tick.
-            let plan = self
-                .offload
-                .plan_with_tick(snapshot, &id_refs, mem, tick);
+            let plan = self.offload.plan_with_tick(snapshot, &id_refs, mem, tick);
 
             let actions_count = plan.actions.len();
             exec.timeline.push(format!(
@@ -60,30 +62,24 @@ impl BatchLoopRunner {
             if actions_count == 0 {
                 exec.timeline
                     .push(format!("OFFLOAD_APPLY tick={} skipped", i));
-                exec.timeline
-                    .push(format!("TICK_END tick={}", i));
+                exec.timeline.push(format!("TICK_END tick={}", i));
                 continue;
             }
 
             // Apply offload plan; handle errors without panicking.
             match self.offload.apply(snapshot, &plan, mem) {
                 Ok(()) => {
-                    exec.timeline
-                        .push(format!("OFFLOAD_APPLY tick={} ok", i));
+                    exec.timeline.push(format!("OFFLOAD_APPLY tick={} ok", i));
                 }
                 Err(err) => {
-                    exec.timeline.push(format!(
-                        "OFFLOAD_APPLY tick={} error={:?}",
-                        i, err
-                    ));
                     exec.timeline
-                        .push(format!("TICK_END tick={}", i));
+                        .push(format!("OFFLOAD_APPLY tick={} error={:?}", i, err));
+                    exec.timeline.push(format!("TICK_END tick={}", i));
                     break;
                 }
             }
 
-            exec.timeline
-                .push(format!("TICK_END tick={}", i));
+            exec.timeline.push(format!("TICK_END tick={}", i));
         }
 
         exec.timeline.clone()
@@ -107,10 +103,11 @@ impl BatchLoopRunner {
             let plan = graph.plan_for_snapshot_with_mem(mem, snapshot, gpu_available);
             results.push(TickResult { tick, plan });
 
-            exec.timeline
-                .push(format!("TICK_START tick={}", i));
+            exec.timeline.push(format!("TICK_START tick={}", i));
 
-            let _ = self.graph_exec.enqueue_graph(graph, exec, mem, snapshot, gpu_available);
+            let _ = self
+                .graph_exec
+                .enqueue_graph(graph, exec, mem, snapshot, gpu_available);
             exec.run_to_completion();
 
             let mut ids: Vec<String> = Vec::new();
@@ -124,9 +121,7 @@ impl BatchLoopRunner {
 
             let id_refs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
 
-            let plan = self
-                .offload
-                .plan_with_tick(snapshot, &id_refs, mem, tick);
+            let plan = self.offload.plan_with_tick(snapshot, &id_refs, mem, tick);
 
             let actions_count = plan.actions.len();
             exec.timeline.push(format!(
@@ -137,29 +132,23 @@ impl BatchLoopRunner {
             if actions_count == 0 {
                 exec.timeline
                     .push(format!("OFFLOAD_APPLY tick={} skipped", i));
-                exec.timeline
-                    .push(format!("TICK_END tick={}", i));
+                exec.timeline.push(format!("TICK_END tick={}", i));
                 continue;
             }
 
             match self.offload.apply(snapshot, &plan, mem) {
                 Ok(()) => {
-                    exec.timeline
-                        .push(format!("OFFLOAD_APPLY tick={} ok", i));
+                    exec.timeline.push(format!("OFFLOAD_APPLY tick={} ok", i));
                 }
                 Err(err) => {
-                    exec.timeline.push(format!(
-                        "OFFLOAD_APPLY tick={} error={:?}",
-                        i, err
-                    ));
                     exec.timeline
-                        .push(format!("TICK_END tick={}", i));
+                        .push(format!("OFFLOAD_APPLY tick={} error={:?}", i, err));
+                    exec.timeline.push(format!("TICK_END tick={}", i));
                     break;
                 }
             }
 
-            exec.timeline
-                .push(format!("TICK_END tick={}", i));
+            exec.timeline.push(format!("TICK_END tick={}", i));
         }
 
         (exec.timeline.clone(), results)

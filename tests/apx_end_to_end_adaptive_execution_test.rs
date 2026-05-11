@@ -1,13 +1,15 @@
-﻿use std::time::{Duration, Instant};
+use std::time::{Duration, Instant};
 
 use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::amg::graph::Graph;
-use atenia_engine::nn::mini_flux::{build_mini_flux_language_model, MiniFluxConfig};
-use atenia_engine::tensor::{Device, DType, Layout, Tensor};
+use atenia_engine::nn::mini_flux::{MiniFluxConfig, build_mini_flux_language_model};
+use atenia_engine::tensor::{DType, Device, Layout, Tensor};
 
 use atenia_engine::apx6_10;
 use atenia_engine::apx6_10::FusionProfile;
-use atenia_engine::apx6_11::runtime_policy::{get_runtime_policy, set_runtime_policy, FusionRuntimePolicy};
+use atenia_engine::apx6_11::runtime_policy::{
+    FusionRuntimePolicy, get_runtime_policy, set_runtime_policy,
+};
 use atenia_engine::apx9::gpu_execution_planner::GPUExecutionPlanner;
 
 /// This end-to-end test empirically demonstrates how Atenia Engine’s adaptive mechanisms interact coherently, and how execution memory causally influences stable behavior across runs.
@@ -35,7 +37,8 @@ fn apx_end_to_end_adaptive_execution_scenario() {
     println!("[APX E2E] phase=Cold policy_exploration_started");
 
     let mut cold_pressure = MemoryPressure::new(6 * 1024 * 1024, 8 * 1024 * 1024, 512 * 1024);
-    let cold_completed_without_fallback = run_phase(&mut graph, &input, Phase::Cold, &mut cold_pressure);
+    let cold_completed_without_fallback =
+        run_phase(&mut graph, &input, Phase::Cold, &mut cold_pressure);
 
     if cold_completed_without_fallback {
         println!("[APX E2E] phase=Cold execution_completed");
@@ -53,7 +56,8 @@ fn apx_end_to_end_adaptive_execution_scenario() {
     println!("[APX E2E] phase=Warm stable_policy_selected source=execution_memory");
 
     let mut warm_pressure = MemoryPressure::new(6 * 1024 * 1024, 8 * 1024 * 1024, 512 * 1024);
-    let warm_completed_without_fallback = run_phase(&mut graph, &input, Phase::Warm, &mut warm_pressure);
+    let warm_completed_without_fallback =
+        run_phase(&mut graph, &input, Phase::Warm, &mut warm_pressure);
 
     println!("[APX E2E] phase=Warm stable_execution_state_reached");
 
@@ -117,14 +121,13 @@ fn run_phase(graph: &mut Graph, input: &Tensor, phase: Phase, mem: &mut MemoryPr
         if phase == Phase::Warm {
             println!("[APX E2E] phase=Warm background_policy_validation");
         }
-        println!(
-            "[APX E2E] phase={:?} unstable_policy_discarded",
-            phase
-        );
+        println!("[APX E2E] phase={:?} unstable_policy_discarded", phase);
     }
 
     // Candidate that will be applied.
-    let _effective_budget_bytes_accept = estimated_vram_bytes.saturating_mul(2).max(estimated_vram_bytes + 1);
+    let _effective_budget_bytes_accept = estimated_vram_bytes
+        .saturating_mul(2)
+        .max(estimated_vram_bytes + 1);
 
     // Execute a few steps.
     for step in 0..8usize {
@@ -148,7 +151,9 @@ fn run_phase(graph: &mut Graph, input: &Tensor, phase: Phase, mem: &mut MemoryPr
 
         let t0 = Instant::now();
         let mut out = graph.execute(vec![input.clone()]);
-        let _ = out.pop().expect("Mini-Flux graph must return a single output");
+        let _ = out
+            .pop()
+            .expect("Mini-Flux graph must return a single output");
         let elapsed_us = t0.elapsed().as_micros() as u64;
 
         // Record a single execution-memory sample on cold start.
@@ -219,7 +224,8 @@ fn prime_policy_from_execution_memory() {
 fn build_mini_flux_graph(cfg: &MiniFluxConfig) -> Graph {
     let mut gb = GraphBuilder::new();
     let tokens_id = gb.input();
-    let (logits_id, _param_ids, _param_names) = build_mini_flux_language_model(&mut gb, cfg, tokens_id);
+    let (logits_id, _param_ids, _param_names) =
+        build_mini_flux_language_model(&mut gb, cfg, tokens_id);
     gb.output(logits_id);
     gb.build()
 }

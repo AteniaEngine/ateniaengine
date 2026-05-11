@@ -1,10 +1,10 @@
-use atenia_engine::v13::autograd::{
-    execute_backward_with_trace, AutogradGraph, AutogradNode, GradMoveRecord, TensorGrad,
-};
 use atenia_engine::v13::async_executor::AsyncExecutor;
+use atenia_engine::v13::autograd::{
+    AutogradGraph, AutogradNode, GradMoveRecord, TensorGrad, execute_backward_with_trace,
+};
 use atenia_engine::v13::execution_planner::ExecutionTarget;
 use atenia_engine::v13::hybrid_memory::HybridMemoryManager;
-use atenia_engine::v13::memory_types::{MemoryTier, MemorySnapshot, MoveError, TierStatus};
+use atenia_engine::v13::memory_types::{MemorySnapshot, MemoryTier, MoveError, TierStatus};
 use atenia_engine::v13::reconfigurable_graph::NodeId;
 use atenia_engine::v13::streams::StreamConfig;
 use atenia_engine::v13::vram_adapter::VramAdapter;
@@ -35,7 +35,7 @@ impl VramAdapter for FakeVramAdapter {
             Err(_) => {
                 return Err(MoveError::BackendUnavailable(
                     "Failed to lock FakeVramAdapter storage".to_string(),
-                ))
+                ));
             }
         };
         guard.insert(id.to_string(), data.to_vec());
@@ -48,7 +48,7 @@ impl VramAdapter for FakeVramAdapter {
             Err(_) => {
                 return Err(MoveError::BackendUnavailable(
                     "Failed to lock FakeVramAdapter storage".to_string(),
-                ))
+                ));
             }
         };
         match guard.get(id) {
@@ -65,7 +65,7 @@ impl VramAdapter for FakeVramAdapter {
             Err(_) => {
                 return Err(MoveError::BackendUnavailable(
                     "Failed to lock FakeVramAdapter storage".to_string(),
-                ))
+                ));
             }
         };
         guard.remove(id);
@@ -165,7 +165,12 @@ fn trace_records_moves_and_target_gpu_success() {
     ];
 
     let mut graph = AutogradGraph::new();
-    graph.add_node(make_autograd_node(1, ExecutionTarget::Gpu, grads, "gpu success"));
+    graph.add_node(make_autograd_node(
+        1,
+        ExecutionTarget::Gpu,
+        grads,
+        "gpu success",
+    ));
 
     let snapshot = make_snapshot();
     let mut exec = make_executor();
@@ -249,7 +254,12 @@ fn trace_records_fallback_when_gpu_move_fails() {
     ];
 
     let mut graph = AutogradGraph::new();
-    graph.add_node(make_autograd_node(2, ExecutionTarget::Gpu, grads, "gpu may fail"));
+    graph.add_node(make_autograd_node(
+        2,
+        ExecutionTarget::Gpu,
+        grads,
+        "gpu may fail",
+    ));
 
     let snapshot = make_snapshot();
     let mut exec = make_executor();
@@ -267,8 +277,10 @@ fn trace_records_fallback_when_gpu_move_fails() {
     for rec in &node_trace.moves {
         if let GradMoveRecord::Failed { reason, .. } = rec {
             saw_failed = true;
-            assert!(reason.to_lowercase().contains("simulated upload failure")
-                || reason.to_lowercase().contains("backendunavailable"));
+            assert!(
+                reason.to_lowercase().contains("simulated upload failure")
+                    || reason.to_lowercase().contains("backendunavailable")
+            );
         }
     }
 
@@ -313,7 +325,12 @@ fn trace_skips_moves_when_already_in_target() {
     ];
 
     let mut graph = AutogradGraph::new();
-    graph.add_node(make_autograd_node(3, ExecutionTarget::Cpu, grads, "cpu no moves"));
+    graph.add_node(make_autograd_node(
+        3,
+        ExecutionTarget::Cpu,
+        grads,
+        "cpu no moves",
+    ));
 
     let snapshot = make_snapshot();
     let mut exec = make_executor();

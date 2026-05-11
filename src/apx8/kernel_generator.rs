@@ -39,7 +39,10 @@ impl GpuKernelTemplate {
         params.insert("vectorize".into(), self.vectorize.to_string());
         params.insert("unroll".into(), self.unroll.to_string());
 
-        GpuKernelIR { op: self.op.clone(), params }
+        GpuKernelIR {
+            op: self.op.clone(),
+            params,
+        }
     }
 }
 

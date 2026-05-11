@@ -1,6 +1,6 @@
-use crate::tensor::Tensor;
 use super::forecaster::MemoryForecaster;
 use super::offloading::{OffloadHandle, Offloader};
+use crate::tensor::Tensor;
 
 #[derive(Debug)]
 pub struct ManagedTensor {

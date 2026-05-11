@@ -28,10 +28,10 @@
 //!
 use crate::amg::graph::Graph;
 use crate::amg::nodes::NodeType;
-use crate::apx4_3::{gpu_enabled, log_gpu, gpu_plan::GpuSegment};
-use crate::cuda::matmul::cuda_matmul_inplace;
-use crate::cuda::linear::cuda_linear;
+use crate::apx4_3::{gpu_enabled, gpu_plan::GpuSegment, log_gpu};
 use crate::cuda::fused_linear_silu::cuda_fused_linear_silu;
+use crate::cuda::linear::cuda_linear;
+use crate::cuda::matmul::cuda_matmul_inplace;
 use crate::tensor::{Device, Layout, Tensor, TensorStorage};
 
 impl Graph {
@@ -65,8 +65,16 @@ impl Graph {
     pub fn exec_gpu_matmul(&mut self, id: usize) {
         let a_id = self.nodes[id].inputs[0];
         let b_id = self.nodes[id].inputs[1];
-        let a = self.nodes[a_id].output.as_ref().expect("MatMul missing A").clone();
-        let b = self.nodes[b_id].output.as_ref().expect("MatMul missing B").clone();
+        let a = self.nodes[a_id]
+            .output
+            .as_ref()
+            .expect("MatMul missing A")
+            .clone();
+        let b = self.nodes[b_id]
+            .output
+            .as_ref()
+            .expect("MatMul missing B")
+            .clone();
 
         assert_eq!(a.shape.len(), 2);
         assert_eq!(b.shape.len(), 2);
@@ -97,13 +105,9 @@ impl Graph {
         let mut out = if both_cuda {
             match Tensor::zeros_new_cuda(&[m, n]) {
                 Ok(t) => t,
-                Err(_) => Tensor::with_layout(
-                    vec![m, n],
-                    0.0,
-                    Device::CPU,
-                    Layout::Contiguous,
-                    a.dtype,
-                ),
+                Err(_) => {
+                    Tensor::with_layout(vec![m, n], 0.0, Device::CPU, Layout::Contiguous, a.dtype)
+                }
             }
         } else {
             Tensor::with_layout(vec![m, n], 0.0, Device::CPU, Layout::Contiguous, a.dtype)
@@ -199,9 +203,18 @@ impl Graph {
             "exec_gpu_fused_linear_silu expects [x, w, b] inputs",
         );
 
-        let x = self.nodes[inputs[0]].output.as_ref().expect("FusedLinear SiLU missing x");
-        let w = self.nodes[inputs[1]].output.as_ref().expect("FusedLinear SiLU missing w");
-        let b = self.nodes[inputs[2]].output.as_ref().expect("FusedLinear SiLU missing b");
+        let x = self.nodes[inputs[0]]
+            .output
+            .as_ref()
+            .expect("FusedLinear SiLU missing x");
+        let w = self.nodes[inputs[1]]
+            .output
+            .as_ref()
+            .expect("FusedLinear SiLU missing w");
+        let b = self.nodes[inputs[2]]
+            .output
+            .as_ref()
+            .expect("FusedLinear SiLU missing b");
 
         // Shapes: x [M,K], w [K,N], b [N]
         assert_eq!(x.shape.len(), 2);

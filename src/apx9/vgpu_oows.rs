@@ -1,8 +1,8 @@
 // APX 9.22 — Out-of-Order Warp Scheduler (OOWS)
 // Fully simulated and safe scheduler, without real GPU nor PTX/SASS.
 
-use crate::apx9::vgpu_warp::VGPUWarp;
 use crate::apx9::vgpu_pipeline::PipelineStage;
+use crate::apx9::vgpu_warp::VGPUWarp;
 
 #[derive(Debug)]
 pub struct VGPUOOWarpScheduler;

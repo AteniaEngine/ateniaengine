@@ -11,8 +11,8 @@ use std::collections::HashMap;
 use atenia_engine::tensor::DType;
 use atenia_engine::v17::loader::loader_errors::LoaderError;
 use atenia_engine::v17::loader::safetensors_reader::SafetensorsReader;
-use safetensors::tensor::TensorView;
 use safetensors::Dtype as StDtype;
+use safetensors::tensor::TensorView;
 
 /// Helper: build a raw byte payload from an `&[f32]` in
 /// little-endian form, matching the on-disk representation
@@ -173,9 +173,7 @@ fn f16_conversion_matches_known_bit_patterns() {
     let entry = reader.get("f16_cases").unwrap();
     assert_eq!(entry.dtype, DType::F16);
 
-    let decoded = entry
-        .to_vec_f32()
-        .expect("F16 decode must succeed in M4-d");
+    let decoded = entry.to_vec_f32().expect("F16 decode must succeed in M4-d");
     assert_eq!(decoded.len(), cases.len());
 
     for (i, ((bits, expected), got)) in cases.iter().zip(decoded.iter()).enumerate() {
@@ -235,7 +233,11 @@ fn bf16_roundtrip_preserves_values_within_bf16_precision() {
         .to_vec_f32()
         .unwrap();
 
-    for (i, (got, expected)) in decoded.iter().zip(expected_after_truncate.iter()).enumerate() {
+    for (i, (got, expected)) in decoded
+        .iter()
+        .zip(expected_after_truncate.iter())
+        .enumerate()
+    {
         assert_eq!(
             got.to_bits(),
             expected.to_bits(),
@@ -274,11 +276,7 @@ fn f16_roundtrip_preserves_values_within_f16_precision() {
     let serialized = safetensors::serialize(&tensors, &None).unwrap();
 
     let reader = SafetensorsReader::from_bytes(serialized).unwrap();
-    let decoded = reader
-        .get("f16_pseudo_real")
-        .unwrap()
-        .to_vec_f32()
-        .unwrap();
+    let decoded = reader.get("f16_pseudo_real").unwrap().to_vec_f32().unwrap();
 
     for (i, (got, expected)) in decoded.iter().zip(expected_after_f16.iter()).enumerate() {
         assert_eq!(
@@ -311,8 +309,8 @@ fn malformed_bytes_invalid_header_json_errors() {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&header_len.to_le_bytes());
     bytes.extend_from_slice(&[0xff; 20]);
-    let err = SafetensorsReader::from_bytes(bytes)
-        .expect_err("garbage header must fail JSON parse");
+    let err =
+        SafetensorsReader::from_bytes(bytes).expect_err("garbage header must fail JSON parse");
     match err {
         LoaderError::InvalidFormat(msg) => {
             assert!(

@@ -1,7 +1,7 @@
-﻿use atenia_engine::amg::graph::Graph;
+use atenia_engine::amg::graph::Graph;
 use atenia_engine::amg::nodes::{Node, NodeType};
-use atenia_engine::tensor::{Tensor, Device};
 use atenia_engine::init_apx;
+use atenia_engine::tensor::{Device, Tensor};
 
 #[test]
 fn test_apx4_11_matmul_hook_runs_and_matches_cpu() {

@@ -52,8 +52,9 @@ fn test_storage_accessor() {
         TensorStorage::CpuBf16(_) => unreachable!("test uses CPU storage only"),
         TensorStorage::Cuda(_) => unreachable!("test uses CPU storage only"),
         TensorStorage::Disk(_) => unreachable!("test uses CPU storage only"),
-        TensorStorage::CpuShared(_) | TensorStorage::CpuBf16Shared(_) =>
-            unreachable!("M5.c.2.a Arc-shared variants not exercised by this test"),
+        TensorStorage::CpuShared(_) | TensorStorage::CpuBf16Shared(_) => {
+            unreachable!("M5.c.2.a Arc-shared variants not exercised by this test")
+        }
     }
 }
 
@@ -95,8 +96,9 @@ fn test_clone_preserves_storage() {
         TensorStorage::CpuBf16(_) => unreachable!("test uses CPU storage only"),
         TensorStorage::Cuda(_) => unreachable!("test uses CPU storage only"),
         TensorStorage::Disk(_) => unreachable!("test uses CPU storage only"),
-        TensorStorage::CpuShared(_) | TensorStorage::CpuBf16Shared(_) =>
-            unreachable!("M5.c.2.a Arc-shared variants not exercised by this test"),
+        TensorStorage::CpuShared(_) | TensorStorage::CpuBf16Shared(_) => {
+            unreachable!("M5.c.2.a Arc-shared variants not exercised by this test")
+        }
     }
 
     // And the clone is independent: mutating it does not touch the

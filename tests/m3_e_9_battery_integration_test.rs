@@ -25,19 +25,15 @@
 //!    calls invoke each probe exactly once per cache miss, zero
 //!    times during cache hits.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use atenia_engine::amm::battery_probe::{
-    BatteryProbeApi, BatteryProbeError, BatterySnapshot,
-};
+use atenia_engine::amm::battery_probe::{BatteryProbeApi, BatteryProbeError, BatterySnapshot};
 use atenia_engine::amm::cpu_probe::{CpuProbeApi, CpuProbeError, CpuSnapshot};
 use atenia_engine::amm::foreground_probe::{
     ForegroundProbeApi, ForegroundProbeError, ForegroundSnapshot,
 };
-use atenia_engine::amm::gpu_util_probe::{
-    GpuUtilProbeApi, GpuUtilProbeError, GpuUtilSnapshot,
-};
+use atenia_engine::amm::gpu_util_probe::{GpuUtilProbeApi, GpuUtilProbeError, GpuUtilSnapshot};
 use atenia_engine::amm::signal_bus::SignalBus;
 
 // --- mock probes --------------------------------------------------
@@ -269,7 +265,11 @@ fn test_battery_fields_none_when_probe_says_none() {
 
     assert_eq!(c.on_battery, None);
     assert_eq!(c.battery_level, None);
-    assert_eq!(bat.calls(), 1, "probe must have been called despite the (None, None)");
+    assert_eq!(
+        bat.calls(),
+        1,
+        "probe must have been called despite the (None, None)"
+    );
 }
 
 #[test]
@@ -374,8 +374,16 @@ fn test_cache_monotonicity_with_four_probes() {
         probes_after_first,
         "probe_calls_count must stay flat during cached burst"
     );
-    assert_eq!(cpu.calls(), cpu_calls_after_first, "CPU probe must not re-fire");
-    assert_eq!(gpu.calls(), gpu_calls_after_first, "GPU probe must not re-fire");
+    assert_eq!(
+        cpu.calls(),
+        cpu_calls_after_first,
+        "CPU probe must not re-fire"
+    );
+    assert_eq!(
+        gpu.calls(),
+        gpu_calls_after_first,
+        "GPU probe must not re-fire"
+    );
     assert_eq!(
         fg.calls(),
         fg_calls_after_first,

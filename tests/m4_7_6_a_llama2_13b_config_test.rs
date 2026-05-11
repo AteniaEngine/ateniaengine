@@ -34,9 +34,7 @@
 use std::path::Path;
 
 use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::nn::llama::{
-    build_llama, LlamaConfig, LlamaRuntime,
-};
+use atenia_engine::nn::llama::{LlamaConfig, LlamaRuntime, build_llama};
 
 /// Llama 2 13B Chat lives on the **internal NVMe (D:)** for the
 /// demo per the M4.7.4 / M4.7.5 drive policy — F: USB HDD is
@@ -70,7 +68,10 @@ fn llama2_13b_config_parses_with_expected_values() {
     // Atenia's parser leaves it as None and resolves at runtime
     // via `effective_attention_bias()`.
     assert_eq!(cfg.attention_bias, None);
-    assert!(!cfg.effective_attention_bias(), "Llama 2 must have no QKV bias");
+    assert!(
+        !cfg.effective_attention_bias(),
+        "Llama 2 must have no QKV bias"
+    );
     assert_eq!(cfg.model_type.as_deref(), Some("llama"));
     assert!(cfg.rope_scaling.is_none(), "Llama 2 uses plain RoPE");
     assert_eq!(cfg.head_dim, None);
@@ -122,7 +123,8 @@ fn llama2_13b_safetensors_index_is_consistent() {
     assert!(
         (total_size as i64 - 26_031_738_880_i64).abs() < 1_000_000,
         "total_size {} is far from the expected 26.03 GB ({} bytes)",
-        total_size, 26_031_738_880_u64
+        total_size,
+        26_031_738_880_u64
     );
 }
 

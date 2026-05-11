@@ -16,10 +16,7 @@ pub fn dispatch_matmul(
     // APX 6.5: experimental path only for CPU forward when the mode is
     // exactly "6.5" and AVX2 is available. If anything fails, the rest of the
     // dispatcher preserves APX 3.8 behavior.
-    if !ctx.is_gpu()
-        && crate::apx_mode() == "6.5"
-        && std::is_x86_feature_detected!("avx2")
-    {
+    if !ctx.is_gpu() && crate::apx_mode() == "6.5" && std::is_x86_feature_detected!("avx2") {
         matmul_tiled_6_5(a, b, out, m, k, n);
         return;
     }

@@ -148,8 +148,7 @@ pub fn kick_off(handle: &DiskTensorHandle) {
     rayon::spawn(move || {
         let mut buf = vec![0u8; buf_size];
         let result =
-            crate::tensor::disk_tier::read_bf16_raw_bytes(&handle_clone, &mut buf)
-                .map(|()| buf);
+            crate::tensor::disk_tier::read_bf16_raw_bytes(&handle_clone, &mut buf).map(|()| buf);
         let _ = tx.send(result);
     });
 
@@ -191,7 +190,7 @@ pub fn take(handle: &DiskTensorHandle) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tensor::disk_tier::{write_bf16_tensor, DiskTensorHandle};
+    use crate::tensor::disk_tier::{DiskTensorHandle, write_bf16_tensor};
 
     fn cache_dir() -> std::path::PathBuf {
         let mut p = std::env::temp_dir();
@@ -222,7 +221,10 @@ mod tests {
         let bytes = take(&h);
         let after = disk_prefetch_hits();
 
-        assert!(bytes.is_some(), "prefetch must yield bytes for matching handle");
+        assert!(
+            bytes.is_some(),
+            "prefetch must yield bytes for matching handle"
+        );
         assert_eq!(bytes.unwrap().len(), 32 * 2);
         assert!(
             after > before,
@@ -304,6 +306,9 @@ mod tests {
         // from the smoke test which excludes lm_head naturally.
         kick_off(&h);
         let bytes_taken = take(&h);
-        assert!(bytes_taken.is_some(), "handle under threshold must prefetch");
+        assert!(
+            bytes_taken.is_some(),
+            "handle under threshold must prefetch"
+        );
     }
 }

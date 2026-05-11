@@ -11,5 +11,8 @@ fn test_nvrtc_basic() {
     "#;
 
     let result = compiler.compile(src, "test_kernel", "compute_89");
-    assert!(result.is_ok(), "❌ NVRTC failed to compile even a simple kernel!");
+    assert!(
+        result.is_ok(),
+        "❌ NVRTC failed to compile even a simple kernel!"
+    );
 }

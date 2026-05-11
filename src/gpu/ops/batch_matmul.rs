@@ -1,7 +1,4 @@
-use crate::gpu::{
-    ops::matmul::MatMulOp,
-    memory::GpuPtr,
-};
+use crate::gpu::{memory::GpuPtr, ops::matmul::MatMulOp};
 
 /// BatchMatMul wrapper.
 /// A: [B,H,M,K]

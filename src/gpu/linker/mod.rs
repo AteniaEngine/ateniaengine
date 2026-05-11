@@ -1,3 +1,3 @@
 pub mod linker;
 
-pub use linker::{NvJitLinker, NvJitLinkError};
+pub use linker::{NvJitLinkError, NvJitLinker};

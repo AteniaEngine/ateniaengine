@@ -1,5 +1,5 @@
-use atenia_engine::apx8::kernel_generator::KernelIR;
 use atenia_engine::apx8::gpu_compiler_stub::*;
+use atenia_engine::apx8::kernel_generator::KernelIR;
 
 #[test]
 fn apx_8_11_compiler_basic() {

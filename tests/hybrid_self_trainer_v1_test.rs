@@ -1,13 +1,15 @@
 use atenia_engine::v13::checkpoint::{WarmStartAction, WarmStartDecision, WarmStartPlan};
 use atenia_engine::v13::self_trainer::{
-    summarize_warm_start_plan, BackendChoice, ExecutionContext, EpisodeOutcome, SelfTrainer,
-    TrainingEpisode,
+    BackendChoice, EpisodeOutcome, ExecutionContext, SelfTrainer, TrainingEpisode,
+    summarize_warm_start_plan,
 };
 
 fn mock_plan_with_backend(backend: BackendChoice) -> WarmStartPlan {
     let action = match backend {
         BackendChoice::Cpu => WarmStartAction::Keep,
-        BackendChoice::Gpu => WarmStartAction::HintPromote { to: atenia_engine::v13::memory_types::MemoryTier::Vram },
+        BackendChoice::Gpu => WarmStartAction::HintPromote {
+            to: atenia_engine::v13::memory_types::MemoryTier::Vram,
+        },
     };
 
     let mut reason = String::from("Base plan");

@@ -55,8 +55,7 @@ pub fn enumerate(warnings: &mut Vec<String>) -> Vec<GpuInfo> {
             let info = adapter.get_info();
 
             let driver = (!info.driver.is_empty()).then(|| info.driver.clone());
-            let driver_version =
-                (!info.driver_info.is_empty()).then(|| info.driver_info.clone());
+            let driver_version = (!info.driver_info.is_empty()).then(|| info.driver_info.clone());
 
             GpuInfo {
                 index,

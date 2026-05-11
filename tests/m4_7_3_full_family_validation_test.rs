@@ -46,12 +46,8 @@
 
 use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::cuda::cuda_available;
-use atenia_engine::gpu::dispatch::hooks::{
-    gpu_matmul_resident_count, gpu_matmul_roundtrip_count,
-};
-use atenia_engine::nn::llama::{
-    build_llama, llama_weight_mapper, LlamaConfig, LlamaRuntime,
-};
+use atenia_engine::gpu::dispatch::hooks::{gpu_matmul_resident_count, gpu_matmul_roundtrip_count};
+use atenia_engine::nn::llama::{LlamaConfig, LlamaRuntime, build_llama, llama_weight_mapper};
 use atenia_engine::tensor::Tensor;
 use atenia_engine::v17::loader::safetensors_reader::SafetensorsReader;
 use std::env;
@@ -62,8 +58,9 @@ const TOKENS: [f32; 4] = [1.0, 100.0, 200.0, 300.0];
 const ADR_004_THRESHOLD: f64 = 0.5;
 
 fn load_f64_fixture(rel_dir: &str) -> Vec<f64> {
-    let path =
-        PathBuf::from("tests/fixtures").join(rel_dir).join("expected_logits_f64.json");
+    let path = PathBuf::from("tests/fixtures")
+        .join(rel_dir)
+        .join("expected_logits_f64.json");
     let s = fs::read_to_string(&path)
         .unwrap_or_else(|_| panic!("F64 fixture missing: {}", path.display()));
     let json: serde_json::Value = serde_json::from_str(&s).expect("malformed F64 fixture");
@@ -85,7 +82,10 @@ fn run_one_model(
     expected_param_count: usize,
     vocab_size: usize,
 ) -> (f64, [bool; 4], usize) {
-    println!("\n=== {} F64 re-validation under M4.7.3 dispatch ===", label);
+    println!(
+        "\n=== {} F64 re-validation under M4.7.3 dispatch ===",
+        label
+    );
 
     let path =
         env::var(safetensors_env_var).unwrap_or_else(|_| panic!("Set {}", safetensors_env_var));
@@ -103,11 +103,14 @@ fn run_one_model(
 
     // Load with BF16 flag on (same as M4.7.2.e — exercises the
     // decode-on-access M4.7.2.c + .d ensure_cpu defenses).
-    println!("Loading {} weights with store_params_as_bf16 = true ...", label);
+    println!(
+        "Loading {} weights with store_params_as_bf16 = true ...",
+        label
+    );
     let load_start = std::time::Instant::now();
     let reader = SafetensorsReader::open(Path::new(&path)).expect("open safetensors");
-    let mut mapper = llama_weight_mapper(&config, &handles.param_names, &handles.param_ids)
-        .expect("mapper");
+    let mut mapper =
+        llama_weight_mapper(&config, &handles.param_names, &handles.param_ids).expect("mapper");
     mapper.set_store_params_as_bf16(true);
     let report = mapper.load_into(&mut graph, &reader).expect("load");
     drop(reader);
@@ -312,7 +315,9 @@ const LLAMA32_CONFIG: &str = r#"{
 #[test]
 #[ignore = "requires the four checkpoint env vars + F64 fixtures + CUDA driver"]
 fn tinyllama_m4_7_3_matches_f64() {
-    if skip_if_no_cuda() { return; }
+    if skip_if_no_cuda() {
+        return;
+    }
     let (drift, matches, gpu_delta) = run_one_model(
         "TinyLlama 1.1B",
         TINYLLAMA_CONFIG,
@@ -337,7 +342,9 @@ fn tinyllama_m4_7_3_matches_f64() {
 #[test]
 #[ignore = "requires the four checkpoint env vars + F64 fixtures + CUDA driver"]
 fn smollm2_m4_7_3_matches_f64() {
-    if skip_if_no_cuda() { return; }
+    if skip_if_no_cuda() {
+        return;
+    }
     let (drift, matches, gpu_delta) = run_one_model(
         "SmolLM2 1.7B",
         SMOLLM2_CONFIG,
@@ -359,7 +366,9 @@ fn smollm2_m4_7_3_matches_f64() {
 #[test]
 #[ignore = "requires the four checkpoint env vars + F64 fixtures + CUDA driver"]
 fn qwen25_m4_7_3_matches_f64() {
-    if skip_if_no_cuda() { return; }
+    if skip_if_no_cuda() {
+        return;
+    }
     let (drift, matches, gpu_delta) = run_one_model(
         "Qwen 2.5 1.5B",
         QWEN25_CONFIG,
@@ -381,7 +390,9 @@ fn qwen25_m4_7_3_matches_f64() {
 #[test]
 #[ignore = "requires the four checkpoint env vars + F64 fixtures + CUDA driver"]
 fn llama_3_2_m4_7_3_matches_f64() {
-    if skip_if_no_cuda() { return; }
+    if skip_if_no_cuda() {
+        return;
+    }
     let (drift, matches, gpu_delta) = run_one_model(
         "Llama 3.2 1B",
         LLAMA32_CONFIG,

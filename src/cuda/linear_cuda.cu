@@ -1,5 +1,6 @@
 #include <cuda_runtime.h>
 #include <cstdio>
+#include "cuda_common.h"
 
 extern "C" __global__
 void linear_f32_kernel(

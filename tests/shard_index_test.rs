@@ -21,8 +21,8 @@ fn parse_valid_two_shard_index() {
             "model.norm.weight": "model-00002-of-00002.safetensors"
         }
     }"#;
-    let index = ShardIndex::from_json_str(json, fake_base())
-        .expect("valid 2-shard index must parse");
+    let index =
+        ShardIndex::from_json_str(json, fake_base()).expect("valid 2-shard index must parse");
 
     assert_eq!(index.total_size, 1_234_567);
     assert_eq!(index.weight_map.len(), 4);

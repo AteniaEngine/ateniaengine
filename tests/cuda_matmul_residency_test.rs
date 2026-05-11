@@ -25,11 +25,11 @@ fn cpu_matmul(a: &Tensor, b: &Tensor) -> Tensor {
 
 fn make_cuda_tensor_from_host(data: &[f32], shape: &[usize]) -> Tensor {
     // Allocate on VRAM, then upload.
-    let mut t =
-        Tensor::zeros_new_cuda(shape).expect("VRAM allocation failed (no CUDA driver?)");
+    let mut t = Tensor::zeros_new_cuda(shape).expect("VRAM allocation failed (no CUDA driver?)");
     // Promote to Cpu, write data, promote back to Cuda — exercises
     // both directions of the storage transfer machinery.
-    t.ensure_cpu().expect("ensure_cpu failed on freshly-allocated Cuda");
+    t.ensure_cpu()
+        .expect("ensure_cpu failed on freshly-allocated Cuda");
     t.set_cpu_data(data.to_vec());
     t.ensure_gpu().expect("ensure_gpu failed");
     assert!(matches!(t.storage(), TensorStorage::Cuda(_)));
@@ -64,8 +64,7 @@ fn cuda_matmul_inplace_residency_path_matches_cpu() {
     // ---- GPU residency path ----
     let a_gpu = make_cuda_tensor_from_host(&a_host, &[m, k]);
     let b_gpu = make_cuda_tensor_from_host(&b_host, &[k, n]);
-    let mut out_gpu =
-        Tensor::zeros_new_cuda(&[m, n]).expect("VRAM allocation for output failed");
+    let mut out_gpu = Tensor::zeros_new_cuda(&[m, n]).expect("VRAM allocation for output failed");
 
     cuda_matmul_inplace(&a_gpu, &b_gpu, &mut out_gpu, m, k, n);
 

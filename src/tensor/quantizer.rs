@@ -64,17 +64,19 @@ use crate::tensor::{Tensor, TensorStorage};
 /// Panics on any length / shape mismatch:
 ///   - `shape.is_empty()`
 ///   - `weights.len() != product(shape)`
-pub fn absmax_per_channel_symmetric(
-    weights: &[f32],
-    shape: &[usize],
-) -> (Vec<i8>, Vec<f32>) {
-    assert!(!shape.is_empty(),
-        "absmax_per_channel_symmetric: shape must be non-empty");
+pub fn absmax_per_channel_symmetric(weights: &[f32], shape: &[usize]) -> (Vec<i8>, Vec<f32>) {
+    assert!(
+        !shape.is_empty(),
+        "absmax_per_channel_symmetric: shape must be non-empty"
+    );
     let total: usize = shape.iter().product();
     assert_eq!(
-        weights.len(), total,
+        weights.len(),
+        total,
         "absmax_per_channel_symmetric: weights.len() = {} does not match product(shape) = {} (shape = {:?})",
-        weights.len(), total, shape,
+        weights.len(),
+        total,
+        shape,
     );
 
     let n = *shape.last().unwrap();
@@ -175,20 +177,35 @@ pub fn absmax_per_group_symmetric(
     shape: &[usize],
     group_size: usize,
 ) -> (Vec<i8>, Vec<f32>) {
-    assert!(!shape.is_empty(),
-        "absmax_per_group_symmetric: shape must be non-empty");
-    assert!(group_size > 0,
-        "absmax_per_group_symmetric: group_size must be > 0");
+    assert!(
+        !shape.is_empty(),
+        "absmax_per_group_symmetric: shape must be non-empty"
+    );
+    assert!(
+        group_size > 0,
+        "absmax_per_group_symmetric: group_size must be > 0"
+    );
     let total: usize = shape.iter().product();
     assert_eq!(
-        weights.len(), total,
+        weights.len(),
+        total,
         "absmax_per_group_symmetric: weights.len() = {} does not match product(shape) = {} (shape = {:?})",
-        weights.len(), total, shape,
+        weights.len(),
+        total,
+        shape,
     );
 
     let n = *shape.last().unwrap();
-    let k: usize = if shape.len() <= 1 { 1 } else { shape[..shape.len() - 1].iter().product() };
-    let num_groups = if k == 0 { 0 } else { (k + group_size - 1) / group_size };
+    let k: usize = if shape.len() <= 1 {
+        1
+    } else {
+        shape[..shape.len() - 1].iter().product()
+    };
+    let num_groups = if k == 0 {
+        0
+    } else {
+        (k + group_size - 1) / group_size
+    };
 
     // Per-(group, column) absmax sweep. The column-major loop
     // order is the natural "scan one block at a time" pattern;
@@ -233,11 +250,7 @@ pub fn absmax_per_group_symmetric(
 /// **M9.4** — convenience wrapper: build a CpuInt8 tensor from
 /// an F32 source using per-group quantisation. The default
 /// `group_size = 128` is the M9.4 production value (Q8_0).
-pub fn quantize_int8_per_group(
-    weights: &[f32],
-    shape: &[usize],
-    group_size: usize,
-) -> Tensor {
+pub fn quantize_int8_per_group(weights: &[f32], shape: &[usize], group_size: usize) -> Tensor {
     let (q, scales) = absmax_per_group_symmetric(weights, shape, group_size);
     Tensor::new_cpu_int8_per_group(shape.to_vec(), q, scales, group_size)
 }
@@ -250,9 +263,17 @@ pub fn quantize_int8_per_group(
 /// through `int8_per_group_to_bf16_in_vram` instead.
 pub fn as_cpu_int8_view(tensor: &Tensor) -> Option<(&[i8], &[f32], &[usize], usize)> {
     match &tensor.storage {
-        TensorStorage::CpuInt8 { q, scales, shape, group_size } => {
-            Some((q.as_slice(), scales.as_slice(), shape.as_slice(), *group_size))
-        }
+        TensorStorage::CpuInt8 {
+            q,
+            scales,
+            shape,
+            group_size,
+        } => Some((
+            q.as_slice(),
+            scales.as_slice(),
+            shape.as_slice(),
+            *group_size,
+        )),
         _ => None,
     }
 }
@@ -276,13 +297,21 @@ mod tests {
         let w = vec![2.0_f32, -4.0, 6.0, -127.0];
         let (q, scales) = absmax_per_channel_symmetric(&w, &[4, 1]);
         assert_eq!(scales.len(), 1);
-        assert!((scales[0] - 1.0).abs() < 1e-9, "expected scale 1.0, got {}", scales[0]);
+        assert!(
+            (scales[0] - 1.0).abs() < 1e-9,
+            "expected scale 1.0, got {}",
+            scales[0]
+        );
         assert_eq!(q, vec![2_i8, -4, 6, -127]);
 
         // Round-trip through TensorStorage::CpuInt8 → copy_to_cpu_vec.
         let t = Tensor::new_cpu_int8(vec![4, 1], q, scales);
         let dequant = t.copy_to_cpu_vec();
-        assert_eq!(dequant, w, "bit-exact round-trip failed: {:?} vs {:?}", dequant, w);
+        assert_eq!(
+            dequant, w,
+            "bit-exact round-trip failed: {:?} vs {:?}",
+            dequant, w
+        );
     }
 
     /// The 1/127 envelope: for an arbitrary F32 weight bounded by
@@ -319,8 +348,10 @@ mod tests {
                 // |W[:,col]|_max ≤ 1.0 in every column → envelope
                 // ≤ 1/127 ≈ 7.87e-3. Allow a tiny absolute margin
                 // for round-half ties.
-                assert!(err < 1.0 / 127.0 + 1e-6,
-                    "round-trip error {err:e} at ({row}, {col}) exceeds 1/127");
+                assert!(
+                    err < 1.0 / 127.0 + 1e-6,
+                    "round-trip error {err:e} at ({row}, {col}) exceeds 1/127"
+                );
             }
         }
     }
@@ -328,16 +359,10 @@ mod tests {
     /// Scales vector length contract — must equal N (last axis).
     #[test]
     fn scales_length_equals_last_axis() {
-        let (_q, scales) = absmax_per_channel_symmetric(
-            &vec![0.5_f32; 5 * 7],
-            &[5, 7],
-        );
+        let (_q, scales) = absmax_per_channel_symmetric(&vec![0.5_f32; 5 * 7], &[5, 7]);
         assert_eq!(scales.len(), 7, "scales.len() must equal N = 7");
 
-        let (_q, scales) = absmax_per_channel_symmetric(
-            &vec![0.25_f32; 11 * 13],
-            &[11, 13],
-        );
+        let (_q, scales) = absmax_per_channel_symmetric(&vec![0.25_f32; 11 * 13], &[11, 13]);
         assert_eq!(scales.len(), 13);
     }
 
@@ -425,11 +450,16 @@ mod tests {
     fn cpu_int8_storage_carries_inner_shape() {
         let t = quantize_int8_w8a16(&vec![0.5_f32; 6], &[2, 3]);
         match &t.storage {
-            TensorStorage::CpuInt8 { q, scales, shape, group_size } => {
+            TensorStorage::CpuInt8 {
+                q,
+                scales,
+                shape,
+                group_size,
+            } => {
                 assert_eq!(q.len(), 6);
                 assert_eq!(scales.len(), 3);
                 assert_eq!(shape, &vec![2usize, 3]);
-                assert_eq!(*group_size, 2);  // per-channel: one group per column
+                assert_eq!(*group_size, 2); // per-channel: one group per column
             }
             other => panic!("expected CpuInt8 storage, got {:?}", other),
         }
@@ -445,30 +475,26 @@ mod tests {
     #[test]
     fn m9_4_per_group_scales_length_contract() {
         // shape [256, 7], group_size = 128 → 2 groups × 7 = 14 scales.
-        let (_q, scales) = absmax_per_group_symmetric(
-            &vec![0.5_f32; 256 * 7],
-            &[256, 7],
-            128,
+        let (_q, scales) = absmax_per_group_symmetric(&vec![0.5_f32; 256 * 7], &[256, 7], 128);
+        assert_eq!(
+            scales.len(),
+            2 * 7,
+            "expected ceil(256/128) * 7 = 14 scales, got {}",
+            scales.len()
         );
-        assert_eq!(scales.len(), 2 * 7,
-            "expected ceil(256/128) * 7 = 14 scales, got {}", scales.len());
 
         // Non-divisible: shape [200, 7], g = 128 → ceil(200/128) = 2.
-        let (_q, scales) = absmax_per_group_symmetric(
-            &vec![0.5_f32; 200 * 7],
-            &[200, 7],
-            128,
+        let (_q, scales) = absmax_per_group_symmetric(&vec![0.5_f32; 200 * 7], &[200, 7], 128);
+        assert_eq!(
+            scales.len(),
+            2 * 7,
+            "expected ceil(200/128) * 7 = 14 scales, got {}",
+            scales.len()
         );
-        assert_eq!(scales.len(), 2 * 7,
-            "expected ceil(200/128) * 7 = 14 scales, got {}", scales.len());
 
         // group_size == K → one group per column → equivalent to
         // per-channel scales.
-        let (_q, scales) = absmax_per_group_symmetric(
-            &vec![0.5_f32; 5 * 7],
-            &[5, 7],
-            5,
-        );
+        let (_q, scales) = absmax_per_group_symmetric(&vec![0.5_f32; 5 * 7], &[5, 7], 5);
         assert_eq!(scales.len(), 7);
     }
 
@@ -501,7 +527,7 @@ mod tests {
 
         // Per-group: outlier is contained in group 1.
         let (q_pg, scales_pg) = absmax_per_group_symmetric(&w, &[k, n], g);
-        assert_eq!(scales_pg.len(), 2);  // 2 groups × 1 col
+        assert_eq!(scales_pg.len(), 2); // 2 groups × 1 col
 
         let t_pg = Tensor::new_cpu_int8_per_group(vec![k, n], q_pg, scales_pg, g);
         let dequant_pg = t_pg.copy_to_cpu_vec();
@@ -522,7 +548,7 @@ mod tests {
 
         // Per-channel reference: the same outlier crushes group 0.
         let (q_pc, scales_pc) = absmax_per_channel_symmetric(&w, &[k, n]);
-        assert_eq!(scales_pc.len(), 1);  // 1 column-wide scale
+        assert_eq!(scales_pc.len(), 1); // 1 column-wide scale
         let t_pc = Tensor::new_cpu_int8(vec![k, n], q_pc, scales_pc);
         let dequant_pc = t_pc.copy_to_cpu_vec();
         let mut max_err_pc_group_0 = 0.0_f32;
@@ -570,9 +596,11 @@ mod tests {
         for row in 0..k {
             for col in 0..n {
                 let err = (w[row * n + col] - dequant_pg[row * n + col]).abs();
-                assert!(err < 1.0 / 127.0 + 1e-6,
+                assert!(
+                    err < 1.0 / 127.0 + 1e-6,
                     "per-group round-trip error {err:e} at ({row}, {col}) \
-                     exceeds 1/127 on benign input");
+                     exceeds 1/127 on benign input"
+                );
             }
         }
     }
@@ -603,9 +631,7 @@ mod tests {
     /// asserts).
     #[test]
     fn m9_4_per_group_rejects_zero_group_size() {
-        let r = std::panic::catch_unwind(|| {
-            absmax_per_group_symmetric(&[0.0_f32; 4], &[2, 2], 0)
-        });
+        let r = std::panic::catch_unwind(|| absmax_per_group_symmetric(&[0.0_f32; 4], &[2, 2], 0));
         assert!(r.is_err(), "expected panic on group_size = 0");
     }
 }

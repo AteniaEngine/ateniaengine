@@ -1,6 +1,6 @@
-pub mod event;
 pub mod buffer;
+pub mod event;
 pub mod timeline;
 
-pub use timeline::LaunchTimeline;
 pub use event::TimelineEvent;
+pub use timeline::LaunchTimeline;

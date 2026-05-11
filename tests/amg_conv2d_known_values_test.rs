@@ -1,4 +1,4 @@
-﻿//! Absolute-correctness forward tests for AMG's `Conv2D`.
+//! Absolute-correctness forward tests for AMG's `Conv2D`.
 //!
 //! Inputs and weights are small integer-valued tensors chosen so the
 //! expected output can be computed by hand. Each expected value is
@@ -23,7 +23,11 @@ fn assert_close(got: &[f32], want: &[f32], ctx: &str) {
         assert!(
             diff < TOLERANCE,
             "{}: idx {}: got={} want={} diff={}",
-            ctx, i, g, w, diff
+            ctx,
+            i,
+            g,
+            w,
+            diff
         );
     }
 }

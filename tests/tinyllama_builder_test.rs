@@ -13,9 +13,7 @@
 //!   10. TinyLlama baseline (`tie_word_embeddings=false`) regression intact.
 
 use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::nn::llama::{
-    build_llama, LlamaConfig, LlamaHandles, LlamaRuntime,
-};
+use atenia_engine::nn::llama::{LlamaConfig, LlamaHandles, LlamaRuntime, build_llama};
 use atenia_engine::tensor::Tensor;
 
 const TINYLLAMA_CONFIG_JSON: &str = r#"{
@@ -185,7 +183,10 @@ fn param_shapes_match_expected_post_transform_layouts() {
             .unwrap_or_else(|| panic!("node {} has no tensor", id))
     };
 
-    assert_eq!(lookup("model.embed_tokens.weight").shape, vec![32_000, 2048]);
+    assert_eq!(
+        lookup("model.embed_tokens.weight").shape,
+        vec![32_000, 2048]
+    );
     assert_eq!(
         lookup("model.layers.0.self_attn.q_proj.weight").shape,
         vec![2048, 2048]
@@ -329,7 +330,11 @@ fn tied_embeddings_forward_smoke() {
         "tied logits shape must match (batch, seq, vocab)"
     );
     for &v in logits.as_cpu_slice() {
-        assert!(v.is_finite(), "non-finite logit produced under tied embeddings: {}", v);
+        assert!(
+            v.is_finite(),
+            "non-finite logit produced under tied embeddings: {}",
+            v
+        );
     }
 }
 
@@ -341,12 +346,13 @@ fn tinyllama_baseline_untied_still_produces_201_params() {
     let runtime = LlamaRuntime { batch: 1, seq: 4 };
     let (_graph, handles) = build_with(&cfg, runtime);
 
-    assert_eq!(handles.param_names.len(), 201, "TinyLlama param count regression");
+    assert_eq!(
+        handles.param_names.len(),
+        201,
+        "TinyLlama param count regression"
+    );
     assert!(
-        handles
-            .param_names
-            .iter()
-            .any(|n| n == "lm_head.weight"),
+        handles.param_names.iter().any(|n| n == "lm_head.weight"),
         "TinyLlama untied baseline must still register lm_head.weight"
     );
 }

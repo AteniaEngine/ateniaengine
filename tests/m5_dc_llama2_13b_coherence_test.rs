@@ -30,11 +30,9 @@
 //!     -- --ignored --nocapture
 //! ```
 
+use atenia_engine::nn::llama::{CollectingTokenSink, GenerationPipeline};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
-use atenia_engine::nn::llama::{
-    CollectingTokenSink, GenerationPipeline,
-};
 
 /// **Memory-safety trick.** Both tests in this file load the
 /// same 26 GB BF16 13B checkpoint. Cargo runs tests in
@@ -59,11 +57,13 @@ fn shared_pipeline() -> &'static Mutex<Option<GenerationPipeline>> {
                 let t = std::time::Instant::now();
                 match GenerationPipeline::from_model_dir(&dir) {
                     Ok(p) => {
-                        let resident_gib =
-                            p.store.resident_bytes() as f64 / (1024.0_f64.powi(3));
+                        let resident_gib = p.store.resident_bytes() as f64 / (1024.0_f64.powi(3));
                         eprintln!(
                             "[shared-load] loaded in {:.1}s ({} params, {:.2} GiB resident)",
-                            t.elapsed().as_secs_f32(), p.store.len(), resident_gib);
+                            t.elapsed().as_secs_f32(),
+                            p.store.len(),
+                            resident_gib
+                        );
                         Some(p)
                     }
                     Err(e) => {
@@ -112,7 +112,9 @@ fn llama2_13b_arc_sharing_keeps_resident_under_30_gib() {
     let resident_gib = pipe.store.resident_bytes() as f64 / (1024.0_f64.powi(3));
     eprintln!(
         "shared pipeline: {} parameters, {:.2} GiB resident",
-        pipe.store.len(), resident_gib);
+        pipe.store.len(),
+        resident_gib
+    );
 
     // Sanity: 13B Chat is MHA (40 Q == 40 KV).
     assert_eq!(pipe.config.num_attention_heads, 40);
@@ -122,8 +124,11 @@ fn llama2_13b_arc_sharing_keeps_resident_under_30_gib() {
 
     // Param count: 40 layers × 9 params/layer + embed +
     // final norm + lm_head = 363.
-    assert_eq!(pipe.store.len(), 363,
-        "Llama 2 13B Chat must materialise 363 parameters");
+    assert_eq!(
+        pipe.store.len(),
+        363,
+        "Llama 2 13B Chat must materialise 363 parameters"
+    );
 
     // Arc-sharing proof: BF16 13B should land at ~26 GiB.
     // The threshold is 30 GiB to allow ~15% headroom for
@@ -145,22 +150,27 @@ fn llama2_13b_arc_sharing_keeps_resident_under_30_gib() {
     // buffers. The newly-built graph drops at end of scope;
     // the strong_count drop after that proves correctness
     // of Arc bookkeeping.
-    use atenia_engine::amg::weight_store::SharedParam;
     use atenia_engine::amg::builder::GraphBuilder;
-    use atenia_engine::nn::llama::{build_llama_with_store, LlamaRuntime};
+    use atenia_engine::amg::weight_store::SharedParam;
+    use atenia_engine::nn::llama::{LlamaRuntime, build_llama_with_store};
     let mut gb = GraphBuilder::new();
     let token_in = gb.input();
     let runtime = LlamaRuntime { batch: 1, seq: 1 };
-    let _ = build_llama_with_store(
-        &mut gb, &pipe.config, &runtime, token_in, &pipe.store, None,
-    ).expect("second graph build must succeed");
+    let _ = build_llama_with_store(&mut gb, &pipe.config, &runtime, token_in, &pipe.store, None)
+        .expect("second graph build must succeed");
     let _g2 = gb.build();
     // Each shared param now has at least 2 refs (store
     // entry + this graph's parameter slot). Real number
     // depends on test ordering: if the coherence test
     // already built its own decode graphs, the count is
     // higher.
-    for (name, p) in pipe.store.names.iter().zip(pipe.store.params.iter()).take(5) {
+    for (name, p) in pipe
+        .store
+        .names
+        .iter()
+        .zip(pipe.store.params.iter())
+        .take(5)
+    {
         let count = match p {
             SharedParam::F32 { arc, .. } => std::sync::Arc::strong_count(arc),
             SharedParam::Bf16 { arc, .. } => std::sync::Arc::strong_count(arc),
@@ -170,18 +180,16 @@ fn llama2_13b_arc_sharing_keeps_resident_under_30_gib() {
             // Explicit panics preserve the M5 invariant: any leak
             // of a non-CPU variant is a regression.
             SharedParam::Cuda { .. } => {
-                panic!(
-                    "M5 coherence smoke must not expose Cuda-resident params (got '{name}')"
-                );
+                panic!("M5 coherence smoke must not expose Cuda-resident params (got '{name}')");
             }
             SharedParam::Disk { .. } => {
-                panic!(
-                    "M5 coherence smoke must not expose Disk-resident params (got '{name}')"
-                );
+                panic!("M5 coherence smoke must not expose Disk-resident params (got '{name}')");
             }
         };
-        assert!(count >= 2,
-            "param '{name}' strong_count = {count}, expected >= 2 (store + at least one graph)");
+        assert!(
+            count >= 2,
+            "param '{name}' strong_count = {count}, expected >= 2 (store + at least one graph)"
+        );
         eprintln!("  {name}: strong_count = {count}");
     }
 
@@ -229,10 +237,10 @@ fn llama2_13b_responds_coherently_to_greeting() {
     eprintln!("generating {max_new_tokens} tokens for prompt {prompt:?}...");
     let mut sink = CollectingTokenSink::default();
     let gen_start = std::time::Instant::now();
-    let text = pipe.generate(prompt, max_new_tokens, &mut sink)
+    let text = pipe
+        .generate(prompt, max_new_tokens, &mut sink)
         .expect("generate failed");
-    eprintln!("generated in {:.1}s",
-        gen_start.elapsed().as_secs_f32());
+    eprintln!("generated in {:.1}s", gen_start.elapsed().as_secs_f32());
     eprintln!("response: {:?}", text);
 
     let lowered = text.to_lowercase();
@@ -245,12 +253,15 @@ fn llama2_13b_responds_coherently_to_greeting() {
     // "Yes, absolutely! Here are some examples" (which
     // was the M5.d.b symptom of a broken chat template).
     let coherent_anchors = ["i", "hello", "thank", "fine", "well", "doing", "how"];
-    let hits: Vec<&&str> = coherent_anchors.iter()
+    let hits: Vec<&&str> = coherent_anchors
+        .iter()
         .filter(|w| lowered.contains(*w))
         .collect();
-    assert!(!hits.is_empty(),
+    assert!(
+        !hits.is_empty(),
         "13B response {text:?} contains none of {coherent_anchors:?} — \
-         possible chat-template / detokenisation regression");
+         possible chat-template / detokenisation regression"
+    );
     eprintln!("[OK] coherence hits: {hits:?}");
 
     // Sanity on streaming: every token has the right

@@ -53,5 +53,8 @@ fn invalid_manifest_yields_explicit_error() {
     let mut m = EngineManifest::apx17_default();
     m.learning_enabled = true;
     let res = VersionSeal::from_manifest(&m);
-    assert!(matches!(res, Err(ManifestError::InconsistentCapabilities(_))));
+    assert!(matches!(
+        res,
+        Err(ManifestError::InconsistentCapabilities(_))
+    ));
 }

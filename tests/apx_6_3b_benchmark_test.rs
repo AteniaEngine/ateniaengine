@@ -1,8 +1,10 @@
 use std::time::Instant;
 
-use atenia_engine::apx3_8::{device_context::DeviceContext, kernel_dispatch::dispatch_matmul as dispatch_matmul_apx3_8};
-use atenia_engine::kernels::matmul_tiled_cpu; // APX 6.1
+use atenia_engine::apx3_8::{
+    device_context::DeviceContext, kernel_dispatch::dispatch_matmul as dispatch_matmul_apx3_8,
+};
 use atenia_engine::apx6::matmul_tiled_6_3b::matmul_tiled_6_3b; // APX 6.3B
+use atenia_engine::kernels::matmul_tiled_cpu; // APX 6.1
 use atenia_engine::tensor::Device;
 
 fn baseline_matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> (Vec<f32>, u128) {
@@ -47,11 +49,7 @@ fn bench_size(m: usize, k: usize, n: usize) {
 
     println!(
         "[APX 6.3B BENCH] size {} -> baseline={} | tiled6.1={} | tiled6.3b={} | speedup6.3b={:.2}",
-        m,
-        t_base,
-        t_61,
-        t_63b,
-        speedup_63b,
+        m, t_base, t_61, t_63b, speedup_63b,
     );
     // In this specific environment, the APX 3.8 baseline is already highly optimized
     // and may outperform the 6.3B kernel. This benchmark is kept as a

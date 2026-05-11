@@ -1,6 +1,6 @@
-﻿use atenia_engine::tensor::{Tensor, Device};
 use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::nn::linear::linear;
+use atenia_engine::tensor::{Device, Tensor};
 
 #[test]
 fn apx_4_3_linear_chain_gpu_matches_cpu() {
@@ -42,7 +42,11 @@ fn apx_4_3_linear_chain_gpu_matches_cpu() {
 
     // GPU: execute the graph (APX 4.3 should route linear layers to CUDA when possible).
     let out_vec = graph.execute(vec![x0.clone()]);
-    assert_eq!(out_vec.len(), 1, "graph must produce a single output tensor");
+    assert_eq!(
+        out_vec.len(),
+        1,
+        "graph must produce a single output tensor"
+    );
     let gpu = &out_vec[0];
 
     assert_eq!(cpu.shape, gpu.shape, "CPU/GPU shapes must match");

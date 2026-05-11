@@ -1,5 +1,5 @@
-﻿use atenia_engine::tensor::ops::testing::{fast_add_calls, reset_op_counters, slow_add_calls};
-use atenia_engine::tensor::tensor::{Device, DType, Layout, Tensor};
+use atenia_engine::tensor::ops::testing::{fast_add_calls, reset_op_counters, slow_add_calls};
+use atenia_engine::tensor::tensor::{DType, Device, Layout, Tensor};
 
 fn assign_logical_values(tensor: &mut Tensor, values: &[f32]) {
     assert_eq!(values.len(), tensor.numel());
@@ -42,11 +42,7 @@ fn collect_logical_values(tensor: &Tensor) -> Vec<f32> {
 }
 
 fn linear_offset(index: &[usize], strides: &[usize]) -> usize {
-    index
-        .iter()
-        .zip(strides)
-        .map(|(i, s)| i * s)
-        .sum()
+    index.iter().zip(strides).map(|(i, s)| i * s).sum()
 }
 
 fn increment_index(index: &mut [usize], shape: &[usize]) -> bool {

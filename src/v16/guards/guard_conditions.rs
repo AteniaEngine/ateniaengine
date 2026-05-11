@@ -191,12 +191,7 @@ impl GuardConditions {
     /// formula (`current / baseline` vs alternatives such as
     /// `(current - baseline) / baseline`) stays centralized at the
     /// call site that knows the semantics.
-    pub fn with_latency_context(
-        mut self,
-        baseline_ms: f32,
-        current_ms: f32,
-        ratio: f32,
-    ) -> Self {
+    pub fn with_latency_context(mut self, baseline_ms: f32, current_ms: f32, ratio: f32) -> Self {
         self.latency_baseline_ms = Some(baseline_ms);
         self.latency_current_ms = Some(current_ms);
         self.latency_ratio = Some(ratio);

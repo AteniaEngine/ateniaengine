@@ -1,11 +1,13 @@
-use crate::apx3_8::{device_context::DeviceContext, kernel_dispatch::dispatch_matmul as dispatch_matmul_apx3_8};
-use crate::tensor::Device;
-use crate::kernels::matmul_tiled_cpu::matmul_tiled_cpu;
+use crate::apx3_8::{
+    device_context::DeviceContext, kernel_dispatch::dispatch_matmul as dispatch_matmul_apx3_8,
+};
+use crate::apx5::kernel_planner::KernelTarget;
 use crate::apx6::matmul_tiled_6_3b::matmul_tiled_6_3b;
 use crate::apx6_4::matmul_4x8_avx2;
-use crate::apx5::kernel_planner::KernelTarget;
 use crate::apx6_5::matmul_tiled_6_5;
+use crate::kernels::matmul_tiled_cpu::matmul_tiled_cpu;
 use crate::matmul::matmul_tiled_flex::matmul_tiled_flex;
+use crate::tensor::Device;
 
 /// M4.8.d threshold: minimum `M` to engage row-level
 /// parallelism. Below this the rayon spawn cost (~ a few µs
@@ -32,14 +34,7 @@ const PARALLEL_PER_ROW_FLOOR: usize = 1024;
 /// kernel `apx_mode_at_least(...)` selects (AVX2 / 6.3b /
 /// 4×8 BLIS / etc.) — the row partition does not change
 /// kernel selection, only multiplies it across cores.
-pub fn matmul_dispatch(
-    a: &[f32],
-    b: &[f32],
-    out: &mut [f32],
-    m: usize,
-    k: usize,
-    n: usize,
-) {
+pub fn matmul_dispatch(a: &[f32], b: &[f32], out: &mut [f32], m: usize, k: usize, n: usize) {
     if m >= MIN_PARALLEL_M && k * n >= PARALLEL_PER_ROW_FLOOR {
         use rayon::prelude::*;
         out.par_chunks_mut(n).enumerate().for_each(|(i, out_row)| {
@@ -74,14 +69,7 @@ const MATRIXMULTIPLY_MIN_MK_N: usize = 1_000_000;
 /// dominant case for seq=1 generation) or after the
 /// row-partitioning wrapper has split a multi-row call into
 /// 1-row pieces (where the per-row work is `1 * k * n`).
-fn matmul_dispatch_serial(
-    a: &[f32],
-    b: &[f32],
-    out: &mut [f32],
-    m: usize,
-    k: usize,
-    n: usize,
-) {
+fn matmul_dispatch_serial(a: &[f32], b: &[f32], out: &mut [f32], m: usize, k: usize, n: usize) {
     // M4.8.e: route cache-blocking-friendly shapes through
     // `matrixmultiply::sgemm`. Pure-Rust, AVX2/FMA on x86_64,
     // NEON on aarch64 — vendor-agnostic by design (rules out
@@ -104,12 +92,20 @@ fn matmul_dispatch_serial(
     if total_work >= MATRIXMULTIPLY_MIN_MK_N {
         unsafe {
             matrixmultiply::sgemm(
-                m, k, n,
+                m,
+                k,
+                n,
                 1.0,
-                a.as_ptr(), k as isize, 1,
-                b.as_ptr(), n as isize, 1,
+                a.as_ptr(),
+                k as isize,
+                1,
+                b.as_ptr(),
+                n as isize,
+                1,
                 0.0,
-                out.as_mut_ptr(), n as isize, 1,
+                out.as_mut_ptr(),
+                n as isize,
+                1,
             );
         }
         return;
@@ -198,14 +194,10 @@ fn matmul_dispatch_serial(
                 matmul_tiled_6_3b(a, b, &mut tmp_seq, m, k, n);
             });
             let t_pex = quick_time(|| {
-                crate::apx6::matmul_tiled_6_3b::matmul_tiled_6_3b_pex(
-                    a, b, &mut tmp_pex, m, k, n,
-                );
+                crate::apx6::matmul_tiled_6_3b::matmul_tiled_6_3b_pex(a, b, &mut tmp_pex, m, k, n);
             });
             let t_ws = quick_time(|| {
-                crate::apx6::matmul_tiled_6_3b::matmul_tiled_6_3b_pex(
-                    a, b, &mut tmp_ws, m, k, n,
-                );
+                crate::apx6::matmul_tiled_6_3b::matmul_tiled_6_3b_pex(a, b, &mut tmp_ws, m, k, n);
             });
 
             if let Ok(mut guard) = crate::apx7::adaptive_pgl::ADAPTIVE_BUCKETS.write() {
@@ -218,12 +210,7 @@ fn matmul_dispatch_serial(
     // - modo == "6.5",
     // - hay AVX2 disponible,
     // - sufficiently large size (>=128x128x128).
-    if mode == "6.5"
-        && std::is_x86_feature_detected!("avx2")
-        && m >= 128
-        && n >= 128
-        && k >= 128
-    {
+    if mode == "6.5" && std::is_x86_feature_detected!("avx2") && m >= 128 && n >= 128 && k >= 128 {
         matmul_tiled_6_5(a, b, out, m, k, n);
         return;
     }
@@ -276,7 +263,7 @@ fn matmul_dispatch_serial(
         // APX 7.2+: let the Parallel GEMM Layer (PGL) decide the
         // concrete strategy (seq / PEX / WS) over the same base kernel.
         if crate::apx_mode_at_least("7.2") {
-            use crate::apx7_2::pgl::{decide_pgl, PGLStrategy};
+            use crate::apx7_2::pgl::{PGLStrategy, decide_pgl};
 
             let threads = crate::cpu_features::cpu_features().threads.max(1) as usize;
             let decision = decide_pgl(m, k, n, threads);

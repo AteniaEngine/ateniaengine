@@ -8,14 +8,7 @@
 use crate::cuda::matmul::cuda_matmul;
 use crate::tensor::Tensor;
 
-pub fn gpu_matmul(
-    a: &[f32],
-    b: &[f32],
-    m: usize,
-    k: usize,
-    n: usize,
-    out: &mut [f32],
-) {
+pub fn gpu_matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize, out: &mut [f32]) {
     // Build temporary CPU tensors to reuse the existing cuda_matmul path.
     // This does not change MatMul math; it only delegates computation to the
     // CUDA kernel when available.

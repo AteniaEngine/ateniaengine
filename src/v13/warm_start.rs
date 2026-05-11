@@ -12,10 +12,7 @@ fn tier_to_str(tier: MemoryTier) -> &'static str {
     }
 }
 
-fn find_drift_for_id<'a>(
-    id: &str,
-    drifts: &'a [DriftReport],
-) -> Option<&'a DriftReport> {
+fn find_drift_for_id<'a>(id: &str, drifts: &'a [DriftReport]) -> Option<&'a DriftReport> {
     let needle = TensorId(id.to_string());
     for report in drifts {
         if report.entry_id == needle {
@@ -36,7 +33,11 @@ fn pick_action_for_entry(
     // Drift-aware downgrade has priority.
     if let Some(report) = drift {
         for d in &report.drifts {
-            if let crate::v13::checkpoint::drift::CheckpointDrift::TierDowngrade { desired, restored } = d {
+            if let crate::v13::checkpoint::drift::CheckpointDrift::TierDowngrade {
+                desired,
+                restored,
+            } = d
+            {
                 let reason = format!(
                     "Tier downgraded from {} to {} during restore drift",
                     tier_to_str(*desired),
@@ -58,12 +59,16 @@ fn pick_action_for_entry(
         Some(MemoryTier::Vram) => {
             let (action, reason) = if gpu_available {
                 (
-                    WarmStartAction::HintPromote { to: MemoryTier::Vram },
+                    WarmStartAction::HintPromote {
+                        to: MemoryTier::Vram,
+                    },
                     "Desired VRAM and GPU available".to_string(),
                 )
             } else {
                 (
-                    WarmStartAction::DegradeSafe { to: MemoryTier::Ram },
+                    WarmStartAction::DegradeSafe {
+                        to: MemoryTier::Ram,
+                    },
                     "Desired VRAM but GPU unavailable".to_string(),
                 )
             };
@@ -78,7 +83,9 @@ fn pick_action_for_entry(
         }
         Some(MemoryTier::Ram) => {
             if matches!(current, MemoryTier::Ssd) {
-                let action = WarmStartAction::HintPromote { to: MemoryTier::Ram };
+                let action = WarmStartAction::HintPromote {
+                    to: MemoryTier::Ram,
+                };
                 let reason = "Prefer RAM for faster access when safe".to_string();
                 return WarmStartDecision {
                     id: id.to_string(),
@@ -182,7 +189,10 @@ pub fn build_warm_start_plan(
         }
     }
 
-    let summary = format!("warm_start: keep={} promote={} degrade={}", keep, promote, degrade);
+    let summary = format!(
+        "warm_start: keep={} promote={} degrade={}",
+        keep, promote, degrade
+    );
 
     WarmStartPlan { decisions, summary }
 }

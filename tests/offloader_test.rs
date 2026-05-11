@@ -1,5 +1,5 @@
-﻿use atenia_engine::amm::offloading::{Offloader, StorageLocation};
-use atenia_engine::tensor::tensor::{Device, DType, Layout, Tensor};
+use atenia_engine::amm::offloading::{Offloader, StorageLocation};
+use atenia_engine::tensor::tensor::{DType, Device, Layout, Tensor};
 use std::fs;
 use uuid::Uuid;
 
@@ -9,8 +9,7 @@ fn make_tensor(values: Vec<f32>, device: Device) -> Tensor {
 }
 
 fn temp_dir() -> String {
-    let dir = std::env::temp_dir()
-        .join(format!("atenia_offload_test_{}", Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("atenia_offload_test_{}", Uuid::new_v4()));
     fs::create_dir_all(&dir).unwrap();
     dir.to_string_lossy().to_string()
 }
@@ -49,8 +48,7 @@ fn loading_from_disk_restores_data() {
 
 #[test]
 fn directory_auto_created() {
-    let dir = std::env::temp_dir()
-        .join(format!("atenia_offload_test_auto_{}", Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("atenia_offload_test_auto_{}", Uuid::new_v4()));
     let dir_str = dir.to_string_lossy().to_string();
     if dir.exists() {
         fs::remove_dir_all(&dir).unwrap();

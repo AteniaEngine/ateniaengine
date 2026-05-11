@@ -23,7 +23,7 @@
 use std::thread;
 use std::time::Duration;
 
-use atenia_engine::amm::signal_bus::{SignalBus, SIGNAL_BUS_CACHE_TTL};
+use atenia_engine::amm::signal_bus::{SIGNAL_BUS_CACHE_TTL, SignalBus};
 
 /// Runs the initial probe and reports whether the host supports it.
 /// Returns `true` when `collect_guard_conditions` returned `Some` —

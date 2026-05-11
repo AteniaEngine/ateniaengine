@@ -17,9 +17,7 @@ use atenia_engine::amg::reactive::ReactiveExecutionContext;
 use atenia_engine::amm::signal_bus::SignalBus;
 use atenia_engine::v15::policy::types::DecisionBias;
 use atenia_engine::v16::contract::constraints::{Constraints, RuntimeState};
-use atenia_engine::v16::contract::execution_contract::{
-    ExecutionBackend, ExecutionContract,
-};
+use atenia_engine::v16::contract::execution_contract::{ExecutionBackend, ExecutionContract};
 use atenia_engine::v16::guards::execution_guard::ExecutionGuard;
 use atenia_engine::v16::guards::guard_manager::GuardManager;
 use atenia_engine::v16::guards::simple_memory_pressure_guard::SimpleMemoryPressureGuard;
@@ -29,8 +27,8 @@ use atenia_engine::v16::guards::simple_memory_pressure_guard::SimpleMemoryPressu
 // ---------------------------------------------------------------------
 
 fn test_cache_dir(label: &str) -> PathBuf {
-    let dir = std::env::temp_dir()
-        .join(format!("atenia_m3_e_11_6_gc_{}_{}", label, Uuid::new_v4()));
+    let dir =
+        std::env::temp_dir().join(format!("atenia_m3_e_11_6_gc_{}_{}", label, Uuid::new_v4()));
     fs::create_dir_all(&dir).expect("create test cache dir");
     dir
 }
@@ -57,11 +55,7 @@ fn create_aged_file(path: &PathBuf, age_ago: Duration) {
 /// Build a minimal SignalBus + Contract + GuardManager triplet.
 /// Tests here do not care about the probes — they only exercise
 /// ReactiveExecutionContext's construction-time GC behavior.
-fn trivial_bus_contract_guards() -> (
-    Arc<SignalBus>,
-    ExecutionContract,
-    GuardManager,
-) {
+fn trivial_bus_contract_guards() -> (Arc<SignalBus>, ExecutionContract, GuardManager) {
     let bus = Arc::new(SignalBus::with_probes(None, None, None, None, None, None));
     let contract = ExecutionContract {
         bias: DecisionBias {
@@ -84,8 +78,7 @@ fn trivial_bus_contract_guards() -> (
         require_stability: false,
         constraints: Constraints { items: vec![] },
     };
-    let guards: Vec<Box<dyn ExecutionGuard>> =
-        vec![Box::new(SimpleMemoryPressureGuard::new())];
+    let guards: Vec<Box<dyn ExecutionGuard>> = vec![Box::new(SimpleMemoryPressureGuard::new())];
     let gm = GuardManager::new(guards);
     (bus, contract, gm)
 }
@@ -155,8 +148,8 @@ fn test_gc_disabled_via_new_without_gc() {
     // when they want to inspect a cache dir without the GC
     // racing them.
     let (bus, contract, gm) = trivial_bus_contract_guards();
-    let _ctx = ReactiveExecutionContext::new_without_gc(bus, contract, gm)
-        .with_cache_dir(dir.clone());
+    let _ctx =
+        ReactiveExecutionContext::new_without_gc(bus, contract, gm).with_cache_dir(dir.clone());
 
     assert!(
         orphan.exists(),
@@ -176,10 +169,8 @@ fn test_gc_handles_missing_cache_dir_gracefully() {
     // must not panic or error out, because that would break
     // startup on any host without a pre-existing cache dir
     // (which is the usual state on a first run).
-    let missing = std::env::temp_dir().join(format!(
-        "atenia_m3_e_11_6_gc_missing_{}",
-        Uuid::new_v4()
-    ));
+    let missing =
+        std::env::temp_dir().join(format!("atenia_m3_e_11_6_gc_missing_{}", Uuid::new_v4()));
     assert!(!missing.exists(), "pre-condition: dir must not exist");
 
     let (bus, contract, gm) = trivial_bus_contract_guards();

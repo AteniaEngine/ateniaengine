@@ -30,9 +30,7 @@
 //! ```
 
 use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::nn::llama::{
-    build_llama, llama_weight_mapper, LlamaConfig, LlamaRuntime,
-};
+use atenia_engine::nn::llama::{LlamaConfig, LlamaRuntime, build_llama, llama_weight_mapper};
 use atenia_engine::tensor::tensor::{Tensor, TensorStorage};
 use atenia_engine::v17::loader::safetensors_reader::SafetensorsReader;
 use atenia_engine::v17::loader::weight_mapper::WeightMapper;
@@ -66,8 +64,7 @@ const EMBEDDED_TINYLLAMA_CONFIG: &str = r#"{
 }"#;
 
 fn fixture_f64_reference() -> Vec<f64> {
-    let path =
-        PathBuf::from("tests/fixtures/tinyllama_reference/expected_logits_f64.json");
+    let path = PathBuf::from("tests/fixtures/tinyllama_reference/expected_logits_f64.json");
     let s = fs::read_to_string(&path)
         .unwrap_or_else(|_| panic!("F64 fixture missing: {}", path.display()));
     let json: serde_json::Value = serde_json::from_str(&s).expect("malformed F64 fixture");
@@ -102,8 +99,8 @@ fn tinyllama_bf16_storage_loads_executes_and_argmax_matches_f64() {
     println!("Loading weights with store_params_as_bf16 = true ...");
     let load_start = std::time::Instant::now();
     let reader = SafetensorsReader::open(Path::new(&path)).expect("open safetensors");
-    let mut mapper = llama_weight_mapper(&config, &handles.param_names, &handles.param_ids)
-        .expect("mapper");
+    let mut mapper =
+        llama_weight_mapper(&config, &handles.param_names, &handles.param_ids).expect("mapper");
     let mapper_mut: &mut WeightMapper = &mut mapper;
     mapper_mut.set_store_params_as_bf16(true);
     let report = mapper.load_into(&mut graph, &reader).expect("load");
@@ -137,10 +134,7 @@ fn tinyllama_bf16_storage_loads_executes_and_argmax_matches_f64() {
             other => panic!("unexpected param storage variant: {:?}", other),
         }
     }
-    println!(
-        "Param storage: {} CpuBf16, {} Cpu",
-        bf16_count, f32_count
-    );
+    println!("Param storage: {} CpuBf16, {} Cpu", bf16_count, f32_count);
     println!(
         "Param footprint: {:.1} MB BF16  vs  {:.1} MB F32 (savings = {:.1} MB, {:.1}%)",
         bf16_bytes as f64 / 1e6,
@@ -152,7 +146,10 @@ fn tinyllama_bf16_storage_loads_executes_and_argmax_matches_f64() {
         bf16_count, 201,
         "every param must end up as CpuBf16 with the flag on"
     );
-    assert_eq!(f32_count, 0, "no param should be Cpu(F32) under the BF16 flag");
+    assert_eq!(
+        f32_count, 0,
+        "no param should be Cpu(F32) under the BF16 flag"
+    );
 
     // RAM saving sanity: the BF16 footprint should be half the F32
     // equivalent. Allow 0.001 % slack for floating-point arithmetic
@@ -179,7 +176,10 @@ fn tinyllama_bf16_storage_loads_executes_and_argmax_matches_f64() {
 
     let max_abs = slice.iter().map(|v| v.abs()).fold(0.0_f32, f32::max);
     let mean_abs: f32 = slice.iter().map(|v| v.abs()).sum::<f32>() / slice.len() as f32;
-    println!("Logit stats: max |v|={:.4}  mean |v|={:.4}", max_abs, mean_abs);
+    println!(
+        "Logit stats: max |v|={:.4}  mean |v|={:.4}",
+        max_abs, mean_abs
+    );
     assert!(max_abs < 1000.0, "logits suspiciously large: {}", max_abs);
 
     // ---- 5. Argmax sanity vs F64 ground truth (M4.6.1 fixture) ----
@@ -210,7 +210,10 @@ fn tinyllama_bf16_storage_loads_executes_and_argmax_matches_f64() {
         } else {
             "MISMATCH"
         };
-        println!("  Pos {}: BF16 argmax id={:>5}  F64 id={:>5}   [{}]", pos, a_id, f_id, tag);
+        println!(
+            "  Pos {}: BF16 argmax id={:>5}  F64 id={:>5}   [{}]",
+            pos, a_id, f_id, tag
+        );
     }
 
     assert_eq!(

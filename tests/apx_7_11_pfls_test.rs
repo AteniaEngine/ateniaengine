@@ -1,7 +1,7 @@
-﻿use atenia_engine::apx7::pfls::PFLSHistory;
 use atenia_engine::amg::graph::Graph;
 use atenia_engine::amg::nodes::{Node, NodeType};
-use atenia_engine::tensor::{Tensor, Device, Layout};
+use atenia_engine::apx7::pfls::PFLSHistory;
+use atenia_engine::tensor::{Device, Layout, Tensor};
 
 fn max_abs_diff(a: &Tensor, b: &Tensor) -> f32 {
     a.as_cpu_slice()
@@ -23,7 +23,13 @@ fn make_simple_graph() -> Graph {
 }
 
 fn make_inputs() -> Vec<Tensor> {
-    let x = Tensor::with_layout(vec![8, 8], 1.0, Device::CPU, Layout::Contiguous, atenia_engine::tensor::DType::F32);
+    let x = Tensor::with_layout(
+        vec![8, 8],
+        1.0,
+        Device::CPU,
+        Layout::Contiguous,
+        atenia_engine::tensor::DType::F32,
+    );
     vec![x]
 }
 
@@ -45,11 +51,15 @@ fn apx_7_11_predicts_hotspot_correctly() {
 fn apx_7_11_equivalence_vs_7_10() {
     let inputs = make_inputs();
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.10"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.10");
+    }
     let mut g_710 = make_simple_graph();
     let out_710 = g_710.execute(inputs.clone());
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.11"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.11");
+    }
     let mut g_711 = make_simple_graph();
     let out_711 = g_711.execute(inputs);
 

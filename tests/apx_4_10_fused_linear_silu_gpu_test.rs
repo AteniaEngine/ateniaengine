@@ -1,6 +1,6 @@
-﻿use atenia_engine::tensor::{Tensor, Device};
-use atenia_engine::cuda::fused_linear_silu::cuda_fused_linear_silu;
 use atenia_engine::apx4_8::fused_linear_activation::exec_fused_linear_silu;
+use atenia_engine::cuda::fused_linear_silu::cuda_fused_linear_silu;
+use atenia_engine::tensor::{Device, Tensor};
 
 #[test]
 fn test_fused_linear_silu_gpu_matches_cpu() {

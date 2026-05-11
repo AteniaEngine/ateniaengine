@@ -1,4 +1,4 @@
-use atenia_engine::tensor::tensor::{Device, DType, Layout, Tensor};
+use atenia_engine::tensor::tensor::{DType, Device, Layout, Tensor};
 use atenia_engine::training::trainer::{Trainer, TrainerConfig};
 
 fn sample_template(num_elements: usize) -> Tensor {

@@ -41,13 +41,15 @@ fn test_ensure_gpu_then_ensure_cpu_roundtrip() {
     let data = vec![1.5f32, 2.5, 3.5, 4.5, 5.5, 6.5];
     let mut t = Tensor::new_cpu(vec![2, 3], data.clone());
 
-    t.ensure_gpu().expect("ensure_gpu must succeed when engine is available");
+    t.ensure_gpu()
+        .expect("ensure_gpu must succeed when engine is available");
     assert!(
         matches!(t.storage(), TensorStorage::Cuda(_)),
         "after ensure_gpu the storage variant must be Cuda"
     );
 
-    t.ensure_cpu().expect("ensure_cpu must succeed on a just-uploaded tensor");
+    t.ensure_cpu()
+        .expect("ensure_cpu must succeed on a just-uploaded tensor");
     assert!(
         matches!(t.storage(), TensorStorage::Cpu(_)),
         "after ensure_cpu the storage variant must be Cpu"
@@ -76,8 +78,9 @@ fn test_ensure_gpu_on_gpu_is_noop() {
         TensorStorage::Cpu(_) => unreachable!("storage should be Cuda here"),
         TensorStorage::CpuBf16(_) => unreachable!("test never places tensor on CpuBf16"),
         TensorStorage::Disk(_) => unreachable!("test never places tensor on Disk"),
-        TensorStorage::CpuShared(_) | TensorStorage::CpuBf16Shared(_) =>
-            unreachable!("M5.c.2.a Arc-shared variants not exercised by this test"),
+        TensorStorage::CpuShared(_) | TensorStorage::CpuBf16Shared(_) => {
+            unreachable!("M5.c.2.a Arc-shared variants not exercised by this test")
+        }
     };
 
     t.ensure_gpu()
@@ -88,8 +91,9 @@ fn test_ensure_gpu_on_gpu_is_noop() {
         TensorStorage::Cpu(_) => unreachable!("storage should still be Cuda"),
         TensorStorage::CpuBf16(_) => unreachable!("test never places tensor on CpuBf16"),
         TensorStorage::Disk(_) => unreachable!("test never places tensor on Disk"),
-        TensorStorage::CpuShared(_) | TensorStorage::CpuBf16Shared(_) =>
-            unreachable!("M5.c.2.a Arc-shared variants not exercised by this test"),
+        TensorStorage::CpuShared(_) | TensorStorage::CpuBf16Shared(_) => {
+            unreachable!("M5.c.2.a Arc-shared variants not exercised by this test")
+        }
     };
 
     assert_eq!(
@@ -103,7 +107,8 @@ fn test_ensure_cpu_on_cpu_is_noop() {
     let mut t = Tensor::new_cpu(vec![3], vec![7.0f32, 8.0, 9.0]);
 
     // Does not need a GPU: purely a CPU-side no-op path.
-    t.ensure_cpu().expect("ensure_cpu on CPU tensor must be a trivial Ok");
+    t.ensure_cpu()
+        .expect("ensure_cpu on CPU tensor must be a trivial Ok");
 
     assert!(matches!(t.storage(), TensorStorage::Cpu(_)));
     assert_eq!(t.as_cpu_slice(), &[7.0f32, 8.0, 9.0]);
@@ -189,10 +194,7 @@ fn test_graceful_skip_no_gpu() {
     let mut t = Tensor::new_cpu(vec![2], vec![1.0f32, 2.0]);
     match t.ensure_gpu() {
         Err(StorageTransferError::EngineUnavailable) => {}
-        Err(other) => panic!(
-            "expected EngineUnavailable, got {:?}",
-            other
-        ),
+        Err(other) => panic!("expected EngineUnavailable, got {:?}", other),
         Ok(_) => panic!("ensure_gpu should not succeed when no GPU is available"),
     }
 }

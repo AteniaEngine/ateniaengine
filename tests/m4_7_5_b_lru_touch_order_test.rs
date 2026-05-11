@@ -46,10 +46,8 @@ use atenia_engine::amm::vram_probe::{VramProbeApi, VramProbeError, VramSnapshot}
 use atenia_engine::tensor::Tensor;
 use atenia_engine::v15::policy::types::DecisionBias;
 use atenia_engine::v16::contract::constraints::Constraints;
-use atenia_engine::v16::contract::execution_contract::{
-    ExecutionBackend, ExecutionContract,
-};
 use atenia_engine::v16::contract::constraints::RuntimeState;
+use atenia_engine::v16::contract::execution_contract::{ExecutionBackend, ExecutionContract};
 use atenia_engine::v16::guards::execution_guard::ExecutionGuard;
 use atenia_engine::v16::guards::guard_manager::GuardManager;
 use atenia_engine::v16::guards::simple_memory_pressure_guard::SimpleMemoryPressureGuard;
@@ -103,8 +101,7 @@ fn permissive_contract() -> ExecutionContract {
 }
 
 fn cache_dir() -> PathBuf {
-    let dir = std::env::temp_dir()
-        .join(format!("atenia_m4_7_5_b_{}", Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("atenia_m4_7_5_b_{}", Uuid::new_v4()));
     std::fs::create_dir_all(&dir).expect("test cache dir");
     dir
 }
@@ -118,8 +115,7 @@ fn make_context(cache_dir: PathBuf) -> ReactiveExecutionContext {
         Some(Arc::new(LowPressureVramProbe)),
         Some(Arc::new(LowPressureRamProbe)),
     ));
-    let guards: Vec<Box<dyn ExecutionGuard>> =
-        vec![Box::new(SimpleMemoryPressureGuard::new())];
+    let guards: Vec<Box<dyn ExecutionGuard>> = vec![Box::new(SimpleMemoryPressureGuard::new())];
     let gm = GuardManager::new(guards);
     ReactiveExecutionContext::new_without_gc(bus, permissive_contract(), gm)
         .with_cache_dir(cache_dir)

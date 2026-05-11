@@ -1,4 +1,4 @@
-use atenia_engine::apx7::dynamic_load::{LoadSnapshot, LAST_SNAPSHOT, choose_strategy};
+use atenia_engine::apx7::dynamic_load::{LAST_SNAPSHOT, LoadSnapshot, choose_strategy};
 
 #[test]
 fn apx_7_4_prefers_seq_under_heavy_load() {
@@ -8,7 +8,10 @@ fn apx_7_4_prefers_seq_under_heavy_load() {
 
     {
         let mut guard = LAST_SNAPSHOT.write().unwrap();
-        *guard = LoadSnapshot { cpu_load: 95.0, threads_available: 1 };
+        *guard = LoadSnapshot {
+            cpu_load: 95.0,
+            threads_available: 1,
+        };
     }
 
     let snap = atenia_engine::apx7::dynamic_load::get_last_snapshot();
@@ -24,7 +27,10 @@ fn apx_7_4_prefers_ws_when_many_threads_available() {
 
     {
         let mut guard = LAST_SNAPSHOT.write().unwrap();
-        *guard = LoadSnapshot { cpu_load: 20.0, threads_available: 20 };
+        *guard = LoadSnapshot {
+            cpu_load: 20.0,
+            threads_available: 20,
+        };
     }
 
     let snap = atenia_engine::apx7::dynamic_load::get_last_snapshot();
@@ -40,7 +46,10 @@ fn apx_7_4_prefers_pex_when_limited_threads() {
 
     {
         let mut guard = LAST_SNAPSHOT.write().unwrap();
-        *guard = LoadSnapshot { cpu_load: 40.0, threads_available: 2 };
+        *guard = LoadSnapshot {
+            cpu_load: 40.0,
+            threads_available: 2,
+        };
     }
 
     let snap = atenia_engine::apx7::dynamic_load::get_last_snapshot();

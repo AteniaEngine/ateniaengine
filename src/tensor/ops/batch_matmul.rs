@@ -2,8 +2,16 @@ use crate::matmul_dispatcher::batch_matmul_dispatch;
 use crate::tensor::{Layout, Tensor};
 
 pub fn batch_matmul_parallel(a: &Tensor, b: &Tensor) -> Tensor {
-    assert_eq!(a.shape.len(), 3, "batch_matmul_parallel: lhs must be [batch, m, k]");
-    assert_eq!(b.shape.len(), 3, "batch_matmul_parallel: rhs must be [batch, k, n]");
+    assert_eq!(
+        a.shape.len(),
+        3,
+        "batch_matmul_parallel: lhs must be [batch, m, k]"
+    );
+    assert_eq!(
+        b.shape.len(),
+        3,
+        "batch_matmul_parallel: rhs must be [batch, k, n]"
+    );
     let batch = a.shape[0];
     assert_eq!(b.shape[0], batch, "batch_matmul_parallel: batch mismatch");
     let m = a.shape[1];
@@ -19,7 +27,15 @@ pub fn batch_matmul_parallel(a: &Tensor, b: &Tensor) -> Tensor {
         a.dtype,
     );
 
-    batch_matmul_dispatch(a.as_cpu_slice(), b.as_cpu_slice(), out.as_cpu_slice_mut(), batch, m, k, n);
+    batch_matmul_dispatch(
+        a.as_cpu_slice(),
+        b.as_cpu_slice(),
+        out.as_cpu_slice_mut(),
+        batch,
+        m,
+        k,
+        n,
+    );
 
     out
 }

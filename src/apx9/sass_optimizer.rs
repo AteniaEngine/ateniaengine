@@ -20,16 +20,23 @@ impl SassOptimizer {
         // 2. Reorder: LDG first, then FADD, then STG
         lines.sort_by_key(|l| {
             let l = l.trim();
-            if l.starts_with("LDG") { 0 }
-            else if l.starts_with("FADD") { 1 }
-            else if l.starts_with("STG") { 2 }
-            else { 3 }
+            if l.starts_with("LDG") {
+                0
+            } else if l.starts_with("FADD") {
+                1
+            } else if l.starts_with("STG") {
+                2
+            } else {
+                3
+            }
         });
 
         // 3. Normalize whitespace
         for l in lines {
             let trimmed = l.trim();
-            if trimmed.is_empty() { continue; }
+            if trimmed.is_empty() {
+                continue;
+            }
             out.push_str(trimmed);
             out.push('\n');
         }

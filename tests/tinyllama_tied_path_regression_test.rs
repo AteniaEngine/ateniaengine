@@ -22,9 +22,7 @@
 //! Atenia run.
 
 use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::nn::llama::{
-    build_llama, llama_weight_mapper, LlamaConfig, LlamaRuntime,
-};
+use atenia_engine::nn::llama::{LlamaConfig, LlamaRuntime, build_llama, llama_weight_mapper};
 use atenia_engine::tensor::Tensor;
 use atenia_engine::v17::loader::safetensors_reader::SafetensorsReader;
 use std::env;
@@ -62,8 +60,7 @@ const EMBEDDED_TINYLLAMA_TIED_CONFIG: &str = r#"{
 fn tinyllama_tied_path_remains_uniform_across_positions() {
     println!("\n=== TinyLlama tied-path regression: per-position uniformity check ===\n");
 
-    let path = env::var("TINYLLAMA_SAFETENSORS_PATH")
-        .expect("Set TINYLLAMA_SAFETENSORS_PATH");
+    let path = env::var("TINYLLAMA_SAFETENSORS_PATH").expect("Set TINYLLAMA_SAFETENSORS_PATH");
 
     let config = LlamaConfig::from_json_str(EMBEDDED_TINYLLAMA_TIED_CONFIG)
         .expect("Failed to parse config with tied=true");
@@ -115,7 +112,11 @@ fn tinyllama_tied_path_remains_uniform_across_positions() {
     // skipped (lm_head.weight, which exists in the file but the
     // tied-path graph does not need).
     assert_eq!(report.loaded, 200, "expected 200 loaded");
-    assert_eq!(report.skipped.len(), 1, "expected 1 skipped (lm_head.weight)");
+    assert_eq!(
+        report.skipped.len(),
+        1,
+        "expected 1 skipped (lm_head.weight)"
+    );
     assert!(
         report.skipped.contains(&"lm_head.weight".to_string()),
         "Expected lm_head.weight in skipped, got {:?}",
@@ -176,10 +177,7 @@ fn tinyllama_tied_path_remains_uniform_across_positions() {
     } else {
         f32::NAN
     };
-    println!(
-        "Max-abs ratio   pos0/max(pos1-3)     =  {:.3}",
-        max_ratio
-    );
+    println!("Max-abs ratio   pos0/max(pos1-3)     =  {:.3}", max_ratio);
 
     // Regression threshold: per-position magnitudes must remain uniform.
     // Empirically the tied path produces ratios near 1.0 across positions;

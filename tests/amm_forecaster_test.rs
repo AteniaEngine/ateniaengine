@@ -1,5 +1,5 @@
 use atenia_engine::amm::forecaster::MemoryForecaster;
-use atenia_engine::tensor::tensor::{Device, DType, Tensor};
+use atenia_engine::tensor::tensor::{DType, Device, Tensor};
 
 fn sample_tensor(num_elements: usize, dtype: DType) -> Tensor {
     Tensor::new(vec![num_elements], 1.0, Device::CPU, dtype)
@@ -14,7 +14,10 @@ fn register_tensor_accumulates_bytes() {
     forecaster.register_tensor(&t1);
     forecaster.register_tensor(&t2);
 
-    assert_eq!(forecaster.current_bytes, t1.estimated_bytes() + t2.estimated_bytes());
+    assert_eq!(
+        forecaster.current_bytes,
+        t1.estimated_bytes() + t2.estimated_bytes()
+    );
     assert_eq!(forecaster.predicted_next_bytes, 0);
 }
 

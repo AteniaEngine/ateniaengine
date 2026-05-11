@@ -39,14 +39,12 @@
 //! end-to-end at the `Tensor` level (Arc::strong_count proof
 //! of sharing + bit-exact read parity).
 
-use std::sync::Arc;
 use crate::tensor::Tensor;
 #[cfg(test)]
 use crate::tensor::TensorStorage;
+use std::sync::Arc;
 
-use crate::gpu::safety::resource_check::{
-    check_before_gpu_operation, SafetyDecision,
-};
+use crate::gpu::safety::resource_check::{SafetyDecision, check_before_gpu_operation};
 use crate::gpu::tensor::TensorGPU;
 use crate::tensor::disk_tier::DiskTensorHandle;
 
@@ -60,8 +58,14 @@ use crate::tensor::disk_tier::DiskTensorHandle;
 /// parameter based on its `store_params_as_bf16` flag.
 #[derive(Debug, Clone)]
 pub enum SharedParam {
-    F32 { shape: Vec<usize>, arc: Arc<Vec<f32>> },
-    Bf16 { shape: Vec<usize>, arc: Arc<Vec<u16>> },
+    F32 {
+        shape: Vec<usize>,
+        arc: Arc<Vec<f32>>,
+    },
+    Bf16 {
+        shape: Vec<usize>,
+        arc: Arc<Vec<u16>>,
+    },
     /// **M6 step 4b** — VRAM-resident F32 parameter. The
     /// underlying [`TensorGPU`] holds an `Arc<InnerGpuPtr>` so
     /// `Clone` and `to_tensor` are cheap and share the device
@@ -83,7 +87,10 @@ pub enum SharedParam {
     /// production constructor** beyond the test-facing
     /// [`WeightStore::insert_disk`]. Sub-fase 2 will wire it to
     /// the loader's tier-aware path.
-    Disk { shape: Vec<usize>, handle: DiskTensorHandle },
+    Disk {
+        shape: Vec<usize>,
+        handle: DiskTensorHandle,
+    },
 }
 
 impl SharedParam {
@@ -91,14 +98,12 @@ impl SharedParam {
     /// parameter. Cheap (Arc clone, no Vec copy).
     pub fn to_tensor(&self) -> Tensor {
         match self {
-            SharedParam::F32 { shape, arc } =>
-                Tensor::cpu_shared(shape.clone(), Arc::clone(arc)),
-            SharedParam::Bf16 { shape, arc } =>
-                Tensor::cpu_bf16_shared(shape.clone(), Arc::clone(arc)),
-            SharedParam::Cuda { shape, gpu } =>
-                Tensor::from_cuda_gpu(shape.clone(), gpu.clone()),
-            SharedParam::Disk { shape, handle } =>
-                Tensor::from_disk(shape.clone(), handle.clone()),
+            SharedParam::F32 { shape, arc } => Tensor::cpu_shared(shape.clone(), Arc::clone(arc)),
+            SharedParam::Bf16 { shape, arc } => {
+                Tensor::cpu_bf16_shared(shape.clone(), Arc::clone(arc))
+            }
+            SharedParam::Cuda { shape, gpu } => Tensor::from_cuda_gpu(shape.clone(), gpu.clone()),
+            SharedParam::Disk { shape, handle } => Tensor::from_disk(shape.clone(), handle.clone()),
         }
     }
 
@@ -130,8 +135,7 @@ impl SharedParam {
             SharedParam::F32 { arc, .. } => arc.len() * 4,
             SharedParam::Bf16 { arc, .. } => arc.len() * 2,
             SharedParam::Cuda { gpu, .. } => gpu.size_bytes(),
-            SharedParam::Disk { handle, .. } =>
-                handle.numel() * handle.dtype().bytes_per_element(),
+            SharedParam::Disk { handle, .. } => handle.numel() * handle.dtype().bytes_per_element(),
         }
     }
 
@@ -201,23 +205,41 @@ pub struct WeightStore {
 }
 
 impl WeightStore {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Insert an F32 parameter. Wraps the provided `Vec`
     /// in a fresh `Arc`. Returns the parameter index for
     /// downstream `to_tensor` lookups.
-    pub fn insert_f32(&mut self, name: impl Into<String>, shape: Vec<usize>, data: Vec<f32>) -> usize {
+    pub fn insert_f32(
+        &mut self,
+        name: impl Into<String>,
+        shape: Vec<usize>,
+        data: Vec<f32>,
+    ) -> usize {
         let idx = self.params.len();
-        self.params.push(SharedParam::F32 { shape, arc: Arc::new(data) });
+        self.params.push(SharedParam::F32 {
+            shape,
+            arc: Arc::new(data),
+        });
         self.names.push(name.into());
         idx
     }
 
     /// Insert a BF16 parameter. Wraps the provided `Vec<u16>`
     /// (raw BF16 bit patterns) in a fresh `Arc`.
-    pub fn insert_bf16(&mut self, name: impl Into<String>, shape: Vec<usize>, bits: Vec<u16>) -> usize {
+    pub fn insert_bf16(
+        &mut self,
+        name: impl Into<String>,
+        shape: Vec<usize>,
+        bits: Vec<u16>,
+    ) -> usize {
         let idx = self.params.len();
-        self.params.push(SharedParam::Bf16 { shape, arc: Arc::new(bits) });
+        self.params.push(SharedParam::Bf16 {
+            shape,
+            arc: Arc::new(bits),
+        });
         self.names.push(name.into());
         idx
     }
@@ -248,13 +270,18 @@ impl WeightStore {
 
     /// Lookup a parameter by index. Index is the value
     /// returned by `insert_*`.
-    pub fn get(&self, idx: usize) -> Option<&SharedParam> { self.params.get(idx) }
+    pub fn get(&self, idx: usize) -> Option<&SharedParam> {
+        self.params.get(idx)
+    }
 
     /// Lookup by HuggingFace-convention name. Linear scan
     /// (fine — called once per parameter at graph build
     /// time, never on the forward hot path).
     pub fn get_by_name(&self, name: &str) -> Option<&SharedParam> {
-        self.names.iter().position(|n| n == name).and_then(|i| self.params.get(i))
+        self.names
+            .iter()
+            .position(|n| n == name)
+            .and_then(|i| self.params.get(i))
     }
 
     /// Total bytes resident across every stored parameter.
@@ -266,8 +293,12 @@ impl WeightStore {
         self.params.iter().map(|p| p.resident_bytes()).sum()
     }
 
-    pub fn len(&self) -> usize { self.params.len() }
-    pub fn is_empty(&self) -> bool { self.params.is_empty() }
+    pub fn len(&self) -> usize {
+        self.params.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.params.is_empty()
+    }
 
     /// **M10.3.1.1** — stamp each VRAM-resident parameter's
     /// `TensorGPU` with the per-tensor matmul precision policy
@@ -291,10 +322,10 @@ impl WeightStore {
         &mut self,
         manifest: &crate::nn::llama::numcert::NumcertManifest,
     ) -> usize {
-        use crate::nn::llama::numcert::MatmulMode;
         use crate::gpu::tensor::tensor_gpu::{
             MATMUL_POLICY_BYTE_CERTIFIED, MATMUL_POLICY_BYTE_FAST,
         };
+        use crate::nn::llama::numcert::MatmulMode;
         let mut stamped = 0usize;
         let mut fast_count = 0usize;
         let mut certified_count = 0usize;
@@ -322,7 +353,9 @@ impl WeightStore {
         eprintln!(
             "[ATENIA] Numeric contract: per-tensor policy applied — \
              {} VRAM tensors stamped ({} fast, {} certified) from {}.",
-            stamped, fast_count, certified_count,
+            stamped,
+            fast_count,
+            certified_count,
             manifest.source.display(),
         );
         stamped
@@ -539,7 +572,8 @@ impl WeightStore {
     ) -> Result<WeightStore, WeightStoreError> {
         if param_ids.len() != param_names.len() {
             return Err(WeightStoreError::IndexMismatch {
-                ids_len: param_ids.len(), names_len: param_names.len(),
+                ids_len: param_ids.len(),
+                names_len: param_names.len(),
             });
         }
 
@@ -547,13 +581,20 @@ impl WeightStore {
         for (idx, (&node_id, name)) in param_ids.iter().zip(param_names.iter()).enumerate() {
             // Borrow the node's Tensor mutably so we can
             // replace its storage.
-            let node = graph.nodes.get_mut(node_id)
+            let node = graph
+                .nodes
+                .get_mut(node_id)
                 .ok_or(WeightStoreError::NodeOutOfRange {
-                    node_id, len: idx, name: name.clone(),
+                    node_id,
+                    len: idx,
+                    name: name.clone(),
                 })?;
-            let tensor = node.output.as_mut()
+            let tensor = node
+                .output
+                .as_mut()
                 .ok_or(WeightStoreError::NodeHasNoTensor {
-                    node_id, name: name.clone(),
+                    node_id,
+                    name: name.clone(),
                 })?;
             let shape = tensor.shape.clone();
 
@@ -573,8 +614,7 @@ impl WeightStore {
                 }
                 crate::tensor::TensorStorage::CpuBf16(bits) => {
                     let arc = Arc::new(bits);
-                    tensor.storage =
-                        crate::tensor::TensorStorage::CpuBf16Shared(Arc::clone(&arc));
+                    tensor.storage = crate::tensor::TensorStorage::CpuBf16Shared(Arc::clone(&arc));
                     store.params.push(SharedParam::Bf16 { shape, arc });
                     store.names.push(name.clone());
                 }
@@ -595,7 +635,8 @@ impl WeightStore {
                     // and surface the variant to the caller.
                     tensor.storage = other;
                     return Err(WeightStoreError::UnsupportedStorage {
-                        node_id, name: name.clone(),
+                        node_id,
+                        name: name.clone(),
                     });
                 }
             }
@@ -608,10 +649,23 @@ impl WeightStore {
 /// Errors produced by [`WeightStore`] hoist/extract operations.
 #[derive(Debug)]
 pub enum WeightStoreError {
-    IndexMismatch { ids_len: usize, names_len: usize },
-    NodeOutOfRange { node_id: usize, len: usize, name: String },
-    NodeHasNoTensor { node_id: usize, name: String },
-    UnsupportedStorage { node_id: usize, name: String },
+    IndexMismatch {
+        ids_len: usize,
+        names_len: usize,
+    },
+    NodeOutOfRange {
+        node_id: usize,
+        len: usize,
+        name: String,
+    },
+    NodeHasNoTensor {
+        node_id: usize,
+        name: String,
+    },
+    UnsupportedStorage {
+        node_id: usize,
+        name: String,
+    },
     /// **M6 step 4b** — `upload_layer_bf16_to_vram` could not
     /// upload **any** of a layer's BF16 params (e.g. driver
     /// missing, repeated `cuda_malloc` failures). The caller is
@@ -619,22 +673,34 @@ pub enum WeightStoreError {
     /// `Ok(UploadReport { params_uploaded: 0, .. })` which
     /// indicates the safety gate degraded the upload (RAM
     /// pressure) — that path is non-error.
-    AllUploadsFailed { layer_idx: usize },
+    AllUploadsFailed {
+        layer_idx: usize,
+    },
 }
 
 impl std::fmt::Display for WeightStoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            WeightStoreError::IndexMismatch { ids_len, names_len } =>
-                write!(f, "weight_store: param_ids.len={ids_len} != param_names.len={names_len}"),
-            WeightStoreError::NodeOutOfRange { node_id, len, name } =>
-                write!(f, "weight_store: node id {node_id} out of range at index {len} for '{name}'"),
-            WeightStoreError::NodeHasNoTensor { node_id, name } =>
-                write!(f, "weight_store: node {node_id} for '{name}' has no materialised tensor"),
-            WeightStoreError::UnsupportedStorage { node_id, name } =>
-                write!(f, "weight_store: node {node_id} for '{name}' has unsupported (Cuda/Disk) storage"),
-            WeightStoreError::AllUploadsFailed { layer_idx } =>
-                write!(f, "weight_store: every BF16 upload for layer {layer_idx} failed; falling back to CPU"),
+            WeightStoreError::IndexMismatch { ids_len, names_len } => write!(
+                f,
+                "weight_store: param_ids.len={ids_len} != param_names.len={names_len}"
+            ),
+            WeightStoreError::NodeOutOfRange { node_id, len, name } => write!(
+                f,
+                "weight_store: node id {node_id} out of range at index {len} for '{name}'"
+            ),
+            WeightStoreError::NodeHasNoTensor { node_id, name } => write!(
+                f,
+                "weight_store: node {node_id} for '{name}' has no materialised tensor"
+            ),
+            WeightStoreError::UnsupportedStorage { node_id, name } => write!(
+                f,
+                "weight_store: node {node_id} for '{name}' has unsupported (Cuda/Disk) storage"
+            ),
+            WeightStoreError::AllUploadsFailed { layer_idx } => write!(
+                f,
+                "weight_store: every BF16 upload for layer {layer_idx} failed; falling back to CPU"
+            ),
         }
     }
 }
@@ -671,8 +737,12 @@ mod tests {
 
         // Ownership: store holds 1 strong ref; t1 and t2 each
         // add one → 3 total.
-        assert_eq!(p.strong_count(), 3,
-            "expected 3 strong refs (store + 2 tensors), got {}", p.strong_count());
+        assert_eq!(
+            p.strong_count(),
+            3,
+            "expected 3 strong refs (store + 2 tensors), got {}",
+            p.strong_count()
+        );
 
         // Dropping a tensor decrements the count.
         drop(t1);
@@ -686,7 +756,7 @@ mod tests {
         // BF16 path: store BF16 bits, materialise a tensor,
         // copy_to_cpu_vec must produce the F32 upcast that
         // matches the round-trip via f32_to_bf16_bits.
-        use crate::tensor::tensor::{f32_to_bf16_bits, bf16_bits_to_f32};
+        use crate::tensor::tensor::{bf16_bits_to_f32, f32_to_bf16_bits};
         let mut store = WeightStore::new();
 
         let f32_src: Vec<f32> = vec![0.0, 0.5, -0.25, 1.5, 2.0, -2.0, 3.14, 100.0];
@@ -700,8 +770,10 @@ mod tests {
         // Decoded F32 matches lossy round-trip of the source.
         let decoded = t.copy_to_cpu_vec();
         let expected: Vec<f32> = bf16_bits.iter().map(|&b| bf16_bits_to_f32(b)).collect();
-        assert_eq!(decoded, expected,
-            "BF16 decode through CpuBf16Shared != reference round-trip");
+        assert_eq!(
+            decoded, expected,
+            "BF16 decode through CpuBf16Shared != reference round-trip"
+        );
     }
 
     #[test]
@@ -724,8 +796,11 @@ mod tests {
         // the underlying Vec is shared).
         let s1 = t1.as_cpu_slice();
         let s2 = t2.as_cpu_slice();
-        assert_eq!(s1.as_ptr(), s2.as_ptr(),
-            "CpuShared tensors built from the same Arc must share buffer pointer");
+        assert_eq!(
+            s1.as_ptr(),
+            s2.as_ptr(),
+            "CpuShared tensors built from the same Arc must share buffer pointer"
+        );
         assert_eq!(s1, &[1.0, 2.0, 3.0, 4.0]);
     }
 
@@ -768,8 +843,8 @@ mod tests {
         //      (strong_count == 2: graph slot + store entry).
         //   3. Reads through both produce identical bytes.
         use crate::amg::builder::GraphBuilder;
-        use crate::tensor::{Tensor, TensorStorage};
         use crate::tensor::tensor::f32_to_bf16_bits;
+        use crate::tensor::{Tensor, TensorStorage};
 
         let mut gb = GraphBuilder::new();
         // Two parameters: one F32, one BF16.
@@ -809,10 +884,16 @@ mod tests {
         ));
 
         // Strong count: graph slot + store entry = 2.
-        assert_eq!(store.params[0].strong_count(), 2,
-            "F32 param should have 2 strong refs (graph + store)");
-        assert_eq!(store.params[1].strong_count(), 2,
-            "BF16 param should have 2 strong refs (graph + store)");
+        assert_eq!(
+            store.params[0].strong_count(),
+            2,
+            "F32 param should have 2 strong refs (graph + store)"
+        );
+        assert_eq!(
+            store.params[1].strong_count(),
+            2,
+            "BF16 param should have 2 strong refs (graph + store)"
+        );
 
         // Reads through the graph match the original data.
         let g_f32_tensor = g.nodes[f32_id].output.as_ref().unwrap();
@@ -824,8 +905,11 @@ mod tests {
         let store_tensor = store.params[0].to_tensor();
         let g_slice = g_f32_tensor.as_cpu_slice();
         let s_slice = store_tensor.as_cpu_slice();
-        assert_eq!(g_slice.as_ptr(), s_slice.as_ptr(),
-            "graph slot and store tensor must reference same buffer");
+        assert_eq!(
+            g_slice.as_ptr(),
+            s_slice.as_ptr(),
+            "graph slot and store tensor must reference same buffer"
+        );
 
         // Names round-trip.
         assert_eq!(store.names, names);
@@ -846,8 +930,8 @@ mod tests {
         let nodes = std::mem::take(&mut gb.nodes);
         let mut g = crate::amg::graph::Graph::build(nodes);
 
-        let store = WeightStore::extract_from_graph(
-            &mut g, &[id], &["w.shared".to_string()]).unwrap();
+        let store =
+            WeightStore::extract_from_graph(&mut g, &[id], &["w.shared".to_string()]).unwrap();
 
         // Original Arc still alive (reachable through graph
         // slot AND store entry AND original `arc` binding) → 3 refs.
@@ -861,9 +945,11 @@ mod tests {
         let mut gb = GraphBuilder::new();
         let nodes = std::mem::take(&mut gb.nodes);
         let mut g = crate::amg::graph::Graph::build(nodes);
-        let result = WeightStore::extract_from_graph(
-            &mut g, &[0, 1], &["only_one".to_string()]);
-        assert!(matches!(result, Err(WeightStoreError::IndexMismatch { .. })));
+        let result = WeightStore::extract_from_graph(&mut g, &[0, 1], &["only_one".to_string()]);
+        assert!(matches!(
+            result,
+            Err(WeightStoreError::IndexMismatch { .. })
+        ));
     }
 
     #[test]
@@ -961,11 +1047,13 @@ mod tests {
         // Both entries now Cuda.
         assert!(
             matches!(store.params[0], SharedParam::Cuda { .. }),
-            "param 0 should be Cuda, got {:?}", store.params[0]
+            "param 0 should be Cuda, got {:?}",
+            store.params[0]
         );
         assert!(
             matches!(store.params[1], SharedParam::Cuda { .. }),
-            "param 1 should be Cuda, got {:?}", store.params[1]
+            "param 1 should be Cuda, got {:?}",
+            store.params[1]
         );
 
         // Matmul Q @ K (both [4, 4]) on GPU vs CPU reference. We
@@ -1033,8 +1121,8 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let data: Vec<f32> = (0..32).map(|i| (i as f32) * 0.25 - 4.0).collect();
-        let handle = disk_tier::write_f32_tensor(&cache_dir, &data)
-            .expect("write_f32_tensor failed");
+        let handle =
+            disk_tier::write_f32_tensor(&cache_dir, &data).expect("write_f32_tensor failed");
         let _idx = store.insert_disk("w.disk_f32", vec![4, 8], handle);
 
         let p = store.get_by_name("w.disk_f32").unwrap();
@@ -1047,8 +1135,7 @@ mod tests {
         // copy_to_cpu_vec reads the bytes back without mutating
         // the storage. Bit-exact equality with the source.
         let read_back = t.copy_to_cpu_vec();
-        assert_eq!(read_back, data,
-            "F32 disk round-trip is not bit-exact");
+        assert_eq!(read_back, data, "F32 disk round-trip is not bit-exact");
 
         // Resident-byte accounting.
         assert_eq!(p.resident_bytes(), data.len() * 4);
@@ -1071,16 +1158,11 @@ mod tests {
         ));
 
         // Source: a known F32 pattern, converted to BF16 bits.
-        let f32_src: Vec<f32> = (0..16)
-            .map(|i| ((i as f32) * 0.5 - 3.5).sin())
-            .collect();
-        let bf16_bits: Vec<u16> = f32_src
-            .iter()
-            .map(|&f| f32_to_bf16_bits(f))
-            .collect();
+        let f32_src: Vec<f32> = (0..16).map(|i| ((i as f32) * 0.5 - 3.5).sin()).collect();
+        let bf16_bits: Vec<u16> = f32_src.iter().map(|&f| f32_to_bf16_bits(f)).collect();
 
-        let handle = disk_tier::write_bf16_tensor(&cache_dir, &bf16_bits)
-            .expect("write_bf16_tensor failed");
+        let handle =
+            disk_tier::write_bf16_tensor(&cache_dir, &bf16_bits).expect("write_bf16_tensor failed");
         store.insert_disk("w.disk_bf16", vec![2, 8], handle);
 
         let p = store.get_by_name("w.disk_bf16").unwrap();
@@ -1091,12 +1173,11 @@ mod tests {
         // upcast Vec<f32>. Compare against the host-decode
         // reference (lossless inverse of the BF16 encoding).
         let decoded = t.copy_to_cpu_vec();
-        let expected: Vec<f32> = bf16_bits
-            .iter()
-            .map(|&b| bf16_bits_to_f32(b))
-            .collect();
-        assert_eq!(decoded, expected,
-            "BF16 disk round-trip is not bit-exact with host decode");
+        let expected: Vec<f32> = bf16_bits.iter().map(|&b| bf16_bits_to_f32(b)).collect();
+        assert_eq!(
+            decoded, expected,
+            "BF16 disk round-trip is not bit-exact with host decode"
+        );
 
         // Resident-byte accounting (BF16 = 2 bytes/elem).
         assert_eq!(p.resident_bytes(), bf16_bits.len() * 2);

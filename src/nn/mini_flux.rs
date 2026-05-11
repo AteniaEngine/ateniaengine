@@ -1,7 +1,7 @@
 use crate::amg::builder::GraphBuilder;
 use crate::amg::graph::Graph;
 use crate::amg::nodes::NodeType;
-use crate::tensor::{Device, DType, Layout, Tensor};
+use crate::tensor::{DType, Device, Layout, Tensor};
 
 pub trait GraphLike {
     fn add_node_of_type(&mut self, node_type: NodeType, inputs: Vec<usize>) -> usize;
@@ -60,8 +60,7 @@ pub fn build_mini_flux(
     cfg: &MiniFluxConfig,
     token_input_id: usize,
 ) -> MiniFluxHandles {
-    let (logits_id, param_ids, param_names) =
-        build_mini_flux_internal(graph, cfg, token_input_id);
+    let (logits_id, param_ids, param_names) = build_mini_flux_internal(graph, cfg, token_input_id);
     MiniFluxHandles {
         token_input_id,
         logits_id,
@@ -78,19 +77,14 @@ pub fn build_mini_flux_language_model(
     build_mini_flux_internal(graph, cfg, token_input_id)
 }
 
-pub fn build_language_training_graph(
-    cfg: &MiniFluxConfig,
-) -> (Graph, Vec<usize>, Vec<String>) {
+pub fn build_language_training_graph(cfg: &MiniFluxConfig) -> (Graph, Vec<usize>, Vec<String>) {
     let mut gb = GraphBuilder::new();
     let tokens_id = gb.input();
     let targets_id = gb.input();
     let (logits_id, param_ids, param_names) =
         build_mini_flux_language_model(&mut gb, cfg, tokens_id);
     let log_probs = gb.log_softmax(logits_id);
-    let flat_targets = gb.reshape(
-        targets_id,
-        vec![(cfg.batch_size * cfg.seq_len) as isize],
-    );
+    let flat_targets = gb.reshape(targets_id, vec![(cfg.batch_size * cfg.seq_len) as isize]);
     let loss_id = gb.cross_entropy_loss(log_probs, flat_targets);
     gb.output(loss_id);
     (gb.build(), param_ids, param_names)
@@ -113,7 +107,8 @@ fn build_mini_flux_internal<G: GraphLike>(
         &mut param_names,
     );
 
-    let embed_id = graph.add_node_of_type(NodeType::IndexSelect, vec![embedding_id, token_input_id]);
+    let embed_id =
+        graph.add_node_of_type(NodeType::IndexSelect, vec![embedding_id, token_input_id]);
 
     let pos_param = graph.add_parameter(build_positional_table(cfg.seq_len, cfg.d_model));
     let with_pos = graph.add_node_of_type(NodeType::BroadcastAdd, vec![embed_id, pos_param]);
@@ -160,12 +155,45 @@ fn build_block<G: GraphLike>(
     param_ids: &mut Vec<usize>,
     param_names: &mut Vec<String>,
 ) -> usize {
-    let norm_in = graph.add_node_of_type(NodeType::RmsNorm { eps_bits: (1e-5_f32).to_bits() }, vec![input_id]);
+    let norm_in = graph.add_node_of_type(
+        NodeType::RmsNorm {
+            eps_bits: (1e-5_f32).to_bits(),
+        },
+        vec![input_id],
+    );
 
-    let w_q = register_weight(graph, &format!("{}_wq", prefix), cfg.d_model, cfg.d_model, param_ids, param_names);
-    let w_k = register_weight(graph, &format!("{}_wk", prefix), cfg.d_model, cfg.d_model, param_ids, param_names);
-    let w_v = register_weight(graph, &format!("{}_wv", prefix), cfg.d_model, cfg.d_model, param_ids, param_names);
-    let w_o = register_weight(graph, &format!("{}_wo", prefix), cfg.d_model, cfg.d_model, param_ids, param_names);
+    let w_q = register_weight(
+        graph,
+        &format!("{}_wq", prefix),
+        cfg.d_model,
+        cfg.d_model,
+        param_ids,
+        param_names,
+    );
+    let w_k = register_weight(
+        graph,
+        &format!("{}_wk", prefix),
+        cfg.d_model,
+        cfg.d_model,
+        param_ids,
+        param_names,
+    );
+    let w_v = register_weight(
+        graph,
+        &format!("{}_wv", prefix),
+        cfg.d_model,
+        cfg.d_model,
+        param_ids,
+        param_names,
+    );
+    let w_o = register_weight(
+        graph,
+        &format!("{}_wo", prefix),
+        cfg.d_model,
+        cfg.d_model,
+        param_ids,
+        param_names,
+    );
 
     let q = linear_3d(
         graph,
@@ -223,9 +251,28 @@ fn build_block<G: GraphLike>(
 
     let attn_res = graph.add_node_of_type(NodeType::Add, vec![input_id, attn_proj]);
 
-    let norm_mlp_in = graph.add_node_of_type(NodeType::RmsNorm { eps_bits: (1e-5_f32).to_bits() }, vec![attn_res]);
-    let w1 = register_weight(graph, &format!("{}_w1", prefix), cfg.d_model, cfg.d_hidden, param_ids, param_names);
-    let w2 = register_weight(graph, &format!("{}_w2", prefix), cfg.d_hidden, cfg.d_model, param_ids, param_names);
+    let norm_mlp_in = graph.add_node_of_type(
+        NodeType::RmsNorm {
+            eps_bits: (1e-5_f32).to_bits(),
+        },
+        vec![attn_res],
+    );
+    let w1 = register_weight(
+        graph,
+        &format!("{}_w1", prefix),
+        cfg.d_model,
+        cfg.d_hidden,
+        param_ids,
+        param_names,
+    );
+    let w2 = register_weight(
+        graph,
+        &format!("{}_w2", prefix),
+        cfg.d_hidden,
+        cfg.d_model,
+        param_ids,
+        param_names,
+    );
 
     let hidden = linear_3d(
         graph,

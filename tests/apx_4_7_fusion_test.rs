@@ -1,5 +1,5 @@
 use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::tensor::{Tensor, Device};
+use atenia_engine::tensor::{Device, Tensor};
 
 #[test]
 fn test_apx_4_7_fuses_linear_linear() {

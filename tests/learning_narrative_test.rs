@@ -1,5 +1,7 @@
 use atenia_engine::v13::learning_explanation::DecisionExplanation;
-use atenia_engine::v13::learning_factors::{DecisionFactor, DecisionFactorKind, StructuredDecisionExplanation};
+use atenia_engine::v13::learning_factors::{
+    DecisionFactor, DecisionFactorKind, StructuredDecisionExplanation,
+};
 use atenia_engine::v13::learning_narrative::build_narrative;
 use atenia_engine::v13::learning_snapshot::{BackendKind, LearningContextSnapshot};
 

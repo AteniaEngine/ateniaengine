@@ -98,7 +98,9 @@ fn main() {
     println!();
 
     println!("[3/4] GPU path (cuda_matmul_non_pooled) — TWO consecutive calls, same shape...");
-    println!("      Goal: measure whether cuda_malloc cost is one-shot (CUDA context init) or per-call.");
+    println!(
+        "      Goal: measure whether cuda_malloc cost is one-shot (CUDA context init) or per-call."
+    );
     println!();
 
     println!("      --- Call #1 (cold path, includes any one-shot context init) ---");
@@ -186,7 +188,11 @@ fn main() {
     println!(
         "Warm GPU vs CPU:    {:.2}x{}",
         cpu_elapsed / gpu_elapsed2,
-        if gpu_elapsed2 < cpu_elapsed { " (GPU faster)" } else { " (CPU faster)" }
+        if gpu_elapsed2 < cpu_elapsed {
+            " (GPU faster)"
+        } else {
+            " (CPU faster)"
+        }
     );
     println!(
         "Max |diff|: {:e} at index {} (gpu={:.6}, cpu={:.6})",

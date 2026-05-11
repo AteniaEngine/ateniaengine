@@ -26,7 +26,9 @@ pub struct GpuCompilerStub {
 
 impl GpuCompilerStub {
     pub fn new() -> Self {
-        Self { cache: HashMap::new() }
+        Self {
+            cache: HashMap::new(),
+        }
     }
 
     pub fn compile(&mut self, ir: &KernelIR, target: GpuTarget) -> CompiledKernelStub {

@@ -1,6 +1,6 @@
 use atenia_engine::apx8::gpu_metalayer::*;
-use atenia_engine::apx8::kernel_generator::*;
 use atenia_engine::apx8::kernel_generator::KernelOp;
+use atenia_engine::apx8::kernel_generator::*;
 
 #[test]
 fn apx_8_12_structure() {
@@ -25,10 +25,7 @@ fn apx_8_12_structure() {
 #[test]
 fn apx_8_12_removes_nops() {
     let ir = KernelIR {
-        ops: vec![
-            KernelOp::Nop,
-            KernelOp::LoadTensor("A".into()),
-        ],
+        ops: vec![KernelOp::Nop, KernelOp::LoadTensor("A".into())],
         name: "apx_8_12_removes_nops".into(),
         params: vec![],
     };

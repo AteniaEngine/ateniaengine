@@ -1,5 +1,5 @@
-use atenia_engine::gpu::tensor::manager::GpuTensorManager;
 use atenia_engine::gpu::autodiff::linear_backward::LinearBackwardGPU;
+use atenia_engine::gpu::tensor::manager::GpuTensorManager;
 
 #[test]
 fn test_linear_backward_real_gpu() {
@@ -9,18 +9,9 @@ fn test_linear_backward_real_gpu() {
     };
 
     // X [2x2], W [2x2], dOut [2x2]
-    let x = vec![
-        1.0f32, 2.0,
-        3.0,    4.0,
-    ];
-    let w = vec![
-        5.0f32, 6.0,
-        7.0,    8.0,
-    ];
-    let dout = vec![
-        1.0f32, -1.0,
-        2.0,    0.5,
-    ];
+    let x = vec![1.0f32, 2.0, 3.0, 4.0];
+    let w = vec![5.0f32, 6.0, 7.0, 8.0];
+    let dout = vec![1.0f32, -1.0, 2.0, 0.5];
 
     let x_gpu = match mgr.from_cpu_vec(&x, 2, 2) {
         Ok(v) => v,
@@ -35,7 +26,8 @@ fn test_linear_backward_real_gpu() {
         Err(_) => return,
     };
 
-    let (d_x_gpu, d_w_gpu, d_b_gpu) = match LinearBackwardGPU::run(&mgr, &x_gpu, &w_gpu, &dout_gpu) {
+    let (d_x_gpu, d_w_gpu, d_b_gpu) = match LinearBackwardGPU::run(&mgr, &x_gpu, &w_gpu, &dout_gpu)
+    {
         Ok(v) => v,
         Err(_) => return,
     };
@@ -94,12 +86,30 @@ fn test_linear_backward_real_gpu() {
 
     // Compare with a small FP tolerance
     for i in 0..d_x.len() {
-        assert!((d_x[i] - d_x_ref[i]).abs() < 1e-4, "dX mismatch at {}: {} vs {}", i, d_x[i], d_x_ref[i]);
+        assert!(
+            (d_x[i] - d_x_ref[i]).abs() < 1e-4,
+            "dX mismatch at {}: {} vs {}",
+            i,
+            d_x[i],
+            d_x_ref[i]
+        );
     }
     for i in 0..d_w.len() {
-        assert!((d_w[i] - d_w_ref[i]).abs() < 1e-4, "dW mismatch at {}: {} vs {}", i, d_w[i], d_w_ref[i]);
+        assert!(
+            (d_w[i] - d_w_ref[i]).abs() < 1e-4,
+            "dW mismatch at {}: {} vs {}",
+            i,
+            d_w[i],
+            d_w_ref[i]
+        );
     }
     for i in 0..d_b.len() {
-        assert!((d_b[i] - d_b_ref[i]).abs() < 1e-4, "dB mismatch at {}: {} vs {}", i, d_b[i], d_b_ref[i]);
+        assert!(
+            (d_b[i] - d_b_ref[i]).abs() < 1e-4,
+            "dB mismatch at {}: {} vs {}",
+            i,
+            d_b[i],
+            d_b_ref[i]
+        );
     }
 }

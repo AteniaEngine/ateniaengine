@@ -1,4 +1,4 @@
-use atenia_engine::{softmax3, sample_decision};
+use atenia_engine::{sample_decision, softmax3};
 
 #[test]
 fn apx_6_13_softmax_sums_to_one() {

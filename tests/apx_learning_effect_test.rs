@@ -1,11 +1,13 @@
-﻿use atenia_engine::amg::builder::GraphBuilder;
+use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::amg::graph::Graph;
-use atenia_engine::nn::mini_flux::{build_mini_flux_language_model, MiniFluxConfig};
-use atenia_engine::tensor::{Device, DType, Layout, Tensor};
+use atenia_engine::nn::mini_flux::{MiniFluxConfig, build_mini_flux_language_model};
+use atenia_engine::tensor::{DType, Device, Layout, Tensor};
 
 use atenia_engine::apx6_10;
 use atenia_engine::apx6_10::{FusionProfile, GlobalDecision};
-use atenia_engine::apx6_11::runtime_policy::{get_runtime_policy, set_runtime_policy, FusionRuntimePolicy};
+use atenia_engine::apx6_11::runtime_policy::{
+    FusionRuntimePolicy, get_runtime_policy, set_runtime_policy,
+};
 
 /// Learning Effect Across Executions (Warm vs Cold) (experimental).
 ///
@@ -51,7 +53,11 @@ fn apx_learning_effect_warm_vs_cold() {
 
     // Validity constraint: outputs must remain identical (no semantic changes).
     assert_eq!(cold_out.shape, warm_out.shape, "output shape mismatch");
-    assert_eq!(cold_out.as_cpu_slice(), warm_out.as_cpu_slice(), "output data mismatch");
+    assert_eq!(
+        cold_out.as_cpu_slice(),
+        warm_out.as_cpu_slice(),
+        "output data mismatch"
+    );
 
     // Assertions: warm start must be strictly better (measurable learning effect).
     assert!(
@@ -96,7 +102,10 @@ fn run_phase(
 
         if step == 0 {
             selected_policy = p_before;
-            println!("[APX Learning Effect] phase={} selected_policy={:?}", phase, selected_policy);
+            println!(
+                "[APX Learning Effect] phase={} selected_policy={:?}",
+                phase, selected_policy
+            );
         }
 
         // Fallback proxy: engine selected Baseline for this iteration.
@@ -114,7 +123,9 @@ fn run_phase(
         let t0 = std::time::Instant::now();
         let mut out = graph.execute(vec![input.clone()]);
         let elapsed_us = t0.elapsed().as_micros() as u64;
-        let out0 = out.pop().expect("Mini-Flux graph must return a single output");
+        let out0 = out
+            .pop()
+            .expect("Mini-Flux graph must return a single output");
 
         // Cold start: allow one-time exploration signal to be recorded into persistent
         // execution memory based on an observed measurement (no noise, no mock).
@@ -127,10 +138,7 @@ fn run_phase(
             let p_after = get_runtime_policy();
             println!(
                 "[APX Learning Effect] phase={} step={} selected_before={:?} policy_after={:?}",
-                phase,
-                step,
-                p_before,
-                p_after
+                phase, step, p_before, p_after
             );
         }
 
@@ -145,14 +153,13 @@ fn run_phase(
 
     println!(
         "[APX Learning Effect] phase={} iters={} fallback_count={} policy_switch_count={} selected_policy={:?}",
-        phase,
-        iters,
-        metrics.fallback_count,
-        metrics.policy_switch_count,
-        metrics.selected_policy
+        phase, iters, metrics.fallback_count, metrics.policy_switch_count, metrics.selected_policy
     );
 
-    (metrics, last_out.expect("phase must produce at least one output"))
+    (
+        metrics,
+        last_out.expect("phase must produce at least one output"),
+    )
 }
 
 fn record_exploration_profile_from_observation(observed_us: u64) {
@@ -206,7 +213,8 @@ fn clear_execution_memory() {
 fn build_mini_flux_graph(cfg: &MiniFluxConfig) -> Graph {
     let mut gb = GraphBuilder::new();
     let tokens_id = gb.input();
-    let (logits_id, _param_ids, _param_names) = build_mini_flux_language_model(&mut gb, cfg, tokens_id);
+    let (logits_id, _param_ids, _param_names) =
+        build_mini_flux_language_model(&mut gb, cfg, tokens_id);
     gb.output(logits_id);
     gb.build()
 }

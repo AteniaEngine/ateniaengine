@@ -36,13 +36,13 @@
 //! variant the `transformers` package uses (`minijinja` mirrors
 //! the subset HF actually exercises).
 
-use std::path::{Path, PathBuf};
 use std::fs;
+use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
-use tokenizers::Tokenizer as HfTokenizer;
 use minijinja::{Environment, context};
 use minijinja_contrib::pycompat::unknown_method_callback;
+use serde::Deserialize;
+use tokenizers::Tokenizer as HfTokenizer;
 
 /// One message in a chat conversation. Roles map to whatever
 /// the underlying chat template expects — typical values are
@@ -55,13 +55,22 @@ pub struct ChatMessage {
 
 impl ChatMessage {
     pub fn system(content: impl Into<String>) -> Self {
-        Self { role: "system".into(), content: content.into() }
+        Self {
+            role: "system".into(),
+            content: content.into(),
+        }
     }
     pub fn user(content: impl Into<String>) -> Self {
-        Self { role: "user".into(), content: content.into() }
+        Self {
+            role: "user".into(),
+            content: content.into(),
+        }
     }
     pub fn assistant(content: impl Into<String>) -> Self {
-        Self { role: "assistant".into(), content: content.into() }
+        Self {
+            role: "assistant".into(),
+            content: content.into(),
+        }
     }
 }
 
@@ -85,7 +94,9 @@ impl std::fmt::Display for TokenizerError {
             TokenizerError::Json(e) => write!(f, "tokenizer config json: {e}"),
             TokenizerError::Hf(s) => write!(f, "tokenizers crate: {s}"),
             TokenizerError::Template(s) => write!(f, "chat template: {s}"),
-            TokenizerError::MissingField(s) => write!(f, "tokenizer_config.json missing field: {s}"),
+            TokenizerError::MissingField(s) => {
+                write!(f, "tokenizer_config.json missing field: {s}")
+            }
         }
     }
 }
@@ -93,10 +104,14 @@ impl std::fmt::Display for TokenizerError {
 impl std::error::Error for TokenizerError {}
 
 impl From<std::io::Error> for TokenizerError {
-    fn from(e: std::io::Error) -> Self { TokenizerError::Io(e) }
+    fn from(e: std::io::Error) -> Self {
+        TokenizerError::Io(e)
+    }
 }
 impl From<serde_json::Error> for TokenizerError {
-    fn from(e: serde_json::Error) -> Self { TokenizerError::Json(e) }
+    fn from(e: serde_json::Error) -> Self {
+        TokenizerError::Json(e)
+    }
 }
 
 /// HF-style "AddedToken" — sometimes a bare string, sometimes
@@ -160,13 +175,11 @@ impl ChatTemplateField {
     fn into_default_template(self) -> Option<String> {
         match self {
             ChatTemplateField::Single(s) => Some(s),
-            ChatTemplateField::Multi(entries) => {
-                entries
-                    .iter()
-                    .find(|e| e.name == "default")
-                    .map(|e| e.template.clone())
-                    .or_else(|| entries.into_iter().next().map(|e| e.template))
-            }
+            ChatTemplateField::Multi(entries) => entries
+                .iter()
+                .find(|e| e.name == "default")
+                .map(|e| e.template.clone())
+                .or_else(|| entries.into_iter().next().map(|e| e.template)),
         }
     }
 }
@@ -202,8 +215,9 @@ impl AteniaTokenizer {
         let tokenizer_json = dir.join("tokenizer.json");
         let tokenizer_config_json = dir.join("tokenizer_config.json");
 
-        let inner = HfTokenizer::from_file(&tokenizer_json)
-            .map_err(|e| TokenizerError::Hf(format!("loading {}: {e}", tokenizer_json.display())))?;
+        let inner = HfTokenizer::from_file(&tokenizer_json).map_err(|e| {
+            TokenizerError::Hf(format!("loading {}: {e}", tokenizer_json.display()))
+        })?;
 
         let cfg_raw = fs::read_to_string(&tokenizer_config_json)?;
         let cfg: TokenizerConfigRaw = serde_json::from_str(&cfg_raw)?;
@@ -213,15 +227,21 @@ impl AteniaTokenizer {
         // global BOS. `eos_token` is universal across the M5
         // model scope.
         let bos_token = cfg.bos_token.map(|t| t.content());
-        let eos_token = cfg.eos_token.map(|t| t.content())
+        let eos_token = cfg
+            .eos_token
+            .map(|t| t.content())
             .ok_or(TokenizerError::MissingField("eos_token"))?;
 
         let bos_id = match &bos_token {
-            Some(t) => Some(inner.token_to_id(t)
-                .ok_or_else(|| TokenizerError::Hf(format!("bos_token {t:?} not in vocab")))?),
+            Some(t) => Some(
+                inner
+                    .token_to_id(t)
+                    .ok_or_else(|| TokenizerError::Hf(format!("bos_token {t:?} not in vocab")))?,
+            ),
             None => None,
         };
-        let eos_id = inner.token_to_id(&eos_token)
+        let eos_id = inner
+            .token_to_id(&eos_token)
             .ok_or_else(|| TokenizerError::Hf(format!("eos_token {eos_token:?} not in vocab")))?;
 
         // If the config doesn't specify, default to the model's
@@ -256,7 +276,8 @@ impl AteniaTokenizer {
         // BOS handling; we layer it on ourselves below so the
         // `add_bos` knob is honoured even when `add_bos_token` in
         // the config is `false` (e.g. mid-stream continuations).
-        let enc = self.inner
+        let enc = self
+            .inner
             .encode(text, false)
             .map_err(|e| TokenizerError::Hf(format!("encode: {e}")))?;
         let mut ids = enc.get_ids().to_vec();
@@ -291,7 +312,9 @@ impl AteniaTokenizer {
     /// if the model's `tokenizer_config.json` had no template;
     /// raw-prompt callers should not hit this path.
     pub fn apply_chat_template(&self, messages: &[ChatMessage]) -> Result<String, TokenizerError> {
-        let template_src = self.chat_template.as_deref()
+        let template_src = self
+            .chat_template
+            .as_deref()
             .ok_or(TokenizerError::MissingField("chat_template"))?;
 
         let mut env = Environment::new();
@@ -322,52 +345,77 @@ impl AteniaTokenizer {
         // when the user/assistant alternation is broken. Bind it
         // so rendering surfaces a clear template error rather
         // than `UnknownFunction`.
-        env.add_function("raise_exception", |msg: String| -> Result<String, minijinja::Error> {
-            Err(minijinja::Error::new(minijinja::ErrorKind::InvalidOperation, msg))
-        });
+        env.add_function(
+            "raise_exception",
+            |msg: String| -> Result<String, minijinja::Error> {
+                Err(minijinja::Error::new(
+                    minijinja::ErrorKind::InvalidOperation,
+                    msg,
+                ))
+            },
+        );
         // `strftime_now` appears in some Llama 3.2 templates
         // (date stamps in system messages). Stub it with a
         // deterministic placeholder so the template renders;
         // the date is irrelevant to the M5 demo path and a real
         // implementation can be wired post-MVP.
-        env.add_function("strftime_now", |_fmt: String| -> Result<String, minijinja::Error> {
-            Ok(String::from("01 January 2026"))
-        });
+        env.add_function(
+            "strftime_now",
+            |_fmt: String| -> Result<String, minijinja::Error> {
+                Ok(String::from("01 January 2026"))
+            },
+        );
 
         env.add_template("chat", template_src)
             .map_err(|e| TokenizerError::Template(format!("compile: {e}")))?;
-        let tmpl = env.get_template("chat")
+        let tmpl = env
+            .get_template("chat")
             .map_err(|e| TokenizerError::Template(format!("get: {e}")))?;
 
-        let rendered = tmpl.render(context! {
-            messages => messages,
-            // Templates that don't reference `bos_token` won't
-            // care; ones that do (Llama 2) get the literal
-            // string. Empty when the model has no global BOS.
-            bos_token => self.bos_token.clone().unwrap_or_default(),
-            eos_token => self.eos_token.clone(),
-            add_generation_prompt => true,
-        })
-        .map_err(|e| TokenizerError::Template(format!("render: {e}")))?;
+        let rendered = tmpl
+            .render(context! {
+                messages => messages,
+                // Templates that don't reference `bos_token` won't
+                // care; ones that do (Llama 2) get the literal
+                // string. Empty when the model has no global BOS.
+                bos_token => self.bos_token.clone().unwrap_or_default(),
+                eos_token => self.eos_token.clone(),
+                add_generation_prompt => true,
+            })
+            .map_err(|e| TokenizerError::Template(format!("render: {e}")))?;
 
         Ok(rendered)
     }
 
     /// BOS token id, or `None` when the model has no global
     /// BOS sentinel (Qwen 2.5 case). 1 for Llama 2.
-    pub fn bos_id(&self) -> Option<u32> { self.bos_id }
+    pub fn bos_id(&self) -> Option<u32> {
+        self.bos_id
+    }
     /// EOS token id (2 for Llama 2, model-dependent otherwise).
-    pub fn eos_id(&self) -> u32 { self.eos_id }
+    pub fn eos_id(&self) -> u32 {
+        self.eos_id
+    }
     /// Whether the underlying config wants BOS prepended by default.
-    pub fn add_bos_token(&self) -> bool { self.add_bos_token }
+    pub fn add_bos_token(&self) -> bool {
+        self.add_bos_token
+    }
     /// Whether the underlying config wants EOS appended by default.
-    pub fn add_eos_token(&self) -> bool { self.add_eos_token }
+    pub fn add_eos_token(&self) -> bool {
+        self.add_eos_token
+    }
     /// True if the model ships a chat template.
-    pub fn has_chat_template(&self) -> bool { self.chat_template.is_some() }
+    pub fn has_chat_template(&self) -> bool {
+        self.chat_template.is_some()
+    }
     /// Underlying vocabulary size (= tokenizer.json vocab len).
-    pub fn vocab_size(&self) -> usize { self.inner.get_vocab_size(true) }
+    pub fn vocab_size(&self) -> usize {
+        self.inner.get_vocab_size(true)
+    }
     /// Path the tokenizer was loaded from.
-    pub fn model_dir(&self) -> &Path { &self.model_dir }
+    pub fn model_dir(&self) -> &Path {
+        &self.model_dir
+    }
 
     /// **M5.d.a** — true iff `id` is a special token (BOS,
     /// EOS, or any token registered as `special` in the
@@ -424,16 +472,20 @@ mod tests {
 
     #[test]
     fn llama2_round_trip_preserves_text() {
-        let Some(dir) = model_dir("llama-2-13b-chat") else { return; };
+        let Some(dir) = model_dir("llama-2-13b-chat") else {
+            return;
+        };
         let tok = AteniaTokenizer::from_model_dir(&dir).unwrap();
         // D66 round-trip: decode(encode(x)) == x for clean text.
         // BOS is stripped by skip_special_tokens. Whitespace
         // normalisation in SentencePiece can collapse leading
         // spaces; we test inputs that don't trigger that.
-        let cases = ["Hello, my name is",
-                     "The capital of France is Paris.",
-                     "1234567890",
-                     "End of file."];
+        let cases = [
+            "Hello, my name is",
+            "The capital of France is Paris.",
+            "1234567890",
+            "End of file.",
+        ];
         for text in &cases {
             let ids = tok.encode(text, true).unwrap();
             let back = tok.decode(&ids, true).unwrap();
@@ -451,20 +503,27 @@ mod tests {
         //   t = AutoTokenizer.from_pretrained(".../llama-2-13b-chat")
         //   t.encode("Hello, my name is")
         //   -> [1, 15043, 29892, 590, 1024, 338]
-        let Some(dir) = model_dir("llama-2-13b-chat") else { return; };
+        let Some(dir) = model_dir("llama-2-13b-chat") else {
+            return;
+        };
         let tok = AteniaTokenizer::from_model_dir(&dir).unwrap();
         let ids = tok.encode("Hello, my name is", true).unwrap();
-        assert_eq!(ids, vec![1, 15043, 29892, 590, 1024, 338],
-            "byte-exact ID match vs HF transformers reference");
+        assert_eq!(
+            ids,
+            vec![1, 15043, 29892, 590, 1024, 338],
+            "byte-exact ID match vs HF transformers reference"
+        );
     }
 
     #[test]
     fn llama2_chat_template_renders() {
-        let Some(dir) = model_dir("llama-2-13b-chat") else { return; };
+        let Some(dir) = model_dir("llama-2-13b-chat") else {
+            return;
+        };
         let tok = AteniaTokenizer::from_model_dir(&dir).unwrap();
-        let prompt = tok.apply_chat_template(&[
-            ChatMessage::user("Hi!"),
-        ]).unwrap();
+        let prompt = tok
+            .apply_chat_template(&[ChatMessage::user("Hi!")])
+            .unwrap();
         // Llama 2 chat template wraps user messages in
         // `<s>[INST] ... [/INST]`. We assert structural shape,
         // not exact whitespace, so template tweaks upstream
@@ -506,9 +565,9 @@ mod tests {
             return;
         };
         let tok = AteniaTokenizer::from_model_dir(&dir).unwrap();
-        let rendered = tok.apply_chat_template(&[
-            ChatMessage::user("Hello"),
-        ]).unwrap();
+        let rendered = tok
+            .apply_chat_template(&[ChatMessage::user("Hello")])
+            .unwrap();
 
         // Byte-exact expectation. HF emits exactly this for
         // a single user turn with add_generation_prompt:
@@ -545,13 +604,16 @@ mod tests {
             };
             let tok = AteniaTokenizer::from_model_dir(&dir)
                 .unwrap_or_else(|e| panic!("{name}: load: {e}"));
-            let ids = tok.encode("Hello world", false)
+            let ids = tok
+                .encode("Hello world", false)
                 .unwrap_or_else(|e| panic!("{name}: encode: {e}"));
             assert!(!ids.is_empty(), "{name}: encode produced no tokens");
-            let _back = tok.decode(&ids, true)
+            let _back = tok
+                .decode(&ids, true)
                 .unwrap_or_else(|e| panic!("{name}: decode: {e}"));
             if tok.has_chat_template() {
-                let _prompt = tok.apply_chat_template(&[ChatMessage::user("Hi!")])
+                let _prompt = tok
+                    .apply_chat_template(&[ChatMessage::user("Hi!")])
                     .unwrap_or_else(|e| panic!("{name}: chat template: {e}"));
             }
         }

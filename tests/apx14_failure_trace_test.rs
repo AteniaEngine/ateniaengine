@@ -3,9 +3,9 @@ mod v14;
 
 use v14::failure::failure_event::FailureSeverity;
 use v14::failure::failure_kind::FailureKind;
+use v14::failure::failure_trace::FailureTrace;
 use v14::failure::recovery_action::RecoveryAction;
 use v14::failure::recovery_record::RecoveryResult;
-use v14::failure::failure_trace::FailureTrace;
 
 #[test]
 fn records_prefailure_and_recovery_with_stable_json() {

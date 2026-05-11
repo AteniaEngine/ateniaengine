@@ -1,6 +1,6 @@
-﻿use atenia_engine::amg::graph::Graph;
+use atenia_engine::amg::graph::Graph;
 use atenia_engine::amg::nodes::{Node, NodeType};
-use atenia_engine::tensor::{Tensor, Device, Layout};
+use atenia_engine::tensor::{Device, Layout, Tensor};
 
 fn max_abs_diff(a: &Tensor, b: &Tensor) -> f32 {
     a.as_cpu_slice()
@@ -31,7 +31,13 @@ fn make_deep_graph() -> Graph {
 }
 
 fn make_inputs() -> Vec<Tensor> {
-    let x = Tensor::with_layout(vec![8, 8], 1.0, Device::CPU, Layout::Contiguous, atenia_engine::tensor::DType::F32);
+    let x = Tensor::with_layout(
+        vec![8, 8],
+        1.0,
+        Device::CPU,
+        Layout::Contiguous,
+        atenia_engine::tensor::DType::F32,
+    );
     vec![x]
 }
 
@@ -50,11 +56,15 @@ fn apx_7_10_hls_deep_superlevels_nontrivial() {
 fn apx_7_10_hls_deep_equivalence_vs_7_9() {
     let inputs = make_inputs();
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.9"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.9");
+    }
     let mut g_tlo = make_deep_graph();
     let out_tlo = g_tlo.execute(inputs.clone());
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.10"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.10");
+    }
     let mut g_hlsd = make_deep_graph();
     let out_hlsd = g_hlsd.execute(inputs);
 
@@ -100,11 +110,15 @@ fn apx_7_10_hls_deep_performance_sanity() {
 
     let inputs = make_inputs();
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.4"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.4");
+    }
     let mut g_seq = make_wider_deep_graph(3, 4);
     let t_seq = now_ms(|| g_seq.execute(inputs.clone()));
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.10"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.10");
+    }
     let mut g_hlsd = make_wider_deep_graph(3, 4);
     let t_hlsd = now_ms(|| g_hlsd.execute(inputs));
 

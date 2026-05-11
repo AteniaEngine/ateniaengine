@@ -1,6 +1,6 @@
-use atenia_engine::apx6_7::runtime_profile::{KernelPerf, RuntimeProfile};
-use atenia_engine::apx6_7::auto_bench::{run_initial_bench, estimate_best_kernel};
 use atenia_engine::apx5::kernel_planner::KernelTarget;
+use atenia_engine::apx6_7::auto_bench::{estimate_best_kernel, run_initial_bench};
+use atenia_engine::apx6_7::runtime_profile::{KernelPerf, RuntimeProfile};
 
 #[test]
 fn profile_builds_for_all_sizes() {

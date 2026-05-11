@@ -20,10 +20,7 @@ fn nvidia_smi_available() -> bool {
 /// written separately so the test is not self-referential.
 fn reference_free_vram_bytes() -> u64 {
     let out = Command::new("nvidia-smi")
-        .args([
-            "--query-gpu=memory.free",
-            "--format=csv,noheader,nounits",
-        ])
+        .args(["--query-gpu=memory.free", "--format=csv,noheader,nounits"])
         .output()
         .expect("nvidia-smi invocation failed");
 
@@ -62,6 +59,9 @@ fn test_matches_nvidia_smi() {
         diff < tolerance,
         "probe vs ground truth mismatch: probe={} bytes, reference={} bytes, \
          diff={} bytes (tolerance={} bytes)",
-        probe, reference, diff, tolerance
+        probe,
+        reference,
+        diff,
+        tolerance
     );
 }

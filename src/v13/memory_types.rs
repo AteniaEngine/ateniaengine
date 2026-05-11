@@ -22,8 +22,13 @@ pub struct CompressionMeta {
 pub enum StorageBacking {
     None,
     Ram(Vec<u8>),
-    SsdFile { path: String, compression: Option<CompressionMeta> },
-    VramHandle { key: String },
+    SsdFile {
+        path: String,
+        compression: Option<CompressionMeta>,
+    },
+    VramHandle {
+        key: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

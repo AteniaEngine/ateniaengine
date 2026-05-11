@@ -1,5 +1,5 @@
-use crate::gpu::safety::error_codes::{describe, CUDA_SUCCESS};
 use crate::gpu::runtime::logging::log;
+use crate::gpu::safety::error_codes::{CUDA_SUCCESS, describe};
 
 pub struct GpuSafety;
 

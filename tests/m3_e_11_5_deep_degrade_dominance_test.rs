@@ -22,9 +22,7 @@
 
 use atenia_engine::v15::policy::types::DecisionBias;
 use atenia_engine::v16::contract::constraints::{Constraints, RuntimeState};
-use atenia_engine::v16::contract::execution_contract::{
-    ExecutionBackend, ExecutionContract,
-};
+use atenia_engine::v16::contract::execution_contract::{ExecutionBackend, ExecutionContract};
 use atenia_engine::v16::guards::execution_guard::ExecutionGuard;
 use atenia_engine::v16::guards::guard_action::GuardAction;
 use atenia_engine::v16::guards::guard_conditions::GuardConditions;
@@ -88,9 +86,7 @@ fn manager_with(actions: Vec<GuardAction>) -> GuardManager {
             // Box::leak to produce a single &'static str per label
             // without needing a fancier lifetime scheme — tests
             // only, cost is negligible.
-            let label: &'static str = Box::leak(
-                format!("fixed_guard_{}", i).into_boxed_str(),
-            );
+            let label: &'static str = Box::leak(format!("fixed_guard_{}", i).into_boxed_str());
             Box::new(FixedActionGuard { label, action: a }) as Box<dyn ExecutionGuard>
         })
         .collect();
@@ -182,10 +178,7 @@ fn test_multiple_guards_full_stack_ordering() {
     assert_eq!(verdict_no_abort, GuardAction::DeepDegrade);
 
     // Drop DeepDegrade — Degrade wins.
-    let mgr_no_deep = manager_with(vec![
-        GuardAction::Continue,
-        GuardAction::Degrade,
-    ]);
+    let mgr_no_deep = manager_with(vec![GuardAction::Continue, GuardAction::Degrade]);
     let verdict_no_deep = mgr_no_deep
         .evaluate(&permissive_contract(), &clean_conditions())
         .expect("ok");

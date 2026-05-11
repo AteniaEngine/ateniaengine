@@ -1,5 +1,5 @@
-use atenia_engine::gpu_autodiff::ir_backward::BackwardKernelSpec;
 use atenia_engine::gpu_autodiff::fuser::FusionPlanner;
+use atenia_engine::gpu_autodiff::ir_backward::BackwardKernelSpec;
 
 #[test]
 fn test_fusion_basic() {

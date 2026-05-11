@@ -1,5 +1,5 @@
-﻿use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::tensor::{Tensor, Device, DType, Layout};
+use atenia_engine::amg::builder::GraphBuilder;
+use atenia_engine::tensor::{DType, Device, Layout, Tensor};
 
 #[test]
 fn test_fused_linear_silu_pipeline() {

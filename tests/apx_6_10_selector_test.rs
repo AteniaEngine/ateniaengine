@@ -1,5 +1,5 @@
-use atenia_engine::apx6_10::FusionSelector;
 use atenia_engine::apx6_10::FusionProfile;
+use atenia_engine::apx6_10::FusionSelector;
 
 #[test]
 fn selector_prefers_full_when_much_faster() {

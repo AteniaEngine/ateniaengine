@@ -3,12 +3,12 @@
 // multi-arch router, precompilation cache, and mock codegen.
 // Does not execute real GPU nor modify any numeric computation.
 
+use crate::apx8::codegen::gpu_codegen_v1::GPUCodegenV1;
 use crate::apx8::device_planner::plan_for_ir;
 use crate::apx8::gpu_partition::suggest_partition;
 use crate::apx8::kernel_generator::KernelIR;
-use crate::apx8::multiarch_router::{route_kernel, TargetArch};
+use crate::apx8::multiarch_router::{TargetArch, route_kernel};
 use crate::apx8::precompile_cache::PrecompileCache;
-use crate::apx8::codegen::gpu_codegen_v1::GPUCodegenV1;
 
 #[derive(Debug, Clone)]
 pub struct HybridOpPlan {

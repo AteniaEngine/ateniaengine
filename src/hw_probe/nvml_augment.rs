@@ -24,9 +24,7 @@ const NVIDIA_PCI_VENDOR_ID: u32 = 0x10DE;
 pub fn augment(gpus: &mut [GpuInfo], warnings: &mut Vec<String>) {
     // Skip early if no NVIDIA GPU was enumerated by wgpu — no reason
     // to spin up NVML just to iterate over nothing.
-    let any_nvidia = gpus
-        .iter()
-        .any(|g| g.vendor_id == NVIDIA_PCI_VENDOR_ID);
+    let any_nvidia = gpus.iter().any(|g| g.vendor_id == NVIDIA_PCI_VENDOR_ID);
     if !any_nvidia {
         return;
     }
@@ -46,17 +44,14 @@ pub fn augment(gpus: &mut [GpuInfo], warnings: &mut Vec<String>) {
 
     // CUDA driver version (shared across all NVIDIA devices on the
     // host) — query once up front so we can attach it to each entry.
-    let cuda_runtime_label = nvml
-        .sys_cuda_driver_version()
-        .ok()
-        .map(|v| {
-            // nvml returns an integer like 13020 for CUDA 13.2.
-            // Formula documented by NVIDIA: major = v / 1000,
-            // minor = (v % 1000) / 10.
-            let major = v / 1000;
-            let minor = (v % 1000) / 10;
-            format!("CUDA {}.{}", major, minor)
-        });
+    let cuda_runtime_label = nvml.sys_cuda_driver_version().ok().map(|v| {
+        // nvml returns an integer like 13020 for CUDA 13.2.
+        // Formula documented by NVIDIA: major = v / 1000,
+        // minor = (v % 1000) / 10.
+        let major = v / 1000;
+        let minor = (v % 1000) / 10;
+        format!("CUDA {}.{}", major, minor)
+    });
 
     let device_count = match nvml.device_count() {
         Ok(n) => n,
@@ -87,7 +82,9 @@ pub fn augment(gpus: &mut [GpuInfo], warnings: &mut Vec<String>) {
     // matching, which wgpu does not expose.
     let mut nvml_by_pci: Vec<(u16, u16, u32)> = Vec::new();
     for ordinal in 0..device_count {
-        let Ok(dev) = nvml.device_by_index(ordinal) else { continue };
+        let Ok(dev) = nvml.device_by_index(ordinal) else {
+            continue;
+        };
         let Ok(pci) = dev.pci_info() else { continue };
         let combined = pci.pci_device_id;
         let vendor = (combined & 0xFFFF) as u16;
@@ -95,10 +92,13 @@ pub fn augment(gpus: &mut [GpuInfo], warnings: &mut Vec<String>) {
         nvml_by_pci.push((vendor, device, ordinal));
     }
 
-    for gpu in gpus.iter_mut().filter(|g| g.vendor_id == NVIDIA_PCI_VENDOR_ID) {
-        let match_idx = nvml_by_pci.iter().position(|(v, d, _)| {
-            *v as u32 == gpu.vendor_id && *d as u32 == gpu.device_id
-        });
+    for gpu in gpus
+        .iter_mut()
+        .filter(|g| g.vendor_id == NVIDIA_PCI_VENDOR_ID)
+    {
+        let match_idx = nvml_by_pci
+            .iter()
+            .position(|(v, d, _)| *v as u32 == gpu.vendor_id && *d as u32 == gpu.device_id);
 
         let Some(i) = match_idx else {
             warnings.push(format!(
@@ -111,7 +111,9 @@ pub fn augment(gpus: &mut [GpuInfo], warnings: &mut Vec<String>) {
         };
         let ordinal = nvml_by_pci[i].2;
 
-        let Ok(dev) = nvml.device_by_index(ordinal) else { continue };
+        let Ok(dev) = nvml.device_by_index(ordinal) else {
+            continue;
+        };
 
         if let Ok(cc) = dev.cuda_compute_capability() {
             gpu.compute_capability = Some(format!("{}.{}", cc.major, cc.minor));

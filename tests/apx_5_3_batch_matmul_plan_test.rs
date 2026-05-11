@@ -12,7 +12,7 @@
 //! well-chosen, or that the plan branches correspond to optimal
 //! execution paths under real hardware.
 
-use atenia_engine::apx5::apx_5_3_planner::{Planner5_3, NodeExecInfo, LayoutDecision};
+use atenia_engine::apx5::apx_5_3_planner::{LayoutDecision, NodeExecInfo, Planner5_3};
 
 fn make_info(shape: Vec<usize>, dtype: &str, contiguous: bool) -> NodeExecInfo {
     NodeExecInfo {

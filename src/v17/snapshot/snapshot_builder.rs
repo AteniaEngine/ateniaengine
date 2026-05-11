@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
 use crate::v16::contract::execution_contract::ExecutionContract;
-use crate::v16::planner::execution_plan::ExecutionPlan;
 use crate::v16::feedback::execution_outcome::ExecutionOutcomeKind;
+use crate::v16::planner::execution_plan::ExecutionPlan;
 use crate::v17::inference::inference_result::InferenceResult;
 use crate::v17::profiling::backend_metrics::ExecutionProfile;
 
@@ -41,22 +41,25 @@ impl SnapshotBuilder {
         let model_id = contract.bias.risk_weight.to_string(); // placeholder fingerprint source
         let contract_fingerprint = hash_str(&format!("{:?}", contract));
         let plan_fingerprint = hash_str(&format!("{:?}", plan));
-        let backend_usage = if profile
-            .backends
-            .iter()
-            .any(|b| matches!(b.backend, crate::v17::profiling::backend_metrics::BackendKind::Gpu))
-        {
+        let backend_usage = if profile.backends.iter().any(|b| {
+            matches!(
+                b.backend,
+                crate::v17::profiling::backend_metrics::BackendKind::Gpu
+            )
+        }) {
             "gpu".to_string()
         } else {
             "cpu".to_string()
         };
 
         let profile_hash = hash_str(&profile.to_json());
-        let output_signature = hash_str(&format!("{:?}:{:?}", result.output.shape, result.output.data));
+        let output_signature = hash_str(&format!(
+            "{:?}:{:?}",
+            result.output.shape, result.output.data
+        ));
         let explanation_signature = hash_str(&format!(
             "{}:{}",
-            result.explanation_text,
-            result.explanation_json
+            result.explanation_text, result.explanation_json
         ));
 
         let snapshot_concat = format!(

@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
-use crate::v15::policy::evidence::snapshot::PolicyEvidenceSnapshot;
 use crate::v15::policy::evidence::signals::PolicySignalKind;
+use crate::v15::policy::evidence::snapshot::PolicyEvidenceSnapshot;
 use crate::v15::policy::policy::ExecutionPolicy;
 use crate::v15::policy::types::{DecisionBias, PolicyInput};
 

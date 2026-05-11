@@ -28,8 +28,8 @@
 //! all land on the cache, preserving probe_calls_count monotonicity
 //! and not re-probing.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::amg::reactive::ReactiveExecutionContext;
@@ -39,9 +39,7 @@ use atenia_engine::gpu::gpu_engine;
 use atenia_engine::tensor::{DType, Device, Layout, Tensor, TensorStorage};
 use atenia_engine::v15::policy::types::DecisionBias;
 use atenia_engine::v16::contract::constraints::{Constraints, RuntimeState};
-use atenia_engine::v16::contract::execution_contract::{
-    ExecutionBackend, ExecutionContract,
-};
+use atenia_engine::v16::contract::execution_contract::{ExecutionBackend, ExecutionContract};
 use atenia_engine::v16::guards::execution_guard::ExecutionGuard;
 use atenia_engine::v16::guards::guard_action::GuardAction;
 use atenia_engine::v16::guards::guard_conditions::GuardConditions;
@@ -111,11 +109,7 @@ impl ExecutionGuard for DegradeIfFailuresGuard {
     fn name(&self) -> &'static str {
         "degrade_if_failures_guard_m3_e_6_fixture"
     }
-    fn evaluate(
-        &self,
-        _contract: &ExecutionContract,
-        conditions: &GuardConditions,
-    ) -> GuardAction {
+    fn evaluate(&self, _contract: &ExecutionContract, conditions: &GuardConditions) -> GuardAction {
         if conditions.recent_failures > 0 {
             GuardAction::Degrade
         } else {
@@ -216,9 +210,7 @@ fn test_veto_fires_when_cpu_saturated_externally() {
         result.err()
     );
 
-    let ctx_after = graph
-        .reactive_context()
-        .expect("context still attached");
+    let ctx_after = graph.reactive_context().expect("context still attached");
 
     // Key veto assertions.
     assert!(

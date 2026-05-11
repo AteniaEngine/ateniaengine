@@ -190,8 +190,7 @@ impl SignalBus {
         // warmup, no subprocess until `snapshot` is called). Per-
         // call failures are handled inside `collect_probes` and
         // surface as `None` on `GuardConditions`.
-        let gpu_util_probe: Option<Arc<dyn GpuUtilProbeApi>> =
-            Some(Arc::new(GpuUtilProbe::new()));
+        let gpu_util_probe: Option<Arc<dyn GpuUtilProbeApi>> = Some(Arc::new(GpuUtilProbe::new()));
         // M3-e.8: foreground probe is also infallible to construct;
         // on non-Windows platforms `snapshot` just returns
         // `Ok(None)` (platform stub).
@@ -200,17 +199,14 @@ impl SignalBus {
         // M3-e.9: battery probe likewise infallible. Windows +
         // Linux have real implementations; other platforms stub
         // to `(None, None)`.
-        let battery_probe: Option<Arc<dyn BatteryProbeApi>> =
-            Some(Arc::new(BatteryProbe::new()));
+        let battery_probe: Option<Arc<dyn BatteryProbeApi>> = Some(Arc::new(BatteryProbe::new()));
         // M3-e.11.3: VRAM and RAM probes behind traits. The
         // production implementations delegate to the pre-existing
         // `read_nvidia_vram_snapshot` / `read_system_ram_snapshot`
         // free functions — no behavior change vs pre-e.11.3, only
         // injection surface.
-        let vram_probe: Option<Arc<dyn VramProbeApi>> =
-            Some(Arc::new(VramProbe::new()));
-        let ram_probe: Option<Arc<dyn RamProbeApi>> =
-            Some(Arc::new(RamProbe::new()));
+        let vram_probe: Option<Arc<dyn VramProbeApi>> = Some(Arc::new(VramProbe::new()));
+        let ram_probe: Option<Arc<dyn RamProbeApi>> = Some(Arc::new(RamProbe::new()));
         Self::with_probes(
             cpu_probe,
             gpu_util_probe,
@@ -227,16 +223,12 @@ impl SignalBus {
     /// M3-e.6 for ergonomic test setups that only need to control
     /// the CPU signal.
     pub fn with_cpu_probe(cpu_probe: Arc<dyn CpuProbeApi>) -> Self {
-        let gpu_util_probe: Option<Arc<dyn GpuUtilProbeApi>> =
-            Some(Arc::new(GpuUtilProbe::new()));
+        let gpu_util_probe: Option<Arc<dyn GpuUtilProbeApi>> = Some(Arc::new(GpuUtilProbe::new()));
         let foreground_probe: Option<Arc<dyn ForegroundProbeApi>> =
             Some(Arc::new(ForegroundProbe::new()));
-        let battery_probe: Option<Arc<dyn BatteryProbeApi>> =
-            Some(Arc::new(BatteryProbe::new()));
-        let vram_probe: Option<Arc<dyn VramProbeApi>> =
-            Some(Arc::new(VramProbe::new()));
-        let ram_probe: Option<Arc<dyn RamProbeApi>> =
-            Some(Arc::new(RamProbe::new()));
+        let battery_probe: Option<Arc<dyn BatteryProbeApi>> = Some(Arc::new(BatteryProbe::new()));
+        let vram_probe: Option<Arc<dyn VramProbeApi>> = Some(Arc::new(VramProbe::new()));
+        let ram_probe: Option<Arc<dyn RamProbeApi>> = Some(Arc::new(RamProbe::new()));
         Self::with_probes(
             Some(cpu_probe),
             gpu_util_probe,
@@ -405,8 +397,7 @@ impl SignalBus {
             // rounded to sub-nanosecond on a fast path).
             if baseline_ms > 0.0 {
                 let ratio = current_ms / baseline_ms;
-                conditions =
-                    conditions.with_latency_context(baseline_ms, current_ms, ratio);
+                conditions = conditions.with_latency_context(baseline_ms, current_ms, ratio);
             }
         }
         Some(conditions)
@@ -523,21 +514,18 @@ impl SignalBus {
         // `memory_pressure` from the surviving tier. Both failing
         // still returns `None` — the reaction path remains fully
         // fail-open when memory telemetry is entirely unavailable.
-        let vram_pressure: Option<f32> = self.vram_probe.as_ref().and_then(|p| {
-            match p.snapshot() {
+        let vram_pressure: Option<f32> =
+            self.vram_probe.as_ref().and_then(|p| match p.snapshot() {
                 Ok(snap) if snap.total_bytes > 0 => {
                     Some(1.0 - (snap.free_bytes as f32 / snap.total_bytes as f32))
                 }
                 _ => None,
+            });
+        let ram_pressure: Option<f32> = self.ram_probe.as_ref().and_then(|p| match p.snapshot() {
+            Ok(snap) if snap.total_bytes > 0 => {
+                Some(1.0 - (snap.available_bytes as f32 / snap.total_bytes as f32))
             }
-        });
-        let ram_pressure: Option<f32> = self.ram_probe.as_ref().and_then(|p| {
-            match p.snapshot() {
-                Ok(snap) if snap.total_bytes > 0 => {
-                    Some(1.0 - (snap.available_bytes as f32 / snap.total_bytes as f32))
-                }
-                _ => None,
-            }
+            _ => None,
         });
 
         // Aggregate `memory_pressure` is `max` when both present,

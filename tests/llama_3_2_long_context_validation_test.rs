@@ -78,8 +78,7 @@ fn make_input() -> Tensor {
     for k in 0..total {
         // Spread values across [-1, 1] in a non-trivial pattern
         // (alternating sign, slowly varying magnitude).
-        let raw = ((k as f32) * 0.013).sin() * 0.7
-            + ((k as f32) * 0.27).cos() * 0.3;
+        let raw = ((k as f32) * 0.013).sin() * 0.7 + ((k as f32) * 0.27).cos() * 0.3;
         data.push(raw);
     }
     Tensor::new_cpu(vec![BATCH, SEQ_LEN, N_HEADS, HEAD_DIM], data)
@@ -90,14 +89,8 @@ fn llama_3_long_context_graph_matches_direct_scaled_rope_bit_exact() {
     let input = make_input();
 
     // ---- Reference: direct call to the kernel with the scaled inv_freq.
-    let inv_freqs_scaled = compute_inv_freqs_llama3(
-        HEAD_DIM,
-        BASE_FREQ,
-        FACTOR,
-        LOW,
-        HIGH,
-        ORIGINAL_MAX_POS,
-    );
+    let inv_freqs_scaled =
+        compute_inv_freqs_llama3(HEAD_DIM, BASE_FREQ, FACTOR, LOW, HIGH, ORIGINAL_MAX_POS);
     let direct_scaled = apply_rope_with_inv_freqs(&input, HEAD_DIM, &inv_freqs_scaled);
 
     // ---- Graph path: NodeType::RoPE { scaling: Some(_) } via builder.
@@ -120,7 +113,8 @@ fn llama_3_long_context_graph_matches_direct_scaled_rope_bit_exact() {
     // a different schedule through the kernel.
     for (i, (g, d)) in graph_out.iter().zip(direct_out.iter()).enumerate() {
         assert_eq!(
-            g, d,
+            g,
+            d,
             "graph vs direct mismatch at index {} (pos={}, head={}, dim={}): {} vs {}",
             i,
             i / (N_HEADS * HEAD_DIM) % SEQ_LEN,
@@ -184,14 +178,8 @@ fn llama_3_short_context_scaled_and_unscaled_almost_coincide() {
     let input = Tensor::new_cpu(vec![BATCH, short_seq, N_HEADS, HEAD_DIM], data);
 
     let unscaled = apply_rope(&input, HEAD_DIM, BASE_FREQ);
-    let scaled_inv_freqs = compute_inv_freqs_llama3(
-        HEAD_DIM,
-        BASE_FREQ,
-        FACTOR,
-        LOW,
-        HIGH,
-        ORIGINAL_MAX_POS,
-    );
+    let scaled_inv_freqs =
+        compute_inv_freqs_llama3(HEAD_DIM, BASE_FREQ, FACTOR, LOW, HIGH, ORIGINAL_MAX_POS);
     let unscaled_inv_freqs = compute_inv_freqs(HEAD_DIM, BASE_FREQ);
     // Sanity for the test itself: every dim where the scaled vector
     // diverges from the unscaled one must produce angle differences
@@ -200,7 +188,10 @@ fn llama_3_short_context_scaled_and_unscaled_almost_coincide() {
     for (s, u) in scaled_inv_freqs.iter().zip(unscaled_inv_freqs.iter()) {
         max_inv_diff = max_inv_diff.max((s - u).abs());
     }
-    println!("max inv_freq divergence at scaling boundary = {:.6e}", max_inv_diff);
+    println!(
+        "max inv_freq divergence at scaling boundary = {:.6e}",
+        max_inv_diff
+    );
 
     let scaled = apply_rope_with_inv_freqs(&input, HEAD_DIM, &scaled_inv_freqs);
 

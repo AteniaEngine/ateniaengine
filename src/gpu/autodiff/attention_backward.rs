@@ -1,8 +1,8 @@
-use crate::gpu::tensor::{TensorGPU, GpuTensorManager};
-use crate::gpu::nvrtc::compiler::NvrtcCompiler;
-use crate::gpu::loader::CudaLoader;
 use crate::gpu::launcher::GpuLauncher;
+use crate::gpu::loader::CudaLoader;
+use crate::gpu::nvrtc::compiler::NvrtcCompiler;
 use crate::gpu::runtime::GpuRuntime;
+use crate::gpu::tensor::{GpuTensorManager, TensorGPU};
 
 pub struct AttentionBackwardGPU;
 
@@ -12,11 +12,11 @@ impl AttentionBackwardGPU {
     /// that produces non-trivial gradients in dQ, dK and dV.
     pub fn run(
         mgr: &GpuTensorManager,
-        q: &TensorGPU,       // [M, D] (ignore batch for now)
-        k: &TensorGPU,       // [M, D]
-        v: &TensorGPU,       // [M, D]
-        _att: &TensorGPU,    // [M, M] (not used yet)
-        dout: &TensorGPU,    // [M, D]
+        q: &TensorGPU,    // [M, D] (ignore batch for now)
+        k: &TensorGPU,    // [M, D]
+        v: &TensorGPU,    // [M, D]
+        _att: &TensorGPU, // [M, M] (not used yet)
+        dout: &TensorGPU, // [M, D]
     ) -> Result<(TensorGPU, TensorGPU, TensorGPU), ()> {
         let _ = mgr;
         let m = q.rows as i32;

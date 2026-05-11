@@ -1,4 +1,4 @@
-﻿//! Absolute-correctness forward tests for AMG's `MaxPool2D`.
+//! Absolute-correctness forward tests for AMG's `MaxPool2D`.
 //!
 //! Inputs chosen so the expected max per window is obvious and can
 //! be derived inline. Tolerance 1e-6 because max selection is exact.
@@ -20,7 +20,11 @@ fn assert_close(got: &[f32], want: &[f32], ctx: &str) {
         assert!(
             diff < TOLERANCE,
             "{}: idx {}: got={} want={} diff={}",
-            ctx, i, g, w, diff
+            ctx,
+            i,
+            g,
+            w,
+            diff
         );
     }
 }
@@ -72,10 +76,7 @@ fn maxpool2d_2x2_non_overlapping() {
 ///   out(1,1) = max of input[1..4, 1..4] = {6,7,8,10,11,12,14,15,16}→ 16
 #[test]
 fn maxpool2d_3x3_stride1() {
-    let input = amg_tensor(
-        vec![1, 1, 4, 4],
-        (1..=16).map(|v| v as f32).collect(),
-    );
+    let input = amg_tensor(vec![1, 1, 4, 4], (1..=16).map(|v| v as f32).collect());
     let cfg = MaxPool2DConfig::new((3, 3), (1, 1), (0, 0));
 
     let out = amg_maxpool2d(&input, &cfg);

@@ -62,10 +62,7 @@ impl ShardIndex {
     /// directory automatically for path resolution.
     pub fn from_json_str(s: &str, base_dir: PathBuf) -> Result<Self, LoaderError> {
         let v: Value = serde_json::from_str(s).map_err(|e| {
-            LoaderError::InvalidFormat(format!(
-                "shard index JSON parse error: {}",
-                e
-            ))
+            LoaderError::InvalidFormat(format!("shard index JSON parse error: {}", e))
         })?;
 
         let total_size = v
@@ -81,9 +78,7 @@ impl ShardIndex {
         })?;
 
         let weight_map_obj = weight_map_value.as_object().ok_or_else(|| {
-            LoaderError::InvalidFormat(
-                "shard index `weight_map` must be a JSON object".to_string(),
-            )
+            LoaderError::InvalidFormat("shard index `weight_map` must be a JSON object".to_string())
         })?;
 
         if weight_map_obj.is_empty() {
@@ -125,8 +120,9 @@ impl ShardIndex {
     /// has no parent (root file system), the current working
     /// directory is used.
     pub fn from_file(path: &Path) -> Result<Self, LoaderError> {
-        let s = fs::read_to_string(path)
-            .map_err(|e| LoaderError::IoError(format!("failed to read {}: {}", path.display(), e)))?;
+        let s = fs::read_to_string(path).map_err(|e| {
+            LoaderError::IoError(format!("failed to read {}: {}", path.display(), e))
+        })?;
         let base_dir = path
             .parent()
             .map(|p| p.to_path_buf())
@@ -136,8 +132,7 @@ impl ShardIndex {
 
     /// Number of distinct shard files referenced by the index.
     pub fn shard_count(&self) -> usize {
-        let mut shards: std::collections::BTreeSet<&str> =
-            std::collections::BTreeSet::new();
+        let mut shards: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
         for shard in self.weight_map.values() {
             shards.insert(shard.as_str());
         }
@@ -147,8 +142,7 @@ impl ShardIndex {
     /// Iterator over distinct shard filenames (bare, not absolute),
     /// in deterministic alphabetical order.
     pub fn shard_filenames(&self) -> Vec<String> {
-        let mut shards: std::collections::BTreeSet<String> =
-            std::collections::BTreeSet::new();
+        let mut shards: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for shard in self.weight_map.values() {
             shards.insert(shard.clone());
         }

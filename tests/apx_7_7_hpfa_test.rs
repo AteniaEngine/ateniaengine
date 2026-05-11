@@ -1,6 +1,6 @@
-﻿use atenia_engine::amg::graph::Graph;
+use atenia_engine::amg::graph::Graph;
 use atenia_engine::amg::nodes::{Node, NodeType};
-use atenia_engine::tensor::{Tensor, Device, Layout};
+use atenia_engine::tensor::{Device, Layout, Tensor};
 
 fn max_abs_diff(a: &Tensor, b: &Tensor) -> f32 {
     a.as_cpu_slice()
@@ -22,7 +22,13 @@ fn make_simple_graph() -> Graph {
 }
 
 fn make_inputs() -> Vec<Tensor> {
-    let x = Tensor::with_layout(vec![4, 4], 1.0, Device::CPU, Layout::Contiguous, atenia_engine::tensor::DType::F32);
+    let x = Tensor::with_layout(
+        vec![4, 4],
+        1.0,
+        Device::CPU,
+        Layout::Contiguous,
+        atenia_engine::tensor::DType::F32,
+    );
     vec![x]
 }
 
@@ -30,11 +36,15 @@ fn make_inputs() -> Vec<Tensor> {
 fn apx_7_7_hpfa_equivalence_with_sequential() {
     let inputs = make_inputs();
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.4"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.4");
+    }
     let mut g_seq = make_simple_graph();
     let out_seq = g_seq.execute(inputs.clone());
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.7"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.7");
+    }
     let mut g_hpfa = make_simple_graph();
     let out_hpfa = g_hpfa.execute(inputs);
 
@@ -85,11 +95,15 @@ fn apx_7_7_hpfa_performance_sanity_like_7_6() {
         t0.elapsed().as_secs_f64() * 1000.0
     }
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.4"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.4");
+    }
     let mut g_seq = make_simple_graph();
     let t_seq = now_ms(|| g_seq.execute(inputs.clone()));
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.7"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.7");
+    }
     let mut g_hpfa = make_simple_graph();
     let t_hpfa = now_ms(|| g_hpfa.execute(inputs));
 

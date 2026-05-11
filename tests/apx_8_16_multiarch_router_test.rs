@@ -1,6 +1,6 @@
-﻿use atenia_engine::apx8::kernel_generator::KernelIR;
-use atenia_engine::apx8::multiarch_router::{route_kernel, TargetArch};
-use atenia_engine::tensor::{Tensor, Device, DType};
+use atenia_engine::apx8::kernel_generator::KernelIR;
+use atenia_engine::apx8::multiarch_router::{TargetArch, route_kernel};
+use atenia_engine::tensor::{DType, Device, Tensor};
 
 #[test]
 fn apx_8_16_structure() {

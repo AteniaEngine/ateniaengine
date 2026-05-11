@@ -1,8 +1,8 @@
-use atenia_engine::apx9::gpu_execution_planner::*;
-use atenia_engine::apx9::gpu_executor_mock::*;
 use atenia_engine::amg::graph::Graph;
 use atenia_engine::amg::nodes::{Node, NodeType};
-use atenia_engine::tensor::{Tensor, Device, DType};
+use atenia_engine::apx9::gpu_execution_planner::*;
+use atenia_engine::apx9::gpu_executor_mock::*;
+use atenia_engine::tensor::{DType, Device, Tensor};
 
 #[test]
 fn apx_9_8_structure() {

@@ -1,17 +1,7 @@
-use atenia_engine::gpu::{
-    ops::linear::LinearOp,
-    memory::GpuMemoryEngine,
-};
 use atenia_engine::gpu::loader::compat_layer::CompatLoader;
+use atenia_engine::gpu::{memory::GpuMemoryEngine, ops::linear::LinearOp};
 
-fn cpu_linear(
-    x: &[f32],
-    w: &[f32],
-    b: &[f32],
-    m: usize,
-    k: usize,
-    n: usize,
-) -> Vec<f32> {
+fn cpu_linear(x: &[f32], w: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
     let mut out = vec![0.0f32; m * n];
 
     // matmul (x @ W^T)

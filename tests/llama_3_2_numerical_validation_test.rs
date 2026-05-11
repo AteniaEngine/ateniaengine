@@ -25,9 +25,7 @@
 //! ```
 
 use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::nn::llama::{
-    build_llama, llama_weight_mapper, LlamaConfig, LlamaRuntime,
-};
+use atenia_engine::nn::llama::{LlamaConfig, LlamaRuntime, build_llama, llama_weight_mapper};
 use atenia_engine::tensor::Tensor;
 use atenia_engine::v17::loader::safetensors_reader::SafetensorsReader;
 use std::env;
@@ -291,8 +289,14 @@ fn llama_3_2_atenia_matches_f64_ground_truth_seq4() {
     let max_bf16_vs_f64 = bf16_vs_f64.iter().fold(0.0_f64, |a, &b| a.max(b));
 
     println!("\n=== Verdict ===");
-    println!("Atenia F32   max drift vs F64 truth: {:.6}", max_atenia_vs_f64);
-    println!("PyTorch BF16 max drift vs F64 truth: {:.6}", max_bf16_vs_f64);
+    println!(
+        "Atenia F32   max drift vs F64 truth: {:.6}",
+        max_atenia_vs_f64
+    );
+    println!(
+        "PyTorch BF16 max drift vs F64 truth: {:.6}",
+        max_bf16_vs_f64
+    );
 
     if max_atenia_vs_f64 < max_bf16_vs_f64 {
         let ratio = max_bf16_vs_f64 / max_atenia_vs_f64.max(1e-9);

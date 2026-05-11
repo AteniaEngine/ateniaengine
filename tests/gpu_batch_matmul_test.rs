@@ -1,7 +1,4 @@
-use atenia_engine::gpu::{
-    memory::GpuMemoryEngine,
-    ops::batch_matmul::BatchMatMulOp,
-};
+use atenia_engine::gpu::{memory::GpuMemoryEngine, ops::batch_matmul::BatchMatMulOp};
 
 fn cpu_batch_matmul(
     a: &[f32],

@@ -162,23 +162,21 @@ impl SmartOffloadEngine {
         let mut skipped_due_to_cooldown = false;
 
         // Helper closure to check cooldown for a tensor id.
-        let can_schedule = |id: &str,
-                            last_moved: &HashMap<String, u64>,
-                            cooldown_ticks: u64|
-         -> bool {
-            match last_moved.get(id) {
-                Some(last_tick) => {
-                    if tick <= *last_tick {
-                        false
-                    } else if tick - *last_tick < cooldown_ticks {
-                        false
-                    } else {
-                        true
+        let can_schedule =
+            |id: &str, last_moved: &HashMap<String, u64>, cooldown_ticks: u64| -> bool {
+                match last_moved.get(id) {
+                    Some(last_tick) => {
+                        if tick <= *last_tick {
+                            false
+                        } else if tick - *last_tick < cooldown_ticks {
+                            false
+                        } else {
+                            true
+                        }
                     }
+                    None => true,
                 }
-                None => true,
-            }
-        };
+            };
 
         // Helper to build sorted, budgeted candidates given a predicate and action kind.
         let mut build_priority_actions = |predicate: &dyn Fn(MemoryTier) -> bool,
@@ -216,11 +214,9 @@ impl SmartOffloadEngine {
             }
 
             // Sort by score desc, then id asc.
-            candidates.sort_by(|a, b| {
-                match b.1.cmp(&a.1) {
-                    std::cmp::Ordering::Equal => a.0.cmp(&b.0),
-                    other => other,
-                }
+            candidates.sort_by(|a, b| match b.1.cmp(&a.1) {
+                std::cmp::Ordering::Equal => a.0.cmp(&b.0),
+                other => other,
             });
 
             let total_candidates = candidates.len();
@@ -253,7 +249,10 @@ impl SmartOffloadEngine {
                 reason.push_str(&summary);
             }
 
-            OffloadPlan { actions: actions_out.clone(), reason }
+            OffloadPlan {
+                actions: actions_out.clone(),
+                reason,
+            }
         };
 
         // Both VRAM and RAM high: prefer offloading to SSD for both tiers.

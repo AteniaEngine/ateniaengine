@@ -1,7 +1,7 @@
-﻿use atenia_engine::amg::graph::Graph;
+use atenia_engine::amg::graph::Graph;
 use atenia_engine::amg::nodes::{Node, NodeType};
-use atenia_engine::apx7::ule::{choose_backend, ULEStrategy};
-use atenia_engine::tensor::{Tensor, Device, Layout};
+use atenia_engine::apx7::ule::{ULEStrategy, choose_backend};
+use atenia_engine::tensor::{Device, Layout, Tensor};
 
 fn max_abs_diff(a: &Tensor, b: &Tensor) -> f32 {
     a.as_cpu_slice()
@@ -22,7 +22,13 @@ fn make_simple_graph() -> Graph {
 }
 
 fn make_inputs() -> Vec<Tensor> {
-    let x = Tensor::with_layout(vec![8, 8], 1.0, Device::CPU, Layout::Contiguous, atenia_engine::tensor::DType::F32);
+    let x = Tensor::with_layout(
+        vec![8, 8],
+        1.0,
+        Device::CPU,
+        Layout::Contiguous,
+        atenia_engine::tensor::DType::F32,
+    );
     vec![x]
 }
 
@@ -30,11 +36,15 @@ fn make_inputs() -> Vec<Tensor> {
 fn apx_7_12_ule_equivalence_with_7_11() {
     let inputs = make_inputs();
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.11"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.11");
+    }
     let mut g_711 = make_simple_graph();
     let out_711 = g_711.execute(inputs.clone());
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.12"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.12");
+    }
     let mut g_712 = make_simple_graph();
     let out_712 = g_712.execute(inputs);
 
@@ -116,15 +126,21 @@ fn apx_7_12_ule_performance_sanity() {
 
     let inputs = make_inputs();
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.5"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.5");
+    }
     let mut g_hpge = make_wide_graph(3, 4);
     let t_hpge = now_ms(|| g_hpge.execute(inputs.clone()));
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.11"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.11");
+    }
     let mut g_pfls = make_wide_graph(3, 4);
     let t_pfls = now_ms(|| g_pfls.execute(inputs.clone()));
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.12"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.12");
+    }
     let mut g_ule = make_wide_graph(3, 4);
     let t_ule = now_ms(|| g_ule.execute(inputs));
 

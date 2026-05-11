@@ -1,5 +1,5 @@
-use atenia_engine::gpu::tensor::manager::GpuTensorManager;
 use atenia_engine::gpu::autodiff::fused_attention::FusedAttentionGPU;
+use atenia_engine::gpu::tensor::manager::GpuTensorManager;
 
 #[test]
 fn test_fused_attention_real_gpu() {

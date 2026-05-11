@@ -1,17 +1,17 @@
-use crate::gpu::tensor::{TensorGPU, GpuTensorManager};
-use crate::gpu::nvrtc::compiler::NvrtcCompiler;
-use crate::gpu::loader::CudaLoader;
 use crate::gpu::launcher::GpuLauncher;
+use crate::gpu::loader::CudaLoader;
+use crate::gpu::nvrtc::compiler::NvrtcCompiler;
 use crate::gpu::runtime::GpuRuntime;
+use crate::gpu::tensor::{GpuTensorManager, TensorGPU};
 
 pub struct MatMulBackwardGPU;
 
 impl MatMulBackwardGPU {
     pub fn run(
         mgr: &GpuTensorManager,
-        a: &TensorGPU,        // [M, K]
-        b: &TensorGPU,        // [K, N]
-        dout: &TensorGPU,     // [M, N]
+        a: &TensorGPU,    // [M, K]
+        b: &TensorGPU,    // [K, N]
+        dout: &TensorGPU, // [M, N]
     ) -> Result<(TensorGPU, TensorGPU), ()> {
         let _ = mgr;
         // shapes
@@ -66,7 +66,9 @@ impl MatMulBackwardGPU {
         // load module + kernel symbol
         let loader = CudaLoader::new().map_err(|_| ())?;
         let module = loader.load_module_from_ptx(&program.ptx).map_err(|_| ())?;
-        let func = loader.get_function(&module, "matmul_backward_real").map_err(|_| ())?;
+        let func = loader
+            .get_function(&module, "matmul_backward_real")
+            .map_err(|_| ())?;
 
         // runtime + launcher
         let rt = GpuRuntime::new().map_err(|_| ())?;

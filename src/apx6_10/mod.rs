@@ -1,6 +1,6 @@
+use crate::apx7::hpfa::FusionAffinity;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
-use crate::apx7::hpfa::FusionAffinity;
 
 pub struct FusionProfile {
     pub op_name: String,
@@ -60,7 +60,9 @@ impl FusionSelector {
 
     pub fn decide(&self) -> FusionDecision {
         if self.history.is_empty() {
-            return FusionDecision { use_full_fusion: None };
+            return FusionDecision {
+                use_full_fusion: None,
+            };
         }
 
         let mut sum_qkv = 0.0f64;
@@ -77,11 +79,17 @@ impl FusionSelector {
         let mean_full = sum_full / count;
 
         if mean_full < 0.85 * mean_qkv {
-            FusionDecision { use_full_fusion: Some(true) }
+            FusionDecision {
+                use_full_fusion: Some(true),
+            }
         } else if mean_qkv < 0.85 * mean_full {
-            FusionDecision { use_full_fusion: Some(false) }
+            FusionDecision {
+                use_full_fusion: Some(false),
+            }
         } else {
-            FusionDecision { use_full_fusion: None }
+            FusionDecision {
+                use_full_fusion: None,
+            }
         }
     }
 
@@ -124,7 +132,7 @@ impl FusionSelector {
         let avg_full = sum_full / count;
 
         let full_s = 1.0f32 / (avg_full as f32 + 1.0);
-        let qkv_s  = 1.0f32 / (avg_qkv as f32 + 1.0);
+        let qkv_s = 1.0f32 / (avg_qkv as f32 + 1.0);
         let base_s = 1.0f32 / (avg_base as f32 + 1.0);
 
         (full_s, qkv_s, base_s)

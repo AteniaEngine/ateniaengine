@@ -9,7 +9,9 @@ pub struct VGlobalMemory {
 
 impl VGlobalMemory {
     pub fn new(size: usize) -> Self {
-        Self { data: vec![0.0; size] }
+        Self {
+            data: vec![0.0; size],
+        }
     }
 }
 
@@ -21,7 +23,9 @@ pub struct VSharedMemory {
 
 impl VSharedMemory {
     pub fn new(size: usize) -> Self {
-        Self { data: vec![0.0; size] }
+        Self {
+            data: vec![0.0; size],
+        }
     }
 }
 
@@ -33,7 +37,9 @@ pub struct VLocalMemory {
 
 impl VLocalMemory {
     pub fn new(size: usize) -> Self {
-        Self { data: vec![0.0; size] }
+        Self {
+            data: vec![0.0; size],
+        }
     }
 }
 
@@ -48,7 +54,9 @@ impl VGpuMemory {
     pub fn new(global_size: usize, shared_size: usize, blocks: usize, threads: usize) -> Self {
         Self {
             global: VGlobalMemory::new(global_size),
-            shared_per_block: (0..blocks).map(|_| VSharedMemory::new(shared_size)).collect(),
+            shared_per_block: (0..blocks)
+                .map(|_| VSharedMemory::new(shared_size))
+                .collect(),
             locals_per_thread: (0..(blocks * threads))
                 .map(|_| VLocalMemory::new(32))
                 .collect(),

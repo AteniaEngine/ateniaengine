@@ -52,11 +52,9 @@ impl<R: RuntimeFacade> ExecutionReplay<R> {
         // Execute steps in the same order using the isolated replay context.
         for idx in step_indices {
             let step = &self.plan.steps[idx];
-            StepExecutor::execute_step(step, &mut self.context.context)
-                .map_err(|e| ReplayError::DivergentOutcome(format!(
-                    "replay step failed: {:?}",
-                    e
-                )))?;
+            StepExecutor::execute_step(step, &mut self.context.context).map_err(|e| {
+                ReplayError::DivergentOutcome(format!("replay step failed: {:?}", e))
+            })?;
         }
 
         Ok(())

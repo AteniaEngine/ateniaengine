@@ -41,8 +41,8 @@
 //! `collect_guard_conditions` call inside an arm) be caught here.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use uuid::Uuid;
 
@@ -54,9 +54,7 @@ use atenia_engine::amm::vram_probe::{VramProbeApi, VramProbeError, VramSnapshot}
 use atenia_engine::tensor::Tensor;
 use atenia_engine::v15::policy::types::DecisionBias;
 use atenia_engine::v16::contract::constraints::{Constraints, RuntimeState};
-use atenia_engine::v16::contract::execution_contract::{
-    ExecutionBackend, ExecutionContract,
-};
+use atenia_engine::v16::contract::execution_contract::{ExecutionBackend, ExecutionContract};
 use atenia_engine::v16::guards::execution_guard::ExecutionGuard;
 use atenia_engine::v16::guards::guard_manager::GuardManager;
 use atenia_engine::v16::guards::simple_memory_pressure_guard::SimpleMemoryPressureGuard;
@@ -113,8 +111,7 @@ fn permissive_contract() -> ExecutionContract {
 }
 
 fn cache_dir() -> PathBuf {
-    let dir = std::env::temp_dir()
-        .join(format!("atenia_m4_7_5_a_{}", Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("atenia_m4_7_5_a_{}", Uuid::new_v4()));
     std::fs::create_dir_all(&dir).expect("test cache dir");
     dir
 }
@@ -150,8 +147,7 @@ fn probe_cache_amortises_under_multi_node_forward() {
         Some(vram_probe.clone()),
         Some(ram_probe.clone()),
     ));
-    let guards: Vec<Box<dyn ExecutionGuard>> =
-        vec![Box::new(SimpleMemoryPressureGuard::new())];
+    let guards: Vec<Box<dyn ExecutionGuard>> = vec![Box::new(SimpleMemoryPressureGuard::new())];
     let gm = GuardManager::new(guards);
     let dir = cache_dir();
     graph.set_reactive_context(
@@ -239,8 +235,7 @@ fn probe_cache_does_not_charge_per_node_when_ttl_dominates() {
         Some(vram_probe),
         Some(ram_probe),
     ));
-    let guards: Vec<Box<dyn ExecutionGuard>> =
-        vec![Box::new(SimpleMemoryPressureGuard::new())];
+    let guards: Vec<Box<dyn ExecutionGuard>> = vec![Box::new(SimpleMemoryPressureGuard::new())];
     let gm = GuardManager::new(guards);
     let dir = cache_dir();
     graph.set_reactive_context(

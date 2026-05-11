@@ -1,7 +1,7 @@
-﻿use atenia_engine::amg::graph::Graph;
+use atenia_engine::amg::graph::Graph;
 use atenia_engine::amg::nodes::{Node, NodeType};
-use atenia_engine::tensor::{Tensor, Device, DType};
-use atenia_engine::{HybridDispatcher, ExecDevice};
+use atenia_engine::tensor::{DType, Device, Tensor};
+use atenia_engine::{ExecDevice, HybridDispatcher};
 
 fn small_test_graph() -> Graph {
     let mut nodes = Vec::new();
@@ -46,11 +46,15 @@ fn apx_8_2_dispatcher_equivalence() {
     let mut g1 = small_test_graph();
     let mut g2 = small_test_graph();
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "7.12"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "7.12");
+    }
     let input1 = Tensor::zeros(vec![4], Device::CPU, DType::F32);
     let out_seq = g1.execute(vec![input1]);
 
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "8.2"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "8.2");
+    }
     let input2 = Tensor::zeros(vec![4], Device::CPU, DType::F32);
     let out_hd = g2.execute(vec![input2]);
 
@@ -59,7 +63,9 @@ fn apx_8_2_dispatcher_equivalence() {
 
 #[test]
 fn apx_8_2_dispatcher_selects_gpu_stub() {
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "8.2"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "8.2");
+    }
 
     let dev = HybridDispatcher::select_device("MatMul");
     assert_eq!(dev, ExecDevice::GPU);

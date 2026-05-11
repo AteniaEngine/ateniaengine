@@ -9,7 +9,11 @@ pub struct ValidationResult {
 
 impl ValidationResult {
     pub fn success() -> Self {
-        Self { ok: true, max_diff: 0.0, avg_diff: 0.0 }
+        Self {
+            ok: true,
+            max_diff: 0.0,
+            avg_diff: 0.0,
+        }
     }
 }
 
@@ -56,11 +60,19 @@ impl KernelValidationHarness {
             sum_diff += diff;
         }
 
-        let avg_diff = if cpu.is_empty() { 0.0 } else { sum_diff / cpu.len() as f32 };
+        let avg_diff = if cpu.is_empty() {
+            0.0
+        } else {
+            sum_diff / cpu.len() as f32
+        };
 
         // For this first version, consider ok if max_diff and avg_diff are small.
         let ok = max_diff <= self.atol * 10.0 && avg_diff <= self.atol * 10.0;
 
-        ValidationResult { ok, max_diff, avg_diff }
+        ValidationResult {
+            ok,
+            max_diff,
+            avg_diff,
+        }
     }
 }

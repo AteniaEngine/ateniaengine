@@ -1,7 +1,7 @@
-﻿use atenia_engine::tensor::{Tensor, Device, Layout};
 use atenia_engine::amg::fusions;
-use atenia_engine::nn::softmax as nn_softmax;
 use atenia_engine::nn::linear as nn_linear;
+use atenia_engine::nn::softmax as nn_softmax;
+use atenia_engine::tensor::{Device, Layout, Tensor};
 use std::time::Instant;
 
 fn transpose_2d(t: &Tensor) -> Tensor {

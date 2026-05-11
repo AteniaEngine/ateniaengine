@@ -1,11 +1,4 @@
-pub fn dispatch_matmul_avx2(
-    a: &[f32],
-    b: &[f32],
-    out: &mut [f32],
-    m: usize,
-    k: usize,
-    n: usize,
-) {
+pub fn dispatch_matmul_avx2(a: &[f32], b: &[f32], out: &mut [f32], m: usize, k: usize, n: usize) {
     #[cfg(target_feature = "avx2")]
     unsafe {
         crate::apx6_2::avx2_matmul::matmul_avx2_f32(

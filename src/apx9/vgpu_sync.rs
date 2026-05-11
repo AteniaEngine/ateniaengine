@@ -10,7 +10,10 @@ pub struct VGPUBarrier {
 
 impl VGPUBarrier {
     pub fn new(threads: usize) -> Self {
-        Self { threads, arrived: 0 }
+        Self {
+            threads,
+            arrived: 0,
+        }
     }
 
     pub fn arrive(&mut self) {

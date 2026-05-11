@@ -1,7 +1,7 @@
-﻿use atenia_engine::amg::builder::GraphBuilder;
+use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::amg::graph::Graph;
-use atenia_engine::nn::mini_flux::{build_mini_flux_language_model, MiniFluxConfig};
-use atenia_engine::tensor::{Device, DType, Layout, Tensor};
+use atenia_engine::nn::mini_flux::{MiniFluxConfig, build_mini_flux_language_model};
+use atenia_engine::tensor::{DType, Device, Layout, Tensor};
 
 /// Adaptive Execution without Semantic Drift (experimental).
 ///
@@ -31,10 +31,18 @@ fn apx_semantic_equivalence_mini_flux_forward() {
     let out_baseline = run_forward_with_mode(&cfg, &input, "4.19");
     let out_adaptive = run_forward_with_mode(&cfg, &input, "7.12");
 
-    assert_eq!(out_baseline.shape, out_adaptive.shape, "output shape mismatch");
-    assert_eq!(out_baseline.numel(), out_adaptive.numel(), "output length mismatch");
+    assert_eq!(
+        out_baseline.shape, out_adaptive.shape,
+        "output shape mismatch"
+    );
+    assert_eq!(
+        out_baseline.numel(),
+        out_adaptive.numel(),
+        "output length mismatch"
+    );
 
-    let (max_diff, mean_diff) = diff_stats(out_baseline.as_cpu_slice(), out_adaptive.as_cpu_slice());
+    let (max_diff, mean_diff) =
+        diff_stats(out_baseline.as_cpu_slice(), out_adaptive.as_cpu_slice());
 
     // Machine-precision level equivalence.
     // We prefer exact equality; if a future change introduces tiny rounding differences,
@@ -58,13 +66,15 @@ fn run_forward_with_mode(cfg: &MiniFluxConfig, input: &Tensor, apx_mode: &str) -
     let mut graph = build_mini_flux_graph(cfg);
 
     let mut out = graph.execute(vec![input.clone()]);
-    out.pop().expect("Mini-Flux graph must return a single output")
+    out.pop()
+        .expect("Mini-Flux graph must return a single output")
 }
 
 fn build_mini_flux_graph(cfg: &MiniFluxConfig) -> Graph {
     let mut gb = GraphBuilder::new();
     let tokens_id = gb.input();
-    let (logits_id, _param_ids, _param_names) = build_mini_flux_language_model(&mut gb, cfg, tokens_id);
+    let (logits_id, _param_ids, _param_names) =
+        build_mini_flux_language_model(&mut gb, cfg, tokens_id);
     gb.output(logits_id);
     gb.build()
 }

@@ -7,9 +7,9 @@ use atenia_engine::v17;
 use v15::policy::types::DecisionBias;
 use v16::contract::constraints::{Constraint, ConstraintKind, Constraints, RuntimeState};
 use v16::contract::execution_contract::{ExecutionBackend, ExecutionContract};
+use v16::guards::guard_action::GuardAction;
 use v16::planner::execution_plan::ExecutionPlan;
 use v16::planner::plan_step::{PlanStep, PlanStepKind};
-use v16::guards::guard_action::GuardAction;
 use v17::adapter::adapter_context::AdapterContext;
 use v17::adapter::adapter_errors::AdapterError;
 use v17::adapter::execution_adapter::ExecutionAdapter;
@@ -153,7 +153,9 @@ fn execution_plan_steps_are_executed_in_order() {
 
     let input = Tensor::new(vec![2, 1], vec![1.0, -1.0]).expect("tensor");
 
-    let _ = adapter.execute_plan(&plan, &mut ctx, &input).expect("execute");
+    let _ = adapter
+        .execute_plan(&plan, &mut ctx, &input)
+        .expect("execute");
 
     assert_eq!(ctx.executed_steps, vec![0, 1]);
 }
@@ -207,18 +209,15 @@ fn adapter_respects_execution_contract_and_is_deterministic() {
     let plan = make_plan_with_compute_step();
 
     let backend = CpuBackend::new();
-    let mut ctx1 = AdapterContext::new(handle.clone(), plan.contract.clone(), GuardAction::Continue);
+    let mut ctx1 =
+        AdapterContext::new(handle.clone(), plan.contract.clone(), GuardAction::Continue);
     let mut ctx2 = AdapterContext::new(handle, plan.contract.clone(), GuardAction::Continue);
     let adapter = ExecutionAdapter::new(backend);
 
     let input = Tensor::new(vec![2, 1], vec![2.0, -3.0]).expect("tensor");
 
-    let y1 = adapter
-        .execute_plan(&plan, &mut ctx1, &input)
-        .expect("y1");
-    let y2 = adapter
-        .execute_plan(&plan, &mut ctx2, &input)
-        .expect("y2");
+    let y1 = adapter.execute_plan(&plan, &mut ctx1, &input).expect("y1");
+    let y2 = adapter.execute_plan(&plan, &mut ctx2, &input).expect("y2");
 
     assert_eq!(y1, y2);
 }

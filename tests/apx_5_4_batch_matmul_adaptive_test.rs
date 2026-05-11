@@ -11,8 +11,8 @@
 //! validates a legitimate contract (no samples -> no preference)
 //! without requiring real execution.
 
-use atenia_engine::apx5_4::{AdaptiveSelector, Sample, DeviceTarget};
 use atenia_engine::apx5::apx_5_3_planner::NodeExecInfo;
+use atenia_engine::apx5_4::{AdaptiveSelector, DeviceTarget, Sample};
 use atenia_engine::tensor::DType;
 
 fn make_info(shape: Vec<usize>, dtype: DType) -> NodeExecInfo {

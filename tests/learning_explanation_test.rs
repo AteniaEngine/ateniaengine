@@ -127,10 +127,7 @@ fn explanation_for_cpu_context_due_to_drift() {
 
     assert!(explanation.explanation.contains("CPU"));
     assert!(
-        explanation
-            .explanation
-            .to_lowercase()
-            .contains("drift")
+        explanation.explanation.to_lowercase().contains("drift")
             || explanation
                 .explanation
                 .to_lowercase()

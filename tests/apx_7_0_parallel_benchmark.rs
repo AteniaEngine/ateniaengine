@@ -1,4 +1,4 @@
-use atenia_engine::tensor::{Tensor, Device};
+use atenia_engine::tensor::{Device, Tensor};
 
 #[test]
 #[ignore = "benchmark — run with cargo test -- --ignored"]

@@ -106,11 +106,8 @@ unsafe extern "C" {
     /// Path A — `bf16_to_f32` upcast on a `[K * N]` BF16 buffer to a
     /// matching F32 transient. Same kernel `cuda_matmul_bf16_inplace`
     /// uses internally for the M8.4c per-matmul transient.
-    fn bf16_to_f32_launch_device(
-        d_src_bf16: *const c_void,
-        d_dst_f32: *mut f32,
-        n: c_int,
-    ) -> c_int;
+    fn bf16_to_f32_launch_device(d_src_bf16: *const c_void, d_dst_f32: *mut f32, n: c_int)
+    -> c_int;
 }
 
 #[link(name = "int8_to_bf16", kind = "static")]
@@ -136,12 +133,7 @@ unsafe extern "C" {
 unsafe extern "C" {
     fn cudaMalloc(ptr: *mut *mut c_void, bytes: usize) -> c_int;
     fn cudaFree(ptr: *mut c_void) -> c_int;
-    fn cudaMemcpy(
-        dst: *mut c_void,
-        src: *const c_void,
-        count: usize,
-        kind: c_int,
-    ) -> c_int;
+    fn cudaMemcpy(dst: *mut c_void, src: *const c_void, count: usize, kind: c_int) -> c_int;
     fn cudaDeviceSynchronize() -> c_int;
     fn cudaMemGetInfo(free: *mut usize, total: *mut usize) -> c_int;
 }
@@ -243,11 +235,7 @@ fn from_bf16_bits(bits: &[u16]) -> Vec<f32> {
 ///
 /// Returns `(q_int8, scales)` where `q_int8.len() == k * n` and
 /// `scales.len() == n`.
-fn quantize_int8_per_channel_absmax(
-    weight_f32: &[f32],
-    k: usize,
-    n: usize,
-) -> (Vec<i8>, Vec<f32>) {
+fn quantize_int8_per_channel_absmax(weight_f32: &[f32], k: usize, n: usize) -> (Vec<i8>, Vec<f32>) {
     assert_eq!(weight_f32.len(), k * n);
     let mut scales: Vec<f32> = vec![0.0; n];
     for col in 0..n {
@@ -309,10 +297,30 @@ impl BenchShape {
 }
 
 const SHAPES: &[BenchShape] = &[
-    BenchShape { label: "Q/K/V/O proj", m: 1, k: 5120, n: 5120 },
-    BenchShape { label: "FFN gate/up ", m: 1, k: 5120, n: 13824 },
-    BenchShape { label: "FFN down    ", m: 1, k: 13824, n: 5120 },
-    BenchShape { label: "LM head     ", m: 1, k: 5120, n: 32000 },
+    BenchShape {
+        label: "Q/K/V/O proj",
+        m: 1,
+        k: 5120,
+        n: 5120,
+    },
+    BenchShape {
+        label: "FFN gate/up ",
+        m: 1,
+        k: 5120,
+        n: 13824,
+    },
+    BenchShape {
+        label: "FFN down    ",
+        m: 1,
+        k: 13824,
+        n: 5120,
+    },
+    BenchShape {
+        label: "LM head     ",
+        m: 1,
+        k: 5120,
+        n: 32000,
+    },
 ];
 
 const WARMUP_ITERS: usize = 3;
@@ -347,23 +355,28 @@ fn run_path_a_bf16_resident(
     for _ in 0..WARMUP_ITERS {
         unsafe {
             check_cuda(
-                bf16_to_f32_launch_device(
-                    d_b_bf16,
-                    d_b_f32_transient as *mut f32,
-                    weight_numel,
-                ),
+                bf16_to_f32_launch_device(d_b_bf16, d_b_f32_transient as *mut f32, weight_numel),
                 "bf16_to_f32 (A warmup)",
             );
             check_cublas(
                 cublasGemmEx(
                     handle,
-                    CUBLAS_OP_N, CUBLAS_OP_N,
-                    n, m, k,
+                    CUBLAS_OP_N,
+                    CUBLAS_OP_N,
+                    n,
+                    m,
+                    k,
                     &alpha as *const f32 as *const c_void,
-                    d_b_f32_transient as *const c_void, CUDA_R_32F, n,
-                    d_a_f32 as *const c_void, CUDA_R_32F, k,
+                    d_b_f32_transient as *const c_void,
+                    CUDA_R_32F,
+                    n,
+                    d_a_f32 as *const c_void,
+                    CUDA_R_32F,
+                    k,
                     &beta as *const f32 as *const c_void,
-                    d_c_f32 as *mut c_void, CUDA_R_32F, n,
+                    d_c_f32 as *mut c_void,
+                    CUDA_R_32F,
+                    n,
                     CUBLAS_COMPUTE_32F,
                     CUBLAS_GEMM_DEFAULT,
                 ),
@@ -377,23 +390,28 @@ fn run_path_a_bf16_resident(
     for _ in 0..MEASURED_ITERS {
         unsafe {
             check_cuda(
-                bf16_to_f32_launch_device(
-                    d_b_bf16,
-                    d_b_f32_transient as *mut f32,
-                    weight_numel,
-                ),
+                bf16_to_f32_launch_device(d_b_bf16, d_b_f32_transient as *mut f32, weight_numel),
                 "bf16_to_f32 (A measured)",
             );
             check_cublas(
                 cublasGemmEx(
                     handle,
-                    CUBLAS_OP_N, CUBLAS_OP_N,
-                    n, m, k,
+                    CUBLAS_OP_N,
+                    CUBLAS_OP_N,
+                    n,
+                    m,
+                    k,
                     &alpha as *const f32 as *const c_void,
-                    d_b_f32_transient as *const c_void, CUDA_R_32F, n,
-                    d_a_f32 as *const c_void, CUDA_R_32F, k,
+                    d_b_f32_transient as *const c_void,
+                    CUDA_R_32F,
+                    n,
+                    d_a_f32 as *const c_void,
+                    CUDA_R_32F,
+                    k,
                     &beta as *const f32 as *const c_void,
-                    d_c_f32 as *mut c_void, CUDA_R_32F, n,
+                    d_c_f32 as *mut c_void,
+                    CUDA_R_32F,
+                    n,
                     CUBLAS_COMPUTE_32F,
                     CUBLAS_GEMM_DEFAULT,
                 ),
@@ -433,20 +451,30 @@ fn run_path_b_int8_w8a16(
                     d_b_int8,
                     d_scales,
                     d_b_bf16_transient,
-                    k, n,
+                    k,
+                    n,
                 ),
                 "int8_to_bf16 (B warmup)",
             );
             check_cublas(
                 cublasGemmEx(
                     handle,
-                    CUBLAS_OP_N, CUBLAS_OP_N,
-                    n, m, k,
+                    CUBLAS_OP_N,
+                    CUBLAS_OP_N,
+                    n,
+                    m,
+                    k,
                     &alpha as *const f32 as *const c_void,
-                    d_b_bf16_transient as *const c_void, CUDA_R_16BF, n,
-                    d_a_bf16, CUDA_R_16BF, k,
+                    d_b_bf16_transient as *const c_void,
+                    CUDA_R_16BF,
+                    n,
+                    d_a_bf16,
+                    CUDA_R_16BF,
+                    k,
                     &beta as *const f32 as *const c_void,
-                    d_c_f32 as *mut c_void, CUDA_R_32F, n,
+                    d_c_f32 as *mut c_void,
+                    CUDA_R_32F,
+                    n,
                     CUBLAS_COMPUTE_32F,
                     CUBLAS_GEMM_DEFAULT,
                 ),
@@ -464,20 +492,30 @@ fn run_path_b_int8_w8a16(
                     d_b_int8,
                     d_scales,
                     d_b_bf16_transient,
-                    k, n,
+                    k,
+                    n,
                 ),
                 "int8_to_bf16 (B measured)",
             );
             check_cublas(
                 cublasGemmEx(
                     handle,
-                    CUBLAS_OP_N, CUBLAS_OP_N,
-                    n, m, k,
+                    CUBLAS_OP_N,
+                    CUBLAS_OP_N,
+                    n,
+                    m,
+                    k,
                     &alpha as *const f32 as *const c_void,
-                    d_b_bf16_transient as *const c_void, CUDA_R_16BF, n,
-                    d_a_bf16, CUDA_R_16BF, k,
+                    d_b_bf16_transient as *const c_void,
+                    CUDA_R_16BF,
+                    n,
+                    d_a_bf16,
+                    CUDA_R_16BF,
+                    k,
                     &beta as *const f32 as *const c_void,
-                    d_c_f32 as *mut c_void, CUDA_R_32F, n,
+                    d_c_f32 as *mut c_void,
+                    CUDA_R_32F,
+                    n,
                     CUBLAS_COMPUTE_32F,
                     CUBLAS_GEMM_DEFAULT,
                 ),
@@ -503,7 +541,10 @@ fn main() {
     // Probe initial VRAM.
     let (mut free0, mut total0): (usize, usize) = (0, 0);
     unsafe {
-        check_cuda(cudaMemGetInfo(&mut free0, &mut total0), "cudaMemGetInfo (start)");
+        check_cuda(
+            cudaMemGetInfo(&mut free0, &mut total0),
+            "cudaMemGetInfo (start)",
+        );
     }
     println!(
         "VRAM at start: free {} / total {}",
@@ -514,7 +555,10 @@ fn main() {
     // Driver context warmup (absorbs the first-malloc init cost).
     let mut warmup_ptr: *mut c_void = std::ptr::null_mut();
     unsafe {
-        check_cuda(cudaMalloc(&mut warmup_ptr, 1024), "cudaMalloc (driver warmup)");
+        check_cuda(
+            cudaMalloc(&mut warmup_ptr, 1024),
+            "cudaMalloc (driver warmup)",
+        );
         check_cuda(cudaFree(warmup_ptr), "cudaFree (driver warmup)");
     }
 
@@ -548,8 +592,7 @@ fn main() {
         let b_bf16 = to_bf16_bits(&b_host_f32);
 
         // Quantise the weight to INT8 W8A16 per-channel absmax.
-        let (b_int8, scales) =
-            quantize_int8_per_channel_absmax(&b_host_f32, shape.k, shape.n);
+        let (b_int8, scales) = quantize_int8_per_channel_absmax(&b_host_f32, shape.k, shape.n);
         debug_assert_eq!(b_int8.len(), shape.k * shape.n);
         debug_assert_eq!(scales.len(), shape.n);
 
@@ -567,45 +610,83 @@ fn main() {
         let mut d_c_f32: *mut c_void = std::ptr::null_mut();
 
         unsafe {
-            check_cuda(cudaMalloc(&mut d_a_f32, shape.m * shape.k * 4), "malloc A f32");
-            check_cuda(cudaMalloc(&mut d_a_bf16, shape.a_bytes_bf16()), "malloc A bf16");
-            check_cuda(cudaMalloc(&mut d_b_bf16, shape.b_bytes_bf16()), "malloc B bf16");
+            check_cuda(
+                cudaMalloc(&mut d_a_f32, shape.m * shape.k * 4),
+                "malloc A f32",
+            );
+            check_cuda(
+                cudaMalloc(&mut d_a_bf16, shape.a_bytes_bf16()),
+                "malloc A bf16",
+            );
+            check_cuda(
+                cudaMalloc(&mut d_b_bf16, shape.b_bytes_bf16()),
+                "malloc B bf16",
+            );
             check_cuda(
                 cudaMalloc(&mut d_b_f32_transient, shape.b_bytes_f32_transient()),
                 "malloc B f32 transient",
             );
-            check_cuda(cudaMalloc(&mut d_b_int8, shape.b_bytes_int8()), "malloc B int8");
-            check_cuda(cudaMalloc(&mut d_scales, shape.scale_bytes()), "malloc scales");
+            check_cuda(
+                cudaMalloc(&mut d_b_int8, shape.b_bytes_int8()),
+                "malloc B int8",
+            );
+            check_cuda(
+                cudaMalloc(&mut d_scales, shape.scale_bytes()),
+                "malloc scales",
+            );
             check_cuda(
                 cudaMalloc(&mut d_b_bf16_transient, shape.b_bytes_bf16()),
                 "malloc B bf16 transient",
             );
-            check_cuda(cudaMalloc(&mut d_c_f32, shape.c_bytes_f32()), "malloc C f32");
+            check_cuda(
+                cudaMalloc(&mut d_c_f32, shape.c_bytes_f32()),
+                "malloc C f32",
+            );
 
             // H→D uploads.
             check_cuda(
-                cudaMemcpy(d_a_f32, a_host_f32.as_ptr() as *const c_void,
-                    shape.m * shape.k * 4, CUDA_MEMCPY_HOST_TO_DEVICE),
+                cudaMemcpy(
+                    d_a_f32,
+                    a_host_f32.as_ptr() as *const c_void,
+                    shape.m * shape.k * 4,
+                    CUDA_MEMCPY_HOST_TO_DEVICE,
+                ),
                 "memcpy A f32",
             );
             check_cuda(
-                cudaMemcpy(d_a_bf16, a_bf16.as_ptr() as *const c_void,
-                    shape.a_bytes_bf16(), CUDA_MEMCPY_HOST_TO_DEVICE),
+                cudaMemcpy(
+                    d_a_bf16,
+                    a_bf16.as_ptr() as *const c_void,
+                    shape.a_bytes_bf16(),
+                    CUDA_MEMCPY_HOST_TO_DEVICE,
+                ),
                 "memcpy A bf16",
             );
             check_cuda(
-                cudaMemcpy(d_b_bf16, b_bf16.as_ptr() as *const c_void,
-                    shape.b_bytes_bf16(), CUDA_MEMCPY_HOST_TO_DEVICE),
+                cudaMemcpy(
+                    d_b_bf16,
+                    b_bf16.as_ptr() as *const c_void,
+                    shape.b_bytes_bf16(),
+                    CUDA_MEMCPY_HOST_TO_DEVICE,
+                ),
                 "memcpy B bf16",
             );
             check_cuda(
-                cudaMemcpy(d_b_int8, b_int8.as_ptr() as *const c_void,
-                    shape.b_bytes_int8(), CUDA_MEMCPY_HOST_TO_DEVICE),
+                cudaMemcpy(
+                    d_b_int8,
+                    b_int8.as_ptr() as *const c_void,
+                    shape.b_bytes_int8(),
+                    CUDA_MEMCPY_HOST_TO_DEVICE,
+                ),
                 "memcpy B int8",
             );
             check_cuda(
-                cudaMemcpy(d_scales, scales.as_ptr() as *const c_void,
-                    shape.scale_bytes(), CUDA_MEMCPY_HOST_TO_DEVICE),
+                cudaMemcpy(
+                    d_scales,
+                    scales.as_ptr() as *const c_void,
+                    shape.scale_bytes(),
+                    CUDA_MEMCPY_HOST_TO_DEVICE,
+                ),
                 "memcpy scales",
             );
         }
@@ -613,7 +694,10 @@ fn main() {
         // Probe VRAM mid-bench for the rollback gate.
         let (mut free_now, mut total_now): (usize, usize) = (0, 0);
         unsafe {
-            check_cuda(cudaMemGetInfo(&mut free_now, &mut total_now), "cudaMemGetInfo");
+            check_cuda(
+                cudaMemGetInfo(&mut free_now, &mut total_now),
+                "cudaMemGetInfo",
+            );
         }
         let used_now = total_now.saturating_sub(free_now);
         if used_now > peak_vram_used {
@@ -729,11 +813,17 @@ fn main() {
     println!();
 
     println!("Numerical envelope (Path A vs Path B, max |C_A − C_B|):");
-    println!("  {:.4e}  (synth-weight microbench gate, < 5.0)", max_diff_a_vs_b);
+    println!(
+        "  {:.4e}  (synth-weight microbench gate, < 5.0)",
+        max_diff_a_vs_b
+    );
     println!("  Real-weight ADR-004 contract is M9.4's F64 fixture re-run.");
     println!();
 
-    println!("Peak VRAM used during bench: {} / 7 GiB rollback floor", fmt_size(peak_vram_used));
+    println!(
+        "Peak VRAM used during bench: {} / 7 GiB rollback floor",
+        fmt_size(peak_vram_used)
+    );
     println!();
 
     // H2 decision.
@@ -754,9 +844,21 @@ fn main() {
     }
 
     println!("=== H2 (INT8 TC ≥ 1.3× over Path B BF16) decision ===");
-    println!("Shapes with B ≥ 1.3× over A: {} / {}", wins_1_3x, all_results.len());
-    println!("Shapes with B ≥ 1.0× over A: {} / {}", wins_1_0x, all_results.len());
-    println!("Shapes with B < 1.0× over A: {} / {}", losses, all_results.len());
+    println!(
+        "Shapes with B ≥ 1.3× over A: {} / {}",
+        wins_1_3x,
+        all_results.len()
+    );
+    println!(
+        "Shapes with B ≥ 1.0× over A: {} / {}",
+        wins_1_0x,
+        all_results.len()
+    );
+    println!(
+        "Shapes with B < 1.0× over A: {} / {}",
+        losses,
+        all_results.len()
+    );
     if wins_1_3x >= 2 {
         println!("Decision:  H2 PASS — INT8 TC delivers real speedup. Proceed M9.1.");
     } else if losses == all_results.len() {
@@ -776,7 +878,10 @@ fn main() {
 
     let (mut free_end, mut total_end): (usize, usize) = (0, 0);
     unsafe {
-        check_cuda(cudaMemGetInfo(&mut free_end, &mut total_end), "cudaMemGetInfo (end)");
+        check_cuda(
+            cudaMemGetInfo(&mut free_end, &mut total_end),
+            "cudaMemGetInfo (end)",
+        );
     }
     println!();
     println!(

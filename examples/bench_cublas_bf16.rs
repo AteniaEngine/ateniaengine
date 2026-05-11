@@ -100,12 +100,7 @@ unsafe extern "C" {
 unsafe extern "C" {
     fn cudaMalloc(ptr: *mut *mut c_void, bytes: usize) -> c_int;
     fn cudaFree(ptr: *mut c_void) -> c_int;
-    fn cudaMemcpy(
-        dst: *mut c_void,
-        src: *const c_void,
-        count: usize,
-        kind: c_int,
-    ) -> c_int;
+    fn cudaMemcpy(dst: *mut c_void, src: *const c_void, count: usize, kind: c_int) -> c_int;
     fn cudaDeviceSynchronize() -> c_int;
     fn cudaMemGetInfo(free: *mut usize, total: *mut usize) -> c_int;
 }
@@ -249,10 +244,30 @@ impl BenchShape {
 }
 
 const SHAPES: &[BenchShape] = &[
-    BenchShape { label: "Q/K/V/O proj", m: 1, k: 5120, n: 5120 },
-    BenchShape { label: "FFN gate/up ", m: 1, k: 5120, n: 13824 },
-    BenchShape { label: "FFN down    ", m: 1, k: 13824, n: 5120 },
-    BenchShape { label: "LM head     ", m: 1, k: 5120, n: 32000 },
+    BenchShape {
+        label: "Q/K/V/O proj",
+        m: 1,
+        k: 5120,
+        n: 5120,
+    },
+    BenchShape {
+        label: "FFN gate/up ",
+        m: 1,
+        k: 5120,
+        n: 13824,
+    },
+    BenchShape {
+        label: "FFN down    ",
+        m: 1,
+        k: 13824,
+        n: 5120,
+    },
+    BenchShape {
+        label: "LM head     ",
+        m: 1,
+        k: 5120,
+        n: 32000,
+    },
 ];
 
 const WARMUP_ITERS: usize = 3;
@@ -266,12 +281,7 @@ const MEASURED_ITERS: usize = 20;
 /// Path A — naive F32 kernel `matmul_f32_launch_device`.
 ///
 /// Caller has already uploaded `d_a`, `d_b`. Output `d_c` is overwritten.
-fn run_path_a(
-    shape: BenchShape,
-    d_a: *const f32,
-    d_b: *const f32,
-    d_c: *mut f32,
-) -> f64 {
+fn run_path_a(shape: BenchShape, d_a: *const f32, d_b: *const f32, d_c: *mut f32) -> f64 {
     let m_ci = shape.m as c_int;
     let k_ci = shape.k as c_int;
     let n_ci = shape.n as c_int;
@@ -325,13 +335,22 @@ fn run_path_b_tf32(
             check_cublas(
                 cublasGemmEx(
                     handle,
-                    CUBLAS_OP_N, CUBLAS_OP_N,
-                    n, m, k,
+                    CUBLAS_OP_N,
+                    CUBLAS_OP_N,
+                    n,
+                    m,
+                    k,
                     &alpha as *const f32 as *const c_void,
-                    d_b_f32 as *const c_void, CUDA_R_32F, n,
-                    d_a_f32 as *const c_void, CUDA_R_32F, k,
+                    d_b_f32 as *const c_void,
+                    CUDA_R_32F,
+                    n,
+                    d_a_f32 as *const c_void,
+                    CUDA_R_32F,
+                    k,
                     &beta as *const f32 as *const c_void,
-                    d_c_f32 as *mut c_void, CUDA_R_32F, n,
+                    d_c_f32 as *mut c_void,
+                    CUDA_R_32F,
+                    n,
                     CUBLAS_COMPUTE_32F_FAST_TF32,
                     CUBLAS_GEMM_DEFAULT,
                 ),
@@ -347,13 +366,22 @@ fn run_path_b_tf32(
             check_cublas(
                 cublasGemmEx(
                     handle,
-                    CUBLAS_OP_N, CUBLAS_OP_N,
-                    n, m, k,
+                    CUBLAS_OP_N,
+                    CUBLAS_OP_N,
+                    n,
+                    m,
+                    k,
                     &alpha as *const f32 as *const c_void,
-                    d_b_f32 as *const c_void, CUDA_R_32F, n,
-                    d_a_f32 as *const c_void, CUDA_R_32F, k,
+                    d_b_f32 as *const c_void,
+                    CUDA_R_32F,
+                    n,
+                    d_a_f32 as *const c_void,
+                    CUDA_R_32F,
+                    k,
                     &beta as *const f32 as *const c_void,
-                    d_c_f32 as *mut c_void, CUDA_R_32F, n,
+                    d_c_f32 as *mut c_void,
+                    CUDA_R_32F,
+                    n,
                     CUBLAS_COMPUTE_32F_FAST_TF32,
                     CUBLAS_GEMM_DEFAULT,
                 ),
@@ -390,13 +418,22 @@ fn run_path_c_bf16(
             check_cublas(
                 cublasGemmEx(
                     handle,
-                    CUBLAS_OP_N, CUBLAS_OP_N,
-                    n, m, k,
+                    CUBLAS_OP_N,
+                    CUBLAS_OP_N,
+                    n,
+                    m,
+                    k,
                     &alpha as *const f32 as *const c_void,
-                    d_b_bf16, CUDA_R_16BF, n,
-                    d_a_bf16, CUDA_R_16BF, k,
+                    d_b_bf16,
+                    CUDA_R_16BF,
+                    n,
+                    d_a_bf16,
+                    CUDA_R_16BF,
+                    k,
                     &beta as *const f32 as *const c_void,
-                    d_c_f32 as *mut c_void, CUDA_R_32F, n,
+                    d_c_f32 as *mut c_void,
+                    CUDA_R_32F,
+                    n,
                     CUBLAS_COMPUTE_32F,
                     CUBLAS_GEMM_DEFAULT,
                 ),
@@ -412,13 +449,22 @@ fn run_path_c_bf16(
             check_cublas(
                 cublasGemmEx(
                     handle,
-                    CUBLAS_OP_N, CUBLAS_OP_N,
-                    n, m, k,
+                    CUBLAS_OP_N,
+                    CUBLAS_OP_N,
+                    n,
+                    m,
+                    k,
                     &alpha as *const f32 as *const c_void,
-                    d_b_bf16, CUDA_R_16BF, n,
-                    d_a_bf16, CUDA_R_16BF, k,
+                    d_b_bf16,
+                    CUDA_R_16BF,
+                    n,
+                    d_a_bf16,
+                    CUDA_R_16BF,
+                    k,
                     &beta as *const f32 as *const c_void,
-                    d_c_f32 as *mut c_void, CUDA_R_32F, n,
+                    d_c_f32 as *mut c_void,
+                    CUDA_R_32F,
+                    n,
                     CUBLAS_COMPUTE_32F,
                     CUBLAS_GEMM_DEFAULT,
                 ),
@@ -444,7 +490,10 @@ fn main() {
     // Probe initial VRAM state.
     let (mut free0, mut total0): (usize, usize) = (0, 0);
     unsafe {
-        check_cuda(cudaMemGetInfo(&mut free0, &mut total0), "cudaMemGetInfo (start)");
+        check_cuda(
+            cudaMemGetInfo(&mut free0, &mut total0),
+            "cudaMemGetInfo (start)",
+        );
     }
     println!(
         "VRAM at start: free {} / total {}",
@@ -457,7 +506,10 @@ fn main() {
     // first shape's numbers honest.
     let mut warmup_ptr: *mut c_void = std::ptr::null_mut();
     unsafe {
-        check_cuda(cudaMalloc(&mut warmup_ptr, 1024), "cudaMalloc (driver warmup)");
+        check_cuda(
+            cudaMalloc(&mut warmup_ptr, 1024),
+            "cudaMalloc (driver warmup)",
+        );
         check_cuda(cudaFree(warmup_ptr), "cudaFree (driver warmup)");
     }
 
@@ -504,30 +556,61 @@ fn main() {
         let mut d_b_bf16: *mut c_void = std::ptr::null_mut();
 
         unsafe {
-            check_cuda(cudaMalloc(&mut d_a_f32, shape.a_bytes_f32()), "malloc A f32");
-            check_cuda(cudaMalloc(&mut d_b_f32, shape.b_bytes_f32()), "malloc B f32");
-            check_cuda(cudaMalloc(&mut d_c_f32, shape.c_bytes_f32()), "malloc C f32");
-            check_cuda(cudaMalloc(&mut d_a_bf16, shape.a_bytes_bf16()), "malloc A bf16");
-            check_cuda(cudaMalloc(&mut d_b_bf16, shape.b_bytes_bf16()), "malloc B bf16");
+            check_cuda(
+                cudaMalloc(&mut d_a_f32, shape.a_bytes_f32()),
+                "malloc A f32",
+            );
+            check_cuda(
+                cudaMalloc(&mut d_b_f32, shape.b_bytes_f32()),
+                "malloc B f32",
+            );
+            check_cuda(
+                cudaMalloc(&mut d_c_f32, shape.c_bytes_f32()),
+                "malloc C f32",
+            );
+            check_cuda(
+                cudaMalloc(&mut d_a_bf16, shape.a_bytes_bf16()),
+                "malloc A bf16",
+            );
+            check_cuda(
+                cudaMalloc(&mut d_b_bf16, shape.b_bytes_bf16()),
+                "malloc B bf16",
+            );
 
             check_cuda(
-                cudaMemcpy(d_a_f32, a_host.as_ptr() as *const c_void,
-                    shape.a_bytes_f32(), CUDA_MEMCPY_HOST_TO_DEVICE),
+                cudaMemcpy(
+                    d_a_f32,
+                    a_host.as_ptr() as *const c_void,
+                    shape.a_bytes_f32(),
+                    CUDA_MEMCPY_HOST_TO_DEVICE,
+                ),
                 "memcpy A f32",
             );
             check_cuda(
-                cudaMemcpy(d_b_f32, b_host.as_ptr() as *const c_void,
-                    shape.b_bytes_f32(), CUDA_MEMCPY_HOST_TO_DEVICE),
+                cudaMemcpy(
+                    d_b_f32,
+                    b_host.as_ptr() as *const c_void,
+                    shape.b_bytes_f32(),
+                    CUDA_MEMCPY_HOST_TO_DEVICE,
+                ),
                 "memcpy B f32",
             );
             check_cuda(
-                cudaMemcpy(d_a_bf16, a_bf16.as_ptr() as *const c_void,
-                    shape.a_bytes_bf16(), CUDA_MEMCPY_HOST_TO_DEVICE),
+                cudaMemcpy(
+                    d_a_bf16,
+                    a_bf16.as_ptr() as *const c_void,
+                    shape.a_bytes_bf16(),
+                    CUDA_MEMCPY_HOST_TO_DEVICE,
+                ),
                 "memcpy A bf16",
             );
             check_cuda(
-                cudaMemcpy(d_b_bf16, b_bf16.as_ptr() as *const c_void,
-                    shape.b_bytes_bf16(), CUDA_MEMCPY_HOST_TO_DEVICE),
+                cudaMemcpy(
+                    d_b_bf16,
+                    b_bf16.as_ptr() as *const c_void,
+                    shape.b_bytes_bf16(),
+                    CUDA_MEMCPY_HOST_TO_DEVICE,
+                ),
                 "memcpy B bf16",
             );
         }
@@ -535,7 +618,10 @@ fn main() {
         // Probe VRAM mid-bench for the rollback gate.
         let (mut free_now, mut total_now): (usize, usize) = (0, 0);
         unsafe {
-            check_cuda(cudaMemGetInfo(&mut free_now, &mut total_now), "cudaMemGetInfo");
+            check_cuda(
+                cudaMemGetInfo(&mut free_now, &mut total_now),
+                "cudaMemGetInfo",
+            );
         }
         let used_now = total_now.saturating_sub(free_now);
         if used_now > 7 * 1024 * 1024 * 1024 {
@@ -625,10 +711,7 @@ fn main() {
         }
 
         let flops = shape.flops() as f64;
-        let label_with_shape = format!(
-            "{}",
-            shape.label
-        );
+        let label_with_shape = format!("{}", shape.label);
         println!(
             "{:<14}  {:>7.0} M  {:>9.3}  {:>9.3}  {:>9.3}  {:>8.2}×  {:>8.2}×  {:>8.2}×",
             label_with_shape,
@@ -662,7 +745,10 @@ fn main() {
     println!();
 
     println!("Numerical envelope:");
-    println!("  Max |C_A − C_C|  (across all shapes): {:.4e}", max_diff_a_vs_c);
+    println!(
+        "  Max |C_A − C_C|  (across all shapes): {:.4e}",
+        max_diff_a_vs_c
+    );
     println!("  (Sanity gate: < 1e-2 expected. ADR-004 single-op envelope is");
     println!("   not tight; end-to-end 4-model F64 validation is the real gate.)");
     println!();
@@ -680,8 +766,16 @@ fn main() {
         }
     }
     println!("=== H3 (cuBLAS BF16 TC ≥ 5× over naive F32) decision ===");
-    println!("Shapes with C ≥ 5× over A:  {} / {}", wins_5x, all_results.len());
-    println!("Shapes with C ≥ 3× over A:  {} / {}", wins_3x, all_results.len());
+    println!(
+        "Shapes with C ≥ 5× over A:  {} / {}",
+        wins_5x,
+        all_results.len()
+    );
+    println!(
+        "Shapes with C ≥ 3× over A:  {} / {}",
+        wins_3x,
+        all_results.len()
+    );
     if wins_5x >= 2 {
         println!("Decision:  PLAN A  — proceed M8.1 → M8.5 (BF16-resident kernel path)");
     } else if wins_3x >= 2 {
@@ -698,7 +792,10 @@ fn main() {
     // Final VRAM report.
     let (mut free_end, mut total_end): (usize, usize) = (0, 0);
     unsafe {
-        check_cuda(cudaMemGetInfo(&mut free_end, &mut total_end), "cudaMemGetInfo (end)");
+        check_cuda(
+            cudaMemGetInfo(&mut free_end, &mut total_end),
+            "cudaMemGetInfo (end)",
+        );
     }
     println!();
     println!(

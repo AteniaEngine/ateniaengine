@@ -33,22 +33,19 @@ use std::time::Instant;
 
 use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::cuda::disk_prefetch::disk_prefetch_hits;
-use atenia_engine::cuda::matmul::{
-    disk_streamed_matmul_count, vram_bf16_matmul_count,
-};
+use atenia_engine::cuda::matmul::{disk_streamed_matmul_count, vram_bf16_matmul_count};
 use atenia_engine::gpu::dispatch::hooks::{
     gpu_matmul_legacy_count, gpu_matmul_resident_count, gpu_matmul_roundtrip_count,
 };
 use atenia_engine::gpu::safety::resource_check::{
     probe_free_ram_bytes, probe_free_vram_bytes, probe_total_ram_bytes,
 };
-use atenia_engine::gpu::tier_plan::{plan as tier_plan_fn, TensorMeta, TierPlanInput};
+use atenia_engine::gpu::tier_plan::{TensorMeta, TierPlanInput, plan as tier_plan_fn};
 use atenia_engine::nn::llama::{
-    build_llama, build_llama_with_store, llama_weight_mapper, LlamaConfig,
-    LlamaRuntime,
+    LlamaConfig, LlamaRuntime, build_llama, build_llama_with_store, llama_weight_mapper,
 };
-use atenia_engine::tensor::tensor::Tensor;
 use atenia_engine::tensor::DType;
+use atenia_engine::tensor::tensor::Tensor;
 use atenia_engine::v17::loader::sharded_reader::ShardedSafetensorsReader;
 
 /// Llama 2 13B Chat lives on the **internal NVMe (D:)** for the
@@ -158,10 +155,7 @@ fn main() {
             numel * (m.dtype.size_in_bytes() as u64)
         })
         .sum();
-    let kernel_dtype = if std::env::var("ATENIA_M8_BF16_KERNEL")
-        .as_deref()
-        == Ok("1")
-    {
+    let kernel_dtype = if std::env::var("ATENIA_M8_BF16_KERNEL").as_deref() == Ok("1") {
         DType::BF16
     } else {
         DType::F32
@@ -213,15 +207,8 @@ fn main() {
     // storage at execute time.
     let mut gb2 = GraphBuilder::new();
     let token_input_id_2 = gb2.input();
-    let handles2 = build_llama_with_store(
-        &mut gb2,
-        &cfg,
-        &runtime,
-        token_input_id_2,
-        &store,
-        None,
-    )
-    .expect("build_llama_with_store");
+    let handles2 = build_llama_with_store(&mut gb2, &cfg, &runtime, token_input_id_2, &store, None)
+        .expect("build_llama_with_store");
     let _ = gb2.output(handles2.logits_id);
     let mut graph = gb2.build();
 
@@ -273,18 +260,12 @@ fn main() {
         legacy_delta,
         resident_delta + roundtrip_delta + legacy_delta,
     );
-    println!(
-        "    BF16-resident matmuls (M8.4c): {}",
-        bf16_delta,
-    );
+    println!("    BF16-resident matmuls (M8.4c): {}", bf16_delta,);
     println!(
         "    Disk-streamed matmuls (M8.7.0): {}",
         disk_streamed_delta,
     );
-    println!(
-        "    Disk prefetch hits (M8.7.1.a): {}",
-        disk_prefetch_delta,
-    );
+    println!("    Disk prefetch hits (M8.7.1.a): {}", disk_prefetch_delta,);
     println!(
         "    Logit stats: max |v|={:.4}  mean |v|={:.4}  finite={}/{}",
         max_abs,

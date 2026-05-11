@@ -1,8 +1,8 @@
 use std::fs;
 use std::sync::{Mutex, OnceLock};
 
-use atenia_engine::v13::checkpoint::restore_checkpoint;
 use atenia_engine::v13::checkpoint::drift::take_all_for_test;
+use atenia_engine::v13::checkpoint::restore_checkpoint;
 use atenia_engine::v13::hybrid_memory::HybridMemoryManager;
 use atenia_engine::v13::memory_types::MemoryTier;
 use atenia_engine::v13::persistent_cache::{CacheKind, PersistentHybridCache};
@@ -76,7 +76,11 @@ fn checkpoint_warns_on_tier_downgrade() {
 
     let mut found_downgrade = false;
     for d in &report.drifts {
-        if let atenia_engine::v13::checkpoint::drift::CheckpointDrift::TierDowngrade { desired, restored } = *d {
+        if let atenia_engine::v13::checkpoint::drift::CheckpointDrift::TierDowngrade {
+            desired,
+            restored,
+        } = *d
+        {
             assert_eq!(desired, MemoryTier::Vram);
             assert_eq!(restored, MemoryTier::Ram);
             found_downgrade = true;
@@ -149,7 +153,9 @@ fn checkpoint_detects_missing_backend() {
 
     let mut found_missing = false;
     for d in &report.drifts {
-        if let atenia_engine::v13::checkpoint::drift::CheckpointDrift::MissingBackend { desired } = *d {
+        if let atenia_engine::v13::checkpoint::drift::CheckpointDrift::MissingBackend { desired } =
+            *d
+        {
             assert_eq!(desired, MemoryTier::Vram);
             found_missing = true;
         }
@@ -221,7 +227,8 @@ fn checkpoint_plan_summary_mismatch() {
 
     let mut found_mismatch = false;
     for d in &report.drifts {
-        if let atenia_engine::v13::checkpoint::drift::CheckpointDrift::PlanMismatch { summary } = d {
+        if let atenia_engine::v13::checkpoint::drift::CheckpointDrift::PlanMismatch { summary } = d
+        {
             assert!(summary.contains("GPU"));
             found_mismatch = true;
         }

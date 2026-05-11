@@ -24,22 +24,20 @@ use std::sync::Mutex;
 
 use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::amg::weight_store::SharedParam;
-use atenia_engine::gpu::tier_plan::{Tier, TierPlan, TensorMeta};
-use atenia_engine::tensor::tensor::{f32_to_bf16_bits, bf16_bits_to_f32, Tensor};
+use atenia_engine::gpu::tier_plan::{TensorMeta, Tier, TierPlan};
 use atenia_engine::tensor::DType;
+use atenia_engine::tensor::tensor::{Tensor, bf16_bits_to_f32, f32_to_bf16_bits};
 use atenia_engine::v17::loader::safetensors_reader::SafetensorsReader;
 use atenia_engine::v17::loader::weight_mapper::{
-    disk_fast_path_count, disk_slow_path_count, WeightMapper,
+    WeightMapper, disk_fast_path_count, disk_slow_path_count,
 };
-use safetensors::tensor::TensorView;
 use safetensors::Dtype as StDtype;
+use safetensors::tensor::TensorView;
 
 /// Same serialisation pattern used by `tests/m6_replan_loader_test.rs`.
 /// The byte buffers must outlive the views map because `TensorView`
 /// borrows them.
-fn build_multi_bf16_safetensors(
-    entries: &[(&str, Vec<usize>, Vec<f32>)],
-) -> Vec<u8> {
+fn build_multi_bf16_safetensors(entries: &[(&str, Vec<usize>, Vec<f32>)]) -> Vec<u8> {
     let bf16_byte_buffers: Vec<Vec<u8>> = entries
         .iter()
         .map(|(_, _, vals)| {
@@ -66,8 +64,7 @@ fn build_graph_for_entries(
 ) -> (atenia_engine::amg::graph::Graph, Vec<usize>, Vec<String>) {
     let mut gb = GraphBuilder::new();
     let mut param_ids = Vec::with_capacity(entries.len());
-    let param_names: Vec<String> =
-        entries.iter().map(|(n, _, _)| n.to_string()).collect();
+    let param_names: Vec<String> = entries.iter().map(|(n, _, _)| n.to_string()).collect();
     for (_, shape, _) in entries {
         let numel: usize = shape.iter().product();
         let pid = gb.parameter(Tensor::new_cpu(shape.clone(), vec![0.0_f32; numel]));
@@ -105,7 +102,7 @@ fn handcrafted_plan(disk_name: &str, ram_name: &str) -> TierPlan {
     // both tensors at 32 bytes BF16 + 8 GiB hardcoded floor: set
     // `free_ram_bytes = 8 GiB + 32` so the planner emits 1 Ram + 1
     // Disk in input order.
-    use atenia_engine::gpu::tier_plan::{plan, TierPlanInput};
+    use atenia_engine::gpu::tier_plan::{TierPlanInput, plan};
 
     let metas = vec![
         // First entry → Ram (gets the only RAM slot).
@@ -164,8 +161,7 @@ fn disk_tier_loader_arm_executes_and_round_trips_bit_exact() {
     let reader = SafetensorsReader::from_bytes(buf).expect("reader");
 
     let (mut graph, param_ids, param_names) = build_graph_for_entries(&entries);
-    let mapper =
-        WeightMapper::from_param_names_and_ids(&param_names, &param_ids).unwrap();
+    let mapper = WeightMapper::from_param_names_and_ids(&param_names, &param_ids).unwrap();
 
     let plan = handcrafted_plan("disk_target", "ram_resident");
 
@@ -176,13 +172,7 @@ fn disk_tier_loader_arm_executes_and_round_trips_bit_exact() {
     let slow_before = disk_slow_path_count();
 
     let (store, _report) = mapper
-        .load_into_with_residency_plan(
-            &mut graph,
-            &reader,
-            &plan,
-            &param_ids,
-            &param_names,
-        )
+        .load_into_with_residency_plan(&mut graph, &reader, &plan, &param_ids, &param_names)
         .expect("load_into_with_residency_plan");
 
     let slow_after = disk_slow_path_count();
@@ -268,8 +258,7 @@ fn disk_fast_path_with_bf16_store_no_transforms() {
     let reader = SafetensorsReader::from_bytes(buf).expect("reader");
 
     let (mut graph, param_ids, param_names) = build_graph_for_entries(&entries);
-    let mut mapper =
-        WeightMapper::from_param_names_and_ids(&param_names, &param_ids).unwrap();
+    let mut mapper = WeightMapper::from_param_names_and_ids(&param_names, &param_ids).unwrap();
     // **Critical for the fast path**: enable BF16 storage on the
     // mapper. The fast path only fires under this config because
     // F32-on-disk requires the F32 transient anyway.
@@ -281,13 +270,7 @@ fn disk_fast_path_with_bf16_store_no_transforms() {
     let slow_before = disk_slow_path_count();
 
     let (store, _report) = mapper
-        .load_into_with_residency_plan(
-            &mut graph,
-            &reader,
-            &plan,
-            &param_ids,
-            &param_names,
-        )
+        .load_into_with_residency_plan(&mut graph, &reader, &plan, &param_ids, &param_names)
         .expect("load_into_with_residency_plan");
 
     let fast_after = disk_fast_path_count();

@@ -1,19 +1,13 @@
-﻿use atenia_engine::amg::builder::GraphBuilder;
+use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::amg::nodes::NodeType;
-use atenia_engine::tensor::{Device, DType, Layout, Tensor};
+use atenia_engine::tensor::{DType, Device, Layout, Tensor};
 
 fn run_model() -> Vec<Vec<f32>> {
     let mut gb = GraphBuilder::new();
     let input = gb.input();
 
     // Single Linear + SiLU block with a parameter matrix 3x3
-    let mut w = Tensor::with_layout(
-        vec![3, 3],
-        0.0,
-        Device::CPU,
-        Layout::Contiguous,
-        DType::F32,
-    );
+    let mut w = Tensor::with_layout(vec![3, 3], 0.0, Device::CPU, Layout::Contiguous, DType::F32);
     // Deterministic initialization
     for (i, v) in w.as_cpu_slice_mut().iter_mut().enumerate() {
         *v = (i as f32) * 0.1;
@@ -28,14 +22,11 @@ fn run_model() -> Vec<Vec<f32>> {
     let mut g = gb.build();
 
     // 1x3 input tensor
-    let mut input_tensor = Tensor::with_layout(
-        vec![1, 3],
-        0.0,
-        Device::CPU,
-        Layout::Contiguous,
-        DType::F32,
-    );
-    input_tensor.as_cpu_slice_mut().copy_from_slice(&[1.0, -2.0, 0.5]);
+    let mut input_tensor =
+        Tensor::with_layout(vec![1, 3], 0.0, Device::CPU, Layout::Contiguous, DType::F32);
+    input_tensor
+        .as_cpu_slice_mut()
+        .copy_from_slice(&[1.0, -2.0, 0.5]);
 
     let _ = g.execute(vec![input_tensor]);
     let loss_id = g.last_output_id();

@@ -4,7 +4,11 @@
 #[derive(Debug, Clone)]
 pub enum VGPUInstr {
     Noop,
-    Add { dst: usize, a: usize, b: usize },
+    Add {
+        dst: usize,
+        a: usize,
+        b: usize,
+    },
     If {
         pred: Vec<bool>,
         then_pc: usize,

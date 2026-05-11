@@ -1,5 +1,5 @@
-use crate::v17::compute::tensor::Tensor;
 use crate::v17::cnn::conv2d::AbortFlag;
+use crate::v17::compute::tensor::Tensor;
 
 #[derive(Debug, Clone, Copy)]
 pub struct MaxPool2DParams {
@@ -17,7 +17,15 @@ pub enum MaxPoolError {
     Aborted,
 }
 
-fn idx_nchw(n: usize, c: usize, h: usize, w: usize, c_in: usize, h_in: usize, w_in: usize) -> usize {
+fn idx_nchw(
+    n: usize,
+    c: usize,
+    h: usize,
+    w: usize,
+    c_in: usize,
+    h_in: usize,
+    w_in: usize,
+) -> usize {
     (((n * c_in + c) * h_in) + h) * w_in + w
 }
 
@@ -62,11 +70,17 @@ pub fn maxpool2d_cpu(
     let mut out_data = vec![0.0_f32; n * c * h_out * w_out];
 
     for n_idx in 0..n {
-        if abort_flag.is_aborted() { return Err(MaxPoolError::Aborted); }
+        if abort_flag.is_aborted() {
+            return Err(MaxPoolError::Aborted);
+        }
         for c_idx in 0..c {
-            if abort_flag.is_aborted() { return Err(MaxPoolError::Aborted); }
+            if abort_flag.is_aborted() {
+                return Err(MaxPoolError::Aborted);
+            }
             for oh in 0..h_out {
-                if abort_flag.is_aborted() { return Err(MaxPoolError::Aborted); }
+                if abort_flag.is_aborted() {
+                    return Err(MaxPoolError::Aborted);
+                }
                 for ow in 0..w_out {
                     let mut max_val = f32::NEG_INFINITY;
                     for kh in 0..k_h {
@@ -100,5 +114,8 @@ pub fn maxpool2d_cpu(
         }
     }
 
-    Ok(Tensor { shape: vec![n, c, h_out, w_out], data: out_data })
+    Ok(Tensor {
+        shape: vec![n, c, h_out, w_out],
+        data: out_data,
+    })
 }

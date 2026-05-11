@@ -149,7 +149,7 @@ where
     let seq = runtime.seq;
     let bs = (batch * seq) as isize;
     let _ = n_kv; // reserved for future native-GQA path; today the
-                  // mapper tile-expands K/V to MHA shape.
+    // mapper tile-expands K/V to MHA shape.
 
     // **M11.C step 4** — Gemma 2 decouples `n_heads_q * head_dim`
     // from `hidden_size`. Gemma 2 2B: 8 * 256 = 2048 ≠ 2304.

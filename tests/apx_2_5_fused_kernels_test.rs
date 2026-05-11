@@ -1,6 +1,6 @@
-﻿use atenia_engine::amg::builder::GraphBuilder;
+use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::amg::graph::Graph;
-use atenia_engine::tensor::{Device, DType, Layout, Tensor};
+use atenia_engine::tensor::{DType, Device, Layout, Tensor};
 
 fn rand_vec(n: usize) -> Vec<f32> {
     (0..n).map(|i| ((i * 31) as f32).sin()).collect()

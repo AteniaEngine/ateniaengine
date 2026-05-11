@@ -48,21 +48,13 @@ const W_NUMEL: usize = K * N; // 70_778_880
 // self-contained.
 #[link(name = "bf16_to_f32", kind = "static")]
 unsafe extern "C" {
-    fn bf16_to_f32_launch_device(
-        d_src_bf16: *const c_void,
-        d_dst_f32: *mut f32,
-        n: c_int,
-    ) -> c_int;
+    fn bf16_to_f32_launch_device(d_src_bf16: *const c_void, d_dst_f32: *mut f32, n: c_int)
+    -> c_int;
 }
 
 #[link(name = "cudart")]
 unsafe extern "C" {
-    fn cudaMemcpy(
-        dst: *mut c_void,
-        src: *const c_void,
-        count: usize,
-        kind: c_int,
-    ) -> c_int;
+    fn cudaMemcpy(dst: *mut c_void, src: *const c_void, count: usize, kind: c_int) -> c_int;
 }
 
 unsafe extern "C" {
@@ -256,7 +248,9 @@ fn main() {
         let alloc_bf16_ms = t_alloc_bf16.elapsed().as_secs_f64() * 1000.0;
         if d_bf16.is_null() {
             eprintln!("FATAL: cudaMalloc BF16 failed on run #{}.", run_idx + 1);
-            unsafe { cuda_free(d_f32); }
+            unsafe {
+                cuda_free(d_f32);
+            }
             std::process::exit(2);
         }
 
@@ -271,20 +265,32 @@ fn main() {
         };
         let h2d_ms = t_h2d.elapsed().as_secs_f64() * 1000.0;
         if rc != 0 {
-            eprintln!("FATAL: cudaMemcpy H→D BF16 returned rc={} on run #{}.", rc, run_idx + 1);
-            unsafe { cuda_free(d_bf16); cuda_free(d_f32); }
+            eprintln!(
+                "FATAL: cudaMemcpy H→D BF16 returned rc={} on run #{}.",
+                rc,
+                run_idx + 1
+            );
+            unsafe {
+                cuda_free(d_bf16);
+                cuda_free(d_f32);
+            }
             std::process::exit(4);
         }
         let h2d_bw = (bytes_bf16 as f64 / (1024.0 * 1024.0 * 1024.0)) / (h2d_ms / 1000.0);
 
         let t_upcast = Instant::now();
-        let rc = unsafe {
-            bf16_to_f32_launch_device(d_bf16, d_f32 as *mut f32, W_NUMEL as c_int)
-        };
+        let rc = unsafe { bf16_to_f32_launch_device(d_bf16, d_f32 as *mut f32, W_NUMEL as c_int) };
         let upcast_ms = t_upcast.elapsed().as_secs_f64() * 1000.0;
         if rc != 0 {
-            eprintln!("FATAL: bf16_to_f32_launch_device returned rc={} on run #{}.", rc, run_idx + 1);
-            unsafe { cuda_free(d_bf16); cuda_free(d_f32); }
+            eprintln!(
+                "FATAL: bf16_to_f32_launch_device returned rc={} on run #{}.",
+                rc,
+                run_idx + 1
+            );
+            unsafe {
+                cuda_free(d_bf16);
+                cuda_free(d_f32);
+            }
             std::process::exit(5);
         }
 
@@ -296,9 +302,15 @@ fn main() {
 
         let total_ms = t_run.elapsed().as_secs_f64() * 1000.0;
 
-        println!("        cudaMalloc BF16 ({:.0} MB):  {:.2} ms",
-                 bytes_bf16 as f64 / (1024.0 * 1024.0), alloc_bf16_ms);
-        println!("        cudaMemcpy H→D BF16:          {:.2} ms ({:.2} GB/s)", h2d_ms, h2d_bw);
+        println!(
+            "        cudaMalloc BF16 ({:.0} MB):  {:.2} ms",
+            bytes_bf16 as f64 / (1024.0 * 1024.0),
+            alloc_bf16_ms
+        );
+        println!(
+            "        cudaMemcpy H→D BF16:          {:.2} ms ({:.2} GB/s)",
+            h2d_ms, h2d_bw
+        );
         println!("        GPU upcast bf16→f32 kernel:   {:.2} ms", upcast_ms);
         println!("        cudaFree BF16:                {:.2} ms", free_ms);
         println!("        ───────────────────────────────");
@@ -340,7 +352,9 @@ fn main() {
     };
     if rc != 0 {
         eprintln!("FATAL: D→H memcpy for verification returned rc={}", rc);
-        unsafe { cuda_free(d_f32); }
+        unsafe {
+            cuda_free(d_f32);
+        }
         std::process::exit(6);
     }
     let host_ref = host_bf16_to_f32(&w_bf16);
@@ -361,7 +375,9 @@ fn main() {
         eprintln!(
             "       This contradicts the design assumption that __bfloat162float() == AVX2 decode."
         );
-        unsafe { cuda_free(d_f32); }
+        unsafe {
+            cuda_free(d_f32);
+        }
         std::process::exit(7);
     }
     // Drop the verification buffer (we used it only for the sanity
@@ -392,7 +408,9 @@ fn main() {
         Some(t) => t,
         None => {
             eprintln!("FATAL: cuda_matmul_non_pooled returned None.");
-            unsafe { cuda_free(d_f32); }
+            unsafe {
+                cuda_free(d_f32);
+            }
             std::process::exit(8);
         }
     };
@@ -435,25 +453,43 @@ fn main() {
     println!("  Run #  | H→D BF16  | Kernel upcast | Total");
     println!("  -------+-----------+---------------+--------");
     for (i, (h2d, upcast, total)) in runs.iter().enumerate() {
-        println!("  {:6} | {:6.2} ms | {:10.2} ms | {:6.2} ms",
-                 format!("#{} {}", i + 1, if i == 0 { "(cold)" } else { "(warm)" }),
-                 h2d, upcast, total);
+        println!(
+            "  {:6} | {:6.2} ms | {:10.2} ms | {:6.2} ms",
+            format!("#{} {}", i + 1, if i == 0 { "(cold)" } else { "(warm)" }),
+            h2d,
+            upcast,
+            total
+        );
     }
     let cold_total = runs[0].2;
     let warm_total = runs[2].2;
     println!();
-    println!("Cold-vs-warm delta:                {:.2} ms ({:.2}× cold)",
-             cold_total - warm_total,
-             cold_total / warm_total);
+    println!(
+        "Cold-vs-warm delta:                {:.2} ms ({:.2}× cold)",
+        cold_total - warm_total,
+        cold_total / warm_total
+    );
     println!();
-    println!("Warm-state upload (run #3):        {:.2} ms", total_upload_ms);
-    println!("  - cudaMemcpy H2D BF16 (135MB):   {:.2} ms ({:.2} GB/s)", h2d_ms, h2d_bw);
+    println!(
+        "Warm-state upload (run #3):        {:.2} ms",
+        total_upload_ms
+    );
+    println!(
+        "  - cudaMemcpy H2D BF16 (135MB):   {:.2} ms ({:.2} GB/s)",
+        h2d_ms, h2d_bw
+    );
     println!("  - GPU bf16→f32 upcast kernel:    {:.2} ms", upcast_ms);
     println!("Matmul against resident F32:       {:.2} ms", matmul_ms);
     println!("CPU reference:                     {:.2} ms", cpu_ms);
     println!();
-    println!("Bit-exact GPU upcast vs host:      {}", if bitwise_mismatches == 0 { "YES" } else { "NO" });
-    println!("ADR-004 envelope (0.5 absolute):   {}", if max_abs_diff < 0.5 { "PASS" } else { "FAIL" });
+    println!(
+        "Bit-exact GPU upcast vs host:      {}",
+        if bitwise_mismatches == 0 { "YES" } else { "NO" }
+    );
+    println!(
+        "ADR-004 envelope (0.5 absolute):   {}",
+        if max_abs_diff < 0.5 { "PASS" } else { "FAIL" }
+    );
     println!("max |diff|:                        {:e}", max_abs_diff);
     println!();
 

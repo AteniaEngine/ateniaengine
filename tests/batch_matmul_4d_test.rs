@@ -22,7 +22,14 @@ fn run_bmm(a: &Tensor, b: &Tensor) -> Tensor {
 }
 
 /// CPU-only reference: `out[..., m, n] = sum_k a[..., m, k] * b[..., k, n]`.
-fn manual_bmm4d(a_data: &[f32], b_data: &[f32], outer: usize, m: usize, k: usize, n: usize) -> Vec<f32> {
+fn manual_bmm4d(
+    a_data: &[f32],
+    b_data: &[f32],
+    outer: usize,
+    m: usize,
+    k: usize,
+    n: usize,
+) -> Vec<f32> {
     let mut out = vec![0.0_f32; outer * m * n];
     for o in 0..outer {
         let a_off = o * m * k;
@@ -46,7 +53,9 @@ fn bmm_4d_smoke_no_panic_correct_shape() {
     // [b=2, h=3, m=4, k=5] @ [b=2, h=3, k=5, n=6] → [b=2, h=3, m=4, n=6]
     let (bd, hd, m, k, n) = (2_usize, 3, 4, 5, 6);
     let a_data: Vec<f32> = (0..bd * hd * m * k).map(|i| i as f32 * 0.01).collect();
-    let b_data: Vec<f32> = (0..bd * hd * k * n).map(|i| (i as f32) * 0.02 - 0.5).collect();
+    let b_data: Vec<f32> = (0..bd * hd * k * n)
+        .map(|i| (i as f32) * 0.02 - 0.5)
+        .collect();
 
     let a = Tensor::new_cpu(vec![bd, hd, m, k], a_data);
     let b = Tensor::new_cpu(vec![bd, hd, k, n], b_data);
@@ -61,7 +70,9 @@ fn bmm_3d_regression_still_works() {
     // The existing rank-3 path must be unaffected by the extension.
     let (batch, m, k, n) = (4_usize, 5, 6, 7);
     let a_data: Vec<f32> = (0..batch * m * k).map(|i| (i as f32) * 0.1).collect();
-    let b_data: Vec<f32> = (0..batch * k * n).map(|i| (i as f32) * -0.05 + 1.0).collect();
+    let b_data: Vec<f32> = (0..batch * k * n)
+        .map(|i| (i as f32) * -0.05 + 1.0)
+        .collect();
     let a = Tensor::new_cpu(vec![batch, m, k], a_data.clone());
     let b = Tensor::new_cpu(vec![batch, k, n], b_data.clone());
     let out = run_bmm(&a, &b);
@@ -88,8 +99,12 @@ fn bmm_4d_flatten_equivalence_with_3d() {
     let (m, k, n) = (4_usize, 5, 6);
     let inner_batch = 3_usize;
 
-    let a_data: Vec<f32> = (0..inner_batch * m * k).map(|i| (i as f32) * 0.07).collect();
-    let b_data: Vec<f32> = (0..inner_batch * k * n).map(|i| (i as f32) * 0.03 - 0.2).collect();
+    let a_data: Vec<f32> = (0..inner_batch * m * k)
+        .map(|i| (i as f32) * 0.07)
+        .collect();
+    let b_data: Vec<f32> = (0..inner_batch * k * n)
+        .map(|i| (i as f32) * 0.03 - 0.2)
+        .collect();
 
     let a3 = Tensor::new_cpu(vec![inner_batch, m, k], a_data.clone());
     let b3 = Tensor::new_cpu(vec![inner_batch, k, n], b_data.clone());
@@ -121,7 +136,9 @@ fn bmm_4d_flatten_equivalence_with_3d() {
 #[test]
 fn bmm_4d_forward_bit_exact_vs_manual() {
     let (bd, hd, m, k, n) = (2_usize, 3, 4, 5, 6);
-    let a_data: Vec<f32> = (0..bd * hd * m * k).map(|i| ((i as f32) * 0.31).sin()).collect();
+    let a_data: Vec<f32> = (0..bd * hd * m * k)
+        .map(|i| ((i as f32) * 0.31).sin())
+        .collect();
     let b_data: Vec<f32> = (0..bd * hd * k * n)
         .map(|i| ((i as f32) * 0.17 + 0.5).cos())
         .collect();

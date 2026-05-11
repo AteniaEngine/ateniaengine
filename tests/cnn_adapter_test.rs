@@ -2,24 +2,31 @@
 
 use atenia_engine::v17;
 
-use v17::cnn::conv2d::AbortFlag;
 use v17::cnn::cnn_adapter::{
-    CNNExecutionAdapter,
-    CNNGraph,
-    CNNLayer,
-    CNNLayerKind,
-    CNNPlanStepKind,
-    CNNAdapterError,
+    CNNAdapterError, CNNExecutionAdapter, CNNGraph, CNNLayer, CNNLayerKind, CNNPlanStepKind,
 };
+use v17::cnn::conv2d::AbortFlag;
 
 #[test]
 fn cnn_plan_is_built_with_expected_steps() {
     let graph = CNNGraph {
         layers: vec![
-            CNNLayer { name: "conv".to_string(), kind: CNNLayerKind::Conv2D },
-            CNNLayer { name: "bias".to_string(), kind: CNNLayerKind::Bias },
-            CNNLayer { name: "relu".to_string(), kind: CNNLayerKind::ReLU },
-            CNNLayer { name: "pool".to_string(), kind: CNNLayerKind::MaxPool2D },
+            CNNLayer {
+                name: "conv".to_string(),
+                kind: CNNLayerKind::Conv2D,
+            },
+            CNNLayer {
+                name: "bias".to_string(),
+                kind: CNNLayerKind::Bias,
+            },
+            CNNLayer {
+                name: "relu".to_string(),
+                kind: CNNLayerKind::ReLU,
+            },
+            CNNLayer {
+                name: "pool".to_string(),
+                kind: CNNLayerKind::MaxPool2D,
+            },
         ],
     };
 
@@ -37,8 +44,14 @@ fn cnn_plan_is_built_with_expected_steps() {
 fn cnn_steps_are_ordered_and_abortable() {
     let graph = CNNGraph {
         layers: vec![
-            CNNLayer { name: "conv".to_string(), kind: CNNLayerKind::Conv2D },
-            CNNLayer { name: "relu".to_string(), kind: CNNLayerKind::ReLU },
+            CNNLayer {
+                name: "conv".to_string(),
+                kind: CNNLayerKind::Conv2D,
+            },
+            CNNLayer {
+                name: "relu".to_string(),
+                kind: CNNLayerKind::ReLU,
+            },
         ],
     };
 
@@ -60,9 +73,18 @@ fn cnn_steps_are_ordered_and_abortable() {
 fn cnn_adapter_respects_execution_contract() {
     let graph = CNNGraph {
         layers: vec![
-            CNNLayer { name: "conv".to_string(), kind: CNNLayerKind::Conv2D },
-            CNNLayer { name: "bias".to_string(), kind: CNNLayerKind::Bias },
-            CNNLayer { name: "relu".to_string(), kind: CNNLayerKind::ReLU },
+            CNNLayer {
+                name: "conv".to_string(),
+                kind: CNNLayerKind::Conv2D,
+            },
+            CNNLayer {
+                name: "bias".to_string(),
+                kind: CNNLayerKind::Bias,
+            },
+            CNNLayer {
+                name: "relu".to_string(),
+                kind: CNNLayerKind::ReLU,
+            },
         ],
     };
 
@@ -73,7 +95,10 @@ fn cnn_adapter_respects_execution_contract() {
     assert!(!plan.steps.is_empty());
     for step in &plan.steps {
         match step.kind {
-            CNNPlanStepKind::Conv2D | CNNPlanStepKind::Bias | CNNPlanStepKind::ReLU | CNNPlanStepKind::MaxPool2D => {},
+            CNNPlanStepKind::Conv2D
+            | CNNPlanStepKind::Bias
+            | CNNPlanStepKind::ReLU
+            | CNNPlanStepKind::MaxPool2D => {}
         }
     }
 }
@@ -89,8 +114,14 @@ fn invalid_cnn_graph_yields_explicit_error() {
     // Bias before Conv2D.
     let bad_graph = CNNGraph {
         layers: vec![
-            CNNLayer { name: "bias".to_string(), kind: CNNLayerKind::Bias },
-            CNNLayer { name: "conv".to_string(), kind: CNNLayerKind::Conv2D },
+            CNNLayer {
+                name: "bias".to_string(),
+                kind: CNNLayerKind::Bias,
+            },
+            CNNLayer {
+                name: "conv".to_string(),
+                kind: CNNLayerKind::Conv2D,
+            },
         ],
     };
     let r2 = CNNExecutionAdapter::build_plan(&bad_graph, &flag);
@@ -99,8 +130,14 @@ fn invalid_cnn_graph_yields_explicit_error() {
     // Multiple Conv2D layers not supported in minimal adapter.
     let multi_conv = CNNGraph {
         layers: vec![
-            CNNLayer { name: "conv1".to_string(), kind: CNNLayerKind::Conv2D },
-            CNNLayer { name: "conv2".to_string(), kind: CNNLayerKind::Conv2D },
+            CNNLayer {
+                name: "conv1".to_string(),
+                kind: CNNLayerKind::Conv2D,
+            },
+            CNNLayer {
+                name: "conv2".to_string(),
+                kind: CNNLayerKind::Conv2D,
+            },
         ],
     };
     let r3 = CNNExecutionAdapter::build_plan(&multi_conv, &flag);
@@ -111,10 +148,22 @@ fn invalid_cnn_graph_yields_explicit_error() {
 fn cnn_adapter_is_deterministic() {
     let graph = CNNGraph {
         layers: vec![
-            CNNLayer { name: "conv".to_string(), kind: CNNLayerKind::Conv2D },
-            CNNLayer { name: "bias".to_string(), kind: CNNLayerKind::Bias },
-            CNNLayer { name: "relu".to_string(), kind: CNNLayerKind::ReLU },
-            CNNLayer { name: "pool".to_string(), kind: CNNLayerKind::MaxPool2D },
+            CNNLayer {
+                name: "conv".to_string(),
+                kind: CNNLayerKind::Conv2D,
+            },
+            CNNLayer {
+                name: "bias".to_string(),
+                kind: CNNLayerKind::Bias,
+            },
+            CNNLayer {
+                name: "relu".to_string(),
+                kind: CNNLayerKind::ReLU,
+            },
+            CNNLayer {
+                name: "pool".to_string(),
+                kind: CNNLayerKind::MaxPool2D,
+            },
         ],
     };
 

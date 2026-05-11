@@ -1,5 +1,5 @@
-﻿use atenia_engine::apx8::gpu_kernel_signature::*;
-use atenia_engine::tensor::{Tensor, Device, DType};
+use atenia_engine::apx8::gpu_kernel_signature::*;
+use atenia_engine::tensor::{DType, Device, Tensor};
 
 #[test]
 fn apx_8_8_register_and_get() {
@@ -19,7 +19,9 @@ fn apx_8_8_register_and_get() {
 
 #[test]
 fn apx_8_8_dispatcher_checks_signature_stub() {
-    unsafe { std::env::set_var("ATENIA_APX_MODE", "8.8"); }
+    unsafe {
+        std::env::set_var("ATENIA_APX_MODE", "8.8");
+    }
 
     // Llamamos directamente a get_signature como si el dispatcher lo hubiera consultado.
     let _ = get_signature(&GpuKernelType::VecAdd);

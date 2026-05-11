@@ -123,12 +123,7 @@ unsafe extern "C" {
     fn cudaFree(ptr: *mut c_void) -> c_int;
     fn cudaMallocHost(ptr: *mut *mut c_void, bytes: usize) -> c_int;
     fn cudaFreeHost(ptr: *mut c_void) -> c_int;
-    fn cudaMemcpy(
-        dst: *mut c_void,
-        src: *const c_void,
-        count: usize,
-        kind: c_int,
-    ) -> c_int;
+    fn cudaMemcpy(dst: *mut c_void, src: *const c_void, count: usize, kind: c_int) -> c_int;
     fn cudaMemcpyAsync(
         dst: *mut c_void,
         src: *const c_void,
@@ -221,7 +216,10 @@ fn fmt_size(bytes: usize) -> String {
 fn check_vram_budget(label: &str) {
     let (mut free_now, mut total_now): (usize, usize) = (0, 0);
     unsafe {
-        check_cuda(cudaMemGetInfo(&mut free_now, &mut total_now), "cudaMemGetInfo");
+        check_cuda(
+            cudaMemGetInfo(&mut free_now, &mut total_now),
+            "cudaMemGetInfo",
+        );
     }
     let used_now = total_now.saturating_sub(free_now);
     if used_now > 7 * 1024 * 1024 * 1024 {
@@ -269,9 +267,8 @@ fn ensure_bench_files(dir: &Path) -> Vec<PathBuf> {
                     + ((j as f32) * 0.00007 + (i as f32) * 0.42).cos() * 0.4;
                 bits.push(f32_to_bf16_bits(f));
             }
-            let bytes: &[u8] = unsafe {
-                std::slice::from_raw_parts(bits.as_ptr() as *const u8, BYTES_B)
-            };
+            let bytes: &[u8] =
+                unsafe { std::slice::from_raw_parts(bits.as_ptr() as *const u8, BYTES_B) };
             let mut f = File::create(&p).expect("create file");
             f.write_all(bytes).expect("write file");
             f.sync_all().expect("sync file");
@@ -325,20 +322,26 @@ unsafe fn issue_gemm(
     let alpha: f32 = 1.0;
     let beta: f32 = 0.0;
     unsafe {
-        check_cublas(
-            cublasSetStream_v2(handle, stream),
-            "cublasSetStream",
-        );
+        check_cublas(cublasSetStream_v2(handle, stream), "cublasSetStream");
         check_cublas(
             cublasGemmEx(
                 handle,
-                CUBLAS_OP_N, CUBLAS_OP_N,
-                N_DIM as c_int, M_DIM as c_int, K_DIM as c_int,
+                CUBLAS_OP_N,
+                CUBLAS_OP_N,
+                N_DIM as c_int,
+                M_DIM as c_int,
+                K_DIM as c_int,
                 &alpha as *const f32 as *const c_void,
-                d_b_bf16, CUDA_R_16BF, N_DIM as c_int,
-                d_a_bf16, CUDA_R_16BF, K_DIM as c_int,
+                d_b_bf16,
+                CUDA_R_16BF,
+                N_DIM as c_int,
+                d_a_bf16,
+                CUDA_R_16BF,
+                K_DIM as c_int,
                 &beta as *const f32 as *const c_void,
-                d_c_f32, CUDA_R_32F, N_DIM as c_int,
+                d_c_f32,
+                CUDA_R_32F,
+                N_DIM as c_int,
                 CUBLAS_COMPUTE_32F,
                 CUBLAS_GEMM_DEFAULT,
             ),
@@ -358,9 +361,8 @@ fn run_config_1_sequential(
     d_c_f32: *mut c_void,
     default_stream: cudaStream_t,
 ) -> ConfigResult {
-    let pinned_slice: &mut [u8] = unsafe {
-        std::slice::from_raw_parts_mut(pinned_host as *mut u8, BYTES_B)
-    };
+    let pinned_slice: &mut [u8] =
+        unsafe { std::slice::from_raw_parts_mut(pinned_host as *mut u8, BYTES_B) };
 
     // Warmup.
     for w in 0..WARMUP_ITERS {
@@ -471,9 +473,8 @@ fn run_config_n_pipeline<const N_SLOTS: usize>(
         // 1. NVMe read into pinned host (this thread, blocking).
         let path = &paths[iter % N_FILES];
         let mut f = open_nvmebench(path);
-        let pinned_slice: &mut [u8] = unsafe {
-            std::slice::from_raw_parts_mut(pinned_hosts[slot] as *mut u8, BYTES_B)
-        };
+        let pinned_slice: &mut [u8] =
+            unsafe { std::slice::from_raw_parts_mut(pinned_hosts[slot] as *mut u8, BYTES_B) };
         f.read_exact(pinned_slice).expect("read iter");
 
         // 2. PCIe upload async on copy_stream.
@@ -536,8 +537,7 @@ fn run_config_n_pipeline<const N_SLOTS: usize>(
     }
     let total_ms = t0.elapsed().as_secs_f64() * 1000.0;
     let avg_ms = total_ms / (MEASURED_ITERS as f64);
-    let nvme_gbs = (BYTES_B as f64 * MEASURED_ITERS as f64 / 1.0e9)
-        / (total_ms / 1000.0);
+    let nvme_gbs = (BYTES_B as f64 * MEASURED_ITERS as f64 / 1.0e9) / (total_ms / 1000.0);
     // PCIe runs concurrently with NVMe in this config; implied
     // bandwidth is the same wallclock — report it so the table can
     // be inspected for bottleneck attribution.
@@ -545,10 +545,14 @@ fn run_config_n_pipeline<const N_SLOTS: usize>(
 
     // Cleanup events.
     for e in upload_done.drain(..) {
-        unsafe { check_cuda(cudaEventDestroy(e), "eventDestroy upload"); }
+        unsafe {
+            check_cuda(cudaEventDestroy(e), "eventDestroy upload");
+        }
     }
     for e in compute_done.drain(..) {
-        unsafe { check_cuda(cudaEventDestroy(e), "eventDestroy compute"); }
+        unsafe {
+            check_cuda(cudaEventDestroy(e), "eventDestroy compute");
+        }
     }
 
     ConfigResult {
@@ -568,10 +572,22 @@ fn main() {
     println!();
     println!(
         "Shape:  [{}, {}] × [{}, {}] (FFN-down Llama 13B; B = {} BF16)",
-        M_DIM, K_DIM, K_DIM, N_DIM, fmt_size(BYTES_B)
+        M_DIM,
+        K_DIM,
+        K_DIM,
+        N_DIM,
+        fmt_size(BYTES_B)
     );
-    println!("Iters:  {} warmup + {} measured per config", WARMUP_ITERS, MEASURED_ITERS);
-    println!("Files:  {} distinct files of {} each ({} total)", N_FILES, fmt_size(BYTES_B), fmt_size(N_FILES * BYTES_B));
+    println!(
+        "Iters:  {} warmup + {} measured per config",
+        WARMUP_ITERS, MEASURED_ITERS
+    );
+    println!(
+        "Files:  {} distinct files of {} each ({} total)",
+        N_FILES,
+        fmt_size(BYTES_B),
+        fmt_size(N_FILES * BYTES_B)
+    );
 
     let bench_dir = default_bench_dir();
     println!("Dir:    {}", bench_dir.display());
@@ -580,7 +596,10 @@ fn main() {
     // Initial VRAM probe.
     let (mut free0, mut total0): (usize, usize) = (0, 0);
     unsafe {
-        check_cuda(cudaMemGetInfo(&mut free0, &mut total0), "cudaMemGetInfo (start)");
+        check_cuda(
+            cudaMemGetInfo(&mut free0, &mut total0),
+            "cudaMemGetInfo (start)",
+        );
     }
     println!(
         "VRAM at start: free {} / total {}",
@@ -601,7 +620,10 @@ fn main() {
     // Driver warmup.
     let mut warmup_ptr: *mut c_void = std::ptr::null_mut();
     unsafe {
-        check_cuda(cudaMalloc(&mut warmup_ptr, 1024), "cudaMalloc (driver warmup)");
+        check_cuda(
+            cudaMalloc(&mut warmup_ptr, 1024),
+            "cudaMalloc (driver warmup)",
+        );
         check_cuda(cudaFree(warmup_ptr), "cudaFree (driver warmup)");
     }
 
@@ -616,7 +638,10 @@ fn main() {
     let mut compute_stream: cudaStream_t = std::ptr::null_mut();
     unsafe {
         check_cuda(cudaStreamCreate(&mut copy_stream), "streamCreate copy");
-        check_cuda(cudaStreamCreate(&mut compute_stream), "streamCreate compute");
+        check_cuda(
+            cudaStreamCreate(&mut compute_stream),
+            "streamCreate compute",
+        );
     }
     let default_stream: cudaStream_t = std::ptr::null_mut();
 
@@ -646,8 +671,11 @@ fn main() {
     }
 
     // Pinned host buffers (3 — enough for Config 3, Config 1/2 use 1/2).
-    let mut pinned: [*mut c_void; 3] =
-        [std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()];
+    let mut pinned: [*mut c_void; 3] = [
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+    ];
     for i in 0..3 {
         unsafe {
             check_cuda(cudaMallocHost(&mut pinned[i], BYTES_B), "mallocHost pinned");
@@ -655,8 +683,11 @@ fn main() {
     }
 
     // VRAM staging buffers (3 — same).
-    let mut d_b_slots: [*mut c_void; 3] =
-        [std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()];
+    let mut d_b_slots: [*mut c_void; 3] = [
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+    ];
     for i in 0..3 {
         unsafe {
             check_cuda(cudaMalloc(&mut d_b_slots[i], BYTES_B), "malloc B slot");
@@ -734,17 +765,11 @@ fn main() {
     );
     println!(
         "{:<26}  {:>10.2}  {:>12}  {:>12.2}",
-        "2 — Two-buffer pipeline",
-        r2.avg_ms,
-        "(overlap)",
-        r2.nvme_gbs
+        "2 — Two-buffer pipeline", r2.avg_ms, "(overlap)", r2.nvme_gbs
     );
     println!(
         "{:<26}  {:>10.2}  {:>12}  {:>12.2}",
-        "3 — Triple-buffer pipeline",
-        r3.avg_ms,
-        "(overlap)",
-        r3.nvme_gbs
+        "3 — Triple-buffer pipeline", r3.avg_ms, "(overlap)", r3.nvme_gbs
     );
     println!("==============================================================");
     println!();
@@ -766,9 +791,13 @@ fn main() {
     if r2.avg_ms <= 200.0 {
         println!("Decision:            PLAN A — pipeline async delivers, proceed M8.1-M8.4 + M8.7");
     } else if r2.avg_ms <= 400.0 {
-        println!("Decision:            PARTIAL — pipeline partially effective; revisit M8 vs M9 ROI");
+        println!(
+            "Decision:            PARTIAL — pipeline partially effective; revisit M8 vs M9 ROI"
+        );
     } else {
-        println!("Decision:            FAIL — pipeline does NOT help; pivot to M9 INT8 or accept M7 closure");
+        println!(
+            "Decision:            FAIL — pipeline does NOT help; pivot to M9 INT8 or accept M7 closure"
+        );
     }
     println!();
 
@@ -778,17 +807,27 @@ fn main() {
     let per_token_ms_pipelined = (r2.avg_ms * 29.0) + (3.0 * 11.0);
     let per_token_ms_serial = (r1.avg_ms * 29.0) + (3.0 * 11.0);
     println!("Projection at M7.3 tier mix (29 Disk + 11 VRAM layers, this shape only):");
-    println!("  Sequential (Config 1):  {:.1} s / token", per_token_ms_serial / 1000.0);
-    println!("  Pipelined  (Config 2):  {:.1} s / token  (vs M7.3 baseline 36.6 s/tok)", per_token_ms_pipelined / 1000.0);
+    println!(
+        "  Sequential (Config 1):  {:.1} s / token",
+        per_token_ms_serial / 1000.0
+    );
+    println!(
+        "  Pipelined  (Config 2):  {:.1} s / token  (vs M7.3 baseline 36.6 s/tok)",
+        per_token_ms_pipelined / 1000.0
+    );
     println!("  (Real per-token will be lower — Q/K/V/O projs are 4x smaller than FFN-down.)");
     println!();
 
     // ------------------------------- Cleanup --------------------------------
     for p in pinned.iter() {
-        unsafe { check_cuda(cudaFreeHost(*p), "freeHost"); }
+        unsafe {
+            check_cuda(cudaFreeHost(*p), "freeHost");
+        }
     }
     for d in d_b_slots.iter() {
-        unsafe { check_cuda(cudaFree(*d), "free B slot"); }
+        unsafe {
+            check_cuda(cudaFree(*d), "free B slot");
+        }
     }
     unsafe {
         check_cuda(cudaFree(d_a_bf16), "free A bf16");
@@ -800,7 +839,10 @@ fn main() {
 
     let (mut free_end, mut total_end): (usize, usize) = (0, 0);
     unsafe {
-        check_cuda(cudaMemGetInfo(&mut free_end, &mut total_end), "cudaMemGetInfo (end)");
+        check_cuda(
+            cudaMemGetInfo(&mut free_end, &mut total_end),
+            "cudaMemGetInfo (end)",
+        );
     }
     println!(
         "VRAM at end:   free {} / total {}",

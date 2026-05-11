@@ -3,8 +3,8 @@
 //! siempre se puede cargar un kernel CUDA, incluso si NVRTC, nvJitLink
 //! o el driver fallan.
 
-use crate::gpu::loader::{CudaLoader, CudaModule, CudaLoaderError};
 use crate::gpu::linker::NvJitLinker;
+use crate::gpu::loader::{CudaLoader, CudaLoaderError, CudaModule};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static FORCED_FALLBACK: AtomicBool = AtomicBool::new(false);
@@ -21,7 +21,6 @@ impl CompatLoader {
     }
 
     pub fn try_all_paths(loader: &CudaLoader, ptx: &str) -> Result<CudaModule, CudaLoaderError> {
-
         // 1. Try nvJitLink (PTX -> CUBIN)
         if let Ok(linker) = NvJitLinker::new() {
             if let Ok(cubin) = linker.link_ptx_to_cubin(ptx) {

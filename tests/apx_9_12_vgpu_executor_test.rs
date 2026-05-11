@@ -1,6 +1,6 @@
-﻿use atenia_engine::{
+use atenia_engine::{
     VirtualGpuExecutor, VirtualKernel,
-    tensor::{Tensor, Device, DType}
+    tensor::{DType, Device, Tensor},
 };
 
 #[test]
@@ -50,11 +50,7 @@ fn apx_9_12_launch_thread_indexing() {
         ptx,
         threads_per_block: 8,
         blocks: 2,
-        args: vec![
-            a,
-            b,
-            out.clone(),
-        ],
+        args: vec![a, b, out.clone()],
     };
 
     let exec = VirtualGpuExecutor::new();

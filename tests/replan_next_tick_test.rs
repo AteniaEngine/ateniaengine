@@ -122,11 +122,7 @@ fn offload_changes_next_tick_placement() {
 
     let mut graph = ReconfigurableGraph::new();
     let kernel = make_kernel("heavy_node", KernelKind::ComputeHeavy);
-    graph.add_node_with_tensors(
-        kernel,
-        vec!["t1".to_string()],
-        vec![MemoryTier::Ram],
-    );
+    graph.add_node_with_tensors(kernel, vec!["t1".to_string()], vec![MemoryTier::Ram]);
 
     let snapshots = vec![
         make_snapshot(0.10, 0.10), // tick0: low pressure

@@ -1,6 +1,6 @@
-use crate::tensor::Tensor;
 use crate::amg::grad_store::GradStore;
 use crate::apx3::grad_pipeline::chunk_size;
+use crate::tensor::Tensor;
 
 pub fn fused_linear_backward(
     store: &GradStore,
@@ -10,8 +10,14 @@ pub fn fused_linear_backward(
     input_grad_id: usize,
     weight_grad_id: usize,
 ) {
-    assert!(input.shape.len() == 2, "fused_linear_backward expects 2D input");
-    assert!(weight.shape.len() == 2, "fused_linear_backward expects 2D weight");
+    assert!(
+        input.shape.len() == 2,
+        "fused_linear_backward expects 2D input"
+    );
+    assert!(
+        weight.shape.len() == 2,
+        "fused_linear_backward expects 2D weight"
+    );
 
     let batch = input.shape[0];
     let in_dim = input.shape[1];

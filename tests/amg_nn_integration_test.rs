@@ -1,9 +1,9 @@
-﻿use atenia_engine::amg::builder::GraphBuilder;
+use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::nn::activations as nn_act;
 use atenia_engine::nn::linear as nn_linear;
 use atenia_engine::nn::normalization as nn_norm;
 use atenia_engine::nn::softmax as nn_softmax;
-use atenia_engine::tensor::{Device, DType, Layout, Tensor};
+use atenia_engine::tensor::{DType, Device, Layout, Tensor};
 
 fn make_tensor_2d(shape: (usize, usize), fill_fn: impl Fn(usize, usize) -> f32) -> Tensor {
     let (rows, cols) = shape;
@@ -110,7 +110,11 @@ fn graph_rms_silu_softmax_pipeline_is_valid() {
     let silu = nn_act::silu(&rms);
     let direct_softmax = nn_softmax::softmax_last_dim(&silu);
 
-    for (a, b) in y.as_cpu_slice().iter().zip(direct_softmax.as_cpu_slice().iter()) {
+    for (a, b) in y
+        .as_cpu_slice()
+        .iter()
+        .zip(direct_softmax.as_cpu_slice().iter())
+    {
         assert!((a - b).abs() < 1e-5);
     }
 }

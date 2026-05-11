@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
 use super::engine_manifest::EngineManifest;
-use crate::v17::snapshot::snapshot_hash::hash_str;
 use super::manifest_errors::ManifestError;
+use crate::v17::snapshot::snapshot_hash::hash_str;
 
 /// Deterministic fingerprint of an engine manifest.
 #[derive(Debug, Clone, PartialEq)]

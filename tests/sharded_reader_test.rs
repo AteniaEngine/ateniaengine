@@ -15,8 +15,8 @@ use atenia_engine::v17::loader::safetensors_reader::SafetensorsReader;
 use atenia_engine::v17::loader::sharded_reader::ShardedSafetensorsReader;
 use atenia_engine::v17::loader::weight_mapper::WeightMapper;
 
-use safetensors::tensor::TensorView;
 use safetensors::Dtype as StDtype;
+use safetensors::tensor::TensorView;
 
 /// Helper: per-test temp dir under `std::env::temp_dir()`. Uses a
 /// time-derived suffix to avoid collisions when several tests run
@@ -26,7 +26,12 @@ fn unique_temp_dir(prefix: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!("atenia_{}_{}_{}", prefix, std::process::id(), nanos));
+    let dir = std::env::temp_dir().join(format!(
+        "atenia_{}_{}_{}",
+        prefix,
+        std::process::id(),
+        nanos
+    ));
     fs::create_dir_all(&dir).expect("create temp dir");
     dir
 }
@@ -57,11 +62,7 @@ fn serialize_tensors(entries: &[(String, Vec<usize>, Vec<f32>)]) -> Vec<u8> {
 
 /// Build a tiny graph with three named parameters of known shapes.
 /// Returns the graph, the names, and the node ids.
-fn build_three_param_graph() -> (
-    atenia_engine::amg::graph::Graph,
-    Vec<String>,
-    Vec<usize>,
-) {
+fn build_three_param_graph() -> (atenia_engine::amg::graph::Graph, Vec<String>, Vec<usize>) {
     let mut gb = GraphBuilder::new();
 
     // Three deterministically-sized tensors, distinct contents.
@@ -270,10 +271,7 @@ fn sharded_reader_index_accessors_work() {
 
     // shard_path resolves relative to the index file's directory.
     let resolved = reader.shard_path("model-00001-of-00002.safetensors");
-    assert_eq!(
-        resolved,
-        model_dir.join("model-00001-of-00002.safetensors")
-    );
+    assert_eq!(resolved, model_dir.join("model-00001-of-00002.safetensors"));
 
     let _ = fs::remove_dir_all(&model_dir);
 }

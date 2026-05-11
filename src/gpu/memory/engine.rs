@@ -38,16 +38,14 @@ impl GpuMemoryEngine {
                 .map_err(|_| GpuMemoryError::DriverLoadFailed)?;
 
             // --- Load required CUDA driver functions ---
-            let cu_init: Symbol<unsafe extern "C" fn(u32) -> i32> =
-                driver
-                    .get(b"cuInit\0")
-                    .map_err(|_| GpuMemoryError::MissingSymbol("cuInit".into()))?;
+            let cu_init: Symbol<unsafe extern "C" fn(u32) -> i32> = driver
+                .get(b"cuInit\0")
+                .map_err(|_| GpuMemoryError::MissingSymbol("cuInit".into()))?;
             cu_init(0);
 
-            let cu_device_get: Symbol<unsafe extern "C" fn(*mut i32, i32) -> i32> =
-                driver
-                    .get(b"cuDeviceGet\0")
-                    .map_err(|_| GpuMemoryError::MissingSymbol("cuDeviceGet".into()))?;
+            let cu_device_get: Symbol<unsafe extern "C" fn(*mut i32, i32) -> i32> = driver
+                .get(b"cuDeviceGet\0")
+                .map_err(|_| GpuMemoryError::MissingSymbol("cuDeviceGet".into()))?;
 
             let mut device = 0;
             let res = cu_device_get(&mut device, 0);
@@ -63,9 +61,7 @@ impl GpuMemoryEngine {
                 unsafe extern "C" fn(*mut *mut std::ffi::c_void, i32) -> i32,
             > = driver
                 .get(b"cuDevicePrimaryCtxRetain\0")
-                .map_err(|_| {
-                    GpuMemoryError::MissingSymbol("cuDevicePrimaryCtxRetain".into())
-                })?;
+                .map_err(|_| GpuMemoryError::MissingSymbol("cuDevicePrimaryCtxRetain".into()))?;
 
             let mut ctx: *mut std::ffi::c_void = std::ptr::null_mut();
             let res = cu_primary_ctx_retain(&mut ctx, device);
@@ -75,10 +71,9 @@ impl GpuMemoryEngine {
 
             // Verify the symbol exists now so a missing-symbol error
             // surfaces during init rather than at first allocation.
-            let _: Symbol<unsafe extern "C" fn(*mut std::ffi::c_void) -> i32> =
-                driver
-                    .get(b"cuCtxSetCurrent\0")
-                    .map_err(|_| GpuMemoryError::MissingSymbol("cuCtxSetCurrent".into()))?;
+            let _: Symbol<unsafe extern "C" fn(*mut std::ffi::c_void) -> i32> = driver
+                .get(b"cuCtxSetCurrent\0")
+                .map_err(|_| GpuMemoryError::MissingSymbol("cuCtxSetCurrent".into()))?;
 
             Ok(Self { driver, ctx })
         }
@@ -93,9 +88,8 @@ impl GpuMemoryEngine {
     /// cheap — safe to call at the start of every public operation.
     unsafe fn set_current_on_this_thread(&self) -> Result<(), GpuMemoryError> {
         unsafe {
-            let cu_ctx_set_current: Symbol<
-                unsafe extern "C" fn(*mut std::ffi::c_void) -> i32,
-            > = self.load(b"cuCtxSetCurrent\0")?;
+            let cu_ctx_set_current: Symbol<unsafe extern "C" fn(*mut std::ffi::c_void) -> i32> =
+                self.load(b"cuCtxSetCurrent\0")?;
             let res = cu_ctx_set_current(self.ctx);
             if res != 0 {
                 return Err(GpuMemoryError::DriverLoadFailed);
@@ -150,8 +144,9 @@ impl GpuMemoryEngine {
         unsafe {
             self.set_current_on_this_thread()?;
 
-            let cu_copy: Symbol<unsafe extern "C" fn(CUdeviceptr, *const std::os::raw::c_void, usize) -> i32> =
-                self.load(b"cuMemcpyHtoD_v2\0")?;
+            let cu_copy: Symbol<
+                unsafe extern "C" fn(CUdeviceptr, *const std::os::raw::c_void, usize) -> i32,
+            > = self.load(b"cuMemcpyHtoD_v2\0")?;
 
             let bytes = src.len() * 4;
             let res = cu_copy(dst.ptr, src.as_ptr() as *const _, bytes);
@@ -168,8 +163,9 @@ impl GpuMemoryEngine {
         unsafe {
             self.set_current_on_this_thread()?;
 
-            let cu_copy: Symbol<unsafe extern "C" fn(*mut std::os::raw::c_void, CUdeviceptr, usize) -> i32> =
-                self.load(b"cuMemcpyDtoH_v2\0")?;
+            let cu_copy: Symbol<
+                unsafe extern "C" fn(*mut std::os::raw::c_void, CUdeviceptr, usize) -> i32,
+            > = self.load(b"cuMemcpyDtoH_v2\0")?;
 
             let bytes = dst.len() * 4;
             let res = cu_copy(dst.as_mut_ptr() as *mut _, src.ptr, bytes);

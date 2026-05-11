@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use atenia_engine::apx6_10::{FusionSelector, FusionProfile};
+use atenia_engine::apx6_10::{FusionProfile, FusionSelector};
 
 fn baseline_op(work: usize) {
     let mut acc = 0.0f32;
@@ -61,10 +61,7 @@ fn apx_6_10_fusion_benchmark() {
 
         println!(
             "[APX 6.10 FUSION] baseline={}us qkv={}us full={}us decision={:?}",
-            baseline,
-            fused_qkv,
-            fused_full,
-            decision.use_full_fusion,
+            baseline, fused_qkv, fused_full, decision.use_full_fusion,
         );
     }
 }

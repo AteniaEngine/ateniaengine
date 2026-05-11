@@ -21,8 +21,8 @@
 //! 5. `memory_pressure == max(vram, ram)`: sanity check against
 //!    symmetric values where the max lies on one side.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use atenia_engine::amm::ram_probe::{RamProbeApi, RamProbeError, RamSnapshot};
 use atenia_engine::amm::signal_bus::SignalBus;

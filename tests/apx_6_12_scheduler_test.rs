@@ -1,10 +1,8 @@
-﻿mod mini_flux_common;
+mod mini_flux_common;
 
 use atenia_engine::apx5::apx_5_3_planner::NodeExecInfo;
 use atenia_engine::apx6_12::adaptive_scheduler::{
-    AdaptiveScheduleBias,
-    get_schedule_bias,
-    set_schedule_bias,
+    AdaptiveScheduleBias, get_schedule_bias, set_schedule_bias,
 };
 use atenia_engine::tensor::Tensor;
 use mini_flux_common::{default_cfg, run_logits_forward, sample_tokens};

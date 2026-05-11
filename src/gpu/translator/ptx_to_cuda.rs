@@ -24,9 +24,7 @@ impl PtxToCuda {
 
         // v1: extremely minimal transformation — wrap the content inside a kernel template.
         // No real syntactic validation; only simple text replacements.
-        let body = ptx
-            .replace(".reg .f32", "float")
-            .replace(";", ";\n");
+        let body = ptx.replace(".reg .f32", "float").replace(";", ";\n");
 
         let code = format!(
             r#"extern "C" __global__ void {name}(float* x) {{

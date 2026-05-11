@@ -32,8 +32,7 @@ use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::tensor::{DType, Tensor, TensorStorage};
 
 fn test_cache_dir(label: &str) -> PathBuf {
-    let dir = std::env::temp_dir()
-        .join(format!("atenia_m4_7_4_d_{}_{}", label, Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("atenia_m4_7_4_d_{}_{}", label, Uuid::new_v4()));
     std::fs::create_dir_all(&dir).expect("create test cache dir");
     dir
 }
@@ -79,10 +78,9 @@ fn ensure_cpu_after_bf16_disk_spill_upcasts_to_f32() {
     {
         let t = graph.nodes[p].output.as_ref().unwrap();
         match &t.storage {
-            TensorStorage::Disk(h) => assert_eq!(
-                h.dtype(),
-                atenia_engine::tensor::disk_tier::DiskDtype::BF16
-            ),
+            TensorStorage::Disk(h) => {
+                assert_eq!(h.dtype(), atenia_engine::tensor::disk_tier::DiskDtype::BF16)
+            }
             other => panic!("expected Disk, got {:?}", other),
         }
         // dtype is still BF16 at this point (the storage is the
@@ -106,7 +104,11 @@ fn ensure_cpu_after_bf16_disk_spill_upcasts_to_f32() {
         TensorStorage::Cpu(v) => v.clone(),
         other => panic!("expected Cpu after ensure_cpu, got {:?}", other),
     };
-    assert_eq!(t.dtype, DType::F32, "dtype must flip to F32 after BF16 disk restore");
+    assert_eq!(
+        t.dtype,
+        DType::F32,
+        "dtype must flip to F32 after BF16 disk restore"
+    );
 
     let expected: Vec<f32> = bf16_bits.iter().map(|&b| bf16_to_f32(b)).collect();
     assert_eq!(restored.len(), expected.len());
@@ -147,10 +149,9 @@ fn ensure_cpu_after_f32_disk_spill_stays_bit_exact() {
 
     // Storage is Disk + F32 tag.
     match &graph.nodes[p].output.as_ref().unwrap().storage {
-        TensorStorage::Disk(h) => assert_eq!(
-            h.dtype(),
-            atenia_engine::tensor::disk_tier::DiskDtype::F32
-        ),
+        TensorStorage::Disk(h) => {
+            assert_eq!(h.dtype(), atenia_engine::tensor::disk_tier::DiskDtype::F32)
+        }
         other => panic!("expected Disk, got {:?}", other),
     }
 
@@ -169,7 +170,11 @@ fn ensure_cpu_after_f32_disk_spill_stays_bit_exact() {
     assert_eq!(t.dtype, DType::F32);
 
     for (a, b) in restored.iter().zip(source.iter()) {
-        assert_eq!(a.to_bits(), b.to_bits(), "F32 disk round-trip must be bit-exact");
+        assert_eq!(
+            a.to_bits(),
+            b.to_bits(),
+            "F32 disk round-trip must be bit-exact"
+        );
     }
 
     cleanup(&dir);

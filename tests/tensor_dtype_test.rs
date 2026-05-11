@@ -1,4 +1,4 @@
-﻿use atenia_engine::tensor::tensor::{Device, DType, Tensor};
+use atenia_engine::tensor::tensor::{DType, Device, Tensor};
 
 #[test]
 fn dtype_size_in_bytes_matches_spec() {

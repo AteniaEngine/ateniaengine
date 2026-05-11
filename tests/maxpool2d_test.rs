@@ -1,20 +1,21 @@
-﻿#![allow(dead_code)]
+#![allow(dead_code)]
 
 use atenia_engine::v17;
 
-use v17::compute::tensor::Tensor;
 use v17::cnn::conv2d::AbortFlag;
-use v17::cnn::maxpool2d::{MaxPool2DParams, maxpool2d_cpu, MaxPoolError};
+use v17::cnn::maxpool2d::{MaxPool2DParams, MaxPoolError, maxpool2d_cpu};
+use v17::compute::tensor::Tensor;
 
 #[test]
 fn maxpool2d_matches_reference() {
     // Simple 1x1x4x4 input, 2x2 kernel, stride 2, no padding.
-    let input = Tensor::new(vec![1, 1, 4, 4], vec![
-        1.0, 2.0, 3.0, 4.0,
-        5.0, 6.0, 7.0, 8.0,
-        9.0,10.0,11.0,12.0,
-        13.0,14.0,15.0,16.0,
-    ]).unwrap();
+    let input = Tensor::new(
+        vec![1, 1, 4, 4],
+        vec![
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
+        ],
+    )
+    .unwrap();
 
     let params = MaxPool2DParams {
         kernel: (2, 2),
@@ -35,11 +36,11 @@ fn maxpool2d_matches_reference() {
 
 #[test]
 fn maxpool2d_is_deterministic() {
-    let input = Tensor::new(vec![1, 1, 3, 3], vec![
-        1.0, 3.0, 2.0,
-        4.0, 6.0, 5.0,
-        7.0, 9.0, 8.0,
-    ]).unwrap();
+    let input = Tensor::new(
+        vec![1, 1, 3, 3],
+        vec![1.0, 3.0, 2.0, 4.0, 6.0, 5.0, 7.0, 9.0, 8.0],
+    )
+    .unwrap();
 
     let params = MaxPool2DParams {
         kernel: (2, 2),

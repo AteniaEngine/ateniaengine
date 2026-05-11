@@ -244,15 +244,14 @@ pub fn load_manifest(model_dir: &Path) -> Option<NumcertManifest> {
 /// fully-resolved manifest or a one-line human-readable reason
 /// for the failure (used by `load_manifest` to log).
 fn parse_manifest(bytes: &[u8], source: PathBuf) -> Result<NumcertManifest, String> {
-    let text = std::str::from_utf8(bytes)
-        .map_err(|e| format!("not valid UTF-8: {e}"))?;
+    let text = std::str::from_utf8(bytes).map_err(|e| format!("not valid UTF-8: {e}"))?;
 
     let schema_version = extract_string_field(text, "schema_version")
         .ok_or_else(|| "missing or non-string \"schema_version\"".to_string())?;
     let recommended_mode_str = extract_string_field(text, "recommended_mode")
         .ok_or_else(|| "missing or non-string \"recommended_mode\"".to_string())?;
-    let recommended_mode = parse_mode(&recommended_mode_str)
-        .map_err(|e| format!("recommended_mode: {e}"))?;
+    let recommended_mode =
+        parse_mode(&recommended_mode_str).map_err(|e| format!("recommended_mode: {e}"))?;
     let per_tensor_policy = parse_per_tensor_policy(text)?;
     Ok(NumcertManifest {
         schema_version,
@@ -298,7 +297,8 @@ fn parse_per_tensor_policy(text: &str) -> Result<Option<PerTensorPolicy>, String
         None => return Ok(None),
     };
     let after_key = &text[key_pos + key.len()..];
-    let colon = after_key.find(':')
+    let colon = after_key
+        .find(':')
         .ok_or_else(|| "per_tensor_policy missing colon".to_string())?;
     let after_colon = after_key[colon + 1..].trim_start();
 
@@ -307,9 +307,7 @@ fn parse_per_tensor_policy(text: &str) -> Result<Option<PerTensorPolicy>, String
         return Ok(None);
     }
     if !after_colon.starts_with('{') {
-        return Err(
-            "per_tensor_policy must be either null or an object".to_string()
-        );
+        return Err("per_tensor_policy must be either null or an object".to_string());
     }
 
     // v2.0.0+ path: an object with `default` and `overrides`.
@@ -320,8 +318,8 @@ fn parse_per_tensor_policy(text: &str) -> Result<Option<PerTensorPolicy>, String
 
     let default_str = extract_string_field(block, "default")
         .ok_or_else(|| "per_tensor_policy missing \"default\"".to_string())?;
-    let default_mode = parse_mode(&default_str)
-        .map_err(|e| format!("per_tensor_policy default: {e}"))?;
+    let default_mode =
+        parse_mode(&default_str).map_err(|e| format!("per_tensor_policy default: {e}"))?;
 
     // Optional overrides array. Absent = empty Vec.
     let overrides = parse_overrides_array(block)?;
@@ -381,7 +379,8 @@ fn parse_overrides_array(block: &str) -> Result<Vec<PolicyOverride>, String> {
         None => return Ok(Vec::new()),
     };
     let after_key = &block[key_pos + key.len()..];
-    let colon = after_key.find(':')
+    let colon = after_key
+        .find(':')
         .ok_or_else(|| "overrides missing colon".to_string())?;
     let after_colon = after_key[colon + 1..].trim_start();
     if !after_colon.starts_with('[') {
@@ -408,8 +407,7 @@ fn parse_overrides_array(block: &str) -> Result<Vec<PolicyOverride>, String> {
             .ok_or_else(|| "overrides entry missing \"pattern\"".to_string())?;
         let mode_str = extract_string_field(entry, "mode")
             .ok_or_else(|| "overrides entry missing \"mode\"".to_string())?;
-        let mode = parse_mode(&mode_str)
-            .map_err(|e| format!("overrides entry: {e}"))?;
+        let mode = parse_mode(&mode_str).map_err(|e| format!("overrides entry: {e}"))?;
         out.push(PolicyOverride { pattern, mode });
 
         cursor += entry_start + entry_end + 1;
@@ -471,8 +469,7 @@ mod tests {
             "recommended_mode": "fast",
             "per_tensor_policy": null
         }"#;
-        let m = parse_manifest(json, fake_source())
-            .expect("manifest should parse");
+        let m = parse_manifest(json, fake_source()).expect("manifest should parse");
         assert_eq!(m.schema_version, "1.0.0");
         assert_eq!(m.recommended_mode, MatmulMode::Fast);
     }
@@ -485,8 +482,7 @@ mod tests {
             "recommended_mode": "certified",
             "per_tensor_policy": null
         }"#;
-        let m = parse_manifest(json, fake_source())
-            .expect("manifest should parse");
+        let m = parse_manifest(json, fake_source()).expect("manifest should parse");
         assert_eq!(m.recommended_mode, MatmulMode::Certified);
     }
 
@@ -501,8 +497,7 @@ mod tests {
                 "overrides": []
             }
         }"#;
-        let m = parse_manifest(json, fake_source())
-            .expect("quantized GGUF manifest should parse");
+        let m = parse_manifest(json, fake_source()).expect("quantized GGUF manifest should parse");
         assert_eq!(m.recommended_mode, MatmulMode::Quantized);
         let p = m.per_tensor_policy.as_ref().expect("policy populated");
         assert_eq!(p.default_mode, MatmulMode::Quantized);
@@ -518,9 +513,11 @@ mod tests {
             "schema_version": "1.0.0",
             "recommended_mode": "turbo"
         }"#;
-        let err = parse_manifest(json, fake_source())
-            .expect_err("unknown mode should fail");
-        assert!(err.contains("turbo"), "error should mention bad value, got: {err}");
+        let err = parse_manifest(json, fake_source()).expect_err("unknown mode should fail");
+        assert!(
+            err.contains("turbo"),
+            "error should mention bad value, got: {err}"
+        );
     }
 
     #[test]
@@ -528,9 +525,11 @@ mod tests {
         let json = br#"{
             "schema_version": "1.0.0"
         }"#;
-        let err = parse_manifest(json, fake_source())
-            .expect_err("missing field should fail");
-        assert!(err.contains("recommended_mode"), "error should name the missing field");
+        let err = parse_manifest(json, fake_source()).expect_err("missing field should fail");
+        assert!(
+            err.contains("recommended_mode"),
+            "error should name the missing field"
+        );
     }
 
     #[test]
@@ -551,21 +550,36 @@ mod tests {
 
     #[test]
     fn glob_match_prefix_pattern() {
-        assert!(glob_match("model.layers.*", "model.layers.0.mlp.gate_proj.weight"));
+        assert!(glob_match(
+            "model.layers.*",
+            "model.layers.0.mlp.gate_proj.weight"
+        ));
         assert!(!glob_match("model.layers.*", "embed_tokens.weight"));
     }
 
     #[test]
     fn glob_match_suffix_pattern() {
-        assert!(glob_match("*.weight", "model.layers.0.mlp.gate_proj.weight"));
+        assert!(glob_match(
+            "*.weight",
+            "model.layers.0.mlp.gate_proj.weight"
+        ));
         assert!(!glob_match("*.weight", "model.layers.0.mlp.gate_proj.bias"));
     }
 
     #[test]
     fn glob_match_contains_pattern() {
-        assert!(glob_match("*.mlp.*_proj.weight", "model.layers.0.mlp.gate_proj.weight"));
-        assert!(glob_match("*.mlp.*_proj.weight", "model.layers.31.mlp.down_proj.weight"));
-        assert!(!glob_match("*.mlp.*_proj.weight", "model.layers.0.self_attn.q_proj.weight"));
+        assert!(glob_match(
+            "*.mlp.*_proj.weight",
+            "model.layers.0.mlp.gate_proj.weight"
+        ));
+        assert!(glob_match(
+            "*.mlp.*_proj.weight",
+            "model.layers.31.mlp.down_proj.weight"
+        ));
+        assert!(!glob_match(
+            "*.mlp.*_proj.weight",
+            "model.layers.0.self_attn.q_proj.weight"
+        ));
     }
 
     #[test]
@@ -585,12 +599,15 @@ mod tests {
             "recommended_mode": "certified",
             "per_tensor_policy": null
         }"#;
-        let m = parse_manifest(json, fake_source())
-            .expect("v1 manifest with null policy should parse");
+        let m =
+            parse_manifest(json, fake_source()).expect("v1 manifest with null policy should parse");
         assert!(m.per_tensor_policy.is_none());
         assert_eq!(m.recommended_mode, MatmulMode::Certified);
         // resolve_for falls back to recommended_mode for any name
-        assert_eq!(m.resolve_for("model.layers.0.mlp.gate_proj.weight"), MatmulMode::Certified);
+        assert_eq!(
+            m.resolve_for("model.layers.0.mlp.gate_proj.weight"),
+            MatmulMode::Certified
+        );
     }
 
     #[test]
@@ -605,8 +622,7 @@ mod tests {
                 ]
             }
         }"#;
-        let m = parse_manifest(json, fake_source())
-            .expect("v2 manifest should parse");
+        let m = parse_manifest(json, fake_source()).expect("v2 manifest should parse");
         let p = m.per_tensor_policy.as_ref().expect("policy populated");
         assert_eq!(p.default_mode, MatmulMode::Certified);
         assert_eq!(p.overrides.len(), 1);
@@ -654,8 +670,7 @@ mod tests {
                 ]
             }
         }"#;
-        let m = parse_manifest(json, fake_source())
-            .expect("v2 manifest should parse");
+        let m = parse_manifest(json, fake_source()).expect("v2 manifest should parse");
         // down_proj matches the first (more-specific) override
         // before the broader one.
         assert_eq!(
@@ -676,8 +691,10 @@ mod tests {
             "recommended_mode": "certified",
             "per_tensor_policy": "not an object or null"
         }"#;
-        let err = parse_manifest(json, fake_source())
-            .expect_err("string policy should fail");
-        assert!(err.contains("per_tensor_policy"), "error should name field, got: {err}");
+        let err = parse_manifest(json, fake_source()).expect_err("string policy should fail");
+        assert!(
+            err.contains("per_tensor_policy"),
+            "error should name field, got: {err}"
+        );
     }
 }

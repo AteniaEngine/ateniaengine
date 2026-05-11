@@ -72,9 +72,9 @@ use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::amg::weight_store::{SharedParam, WeightStore};
 use atenia_engine::cuda::cuda_available;
 use atenia_engine::cuda::matmul::{vram_bf16_matmul_count, vram_bf16_native_matmul_count};
-use atenia_engine::gpu::tier_plan::{plan, TensorMeta, TierPlanInput};
+use atenia_engine::gpu::tier_plan::{TensorMeta, TierPlanInput, plan};
 use atenia_engine::nn::llama::{
-    build_llama, build_llama_with_store, llama_weight_mapper, LlamaConfig, LlamaRuntime,
+    LlamaConfig, LlamaRuntime, build_llama, build_llama_with_store, llama_weight_mapper,
 };
 use atenia_engine::tensor::{DType, Tensor};
 use atenia_engine::v17::loader::safetensors_reader::SafetensorsReader;
@@ -110,7 +110,9 @@ fn assert_drift_within_adr_004(label: &str, drift: f64) {
     assert!(
         drift < ADR_004_THRESHOLD,
         "{} M8 drift {:.6} exceeds {} (ADR-004) — PARAR per protocol",
-        label, drift, ADR_004_THRESHOLD
+        label,
+        drift,
+        ADR_004_THRESHOLD
     );
 }
 
@@ -157,8 +159,9 @@ impl Drop for M8FlagGuard {
 }
 
 fn load_f64_fixture(rel_dir: &str) -> Vec<f64> {
-    let path =
-        PathBuf::from("tests/fixtures").join(rel_dir).join("expected_logits_f64.json");
+    let path = PathBuf::from("tests/fixtures")
+        .join(rel_dir)
+        .join("expected_logits_f64.json");
     let s = fs::read_to_string(&path)
         .unwrap_or_else(|_| panic!("F64 fixture missing: {}", path.display()));
     let json: serde_json::Value = serde_json::from_str(&s).expect("malformed F64 fixture");
@@ -273,8 +276,7 @@ fn run_one_model_m8(
     // ---- Build the scratch graph (just for handles + param ids).
     let mut gb_scratch = GraphBuilder::new();
     let token_input_id_scratch = gb_scratch.input();
-    let handles =
-        build_llama(&mut gb_scratch, &config, &runtime, token_input_id_scratch);
+    let handles = build_llama(&mut gb_scratch, &config, &runtime, token_input_id_scratch);
     let _ = gb_scratch.output(handles.logits_id);
     let mut scratch_graph = gb_scratch.build();
     assert_eq!(handles.param_ids.len(), expected_param_count);
@@ -283,8 +285,8 @@ fn run_one_model_m8(
     println!("Loading {} via M8 BF16-resident path ...", label);
     let load_start = std::time::Instant::now();
     let reader = SafetensorsReader::open(Path::new(&path)).expect("open safetensors");
-    let mapper = llama_weight_mapper(&config, &handles.param_names, &handles.param_ids)
-        .expect("mapper");
+    let mapper =
+        llama_weight_mapper(&config, &handles.param_names, &handles.param_ids).expect("mapper");
 
     let metas = collect_metas_from_reader(&reader);
     let proj_weight_count = count_proj_weights(&metas);
@@ -440,8 +442,7 @@ fn run_one_model_m8(
     // dispatch-fired assertion below picks the right one.
     let bf16_matmul_before = vram_bf16_matmul_count();
     let bf16_native_before = vram_bf16_native_matmul_count();
-    let fast_mode_active =
-        std::env::var("ATENIA_FAST_MODE").as_deref() == Ok("1");
+    let fast_mode_active = std::env::var("ATENIA_FAST_MODE").as_deref() == Ok("1");
     let tokens = Tensor::new_cpu(vec![1, 4], TOKENS.to_vec());
     println!("Running forward (M8 BF16 dispatcher active)...");
     let fwd_start = std::time::Instant::now();
@@ -637,9 +638,7 @@ const LLAMA32_CONFIG: &str = r#"{
 #[test]
 #[ignore = "requires CUDA + checkpoint env vars + F64 fixtures"]
 fn m8_5_tinyllama_under_bf16_kernel_matches_f64() {
-    let _guard = M8_5_TEST_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
+    let _guard = M8_5_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     if !cuda_available() {
         eprintln!("CUDA not available, skipping");
         return;
@@ -661,9 +660,7 @@ fn m8_5_tinyllama_under_bf16_kernel_matches_f64() {
 #[test]
 #[ignore = "requires CUDA + checkpoint env vars + F64 fixtures"]
 fn m8_5_smollm2_under_bf16_kernel_matches_f64() {
-    let _guard = M8_5_TEST_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
+    let _guard = M8_5_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     if !cuda_available() {
         eprintln!("CUDA not available, skipping");
         return;
@@ -685,9 +682,7 @@ fn m8_5_smollm2_under_bf16_kernel_matches_f64() {
 #[test]
 #[ignore = "requires CUDA + checkpoint env vars + F64 fixtures"]
 fn m8_5_qwen25_under_bf16_kernel_matches_f64() {
-    let _guard = M8_5_TEST_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
+    let _guard = M8_5_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     if !cuda_available() {
         eprintln!("CUDA not available, skipping");
         return;
@@ -709,9 +704,7 @@ fn m8_5_qwen25_under_bf16_kernel_matches_f64() {
 #[test]
 #[ignore = "requires CUDA + checkpoint env vars + F64 fixtures"]
 fn m8_5_llama_3_2_under_bf16_kernel_matches_f64() {
-    let _guard = M8_5_TEST_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
+    let _guard = M8_5_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     if !cuda_available() {
         eprintln!("CUDA not available, skipping");
         return;

@@ -7,9 +7,9 @@ mod v15;
 mod v16;
 
 use v15::policy::types::DecisionBias;
-use v16::contract::contract_resolver::ContractResolver;
 use v16::contract::constraints::{ConstraintKind, RuntimeState};
 use v16::contract::contract_errors::ContractError;
+use v16::contract::contract_resolver::ContractResolver;
 
 fn make_normalized_bias() -> DecisionBias {
     DecisionBias {
@@ -35,7 +35,8 @@ fn contract_is_produced_from_valid_bias() {
     let bias = make_normalized_bias();
     let state = make_runtime_state();
 
-    let contract = ContractResolver::resolve_contract(&bias, &state).expect("contract should be produced");
+    let contract =
+        ContractResolver::resolve_contract(&bias, &state).expect("contract should be produced");
 
     assert_eq!(contract.bias, bias);
     assert_eq!(contract.runtime_snapshot, state);
@@ -122,7 +123,8 @@ fn constraints_reflect_bias_priorities() {
         ..make_runtime_state()
     };
 
-    let contract2 = ContractResolver::resolve_contract(&aggressive_bias, &low_headroom_state).expect("contract");
+    let contract2 = ContractResolver::resolve_contract(&aggressive_bias, &low_headroom_state)
+        .expect("contract");
 
     assert!(contract2.max_aggressiveness <= 0.5);
     let has_limit_aggressiveness = contract2

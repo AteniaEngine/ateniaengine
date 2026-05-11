@@ -34,17 +34,14 @@ use uuid::Uuid;
 use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::amg::reactive::MigrationReport;
 use atenia_engine::tensor::disk_tier;
-use atenia_engine::tensor::{
-    DType, Device, Layout, StorageTransferError, Tensor, TensorStorage,
-};
+use atenia_engine::tensor::{DType, Device, Layout, StorageTransferError, Tensor, TensorStorage};
 
 // ---------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------
 
 fn test_cache_dir(label: &str) -> PathBuf {
-    let dir = std::env::temp_dir()
-        .join(format!("atenia_m3_e_11_4_{}_{}", label, Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("atenia_m3_e_11_4_{}_{}", label, Uuid::new_v4()));
     std::fs::create_dir_all(&dir).expect("create test cache dir");
     dir
 }
@@ -54,13 +51,7 @@ fn cleanup(dir: &PathBuf) {
 }
 
 fn cpu_tensor(shape: Vec<usize>, data: Vec<f32>) -> Tensor {
-    let mut t = Tensor::with_layout(
-        shape,
-        0.0,
-        Device::CPU,
-        Layout::Contiguous,
-        DType::F32,
-    );
+    let mut t = Tensor::with_layout(shape, 0.0, Device::CPU, Layout::Contiguous, DType::F32);
     t.set_cpu_data(data);
     t
 }
@@ -114,7 +105,11 @@ fn test_migrate_all_cpu_to_disk_single_tensor() {
                 .unwrap_or(false)
         })
         .count();
-    assert!(cpu_count_pre >= 1, "expected >=1 Cpu tensor, got {}", cpu_count_pre);
+    assert!(
+        cpu_count_pre >= 1,
+        "expected >=1 Cpu tensor, got {}",
+        cpu_count_pre
+    );
 
     let report = graph
         .migrate_all_cpu_to_disk(&dir)
@@ -146,10 +141,7 @@ fn test_migrate_all_cpu_to_disk_single_tensor() {
                         dir
                     );
                 }
-                other => panic!(
-                    "expected Disk, got {:?}",
-                    std::mem::discriminant(other)
-                ),
+                other => panic!("expected Disk, got {:?}", std::mem::discriminant(other)),
             }
         }
     }
@@ -204,8 +196,8 @@ fn test_migrate_all_cpu_to_disk_mixed_storage() {
                     TensorStorage::Cpu(v) => v.clone(),
                     _ => unreachable!(),
                 };
-                let handle = disk_tier::write_f32_tensor(&dir, &data)
-                    .expect("manual pre-migration write");
+                let handle =
+                    disk_tier::write_f32_tensor(&dir, &data).expect("manual pre-migration write");
                 t.storage = TensorStorage::Disk(handle);
                 forced_disk_count = 1;
                 break;
@@ -264,8 +256,7 @@ fn test_migrate_all_cpu_to_disk_mixed_storage() {
 fn test_migrate_all_cpu_to_disk_creates_cache_dir() {
     // Build a path UNDER a temp dir that does not exist yet —
     // migrate should create it.
-    let parent = std::env::temp_dir()
-        .join(format!("atenia_m3_e_11_4_mkdir_{}", Uuid::new_v4()));
+    let parent = std::env::temp_dir().join(format!("atenia_m3_e_11_4_mkdir_{}", Uuid::new_v4()));
     let missing_dir = parent.join("nested").join("cache");
     assert!(!missing_dir.exists(), "pre-condition: dir must not exist");
 
@@ -295,8 +286,7 @@ fn test_migrate_all_cpu_to_disk_atomicity_preserves_storage_on_failure() {
     // (not a directory) as the "cache dir" does it reliably on
     // every platform — `create_dir_all` returns NotADirectory /
     // AlreadyExists-that-is-not-a-directory.
-    let tmp = std::env::temp_dir()
-        .join(format!("atenia_m3_e_11_4_unwritable_{}", Uuid::new_v4()));
+    let tmp = std::env::temp_dir().join(format!("atenia_m3_e_11_4_unwritable_{}", Uuid::new_v4()));
     // Create a FILE at the path the test will pass to migrate.
     std::fs::write(&tmp, b"not a directory").expect("write sentinel file");
 
@@ -380,9 +370,7 @@ fn test_migrate_all_cpu_to_disk_bring_back_roundtrip() {
     let _ = graph.execute(vec![]);
 
     // Migrate.
-    graph
-        .migrate_all_cpu_to_disk(&dir)
-        .expect("migrate ok");
+    graph.migrate_all_cpu_to_disk(&dir).expect("migrate ok");
 
     // Bring back.
     for node in graph.nodes.iter_mut() {
@@ -449,7 +437,10 @@ fn test_migrate_all_to_disk_composite_cuda_to_disk() {
             }
         }
     }
-    assert!(forced_cuda, "test setup: at least one tensor pushed to Cuda");
+    assert!(
+        forced_cuda,
+        "test setup: at least one tensor pushed to Cuda"
+    );
 
     let report = graph
         .migrate_all_to_disk(&dir)
@@ -497,20 +488,14 @@ fn test_migration_report_partial_progress_semantics() {
     // progress failures. But the struct itself permits the
     // combination, and the invariants should hold.)
     let mut err_no_progress = MigrationReport::new();
-    err_no_progress.failure = Some((
-        0,
-        StorageTransferError::DiskWriteFailed("x".to_string()),
-    ));
+    err_no_progress.failure = Some((0, StorageTransferError::DiskWriteFailed("x".to_string())));
     assert!(!err_no_progress.is_complete());
     assert!(!err_no_progress.is_partial());
 
     // Partial: some migrated + failure.
     let mut partial = MigrationReport::new();
     partial.tensors_migrated = 3;
-    partial.failure = Some((
-        5,
-        StorageTransferError::DiskWriteFailed("y".to_string()),
-    ));
+    partial.failure = Some((5, StorageTransferError::DiskWriteFailed("y".to_string())));
     assert!(!partial.is_complete());
     assert!(partial.is_partial());
 }

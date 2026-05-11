@@ -2,9 +2,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 
-use crate::v13::self_trainer::{
-    BackendChoice, ChoiceStats, ContextBucket, SelfTrainer,
-};
+use crate::v13::self_trainer::{BackendChoice, ChoiceStats, ContextBucket, SelfTrainer};
 
 #[derive(Debug, Clone)]
 pub enum PersistError {

@@ -7,7 +7,9 @@ pub struct KernelTags {
 
 impl KernelTags {
     pub fn new() -> Self {
-        Self { tags: HashSet::new() }
+        Self {
+            tags: HashSet::new(),
+        }
     }
 
     pub fn with(mut self, tag: &'static str) -> Self {

@@ -15,7 +15,7 @@
 //! - `set_cpu_bf16_bits` updates both the storage and the dtype.
 
 use atenia_engine::tensor::tensor::{
-    bf16_bits_to_f32, f32_to_bf16_bits, DType, Tensor, TensorStorage,
+    DType, Tensor, TensorStorage, bf16_bits_to_f32, f32_to_bf16_bits,
 };
 
 /// A handful of representative F32 values whose lower 16 mantissa
@@ -23,15 +23,7 @@ use atenia_engine::tensor::tensor::{
 /// bit-exact.
 fn bf16_exact_samples() -> Vec<f32> {
     vec![
-        0.0_f32,
-        -0.0_f32,
-        1.0,
-        -1.0,
-        0.5,
-        -0.25,
-        2.0,
-        -16.0,
-        0.0078125,    // 2^-7, exact BF16
+        0.0_f32, -0.0_f32, 1.0, -1.0, 0.5, -0.25, 2.0, -16.0, 0.0078125, // 2^-7, exact BF16
         -1024.0,
     ]
 }
@@ -134,7 +126,11 @@ fn ensure_cpu_transitions_bf16_to_f32_storage() {
     // downstream ops that read `dtype` to construct outputs or
     // to enforce mixed-precision rejection see a consistent F32
     // tensor.
-    assert_eq!(t.dtype, DType::F32, "ensure_cpu must flip dtype to F32 on CpuBf16 → Cpu");
+    assert_eq!(
+        t.dtype,
+        DType::F32,
+        "ensure_cpu must flip dtype to F32 on CpuBf16 → Cpu"
+    );
     let view = t.as_cpu_slice();
     assert_eq!(view.len(), originals.len());
     for (got, want) in view.iter().zip(originals.iter()) {

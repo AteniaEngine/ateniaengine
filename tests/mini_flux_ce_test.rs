@@ -1,5 +1,5 @@
 use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::tensor::{Device, DType, Layout, Tensor};
+use atenia_engine::tensor::{DType, Device, Layout, Tensor};
 
 fn manual_cross_entropy(logits: &Tensor, targets: &[usize]) -> f32 {
     let shape = &logits.shape;
@@ -42,19 +42,11 @@ fn cross_entropy_matches_manual() {
         DType::F32,
     );
     logits.set_cpu_data(vec![
-        1.0, 0.5, -0.5,
-        0.2, 0.1, -0.1,
-        -0.3, 0.7, 0.1,
-        0.9, -0.4, 0.3,
+        1.0, 0.5, -0.5, 0.2, 0.1, -0.1, -0.3, 0.7, 0.1, 0.9, -0.4, 0.3,
     ]);
 
-    let mut targets = Tensor::with_layout(
-        vec![2, 2],
-        0.0,
-        Device::CPU,
-        Layout::Contiguous,
-        DType::F32,
-    );
+    let mut targets =
+        Tensor::with_layout(vec![2, 2], 0.0, Device::CPU, Layout::Contiguous, DType::F32);
     targets.set_cpu_data(vec![0.0, 1.0, 2.0, 1.0]);
 
     let mut gb = GraphBuilder::new();

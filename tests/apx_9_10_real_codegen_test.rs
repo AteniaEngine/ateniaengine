@@ -1,10 +1,10 @@
-﻿use atenia_engine::apx9::gpu_codegen_real::*;
 use atenia_engine::apx8::kernel_registry::register_real_kernel;
-use atenia_engine::tensor::{Tensor, Device, DType};
+use atenia_engine::apx9::gpu_codegen_real::*;
+use atenia_engine::tensor::{DType, Device, Tensor};
 
 #[test]
 fn apx_9_10_ptx_structure() {
-    let k = RealKernelBuilder::new_ptx("vec_add", &["a","b","out"]);
+    let k = RealKernelBuilder::new_ptx("vec_add", &["a", "b", "out"]);
     assert!(k.code.contains(".entry vec_add"));
     assert!(k.code.contains(".version"));
     assert!(k.code.contains("ret;"));
@@ -12,13 +12,13 @@ fn apx_9_10_ptx_structure() {
 
 #[test]
 fn apx_9_10_cl_structure() {
-    let k = RealKernelBuilder::new_cl("vec_add", &["a","b","out"]);
+    let k = RealKernelBuilder::new_cl("vec_add", &["a", "b", "out"]);
     assert!(k.code.contains("__kernel void vec_add"));
 }
 
 #[test]
 fn apx_9_10_register_kernel() {
-    let k = RealKernelBuilder::new_ptx("vec_add", &["a","b","out"]);
+    let k = RealKernelBuilder::new_ptx("vec_add", &["a", "b", "out"]);
     register_real_kernel(k);
 }
 

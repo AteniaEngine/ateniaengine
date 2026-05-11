@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use crate::tensor::Tensor;
 use crate::gpu_autodiff::ir_backward::BackwardKernelSpec;
+use crate::tensor::Tensor;
 
 pub trait BackwardOp {
     fn backward_gpu(&self, inputs: &[Tensor], grad_output: &Tensor) -> BackwardKernelSpec;

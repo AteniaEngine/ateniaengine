@@ -2,9 +2,9 @@
 // Implements a symbolic dual-issue scheduler operating on VGPUWarp and VGPUScoreboard.
 // Does not touch real kernels nor backward; only internal simulation structures.
 
-use crate::apx9::vgpu_warp::VGPUWarp;
-use crate::apx9::vgpu_scoreboard::VGPUScoreboard;
 use crate::apx9::vgpu_instr::VGPUInstr;
+use crate::apx9::vgpu_scoreboard::VGPUScoreboard;
+use crate::apx9::vgpu_warp::VGPUWarp;
 
 #[derive(Debug)]
 pub struct VGPUDualIssue;
@@ -30,9 +30,7 @@ impl VGPUDualIssue {
 
         // Issue slot #2 (avoid RAW/WAW conflicts with i1)
         if let Some(i2) = instr2.clone() {
-            if !Self::has_hazard(&i2, &warp.scoreboard)
-                && !Self::conflicts(instr1.as_ref(), &i2)
-            {
+            if !Self::has_hazard(&i2, &warp.scoreboard) && !Self::conflicts(instr1.as_ref(), &i2) {
                 warp.scoreboard.reserve(&i2);
                 warp.pipeline.push(i2);
                 ok2 = true;

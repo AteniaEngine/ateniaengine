@@ -32,7 +32,7 @@ impl VramAdapter for FakeVramAdapter {
             Err(_) => {
                 return Err(MoveError::BackendUnavailable(
                     "Failed to lock FakeVramAdapter storage".to_string(),
-                ))
+                ));
             }
         };
         guard.insert(id.to_string(), data.to_vec());
@@ -45,7 +45,7 @@ impl VramAdapter for FakeVramAdapter {
             Err(_) => {
                 return Err(MoveError::BackendUnavailable(
                     "Failed to lock FakeVramAdapter storage".to_string(),
-                ))
+                ));
             }
         };
         match guard.get(id) {
@@ -62,7 +62,7 @@ impl VramAdapter for FakeVramAdapter {
             Err(_) => {
                 return Err(MoveError::BackendUnavailable(
                     "Failed to lock FakeVramAdapter storage".to_string(),
-                ))
+                ));
             }
         };
         guard.remove(id);
@@ -308,7 +308,10 @@ fn vram_entries_restore_safely_to_ram() {
         Some(atenia_engine::v13::memory_types::StorageBacking::Ram(restored_bytes)) => {
             assert_eq!(restored_bytes, &bytes);
         }
-        other => panic!("expected RAM backing after VRAM-safe restore, got {:?}", other),
+        other => panic!(
+            "expected RAM backing after VRAM-safe restore, got {:?}",
+            other
+        ),
     }
 
     let _ = fs::remove_dir_all(cache_root);

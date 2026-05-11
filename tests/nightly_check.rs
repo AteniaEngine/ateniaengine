@@ -5,7 +5,9 @@ fn nightly_active_for_bench() {
     #[cfg(not(bench_nightly))]
     {
         if atenia_engine::apx_debug_enabled() {
-            eprintln!("Nightly bench features not active (bench_nightly cfg unset). Test is a no-op.");
+            eprintln!(
+                "Nightly bench features not active (bench_nightly cfg unset). Test is a no-op."
+            );
         }
     }
 

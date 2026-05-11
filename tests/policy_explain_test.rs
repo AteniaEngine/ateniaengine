@@ -3,14 +3,10 @@
 #[path = "../src/v15/mod.rs"]
 mod v15;
 
-use v15::policy::evidence::snapshot::PolicyEvidenceSnapshot;
 use v15::policy::evidence::signals::{PolicySignal, PolicySignalKind};
-use v15::policy::explain::explanation::{
-    PolicyExplanation, PreferenceStatus,
-};
-use v15::policy::explain::formatter::{
-    format_explanation_json, format_explanation_text,
-};
+use v15::policy::evidence::snapshot::PolicyEvidenceSnapshot;
+use v15::policy::explain::explanation::{PolicyExplanation, PreferenceStatus};
+use v15::policy::explain::formatter::{format_explanation_json, format_explanation_text};
 use v15::policy::preferences::user_preferences::UserPreferences;
 use v15::policy::types::DecisionBias;
 
@@ -146,7 +142,8 @@ fn ignored_preferences_are_explained() {
 
     // All active preferences should be marked as ignored_due_to_risk.
     for p in &expl.preference_explanations {
-        if p.name == "prefer_latency" || p.name == "prioritize_stability" || p.name == "prefer_gpu" {
+        if p.name == "prefer_latency" || p.name == "prioritize_stability" || p.name == "prefer_gpu"
+        {
             assert_eq!(p.status, PreferenceStatus::IgnoredDueToRisk);
         }
     }

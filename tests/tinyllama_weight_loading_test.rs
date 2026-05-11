@@ -6,12 +6,12 @@ use std::path::Path;
 
 use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::nn::llama::weight_loading::compute_transforms_for_name;
-use atenia_engine::nn::llama::{llama_weight_mapper, LlamaConfig};
+use atenia_engine::nn::llama::{LlamaConfig, llama_weight_mapper};
 use atenia_engine::tensor::Tensor;
 use atenia_engine::v17::loader::safetensors_reader::SafetensorsReader;
 use atenia_engine::v17::loader::weight_mapper::{LoadTransform, WeightMapper};
-use safetensors::tensor::TensorView;
 use safetensors::Dtype as StDtype;
+use safetensors::tensor::TensorView;
 
 const TINYLLAMA_CONFIG_JSON: &str = r#"{
   "architectures": ["LlamaForCausalLM"],
@@ -47,8 +47,8 @@ fn build_one_tensor_safetensors(name: &str, shape: &[usize], values: &[f32]) -> 
     for v in values {
         bytes.extend_from_slice(&v.to_le_bytes());
     }
-    let view = TensorView::new(StDtype::F32, shape.to_vec(), &bytes)
-        .expect("TensorView construction");
+    let view =
+        TensorView::new(StDtype::F32, shape.to_vec(), &bytes).expect("TensorView construction");
     let mut views: HashMap<String, TensorView> = HashMap::new();
     views.insert(name.to_string(), view);
     safetensors::serialize(&views, &None).expect("safetensors serialize")
@@ -77,15 +77,18 @@ fn run_pipeline_on_synthetic(
     let _ = gb.output(pid);
     let mut graph = gb.build();
 
-    let mut mapper =
-        WeightMapper::from_param_names_and_ids(&[String::from("w")], &[pid]).unwrap();
+    let mut mapper = WeightMapper::from_param_names_and_ids(&[String::from("w")], &[pid]).unwrap();
     if !transforms.is_empty() {
         mapper.set_transforms("w", transforms).unwrap();
     }
 
     let report = mapper.load_into(&mut graph, &reader).expect("load_into");
     assert_eq!(report.loaded, 1, "should have loaded exactly one tensor");
-    assert!(report.skipped.is_empty(), "no skipped expected: {:?}", report.skipped);
+    assert!(
+        report.skipped.is_empty(),
+        "no skipped expected: {:?}",
+        report.skipped
+    );
     assert!(report.missing.is_empty(), "no missing expected");
 
     graph.nodes[pid]
@@ -199,7 +202,7 @@ fn composite_tile_then_transpose_then_scale_matches_manual_computation() {
     // Step 1 — tile: [4, 6] → [8, 6]
     let mut tiled = vec![0.0_f32; 8 * 6];
     let blocks: [&[f32]; 2] = [
-        &file[0..12], // rows 0..2 (group 0)
+        &file[0..12],  // rows 0..2 (group 0)
         &file[12..24], // rows 2..4 (group 1)
     ];
     for (g, blk) in blocks.iter().enumerate() {
@@ -399,9 +402,10 @@ fn post_transform_shape_mismatch_surfaces_error() {
     let _ = gb.output(pid);
     let mut graph = gb.build();
 
-    let mut mapper =
-        WeightMapper::from_param_names_and_ids(&[String::from("w")], &[pid]).unwrap();
-    mapper.set_transforms("w", vec![LoadTransform::Transpose2D]).unwrap();
+    let mut mapper = WeightMapper::from_param_names_and_ids(&[String::from("w")], &[pid]).unwrap();
+    mapper
+        .set_transforms("w", vec![LoadTransform::Transpose2D])
+        .unwrap();
 
     let err = mapper
         .load_into(&mut graph, &reader)
@@ -409,7 +413,11 @@ fn post_transform_shape_mismatch_surfaces_error() {
     let msg = format!("{:?}", err);
     assert!(msg.contains("ShapeMismatch"), "got error: {}", msg);
     // expected = graph shape = [2, 3]; actual = post-transform = [3, 2]
-    assert!(msg.contains("[3, 2]"), "actual shape should appear: {}", msg);
+    assert!(
+        msg.contains("[3, 2]"),
+        "actual shape should appear: {}",
+        msg
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -439,8 +447,7 @@ fn reshape_transform_rejects_numel_mismatch() {
     let _ = gb.output(pid);
     let mut graph = gb.build();
 
-    let mut mapper =
-        WeightMapper::from_param_names_and_ids(&[String::from("w")], &[pid]).unwrap();
+    let mut mapper = WeightMapper::from_param_names_and_ids(&[String::from("w")], &[pid]).unwrap();
     mapper
         .set_transforms(
             "w",
@@ -477,12 +484,14 @@ fn load_real_tinyllama_layer0_q_proj_weight_via_pipeline() {
     // Build a minimal graph: one Parameter sized [hidden, hidden] (post-transpose).
     let hidden = 2048_usize;
     let mut gb = GraphBuilder::new();
-    let pid = gb.parameter(Tensor::new_cpu(vec![hidden, hidden], vec![0.0_f32; hidden * hidden]));
+    let pid = gb.parameter(Tensor::new_cpu(
+        vec![hidden, hidden],
+        vec![0.0_f32; hidden * hidden],
+    ));
     let _ = gb.output(pid);
     let mut graph = gb.build();
 
-    let mut mapper =
-        WeightMapper::from_param_names_and_ids(&[name.to_string()], &[pid]).unwrap();
+    let mut mapper = WeightMapper::from_param_names_and_ids(&[name.to_string()], &[pid]).unwrap();
     mapper
         .set_transforms(name, vec![LoadTransform::Transpose2D])
         .unwrap();

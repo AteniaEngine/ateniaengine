@@ -1,8 +1,8 @@
-use crate::gpu::tensor::{TensorGPU, GpuTensorManager};
-use crate::gpu::nvrtc::compiler::NvrtcCompiler;
-use crate::gpu::loader::CudaLoader;
 use crate::gpu::launcher::GpuLauncher;
+use crate::gpu::loader::CudaLoader;
+use crate::gpu::nvrtc::compiler::NvrtcCompiler;
 use crate::gpu::runtime::GpuRuntime;
+use crate::gpu::tensor::{GpuTensorManager, TensorGPU};
 
 pub struct FusedAttentionGPU;
 
@@ -86,9 +86,7 @@ impl FusedAttentionGPU {
 
         // Load
         let loader = CudaLoader::new().map_err(|_| ())?;
-        let module = loader
-            .load_module_from_ptx(&prog.ptx)
-            .map_err(|_| ())?;
+        let module = loader.load_module_from_ptx(&prog.ptx).map_err(|_| ())?;
         let func = loader
             .get_function(&module, "fused_attention")
             .map_err(|_| ())?;

@@ -1,7 +1,7 @@
-﻿use atenia_engine::apx9::vgpu_memory::VGpuMemory;
-use atenia_engine::apx9::vgpu_tensor_core::{VGPUTensorCore, TENSOR_CORE_TILE};
 use atenia_engine::apx9::vgpu_instr::VGPUInstr;
-use atenia_engine::{tensor::Tensor, tensor::DType, tensor::Device};
+use atenia_engine::apx9::vgpu_memory::VGpuMemory;
+use atenia_engine::apx9::vgpu_tensor_core::{TENSOR_CORE_TILE, VGPUTensorCore};
+use atenia_engine::{tensor::DType, tensor::Device, tensor::Tensor};
 
 #[test]
 fn apx_9_24_tensor_core_basic_structure() {

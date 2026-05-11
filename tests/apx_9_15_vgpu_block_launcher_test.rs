@@ -1,5 +1,5 @@
-use atenia_engine::{VGpuMemory, VGpuBlockLauncher};
 use atenia_engine::apx9::gpu_ir::*;
+use atenia_engine::{VGpuBlockLauncher, VGpuMemory};
 
 #[test]
 fn apx_9_15_launches_threads_and_blocks() {
@@ -8,10 +8,23 @@ fn apx_9_15_launches_threads_and_blocks() {
         name: "vk_add_grid".into(),
         threads: 4,
         ops: vec![
-            GpuOp::Load { dst: "a".into(), src: "in".into() },
-            GpuOp::Load { dst: "b".into(), src: "in2".into() },
-            GpuOp::Add { dst: "c".into(), a: "a".into(), b: "b".into() },
-            GpuOp::Store { dst: "out".into(), src: "c".into() },
+            GpuOp::Load {
+                dst: "a".into(),
+                src: "in".into(),
+            },
+            GpuOp::Load {
+                dst: "b".into(),
+                src: "in2".into(),
+            },
+            GpuOp::Add {
+                dst: "c".into(),
+                a: "a".into(),
+                b: "b".into(),
+            },
+            GpuOp::Store {
+                dst: "out".into(),
+                src: "c".into(),
+            },
         ],
     };
 
@@ -34,7 +47,11 @@ fn apx_9_15_launches_threads_and_blocks() {
 
 #[test]
 fn apx_9_15_structure() {
-    let ir = GpuKernelIR { name: "empty".into(), threads: 1, ops: vec![] };
+    let ir = GpuKernelIR {
+        name: "empty".into(),
+        threads: 1,
+        ops: vec![],
+    };
     let mut mem = VGpuMemory::new(64, 16, 3, 8);
 
     // It should be able to launch an empty grid without panics or side effects.

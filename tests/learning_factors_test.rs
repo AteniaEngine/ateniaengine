@@ -39,7 +39,11 @@ fn structured_contains_all_factors() {
         had_drift: false,
     };
 
-    trainer.record_episode(atenia_engine::v13::self_trainer::TrainingEpisode { ctx: exec_ctx, decision, outcome });
+    trainer.record_episode(atenia_engine::v13::self_trainer::TrainingEpisode {
+        ctx: exec_ctx,
+        decision,
+        outcome,
+    });
 
     let snap = trainer.snapshot();
     assert!(snap.entries.len() >= 1);
@@ -50,10 +54,22 @@ fn structured_contains_all_factors() {
         .expect("expected structured explanation for known context");
 
     assert_eq!(explanation.factors.len(), 4);
-    assert_eq!(explanation.factors[0].kind, DecisionFactorKind::HistoricalSuccessRate);
-    assert_eq!(explanation.factors[1].kind, DecisionFactorKind::DriftPenalty);
-    assert_eq!(explanation.factors[2].kind, DecisionFactorKind::ObservationCount);
-    assert_eq!(explanation.factors[3].kind, DecisionFactorKind::MemoryStability);
+    assert_eq!(
+        explanation.factors[0].kind,
+        DecisionFactorKind::HistoricalSuccessRate
+    );
+    assert_eq!(
+        explanation.factors[1].kind,
+        DecisionFactorKind::DriftPenalty
+    );
+    assert_eq!(
+        explanation.factors[2].kind,
+        DecisionFactorKind::ObservationCount
+    );
+    assert_eq!(
+        explanation.factors[3].kind,
+        DecisionFactorKind::MemoryStability
+    );
 }
 
 #[test]
@@ -81,7 +97,11 @@ fn weights_are_clamped_and_safe() {
 
     // Record many episodes to drive counts high.
     for _ in 0..100 {
-        trainer.record_episode(atenia_engine::v13::self_trainer::TrainingEpisode { ctx: exec_ctx, decision, outcome });
+        trainer.record_episode(atenia_engine::v13::self_trainer::TrainingEpisode {
+            ctx: exec_ctx,
+            decision,
+            outcome,
+        });
     }
 
     let snap = trainer.snapshot();
@@ -122,7 +142,11 @@ fn gpu_structured_explanation_has_high_success_weight() {
     };
 
     for _ in 0..40 {
-        trainer.record_episode(atenia_engine::v13::self_trainer::TrainingEpisode { ctx: exec_ctx, decision, outcome: good_outcome });
+        trainer.record_episode(atenia_engine::v13::self_trainer::TrainingEpisode {
+            ctx: exec_ctx,
+            decision,
+            outcome: good_outcome,
+        });
     }
 
     let snap = trainer.snapshot();
@@ -161,7 +185,11 @@ fn drift_penalty_present_for_unstable_context() {
     };
 
     for _ in 0..10 {
-        trainer.record_episode(atenia_engine::v13::self_trainer::TrainingEpisode { ctx: exec_ctx, decision, outcome: outcome_unstable });
+        trainer.record_episode(atenia_engine::v13::self_trainer::TrainingEpisode {
+            ctx: exec_ctx,
+            decision,
+            outcome: outcome_unstable,
+        });
     }
 
     let snap = trainer.snapshot();

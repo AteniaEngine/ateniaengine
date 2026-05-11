@@ -33,12 +33,12 @@
 use std::collections::HashMap;
 
 use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::nn::mini_flux::{build_mini_flux, MiniFluxConfig};
+use atenia_engine::nn::mini_flux::{MiniFluxConfig, build_mini_flux};
 use atenia_engine::tensor::TensorStorage;
 use atenia_engine::v17::loader::safetensors_reader::SafetensorsReader;
 use atenia_engine::v17::loader::weight_mapper::WeightMapper;
-use safetensors::tensor::TensorView;
 use safetensors::Dtype as StDtype;
+use safetensors::tensor::TensorView;
 
 fn tiny_cfg() -> MiniFluxConfig {
     MiniFluxConfig {
@@ -53,7 +53,10 @@ fn tiny_cfg() -> MiniFluxConfig {
 
 fn fresh_mini_flux(
     cfg: &MiniFluxConfig,
-) -> (atenia_engine::amg::graph::Graph, atenia_engine::nn::mini_flux::MiniFluxHandles) {
+) -> (
+    atenia_engine::amg::graph::Graph,
+    atenia_engine::nn::mini_flux::MiniFluxHandles,
+) {
     let mut gb = GraphBuilder::new();
     let tokens_id = gb.input();
     let mut graph = gb.build();
@@ -148,7 +151,11 @@ fn f16_tensor_loads_correctly_via_weight_mapper() {
         .unwrap()
         .as_cpu_slice();
     assert_eq!(loaded.len(), expected_after_roundtrip.len());
-    for (i, (got, expected)) in loaded.iter().zip(expected_after_roundtrip.iter()).enumerate() {
+    for (i, (got, expected)) in loaded
+        .iter()
+        .zip(expected_after_roundtrip.iter())
+        .enumerate()
+    {
         assert_eq!(
             got.to_bits(),
             expected.to_bits(),
@@ -231,7 +238,11 @@ fn f16_to_bf16_storage_path_is_consistent() {
         ),
     };
     assert_eq!(stored_bits.len(), expected_bf16_bits.len());
-    for (i, (got, expected)) in stored_bits.iter().zip(expected_bf16_bits.iter()).enumerate() {
+    for (i, (got, expected)) in stored_bits
+        .iter()
+        .zip(expected_bf16_bits.iter())
+        .enumerate()
+    {
         assert_eq!(
             got, expected,
             "F16 → F32 → BF16 mismatch at element {}: got 0x{:04X}, expected 0x{:04X}",
@@ -261,9 +272,7 @@ fn f16_loaded_graph_executes_forward_without_panic() {
     let mut gb = GraphBuilder::new();
     let tokens_id = gb.input();
     let (logits_id, param_ids, param_names) =
-        atenia_engine::nn::mini_flux::build_mini_flux_language_model(
-            &mut gb, &cfg, tokens_id,
-        );
+        atenia_engine::nn::mini_flux::build_mini_flux_language_model(&mut gb, &cfg, tokens_id);
     let _ = gb.output(logits_id);
     let mut graph = gb.build();
     let handles = atenia_engine::nn::mini_flux::MiniFluxHandles {
@@ -319,16 +328,15 @@ fn f16_loaded_graph_executes_forward_without_panic() {
         assert!(
             matches!(storage, TensorStorage::CpuBf16(_)),
             "param node {} expected CpuBf16, got {:?}",
-            id, storage
+            id,
+            storage
         );
     }
 
     // Run the forward. MiniFlux's seq_len is 4 in tiny_cfg(),
     // so we feed 4 token ids in [0, vocab_size).
-    let tokens = atenia_engine::tensor::Tensor::new_cpu(
-        vec![1, cfg.seq_len],
-        vec![1.0_f32, 2.0, 3.0, 4.0],
-    );
+    let tokens =
+        atenia_engine::tensor::Tensor::new_cpu(vec![1, cfg.seq_len], vec![1.0_f32, 2.0, 3.0, 4.0]);
     let outputs = graph.execute(vec![tokens]);
     assert_eq!(outputs.len(), 1);
     let logits = &outputs[0];

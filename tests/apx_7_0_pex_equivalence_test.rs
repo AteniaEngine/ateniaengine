@@ -1,5 +1,5 @@
-﻿use atenia_engine::tensor::{Tensor, Device};
 use atenia_engine::config::get_runtime_flags;
+use atenia_engine::tensor::{Device, Tensor};
 
 #[test]
 fn apx_7_0_pex_matches_seq_in_6_3_mode() {

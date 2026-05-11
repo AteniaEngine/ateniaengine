@@ -1,9 +1,9 @@
-﻿#![allow(dead_code)]
+#![allow(dead_code)]
 
 use atenia_engine::v17;
 
 use v17::cnn::conv2d::AbortFlag;
-use v17::cnn::mnist::mnist_runner::{run_mnist_inference, MnistInferenceResult, MnistRunnerError};
+use v17::cnn::mnist::mnist_runner::{MnistInferenceResult, MnistRunnerError, run_mnist_inference};
 
 fn run_ok() -> MnistInferenceResult {
     let flag = AbortFlag::new();

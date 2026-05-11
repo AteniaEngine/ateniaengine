@@ -1,6 +1,6 @@
-﻿use atenia_engine::tensor::{Tensor, Device};
-use atenia_engine::tensor::ops::batch_matmul::batch_matmul_parallel;
 use atenia_engine::cuda::batch_matmul::cuda_batch_matmul;
+use atenia_engine::tensor::ops::batch_matmul::batch_matmul_parallel;
+use atenia_engine::tensor::{Device, Tensor};
 
 #[test]
 fn apx_4_5_batch_matmul_matches_cpu() {
@@ -30,9 +30,7 @@ fn apx_4_5_batch_matmul_matches_cpu() {
 fn cuda_batch_matmul_panics_on_cuda_input() {
     // See apx_4_4_linear_test::cuda_linear_panics_on_cuda_input for rationale.
     if atenia_engine::gpu::gpu_engine().is_none() {
-        println!(
-            "[TEST:cuda_batch_matmul_panics_on_cuda_input] no GPU available -> graceful skip"
-        );
+        println!("[TEST:cuda_batch_matmul_panics_on_cuda_input] no GPU available -> graceful skip");
         return;
     }
 

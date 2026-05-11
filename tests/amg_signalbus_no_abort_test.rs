@@ -23,14 +23,12 @@
 use std::sync::Arc;
 
 use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::amm::signal_bus::SignalBus;
 use atenia_engine::amg::reactive::ReactiveExecutionContext;
+use atenia_engine::amm::signal_bus::SignalBus;
 use atenia_engine::tensor::{DType, Device, Layout, Tensor};
 use atenia_engine::v15::policy::types::DecisionBias;
 use atenia_engine::v16::contract::constraints::{Constraints, RuntimeState};
-use atenia_engine::v16::contract::execution_contract::{
-    ExecutionBackend, ExecutionContract,
-};
+use atenia_engine::v16::contract::execution_contract::{ExecutionBackend, ExecutionContract};
 use atenia_engine::v16::guards::execution_guard::ExecutionGuard;
 use atenia_engine::v16::guards::guard_action::GuardAction;
 use atenia_engine::v16::guards::guard_conditions::GuardConditions;
@@ -46,13 +44,8 @@ fn build_small_matmul_graph() -> atenia_engine::amg::graph::Graph {
     let mut gb = GraphBuilder::new();
     let input_id = gb.input();
 
-    let mut weight = Tensor::with_layout(
-        vec![2, 2],
-        0.0,
-        Device::CPU,
-        Layout::Contiguous,
-        DType::F32,
-    );
+    let mut weight =
+        Tensor::with_layout(vec![2, 2], 0.0, Device::CPU, Layout::Contiguous, DType::F32);
     weight.set_cpu_data(vec![1.0, 0.0, 0.0, 1.0]); // identity
     let w_id = gb.parameter(weight);
 
@@ -62,13 +55,7 @@ fn build_small_matmul_graph() -> atenia_engine::amg::graph::Graph {
 }
 
 fn make_input_tensor() -> Tensor {
-    let mut t = Tensor::with_layout(
-        vec![2, 2],
-        0.0,
-        Device::CPU,
-        Layout::Contiguous,
-        DType::F32,
-    );
+    let mut t = Tensor::with_layout(vec![2, 2], 0.0, Device::CPU, Layout::Contiguous, DType::F32);
     t.set_cpu_data(vec![1.0, 2.0, 3.0, 4.0]);
     t
 }
@@ -127,7 +114,11 @@ fn assert_close(got: &[f32], want: &[f32], ctx: &str) {
         assert!(
             diff < NUMERICAL_TOLERANCE,
             "{}: idx {}: got={} want={} diff={}",
-            ctx, i, g, w, diff
+            ctx,
+            i,
+            g,
+            w,
+            diff
         );
     }
 }
@@ -147,7 +138,11 @@ fn no_abort_with_continue_guard_matches_baseline() {
         baseline.last_abort().is_none(),
         "baseline must not record an abort"
     );
-    assert_eq!(baseline_outputs.len(), 1, "baseline should produce one output");
+    assert_eq!(
+        baseline_outputs.len(),
+        1,
+        "baseline should produce one output"
+    );
 
     // --- Guarded: same graph + reactive context with AlwaysContinueGuard ---
     let mut guarded = build_small_matmul_graph();
@@ -156,11 +151,7 @@ fn no_abort_with_continue_guard_matches_baseline() {
     let contract = minimal_contract();
     let guards: Vec<Box<dyn ExecutionGuard>> = vec![Box::new(AlwaysContinueGuard)];
     let guard_manager = GuardManager::new(guards);
-    guarded.set_reactive_context(ReactiveExecutionContext::new(
-        bus,
-        contract,
-        guard_manager,
-    ));
+    guarded.set_reactive_context(ReactiveExecutionContext::new(bus, contract, guard_manager));
 
     let guarded_outputs = guarded
         .execute_checked(vec![make_input_tensor()])
@@ -192,10 +183,7 @@ fn no_abort_without_reactive_context() {
         result.is_ok(),
         "execute_checked without reactive_context must return Ok"
     );
-    assert!(
-        graph.last_abort().is_none(),
-        "last_abort must remain None"
-    );
+    assert!(graph.last_abort().is_none(), "last_abort must remain None");
 
     let outputs = result.unwrap();
     assert_eq!(outputs.len(), 1);

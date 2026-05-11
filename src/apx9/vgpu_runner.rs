@@ -8,12 +8,7 @@ pub struct VGpuRunner;
 
 impl VGpuRunner {
     /// Execute a kernel IR over virtual memory.
-    pub fn run_kernel(
-        ir: &GpuKernelIR,
-        mem: &mut VGpuMemory,
-        _block_id: usize,
-        thread_id: usize,
-    ) {
+    pub fn run_kernel(ir: &GpuKernelIR, mem: &mut VGpuMemory, _block_id: usize, thread_id: usize) {
         for op in &ir.ops {
             match op {
                 // Interpretamos `Load { dst, src }` como:

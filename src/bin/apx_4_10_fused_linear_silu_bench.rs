@@ -1,7 +1,7 @@
 use std::time::Instant;
 
-use atenia_engine::tensor::{Tensor, Device};
 use atenia_engine::cuda::fused_linear_silu::cuda_fused_linear_silu;
+use atenia_engine::tensor::{Device, Tensor};
 
 fn main() {
     let m = 64usize;
@@ -27,5 +27,9 @@ fn main() {
     let elapsed = start.elapsed();
 
     let avg = elapsed.as_secs_f64() / iters as f64;
-    println!("[APX 4.10] fused_linear_silu: iters={iters}, total={:?}, avg={:.3} us", elapsed, avg * 1e6);
+    println!(
+        "[APX 4.10] fused_linear_silu: iters={iters}, total={:?}, avg={:.3} us",
+        elapsed,
+        avg * 1e6
+    );
 }

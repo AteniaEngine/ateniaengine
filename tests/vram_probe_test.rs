@@ -6,7 +6,7 @@
 
 use std::process::Command;
 
-use atenia_engine::amm::vram_probe::{read_nvidia_vram_free_bytes, VramProbeError};
+use atenia_engine::amm::vram_probe::{VramProbeError, read_nvidia_vram_free_bytes};
 
 const MIB: u64 = 1024 * 1024;
 
@@ -44,19 +44,21 @@ fn test_value_within_reasonable_bounds() {
 
     let bytes = read_nvidia_vram_free_bytes().expect("probe should succeed on NVIDIA host");
 
-    let lower = 100 * MIB;                // sanity: > 100 MB
-    let upper = (8 * 1024 + 512) * MIB;   // 8.5 GiB, margin over an 8 GB card
+    let lower = 100 * MIB; // sanity: > 100 MB
+    let upper = (8 * 1024 + 512) * MIB; // 8.5 GiB, margin over an 8 GB card
 
     assert!(
         bytes > lower,
         "free VRAM unexpectedly low: {} bytes (< {} bytes)",
-        bytes, lower
+        bytes,
+        lower
     );
     assert!(
         bytes < upper,
         "free VRAM unexpectedly high: {} bytes (> {} bytes); \
          this bound assumes the dev GPU is an 8 GB class card",
-        bytes, upper
+        bytes,
+        upper
     );
 }
 
@@ -76,7 +78,8 @@ fn test_multiple_calls_consistent() {
         diff < max_diff,
         "consecutive probes differ by {} bytes (> {} bytes); \
          expected stable VRAM between back-to-back calls",
-        diff, max_diff
+        diff,
+        max_diff
     );
 }
 

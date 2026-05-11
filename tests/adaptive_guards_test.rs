@@ -31,7 +31,9 @@ fn make_contract(require_stability: bool) -> ExecutionContract {
         offload_supported: true,
     };
 
-    let mut items = vec![Constraint::hard(ConstraintKind::MemoryHeadroom { min: 0.2 })];
+    let mut items = vec![Constraint::hard(ConstraintKind::MemoryHeadroom {
+        min: 0.2,
+    })];
     if require_stability {
         items.push(Constraint::hard(ConstraintKind::RequireStability));
     }
@@ -101,7 +103,11 @@ impl ExecutionGuard for AlwaysContinueGuard {
         "always_continue_guard"
     }
 
-    fn evaluate(&self, _contract: &ExecutionContract, _conditions: &GuardConditions) -> GuardAction {
+    fn evaluate(
+        &self,
+        _contract: &ExecutionContract,
+        _conditions: &GuardConditions,
+    ) -> GuardAction {
         GuardAction::Continue
     }
 }
@@ -111,7 +117,8 @@ fn guards_detect_risk_and_recommend_action() {
     let contract = make_contract(true);
     let conditions = make_conditions_high_risk();
 
-    let guards: Vec<Box<dyn ExecutionGuard>> = vec![Box::new(MemoryPressureGuard { threshold: 0.7 })];
+    let guards: Vec<Box<dyn ExecutionGuard>> =
+        vec![Box::new(MemoryPressureGuard { threshold: 0.7 })];
     let manager = GuardManager::new(guards);
 
     let action = manager

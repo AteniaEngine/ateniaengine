@@ -1,6 +1,6 @@
 use atenia_engine::v13::auto_trainer_loop::{AutoTrainerConfig, AutoTrainerLoop};
-use atenia_engine::v13::checkpoint::{WarmStartAction, WarmStartDecision, WarmStartPlan};
 use atenia_engine::v13::checkpoint::drift::DriftReport;
+use atenia_engine::v13::checkpoint::{WarmStartAction, WarmStartDecision, WarmStartPlan};
 use atenia_engine::v13::memory_types::MemoryTier;
 use atenia_engine::v13::self_trainer::{BackendChoice, ExecutionContext};
 use atenia_engine::v13::self_trainer_integration::ExecResult;
@@ -11,7 +11,9 @@ fn make_gpu_plan() -> WarmStartPlan {
         is_grad: false,
         current: MemoryTier::Ram,
         desired: Some(MemoryTier::Vram),
-        action: WarmStartAction::HintPromote { to: MemoryTier::Vram },
+        action: WarmStartAction::HintPromote {
+            to: MemoryTier::Vram,
+        },
         reason: "Desired VRAM and GPU available".to_string(),
     };
 
@@ -130,8 +132,12 @@ fn records_episodes_every_tick() {
 
     // We do not assert on a specific backend; just check that
     // some stats have at least 5 episodes recorded for this context.
-    let cpu_stats = loop_state.inner_trainer().stats_for(ctx, BackendChoice::Cpu);
-    let gpu_stats = loop_state.inner_trainer().stats_for(ctx, BackendChoice::Gpu);
+    let cpu_stats = loop_state
+        .inner_trainer()
+        .stats_for(ctx, BackendChoice::Cpu);
+    let gpu_stats = loop_state
+        .inner_trainer()
+        .stats_for(ctx, BackendChoice::Gpu);
 
     let total = cpu_stats.map(|s| s.count).unwrap_or(0) + gpu_stats.map(|s| s.count).unwrap_or(0);
     assert!(total >= 5);

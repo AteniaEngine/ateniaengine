@@ -35,7 +35,8 @@ impl GpuBackend {
         contract: &ExecutionContract,
         guard_action: GuardAction,
     ) -> Result<Tensor, ComputeError> {
-        self.inner.run_inference(model, input, contract, guard_action)
+        self.inner
+            .run_inference(model, input, contract, guard_action)
     }
 }
 

@@ -5,8 +5,8 @@ use crate::apx8::kernel_generator::KernelIR;
 
 #[derive(Debug, Clone)]
 pub struct GPUAutoSelector {
-    pub vendors: Vec<String>,   // ["nvidia", "amd", "intel"]
-    pub preferred: String,      // final pick
+    pub vendors: Vec<String>, // ["nvidia", "amd", "intel"]
+    pub preferred: String,    // final pick
 }
 
 impl GPUAutoSelector {

@@ -13,13 +13,11 @@
 use serde::Serialize;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
-use crate::demo::{
-    argmax_row, build_and_load_llama, cache_dir_for, make_context,
-};
+use crate::demo::{argmax_row, build_and_load_llama, cache_dir_for, make_context};
 use crate::nn::llama::LlamaRuntime;
 use crate::tensor::tensor::Tensor;
 
@@ -144,9 +142,7 @@ impl Heartbeat {
         let stop_clone = Arc::clone(&stop);
         let handle = std::thread::spawn(move || {
             while !stop_clone.load(Ordering::Relaxed) {
-                std::thread::sleep(std::time::Duration::from_millis(
-                    interval_ms,
-                ));
+                std::thread::sleep(std::time::Duration::from_millis(interval_ms));
                 if stop_clone.load(Ordering::Relaxed) {
                     break;
                 }
@@ -154,7 +150,10 @@ impl Heartbeat {
                 let _ = std::io::stderr().flush();
             }
         });
-        Heartbeat { stop, handle: Some(handle) }
+        Heartbeat {
+            stop,
+            handle: Some(handle),
+        }
     }
 
     fn stop(mut self) {
@@ -237,14 +236,12 @@ fn cache_dir_disk_probe(cache_dir: &Path) -> Option<f64> {
 
 fn render(report: &DemoReport, format: OutputFormat) {
     match format {
-        OutputFormat::Json => {
-            match serde_json::to_string_pretty(report) {
-                Ok(s) => println!("{}", s),
-                Err(e) => {
-                    eprintln!("error: failed to serialise report as JSON: {}", e);
-                }
+        OutputFormat::Json => match serde_json::to_string_pretty(report) {
+            Ok(s) => println!("{}", s),
+            Err(e) => {
+                eprintln!("error: failed to serialise report as JSON: {}", e);
             }
-        }
+        },
         OutputFormat::Text => {
             render_text(report);
         }
@@ -253,7 +250,10 @@ fn render(report: &DemoReport, format: OutputFormat) {
 
 fn render_text(r: &DemoReport) {
     println!();
-    println!("=== Atenia v20 Killer Demo — Llama-family — Mode {} ===", r.mode.to_uppercase());
+    println!(
+        "=== Atenia v20 Killer Demo — Llama-family — Mode {} ===",
+        r.mode.to_uppercase()
+    );
     println!();
     println!("Run:");
     println!("  atenia version: {}", r.version);
@@ -278,10 +278,7 @@ fn render_text(r: &DemoReport) {
         r.phases.load_seconds, r.phases.load_throughput_mb_s_estimate,
     );
     if let Some(warmup) = r.phases.warmup_forward_seconds {
-        println!(
-            "  Warmup forward ............... {:>8.2}s",
-            warmup,
-        );
+        println!("  Warmup forward ............... {:>8.2}s", warmup,);
     }
     if let Some(spill_secs) = r.phases.spill_seconds {
         let migrated = r.phases.spill_tensors_migrated.unwrap_or(0);
@@ -305,10 +302,7 @@ fn render_text(r: &DemoReport) {
     println!();
     println!(
         "Logit stats: max |v| = {:.4}   mean |v| = {:.4}   finite = {}/{}",
-        r.logit_stats.max_abs,
-        r.logit_stats.mean_abs,
-        r.logit_stats.finite,
-        r.logit_stats.total,
+        r.logit_stats.max_abs, r.logit_stats.mean_abs, r.logit_stats.finite, r.logit_stats.total,
     );
     if let Some(contract) = &r.contract {
         println!();
@@ -323,7 +317,11 @@ fn render_text(r: &DemoReport) {
         );
         println!(
             "  {} {}",
-            if contract.bit_exact { "[PASS] ✓" } else { "[FAIL] ✗" },
+            if contract.bit_exact {
+                "[PASS] ✓"
+            } else {
+                "[FAIL] ✗"
+            },
             contract.description,
         );
     }
@@ -375,7 +373,10 @@ pub fn run(args: RunArgs) -> i32 {
 
 fn run_mode_a(args: RunArgs) -> i32 {
     let total_start = Instant::now();
-    let runtime = LlamaRuntime { batch: 1, seq: args.seq };
+    let runtime = LlamaRuntime {
+        batch: 1,
+        seq: args.seq,
+    };
 
     // Canonical M4.6 / M4.7.6.d input. The CLI hard-codes
     // this to keep the demo's argmax reproducible against
@@ -397,19 +398,18 @@ fn run_mode_a(args: RunArgs) -> i32 {
 
     eprintln!("=== Atenia v20 Killer Demo — Mode A (clean RAM) ===");
     eprintln!();
-    eprintln!("Loading {} (this typically takes ~3 min on NVMe) ...",
-        args.model.display());
+    eprintln!(
+        "Loading {} (this typically takes ~3 min on NVMe) ...",
+        args.model.display()
+    );
 
     let hb = if !args.no_progress {
         Some(Heartbeat::start(2_000))
     } else {
         None
     };
-    let (mut graph, _store, metrics) = build_and_load_llama(
-        &args.model,
-        runtime,
-        /*verbose=*/ false,
-    );
+    let (mut graph, _store, metrics) =
+        build_and_load_llama(&args.model, runtime, /*verbose=*/ false);
     if let Some(hb) = hb {
         hb.stop();
     }
@@ -439,15 +439,18 @@ fn run_mode_a(args: RunArgs) -> i32 {
     assert_eq!(slice.len(), args.seq * vocab, "logit slice mismatch");
 
     let max_abs = slice.iter().map(|v| v.abs()).fold(0.0_f32, f32::max);
-    let mean_abs: f32 =
-        slice.iter().map(|v| v.abs()).sum::<f32>() / slice.len() as f32;
+    let mean_abs: f32 = slice.iter().map(|v| v.abs()).sum::<f32>() / slice.len() as f32;
     let finite = slice.iter().filter(|v| v.is_finite()).count();
 
     let mut argmax_entries = Vec::with_capacity(args.seq);
     for pos in 0..args.seq {
         let row = &slice[pos * vocab..(pos + 1) * vocab];
         let (id, logit) = argmax_row(row, vocab);
-        argmax_entries.push(ArgmaxEntry { position: pos, token_id: id, logit });
+        argmax_entries.push(ArgmaxEntry {
+            position: pos,
+            token_id: id,
+            logit,
+        });
     }
 
     let total_seconds = total_start.elapsed().as_secs_f64();
@@ -468,8 +471,7 @@ fn run_mode_a(args: RunArgs) -> i32 {
         phases: PhasesReport {
             build_seconds: metrics.build_secs,
             load_seconds: metrics.load_secs,
-            load_throughput_mb_s_estimate: 26_000.0
-                / metrics.load_secs.max(0.01),
+            load_throughput_mb_s_estimate: 26_000.0 / metrics.load_secs.max(0.01),
             forward_seconds: fwd_secs,
             spill_seconds: None,
             spill_tensors_migrated: None,
@@ -577,7 +579,10 @@ fn run_mode_b(args: RunArgs) -> i32 {
              canonical setting; --seq <other> overrides)."
         );
     }
-    let runtime = LlamaRuntime { batch: 1, seq: effective_seq };
+    let runtime = LlamaRuntime {
+        batch: 1,
+        seq: effective_seq,
+    };
 
     let token_pattern: Vec<f32> = match effective_seq {
         1 => vec![1.0],
@@ -598,14 +603,13 @@ fn run_mode_b(args: RunArgs) -> i32 {
     if let Err(e) = std::fs::create_dir_all(&cache_dir) {
         eprintln!(
             "error: could not create cache directory {}: {}",
-            cache_dir.display(), e,
+            cache_dir.display(),
+            e,
         );
         return 1;
     }
 
-    eprintln!(
-        "=== Atenia v20 Killer Demo — Mode B (autonomous LRU spill trigger) ==="
-    );
+    eprintln!("=== Atenia v20 Killer Demo — Mode B (autonomous LRU spill trigger) ===");
     eprintln!();
     eprintln!("Cache dir:      {}", cache_dir.display());
 
@@ -621,11 +625,8 @@ fn run_mode_b(args: RunArgs) -> i32 {
     } else {
         None
     };
-    let (mut graph, _store, metrics) = build_and_load_llama(
-        &args.model,
-        runtime,
-        /*verbose=*/ false,
-    );
+    let (mut graph, _store, metrics) =
+        build_and_load_llama(&args.model, runtime, /*verbose=*/ false);
     if let Some(hb) = hb {
         hb.stop();
     }
@@ -728,8 +729,7 @@ fn run_mode_b(args: RunArgs) -> i32 {
         phases: ModeBPhases {
             build_seconds: metrics.build_secs,
             load_seconds: metrics.load_secs,
-            load_throughput_mb_s_estimate: 26_000.0
-                / metrics.load_secs.max(0.01),
+            load_throughput_mb_s_estimate: 26_000.0 / metrics.load_secs.max(0.01),
             forward_seconds: trigger_secs,
         },
         deep_degrade_events: dd_events,
@@ -750,25 +750,20 @@ fn run_mode_b(args: RunArgs) -> i32 {
 
 fn render_mode_b(r: &ModeBReport, format: OutputFormat) {
     match format {
-        OutputFormat::Json => {
-            match serde_json::to_string_pretty(r) {
-                Ok(s) => println!("{}", s),
-                Err(e) => eprintln!("error: failed to serialise report: {}", e),
-            }
-        }
+        OutputFormat::Json => match serde_json::to_string_pretty(r) {
+            Ok(s) => println!("{}", s),
+            Err(e) => eprintln!("error: failed to serialise report: {}", e),
+        },
         OutputFormat::Text => {
             println!();
-            println!(
-                "=== Atenia v20 Killer Demo — Llama-family — Mode B ==="
-            );
+            println!("=== Atenia v20 Killer Demo — Llama-family — Mode B ===");
             println!();
             println!("Run:");
             println!("  atenia version: {}", r.version);
             println!("  Model:          {}", r.model.path.display());
             println!(
                 "                  {} layers × hidden {} × intermediate {} (vocab {})",
-                r.model.layers, r.model.hidden_size,
-                r.model.intermediate_size, r.model.vocab_size,
+                r.model.layers, r.model.hidden_size, r.model.intermediate_size, r.model.vocab_size,
             );
             println!(
                 "  Parameters:     {} ({} storage)",
@@ -796,8 +791,7 @@ fn render_mode_b(r: &ModeBReport, format: OutputFormat) {
                 "  Spilled to disk:             {:.1} MB",
                 (r.spilled_bytes as f64) / 1_000_000.0,
             );
-            let trigger_passed =
-                r.deep_degrade_events > 0 && r.spilled_bytes > 0;
+            let trigger_passed = r.deep_degrade_events > 0 && r.spilled_bytes > 0;
             println!(
                 "  {} {}",
                 if trigger_passed {
@@ -814,9 +808,7 @@ fn render_mode_b(r: &ModeBReport, format: OutputFormat) {
                 println!("  (the transparency contract is owned by Mode C; Mode B validates");
                 println!("   the trigger plumbing only).");
             } else {
-                println!(
-                    "  catch_unwind absorbed a downstream panic — the documented"
-                );
+                println!("  catch_unwind absorbed a downstream panic — the documented");
                 println!("  M4.7.5.e activation-arm `ensure_cpu` gap (M5+ follow-up).");
                 println!("  This is expected and does NOT indicate a Mode B failure.");
                 if let Some(msg) = &r.panic_message {
@@ -857,7 +849,10 @@ fn run_mode_c(args: RunArgs) -> i32 {
              canonical setting; --seq <other> overrides)."
         );
     }
-    let runtime = LlamaRuntime { batch: 1, seq: effective_seq };
+    let runtime = LlamaRuntime {
+        batch: 1,
+        seq: effective_seq,
+    };
 
     // Token pattern: BOS for seq=1; ascending integers for
     // seq>1. Same convention as Mode A.
@@ -880,7 +875,8 @@ fn run_mode_c(args: RunArgs) -> i32 {
     if let Err(e) = std::fs::create_dir_all(&cache_dir) {
         eprintln!(
             "error: could not create cache directory {}: {}",
-            cache_dir.display(), e,
+            cache_dir.display(),
+            e,
         );
         return 1;
     }
@@ -901,11 +897,8 @@ fn run_mode_c(args: RunArgs) -> i32 {
     } else {
         None
     };
-    let (mut graph, _store, metrics) = build_and_load_llama(
-        &args.model,
-        runtime,
-        /*verbose=*/ false,
-    );
+    let (mut graph, _store, metrics) =
+        build_and_load_llama(&args.model, runtime, /*verbose=*/ false);
     if let Some(hb) = hb {
         hb.stop();
     }
@@ -1011,12 +1004,15 @@ fn run_mode_c(args: RunArgs) -> i32 {
     for pos in 0..effective_seq {
         let row = &post_logits[pos * vocab..(pos + 1) * vocab];
         let (id, logit) = argmax_row(row, vocab);
-        argmax_entries.push(ArgmaxEntry { position: pos, token_id: id, logit });
+        argmax_entries.push(ArgmaxEntry {
+            position: pos,
+            token_id: id,
+            logit,
+        });
     }
 
     let max_abs = post_logits.iter().map(|v| v.abs()).fold(0.0_f32, f32::max);
-    let mean_abs: f32 =
-        post_logits.iter().map(|v| v.abs()).sum::<f32>() / post_logits.len() as f32;
+    let mean_abs: f32 = post_logits.iter().map(|v| v.abs()).sum::<f32>() / post_logits.len() as f32;
     let finite = post_logits.iter().filter(|v| v.is_finite()).count();
 
     let total_seconds = total_start.elapsed().as_secs_f64();
@@ -1037,8 +1033,7 @@ fn run_mode_c(args: RunArgs) -> i32 {
         phases: PhasesReport {
             build_seconds: metrics.build_secs,
             load_seconds: metrics.load_secs,
-            load_throughput_mb_s_estimate: 26_000.0
-                / metrics.load_secs.max(0.01),
+            load_throughput_mb_s_estimate: 26_000.0 / metrics.load_secs.max(0.01),
             forward_seconds: post_secs,
             spill_seconds: Some(spill_secs),
             spill_tensors_migrated: Some(migration.tensors_migrated),

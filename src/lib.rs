@@ -48,48 +48,48 @@ pub mod cli_generate;
 // where you'd want the runtime without tokenization.
 pub mod tokenizer;
 
-pub mod hal;
-pub mod tensor;
-pub mod amg;
 pub mod age;
+pub mod amg;
 pub mod amm;
-pub mod pps;
-pub mod data;
-pub mod training;
 pub mod api;
-pub mod nn;
-pub mod autograd;
-pub mod optim;
-pub mod ops;
-pub mod profiler;
-pub mod cpu_features;
-pub mod simd_kernels;
-pub mod matmul_dispatcher;
-pub mod simd_fused_kernels;
-pub mod config;
-pub mod gpu;
-pub mod gpu_autodiff;
-pub mod engine;
-pub mod validator;
 pub mod apx3;
 pub mod apx3_5;
 pub mod apx3_8;
 pub mod apx3_9;
 pub mod apx4;
-pub mod cuda;
+pub mod apx4_11;
+pub mod apx4_12;
+pub mod apx4_13;
 pub mod apx4_3;
 pub mod apx4_5;
 pub mod apx4_7;
 pub mod apx4_8;
 pub mod apx4_9;
-pub mod apx4_11;
-pub mod apx4_12;
-pub mod apx4_13;
 pub mod apx5;
 pub mod apx5_4;
+pub mod apx6_2;
+pub mod autograd;
+pub mod config;
+pub mod cpu_features;
+pub mod cuda;
+pub mod data;
+pub mod engine;
+pub mod gpu;
+pub mod gpu_autodiff;
+pub mod hal;
 pub mod kernels;
 pub mod matmul;
-pub mod apx6_2;
+pub mod matmul_dispatcher;
+pub mod nn;
+pub mod ops;
+pub mod optim;
+pub mod pps;
+pub mod profiler;
+pub mod simd_fused_kernels;
+pub mod simd_kernels;
+pub mod tensor;
+pub mod training;
+pub mod validator;
 pub mod apx6_3 {
     pub mod tiled_avx2;
 }
@@ -98,76 +98,76 @@ pub mod apx6_4;
 pub mod apx6_5;
 pub mod apx6_6_auto_tiling;
 pub mod apx6_7 {
-    pub mod runtime_profile;
     pub mod auto_bench;
+    pub mod runtime_profile;
 }
-pub mod apx6_8;
-pub mod apx6_9;
 pub mod apx6_10;
 pub mod apx6_11;
 pub mod apx6_12;
 pub mod apx6_13;
 pub mod apx6_14;
 pub mod apx6_15;
+pub mod apx6_8;
+pub mod apx6_9;
 pub mod apx7;
 pub mod apx7_2;
 pub mod apx8;
 pub mod apx9;
 pub mod v13;
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
 use crate::apx5_4::AdaptiveSelector;
 use crate::apx6_7::runtime_profile::RuntimeProfile;
 use crate::apx6_8::BlockSizePredictor;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 pub use crate::apx6_12::adaptive_scheduler::*;
 pub use crate::apx6_13::tempered_selector::*;
-pub use crate::apx6_14::temperature_schedule::*;
 pub use crate::apx6_14::temperature_manager::*;
+pub use crate::apx6_14::temperature_schedule::*;
 pub use crate::apx6_15::stabilizer::*;
 pub use crate::apx7_2::pgl::*;
-pub use crate::apx8::dualgraph::*;
-pub use crate::apx8::hybrid_dispatcher::*;
-pub use crate::apx8::gpu_transfer_estimator::*;
-pub use crate::apx8::gpu_kernels::*;
-pub use crate::apx8::kernel_registry::*;
-pub use crate::apx8::gpu_kernel_signature::*;
-pub use crate::apx8::kernel_generator::*;
-pub use crate::apx8::codegen_mock::*;
-pub use crate::apx8::gpu_compiler_stub::*;
-pub use crate::apx8::gpu_metalayer::*;
 pub use crate::apx8::codegen::gpu_codegen_v1::*;
-pub use crate::apx8::gpu_autoselector::*;
-pub use crate::apx8::precompile_cache::*;
-pub use crate::apx8::multiarch_router::*;
-pub use crate::apx8::gpu_finalizer::*;
+pub use crate::apx8::codegen_mock::*;
 pub use crate::apx8::device_planner::*;
+pub use crate::apx8::dualgraph::*;
+pub use crate::apx8::gpu_autoselector::*;
+pub use crate::apx8::gpu_compiler_stub::*;
+pub use crate::apx8::gpu_finalizer::*;
+pub use crate::apx8::gpu_kernel_signature::*;
+pub use crate::apx8::gpu_kernels::*;
+pub use crate::apx8::gpu_metalayer::*;
 pub use crate::apx8::gpu_partition::*;
+pub use crate::apx8::gpu_transfer_estimator::*;
 pub use crate::apx8::hxo::*;
+pub use crate::apx8::hybrid_dispatcher::*;
+pub use crate::apx8::kernel_generator::*;
+pub use crate::apx8::kernel_registry::*;
+pub use crate::apx8::multiarch_router::*;
+pub use crate::apx8::precompile_cache::*;
 // APX 9.1: expose only the high-level IR; GpuKernelIR/GpuOp are used via apx9::gpu_ir.
-pub use crate::apx9::gpu_ir::{GpuIrKernel, GpuIrParam, GpuIrType, GpuIrStmt};
-pub use crate::apx9::ptx_emitter::*;
-pub use crate::apx9::ptx_validator::*;
-pub use crate::apx9::sass_translator::*;
-pub use crate::apx9::sass_optimizer::*;
-pub use crate::apx9::memory_planner::*;
-pub use crate::apx9::gpu_execution_planner::*;
-pub use crate::apx9::gpu_executor_mock::*;
+pub use crate::apx9::cpu_to_ptx::*;
 pub use crate::apx9::gpu_autotuner::*;
 pub use crate::apx9::gpu_codegen_real::*;
-pub use crate::apx9::cpu_to_ptx::*;
+pub use crate::apx9::gpu_execution_planner::*;
+pub use crate::apx9::gpu_executor_mock::*;
+pub use crate::apx9::gpu_ir::{GpuIrKernel, GpuIrParam, GpuIrStmt, GpuIrType};
+pub use crate::apx9::memory_planner::*;
+pub use crate::apx9::ptx_emitter::*;
+pub use crate::apx9::ptx_validator::*;
+pub use crate::apx9::sass_optimizer::*;
+pub use crate::apx9::sass_translator::*;
+pub use crate::apx9::vgpu_block_launcher::*;
+pub use crate::apx9::vgpu_divergence::*;
 pub use crate::apx9::vgpu_executor::*;
 pub use crate::apx9::vgpu_memory::*;
 pub use crate::apx9::vgpu_runner::*;
-pub use crate::apx9::vgpu_block_launcher::*;
+pub use crate::apx9::vgpu_scoreboard::*;
+pub use crate::apx9::vgpu_sm::*;
 pub use crate::apx9::vgpu_sync::*;
+pub use crate::apx9::vgpu_tensor_core::*;
 pub use crate::apx9::vgpu_warp::*;
 pub use crate::apx9::vgpu_warp_scheduler::*;
-pub use crate::apx9::vgpu_divergence::*;
-pub use crate::apx9::vgpu_scoreboard::*;
-pub use crate::apx9::vgpu_tensor_core::*;
-pub use crate::apx9::vgpu_sm::*;
 
 pub static APX_SILENT_MODE: AtomicBool = AtomicBool::new(false);
 
@@ -267,7 +267,9 @@ pub fn apx_mode() -> String {
 /// route through their own gates, not numeric comparisons).
 pub fn apx_mode_at_least(target: &str) -> bool {
     fn parse_mode(s: &str) -> Vec<u32> {
-        s.split('.').map(|seg| seg.parse::<u32>().unwrap_or(0)).collect()
+        s.split('.')
+            .map(|seg| seg.parse::<u32>().unwrap_or(0))
+            .collect()
     }
     let mode_v = parse_mode(&apx_mode());
     let target_v = parse_mode(target);
@@ -306,17 +308,30 @@ fn init_parallel_runtime_entrypoint() {
             use crate::apx9::gpu_ir::{GpuKernelIR, GpuOp};
             use crate::apx9::ptx_emitter::PtxEmitter;
             use crate::apx9::ptx_validator::PtxValidator;
-            use crate::apx9::sass_translator::SassTranslator;
             use crate::apx9::sass_optimizer::SassOptimizer;
+            use crate::apx9::sass_translator::SassTranslator;
 
             let ir = GpuKernelIR {
                 name: "vecadd".to_string(),
                 threads: 256,
                 ops: vec![
-                    GpuOp::Load { dst: "%f1".into(), src: "%A+tid*4".into() },
-                    GpuOp::Load { dst: "%f2".into(), src: "%B+tid*4".into() },
-                    GpuOp::Add  { dst: "%f3".into(), a: "%f1".into(), b: "%f2".into() },
-                    GpuOp::Store { dst: "%Out+tid*4".into(), src: "%f3".into() },
+                    GpuOp::Load {
+                        dst: "%f1".into(),
+                        src: "%A+tid*4".into(),
+                    },
+                    GpuOp::Load {
+                        dst: "%f2".into(),
+                        src: "%B+tid*4".into(),
+                    },
+                    GpuOp::Add {
+                        dst: "%f3".into(),
+                        a: "%f1".into(),
+                        b: "%f2".into(),
+                    },
+                    GpuOp::Store {
+                        dst: "%Out+tid*4".into(),
+                        src: "%f3".into(),
+                    },
                 ],
             };
 
@@ -432,14 +447,18 @@ pub fn init_kernels() {
     // APX 8.7: register GPU mini-kernels v0 in the GPU kernel registry.
     {
         use crate::apx8::gpu_kernels::gpu_vec_add;
-        use crate::apx8::kernel_registry::{KERNEL_REGISTRY as APX8_KERNEL_REGISTRY, KernelKey as APX8KernelKey};
+        use crate::apx8::kernel_registry::{
+            KERNEL_REGISTRY as APX8_KERNEL_REGISTRY, KernelKey as APX8KernelKey,
+        };
 
         APX8_KERNEL_REGISTRY.register(APX8KernelKey::VecAdd, gpu_vec_add);
     }
 
     // APX 8.8: register GPU kernel signatures without executing anything.
     {
-        use crate::apx8::gpu_kernel_signature::{register_signature, GpuKernelSignature, GpuKernelType};
+        use crate::apx8::gpu_kernel_signature::{
+            GpuKernelSignature, GpuKernelType, register_signature,
+        };
 
         register_signature(GpuKernelSignature {
             key: GpuKernelType::VecAdd,

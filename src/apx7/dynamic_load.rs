@@ -34,11 +34,11 @@
 //! direct access to a `SignalBus`), out of scope for this fix.
 
 use std::sync::{Mutex, OnceLock, RwLock};
-use sysinfo::{System, MINIMUM_CPU_UPDATE_INTERVAL};
+use sysinfo::{MINIMUM_CPU_UPDATE_INTERVAL, System};
 
 #[derive(Debug, Clone, Copy)]
 pub struct LoadSnapshot {
-    pub cpu_load: f32,       // percentage (0.0 .. 100.0 per-core-averaged)
+    pub cpu_load: f32, // percentage (0.0 .. 100.0 per-core-averaged)
     pub threads_available: usize,
 }
 
@@ -188,10 +188,7 @@ mod tests {
             "first cpu_load must be finite, got {}",
             first.cpu_load
         );
-        assert!(
-            !first.cpu_load.is_nan(),
-            "first cpu_load must not be NaN"
-        );
+        assert!(!first.cpu_load.is_nan(), "first cpu_load must not be NaN");
         assert!(
             first.threads_available >= 1,
             "threads_available must be >= 1, got {}",

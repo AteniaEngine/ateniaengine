@@ -1,18 +1,22 @@
-﻿#![allow(dead_code)]
+#![allow(dead_code)]
 
 use atenia_engine::v17;
 
-use v17::compute::tensor::Tensor;
+use v17::cnn::bias::{BiasError, add_bias};
 use v17::cnn::conv2d::AbortFlag;
-use v17::cnn::bias::{add_bias, BiasError};
+use v17::compute::tensor::Tensor;
 
 #[test]
 fn bias_add_matches_reference() {
-    let input = Tensor::new(vec![1, 3, 2, 2], vec![
-        1.0, 2.0, 3.0, 4.0, // C0
-        5.0, 6.0, 7.0, 8.0, // C1
-        9.0,10.0,11.0,12.0, // C2
-    ]).unwrap();
+    let input = Tensor::new(
+        vec![1, 3, 2, 2],
+        vec![
+            1.0, 2.0, 3.0, 4.0, // C0
+            5.0, 6.0, 7.0, 8.0, // C1
+            9.0, 10.0, 11.0, 12.0, // C2
+        ],
+    )
+    .unwrap();
 
     let bias = Tensor::new(vec![3], vec![0.5, -1.0, 2.0]).unwrap();
     let flag = AbortFlag::new();
@@ -43,10 +47,11 @@ fn bias_add_matches_reference() {
 
 #[test]
 fn bias_is_deterministic() {
-    let input = Tensor::new(vec![1, 2, 2, 2], vec![
-        1.0, 2.0, 3.0, 4.0,
-        5.0, 6.0, 7.0, 8.0,
-    ]).unwrap();
+    let input = Tensor::new(
+        vec![1, 2, 2, 2],
+        vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+    )
+    .unwrap();
     let bias = Tensor::new(vec![2], vec![0.5, -0.5]).unwrap();
     let flag = AbortFlag::new();
 

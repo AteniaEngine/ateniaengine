@@ -40,7 +40,14 @@ impl VGPUTensorCore {
     /// Returns true if the instruction was handled by the virtual tensor core.
     pub fn try_execute_ir(mem: &mut VGpuMemory, instr: &VGPUInstr) -> bool {
         match instr {
-            VGPUInstr::HMMA { a_ptr, b_ptr, c_ptr, m, k, n } => {
+            VGPUInstr::HMMA {
+                a_ptr,
+                b_ptr,
+                c_ptr,
+                m,
+                k,
+                n,
+            } => {
                 Self::execute_hmma(mem, *a_ptr, *b_ptr, *c_ptr, *m, *k, *n);
                 true
             }

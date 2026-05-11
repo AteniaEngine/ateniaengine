@@ -87,10 +87,8 @@ fn decide_backward_target(
 ) -> ExecutionTarget {
     let _ = snapshot;
 
-    let all_in_vram = !grad_tiers.is_empty()
-        && grad_tiers
-            .iter()
-            .all(|t| matches!(t, MemoryTier::Vram));
+    let all_in_vram =
+        !grad_tiers.is_empty() && grad_tiers.iter().all(|t| matches!(t, MemoryTier::Vram));
 
     if matches!(forward_target, ExecutionTarget::Gpu) && all_in_vram && gpu_available {
         ExecutionTarget::Gpu
@@ -143,12 +141,8 @@ pub fn execute_backward(
             grad_tiers.push(g.tier);
         }
 
-        let mut target = decide_backward_target(
-            node.forward_target,
-            &grad_tiers,
-            snapshot,
-            gpu_available,
-        );
+        let mut target =
+            decide_backward_target(node.forward_target, &grad_tiers, snapshot, gpu_available);
 
         let all_grads_cpu = (&node.input_grads, &node.output_grads);
 
@@ -210,12 +204,8 @@ pub fn execute_backward_with_trace(
             grad_tiers.push(g.tier);
         }
 
-        let requested_target = decide_backward_target(
-            node.forward_target,
-            &grad_tiers,
-            snapshot,
-            gpu_available,
-        );
+        let requested_target =
+            decide_backward_target(node.forward_target, &grad_tiers, snapshot, gpu_available);
 
         let mut final_target = requested_target;
         let mut moves: Vec<GradMoveRecord> = Vec::new();
@@ -329,13 +319,8 @@ pub fn execute_backward_with_trace(
                 reason = format!("{}; GPU fallback due to move failure", reason);
             }
 
-            let _ = process_moves_for_target(
-                mem,
-                &all_grads,
-                MemoryTier::Ram,
-                snapshot,
-                &mut moves,
-            );
+            let _ =
+                process_moves_for_target(mem, &all_grads, MemoryTier::Ram, snapshot, &mut moves);
         }
 
         let stream = match final_target {
@@ -478,10 +463,7 @@ pub fn persist_grads_after_backward(
     Ok(GradPersistReport { saved, skipped })
 }
 
-pub fn warm_grads_before_backward(
-    mem: &mut HybridMemoryManager,
-    grad_ids: &[String],
-) -> usize {
+pub fn warm_grads_before_backward(mem: &mut HybridMemoryManager, grad_ids: &[String]) -> usize {
     let mut restored = 0usize;
 
     for gid in grad_ids {

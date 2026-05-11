@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use crate::tensor::Tensor;
-use crate::ops::op_ref::{BackwardOp, OpRef};
 use crate::gpu_autodiff::ir_backward::BackwardKernelSpec;
+use crate::ops::op_ref::{BackwardOp, OpRef};
+use crate::tensor::Tensor;
 
 pub struct MatMulOp;
 

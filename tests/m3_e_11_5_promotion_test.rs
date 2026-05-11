@@ -25,8 +25,8 @@
 //!   tests.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use uuid::Uuid;
 
 use atenia_engine::amg::builder::GraphBuilder;
@@ -38,9 +38,7 @@ use atenia_engine::amm::vram_probe::{VramProbeApi, VramProbeError, VramSnapshot}
 use atenia_engine::tensor::{DType, Device, Layout, Tensor, TensorStorage};
 use atenia_engine::v15::policy::types::DecisionBias;
 use atenia_engine::v16::contract::constraints::{Constraints, RuntimeState};
-use atenia_engine::v16::contract::execution_contract::{
-    ExecutionBackend, ExecutionContract,
-};
+use atenia_engine::v16::contract::execution_contract::{ExecutionBackend, ExecutionContract};
 use atenia_engine::v16::guards::execution_guard::ExecutionGuard;
 use atenia_engine::v16::guards::guard_manager::GuardManager;
 use atenia_engine::v16::guards::simple_memory_pressure_guard::SimpleMemoryPressureGuard;
@@ -153,8 +151,7 @@ impl CpuProbeApi for FixedCpuProbe {
 // ---------------------------------------------------------------------
 
 fn test_cache_dir(label: &str) -> PathBuf {
-    let dir = std::env::temp_dir()
-        .join(format!("atenia_m3_e_11_5_{}_{}", label, Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("atenia_m3_e_11_5_{}_{}", label, Uuid::new_v4()));
     std::fs::create_dir_all(&dir).expect("create test cache dir");
     dir
 }
@@ -226,8 +223,7 @@ fn make_context(
         Some(vram),
         Some(ram),
     ));
-    let guards: Vec<Box<dyn ExecutionGuard>> =
-        vec![Box::new(SimpleMemoryPressureGuard::new())];
+    let guards: Vec<Box<dyn ExecutionGuard>> = vec![Box::new(SimpleMemoryPressureGuard::new())];
     let gm = GuardManager::new(guards);
     ReactiveExecutionContext::new_without_gc(bus, permissive_contract(), gm)
         .with_cache_dir(cache_dir)
@@ -235,18 +231,21 @@ fn make_context(
 
 fn param_storage_is(graph: &atenia_engine::amg::graph::Graph, kind: &str) -> bool {
     graph.nodes.iter().any(|n| {
-        n.output.as_ref().map(|t| match &t.storage {
-            TensorStorage::Cpu(_) => kind == "Cpu",
-            TensorStorage::CpuBf16(_) => kind == "CpuBf16",
-            TensorStorage::Cuda(_) => kind == "Cuda",
-            TensorStorage::Disk(_) => kind == "Disk",
-            // M5.c.2.a — Arc-shared variants. Promotion test
-            // never exercises them (it's about the M3 disk-
-            // spill machinery), so they map to the F32/BF16
-            // residency category for kind-classification.
-            TensorStorage::CpuShared(_) => kind == "Cpu" || kind == "CpuShared",
-            TensorStorage::CpuBf16Shared(_) => kind == "CpuBf16" || kind == "CpuBf16Shared",
-        }).unwrap_or(false)
+        n.output
+            .as_ref()
+            .map(|t| match &t.storage {
+                TensorStorage::Cpu(_) => kind == "Cpu",
+                TensorStorage::CpuBf16(_) => kind == "CpuBf16",
+                TensorStorage::Cuda(_) => kind == "Cuda",
+                TensorStorage::Disk(_) => kind == "Disk",
+                // M5.c.2.a — Arc-shared variants. Promotion test
+                // never exercises them (it's about the M3 disk-
+                // spill machinery), so they map to the F32/BF16
+                // residency category for kind-classification.
+                TensorStorage::CpuShared(_) => kind == "Cpu" || kind == "CpuShared",
+                TensorStorage::CpuBf16Shared(_) => kind == "CpuBf16" || kind == "CpuBf16Shared",
+            })
+            .unwrap_or(false)
     })
 }
 
@@ -275,9 +274,7 @@ fn test_promotion_when_dual_pressure() {
         "parameter should be on Disk after DeepDegrade promotion"
     );
     // The counter reflects the promotion.
-    let ctx_ref = g
-        .reactive_context()
-        .expect("context still attached");
+    let ctx_ref = g.reactive_context().expect("context still attached");
     assert!(
         ctx_ref.deep_degrade_events_count() >= 1,
         "deep_degrade counter should have incremented: {}",

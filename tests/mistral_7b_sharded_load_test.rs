@@ -76,10 +76,9 @@ fn mistral_7b_sharded_load_round_trips_every_tensor() {
         std::collections::BTreeMap::new();
     for shard_filename in index.shard_filenames() {
         let shard_path = index.shard_path(&shard_filename);
-        let reader = atenia_engine::v17::loader::safetensors_reader::SafetensorsReader::open(
-            &shard_path,
-        )
-        .unwrap_or_else(|e| panic!("open shard {}: {:?}", shard_path.display(), e));
+        let reader =
+            atenia_engine::v17::loader::safetensors_reader::SafetensorsReader::open(&shard_path)
+                .unwrap_or_else(|e| panic!("open shard {}: {:?}", shard_path.display(), e));
         for entry in reader.iter() {
             shapes.insert(entry.name.to_string(), entry.shape.to_vec());
         }

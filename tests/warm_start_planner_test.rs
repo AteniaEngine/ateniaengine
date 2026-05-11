@@ -22,7 +22,9 @@ fn make_checkpoint_entry(
     }
 }
 
-fn make_checkpoint(entries: Vec<atenia_engine::v13::checkpoint::CheckpointEntry>) -> HybridCheckpoint {
+fn make_checkpoint(
+    entries: Vec<atenia_engine::v13::checkpoint::CheckpointEntry>,
+) -> HybridCheckpoint {
     HybridCheckpoint {
         version: 1,
         created_unix: 1,
@@ -112,7 +114,10 @@ fn warm_start_respects_drift_downgrade_reason() {
             assert_eq!(*to, MemoryTier::Ram);
             assert!(d.reason.contains("downgraded") || d.reason.contains("drift"));
         }
-        other => panic!("expected DegradeSafe with downgrade reason, got {:?}", other),
+        other => panic!(
+            "expected DegradeSafe with downgrade reason, got {:?}",
+            other
+        ),
     }
 }
 
@@ -130,7 +135,13 @@ fn warm_start_does_not_materialize_lazy_entries() {
     let bytes = vec![1u8, 2, 3];
     let key = format!("tensor:{}:len{}", id, bytes.len());
 
-    if let Err(e) = cache.put_blob(atenia_engine::v13::persistent_cache::CacheKind::Tensor, &key, &bytes, 1, true) {
+    if let Err(e) = cache.put_blob(
+        atenia_engine::v13::persistent_cache::CacheKind::Tensor,
+        &key,
+        &bytes,
+        1,
+        true,
+    ) {
         panic!("put_blob should succeed: {:?}", e);
     }
 
@@ -184,7 +195,10 @@ fn warm_start_does_not_materialize_lazy_entries() {
 
     let state = atenia_engine::v13::checkpoint::lazy::state_for_test(id)
         .expect("lazy state should be present");
-    assert_eq!(state, atenia_engine::v13::checkpoint::lazy::LazyState::Unmaterialized);
+    assert_eq!(
+        state,
+        atenia_engine::v13::checkpoint::lazy::LazyState::Unmaterialized
+    );
 
     let _ = std::fs::remove_dir_all(cache_root);
     let _ = std::fs::remove_dir_all(ckpt_root);

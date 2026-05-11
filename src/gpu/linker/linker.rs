@@ -1,6 +1,6 @@
 use libloading::{Library, Symbol};
-use std::ffi::c_void;
 use std::ffi::CString;
+use std::ffi::c_void;
 
 #[allow(non_camel_case_types)]
 type NvJitLinkHandle = *mut c_void;
@@ -56,16 +56,16 @@ impl NvJitLinker {
             }
         }
 
-        Err(NvJitLinkError::LoadError(
-            last_err.unwrap_or_else(|| "Failed to load any nvJitLink library".into()),
-        ))
+        Err(NvJitLinkError::LoadError(last_err.unwrap_or_else(|| {
+            "Failed to load any nvJitLink library".into()
+        })))
     }
 
     fn get_symbol<T>(&self, name: &[u8]) -> Result<Symbol<'_, T>, NvJitLinkError> {
         unsafe {
-            self.lib
-                .get(name)
-                .map_err(|_| NvJitLinkError::MissingSymbol(String::from_utf8_lossy(name).to_string()))
+            self.lib.get(name).map_err(|_| {
+                NvJitLinkError::MissingSymbol(String::from_utf8_lossy(name).to_string())
+            })
         }
     }
 
@@ -91,24 +91,15 @@ impl NvJitLinker {
                 *mut *mut i8,
             ) -> i32;
 
-            type NvJitLinkCompleteFn = unsafe extern "C" fn(
-                NvJitLinkHandle,
-                *mut *mut c_void,
-                *mut usize,
-            ) -> i32;
+            type NvJitLinkCompleteFn =
+                unsafe extern "C" fn(NvJitLinkHandle, *mut *mut c_void, *mut usize) -> i32;
 
-            type NvJitLinkDestroyFn = unsafe extern "C" fn(
-                *mut NvJitLinkHandle,
-            ) -> i32;
+            type NvJitLinkDestroyFn = unsafe extern "C" fn(*mut NvJitLinkHandle) -> i32;
 
-            let create: Symbol<NvJitLinkCreateFn> = self
-                .get_symbol(b"nvJitLinkCreate\0")?;
-            let add_data: Symbol<NvJitLinkAddDataFn> = self
-                .get_symbol(b"nvJitLinkAddData\0")?;
-            let complete: Symbol<NvJitLinkCompleteFn> = self
-                .get_symbol(b"nvJitLinkComplete\0")?;
-            let destroy: Symbol<NvJitLinkDestroyFn> = self
-                .get_symbol(b"nvJitLinkDestroy\0")?;
+            let create: Symbol<NvJitLinkCreateFn> = self.get_symbol(b"nvJitLinkCreate\0")?;
+            let add_data: Symbol<NvJitLinkAddDataFn> = self.get_symbol(b"nvJitLinkAddData\0")?;
+            let complete: Symbol<NvJitLinkCompleteFn> = self.get_symbol(b"nvJitLinkComplete\0")?;
+            let destroy: Symbol<NvJitLinkDestroyFn> = self.get_symbol(b"nvJitLinkDestroy\0")?;
 
             let mut handle: NvJitLinkHandle = std::ptr::null_mut();
 

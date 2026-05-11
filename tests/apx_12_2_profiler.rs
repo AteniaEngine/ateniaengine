@@ -1,5 +1,5 @@
-use atenia_engine::gpu::profiler::{GpuProfiler, LatencyRecord};
 use atenia_engine::gpu::loader::compat_layer::CompatLoader;
+use atenia_engine::gpu::profiler::{GpuProfiler, LatencyRecord};
 
 /// APX 12.2: basic GPU Capability Profiler test.
 #[test]
@@ -44,8 +44,14 @@ fn apx_12_2_profiler_basic() -> Result<(), Box<dyn std::error::Error>> {
 
     // Sanity check: the profiler must produce valid latencies.
     // Do not assume strict monotonicity (there may be jitter/overhead/caches).
-    assert!(lat16.is_finite() && lat16 >= 0.0, "invalid latency for size 16: {lat16}");
-    assert!(lat512.is_finite() && lat512 >= 0.0, "invalid latency for size 512: {lat512}");
+    assert!(
+        lat16.is_finite() && lat16 >= 0.0,
+        "invalid latency for size 16: {lat16}"
+    );
+    assert!(
+        lat512.is_finite() && lat512 >= 0.0,
+        "invalid latency for size 512: {lat512}"
+    );
 
     Ok(())
 }

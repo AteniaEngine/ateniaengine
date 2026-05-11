@@ -1,8 +1,8 @@
 // APX 11.3 - AttentionBackward GPU (IR Generator)
 // Minimal test validating that the attention operator generates a well-formed GPU backward IR.
 
-use atenia_engine::tensor::{Tensor, Device, DType};
 use atenia_engine::ops::attention::AttentionOp;
+use atenia_engine::tensor::{DType, Device, Tensor};
 
 #[test]
 fn apx_11_3_attention_backward_ir() {

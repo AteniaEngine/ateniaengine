@@ -48,7 +48,11 @@ fn mock_hw_snapshot_single_gpu(
     }
 }
 
-fn make_tensor(num_elements: u64, element_size_bytes: u32, estimated_compute_cost: Option<f32>) -> TensorProfile {
+fn make_tensor(
+    num_elements: u64,
+    element_size_bytes: u32,
+    estimated_compute_cost: Option<f32>,
+) -> TensorProfile {
     TensorProfile {
         num_elements,
         element_size_bytes,

@@ -1,4 +1,4 @@
-use atenia_engine::apx4::gpu_dispatch::{dispatch_matmul, ApxExecTarget};
+use atenia_engine::apx4::gpu_dispatch::{ApxExecTarget, dispatch_matmul};
 
 #[test]
 fn test_apx_4_0_cpu_fallback() {

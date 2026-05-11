@@ -1,9 +1,5 @@
-use crate::gpu::{
-    memory::GpuMemoryEngine,
-    ops::linear::LinearOp,
-    tensor::TensorGPU,
-};
-use crate::tensor::{Tensor, Device, DType, Layout};
+use crate::gpu::{memory::GpuMemoryEngine, ops::linear::LinearOp, tensor::TensorGPU};
+use crate::tensor::{DType, Device, Layout, Tensor};
 
 pub struct GpuTensorManager {
     pub mem: GpuMemoryEngine,
@@ -23,7 +19,15 @@ impl GpuTensorManager {
             Ok(t) => t,
             Err(_) => return Err(()),
         };
-        LinearOp::run(x.raw_ptr(), w.raw_ptr(), b.raw_ptr(), out.raw_ptr(), x.rows, x.cols, w.rows);
+        LinearOp::run(
+            x.raw_ptr(),
+            w.raw_ptr(),
+            b.raw_ptr(),
+            out.raw_ptr(),
+            x.rows,
+            x.cols,
+            w.rows,
+        );
         Ok(out)
     }
 
@@ -42,13 +46,8 @@ impl GpuTensorManager {
         let cpu_vec = self.to_cpu_vec(t)?;
         let shape = vec![t.rows, t.cols];
 
-        let mut tensor = Tensor::with_layout(
-            shape,
-            0.0,
-            Device::CPU,
-            Layout::Contiguous,
-            DType::F32,
-        );
+        let mut tensor =
+            Tensor::with_layout(shape, 0.0, Device::CPU, Layout::Contiguous, DType::F32);
 
         tensor.as_cpu_slice_mut().copy_from_slice(&cpu_vec);
         Ok(tensor)

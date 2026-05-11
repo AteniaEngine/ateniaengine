@@ -11,10 +11,10 @@ use v16::contract::constraints::{Constraint, ConstraintKind, Constraints, Runtim
 use v16::contract::execution_contract::{ExecutionBackend, ExecutionContract};
 use v16::executor::executor_state::ExecutorStatus;
 use v16::feedback::event_emitter::EventEmitter;
-use v16::feedback::feedback_collector::FeedbackCollector;
-use v16::feedback::feedback_errors::FeedbackError;
 use v16::feedback::execution_event::ExecutionEventKind;
 use v16::feedback::execution_outcome::ExecutionOutcomeKind;
+use v16::feedback::feedback_collector::FeedbackCollector;
+use v16::feedback::feedback_errors::FeedbackError;
 use v16::planner::execution_planner::ExecutionPlanner;
 
 fn make_contract() -> ExecutionContract {
@@ -64,13 +64,9 @@ fn events_are_emitted_in_execution_order() {
     let plan = ExecutionPlanner::build_plan(&contract).expect("plan should be produced");
     let executed_steps: Vec<usize> = (0..plan.steps.len()).collect();
 
-    let (events, outcome) = EventEmitter::emit_for_snapshot(
-        &plan,
-        &executed_steps,
-        &ExecutorStatus::Completed,
-        None,
-    )
-    .expect("emission should succeed");
+    let (events, outcome) =
+        EventEmitter::emit_for_snapshot(&plan, &executed_steps, &ExecutorStatus::Completed, None)
+            .expect("emission should succeed");
 
     // Logical timestamps must be strictly increasing.
     for w in events.windows(2) {
@@ -78,8 +74,14 @@ fn events_are_emitted_in_execution_order() {
     }
 
     // First event is ExecutionStarted, last is ExecutionCompleted.
-    assert!(matches!(events.first().unwrap().kind, ExecutionEventKind::ExecutionStarted));
-    assert!(matches!(events.last().unwrap().kind, ExecutionEventKind::ExecutionCompleted));
+    assert!(matches!(
+        events.first().unwrap().kind,
+        ExecutionEventKind::ExecutionStarted
+    ));
+    assert!(matches!(
+        events.last().unwrap().kind,
+        ExecutionEventKind::ExecutionCompleted
+    ));
 
     assert!(matches!(outcome.kind, ExecutionOutcomeKind::Completed));
 }
@@ -91,14 +93,13 @@ fn outcome_matches_execution_result() {
 
     // Completed
     let executed_all: Vec<usize> = (0..plan.steps.len()).collect();
-    let (_, out_completed) = EventEmitter::emit_for_snapshot(
-        &plan,
-        &executed_all,
-        &ExecutorStatus::Completed,
-        None,
-    )
-    .expect("completed");
-    assert!(matches!(out_completed.kind, ExecutionOutcomeKind::Completed));
+    let (_, out_completed) =
+        EventEmitter::emit_for_snapshot(&plan, &executed_all, &ExecutorStatus::Completed, None)
+            .expect("completed");
+    assert!(matches!(
+        out_completed.kind,
+        ExecutionOutcomeKind::Completed
+    ));
 
     // Failed after partial execution
     let executed_partial: Vec<usize> = vec![0];
@@ -109,16 +110,15 @@ fn outcome_matches_execution_result() {
         Some("error"),
     )
     .expect("failed");
-    assert!(matches!(out_failed.kind, ExecutionOutcomeKind::PartiallyCompleted));
+    assert!(matches!(
+        out_failed.kind,
+        ExecutionOutcomeKind::PartiallyCompleted
+    ));
 
     // Aborted with no steps
-    let (_, out_aborted) = EventEmitter::emit_for_snapshot(
-        &plan,
-        &[],
-        &ExecutorStatus::Aborted,
-        Some("aborted"),
-    )
-    .expect("aborted");
+    let (_, out_aborted) =
+        EventEmitter::emit_for_snapshot(&plan, &[], &ExecutorStatus::Aborted, Some("aborted"))
+            .expect("aborted");
     assert!(matches!(out_aborted.kind, ExecutionOutcomeKind::Aborted));
 }
 
@@ -131,20 +131,12 @@ fn feedback_is_deterministic_and_pure() {
     let plan_before = plan.clone();
     let executed_before = executed_steps.clone();
 
-    let r1 = EventEmitter::emit_for_snapshot(
-        &plan,
-        &executed_steps,
-        &ExecutorStatus::Completed,
-        None,
-    )
-    .expect("first emission");
-    let r2 = EventEmitter::emit_for_snapshot(
-        &plan,
-        &executed_steps,
-        &ExecutorStatus::Completed,
-        None,
-    )
-    .expect("second emission");
+    let r1 =
+        EventEmitter::emit_for_snapshot(&plan, &executed_steps, &ExecutorStatus::Completed, None)
+            .expect("first emission");
+    let r2 =
+        EventEmitter::emit_for_snapshot(&plan, &executed_steps, &ExecutorStatus::Completed, None)
+            .expect("second emission");
 
     assert_eq!(r1, r2);
 
@@ -159,13 +151,9 @@ fn feedback_collector_records_snapshot() {
     let plan = ExecutionPlanner::build_plan(&contract).expect("plan should be produced");
     let executed_steps: Vec<usize> = vec![0, 1];
 
-    let (events, outcome) = EventEmitter::emit_for_snapshot(
-        &plan,
-        &executed_steps,
-        &ExecutorStatus::Completed,
-        None,
-    )
-    .expect("emission");
+    let (events, outcome) =
+        EventEmitter::emit_for_snapshot(&plan, &executed_steps, &ExecutorStatus::Completed, None)
+            .expect("emission");
 
     let mut collector = FeedbackCollector::new();
     collector.record(events.clone(), outcome.clone());
@@ -182,23 +170,13 @@ fn invalid_event_sequences_yield_error() {
 
     // Out-of-bounds index.
     let bad_steps = vec![plan.steps.len()];
-    let err = EventEmitter::emit_for_snapshot(
-        &plan,
-        &bad_steps,
-        &ExecutorStatus::Completed,
-        None,
-    )
-    .unwrap_err();
+    let err = EventEmitter::emit_for_snapshot(&plan, &bad_steps, &ExecutorStatus::Completed, None)
+        .unwrap_err();
     assert!(matches!(err, FeedbackError::InvalidEvent(_)));
 
     // Non-monotonic indices.
     let bad_order = vec![1, 0];
-    let err2 = EventEmitter::emit_for_snapshot(
-        &plan,
-        &bad_order,
-        &ExecutorStatus::Completed,
-        None,
-    )
-    .unwrap_err();
+    let err2 = EventEmitter::emit_for_snapshot(&plan, &bad_order, &ExecutorStatus::Completed, None)
+        .unwrap_err();
     assert!(matches!(err2, FeedbackError::LogicalOrderViolation(_)));
 }

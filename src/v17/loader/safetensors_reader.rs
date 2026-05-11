@@ -106,19 +106,15 @@ impl SafetensorsReader {
         // negligible; the body itself is not re-scanned.
         let (_hdr_len, hdr_metadata) =
             safetensors::SafeTensors::read_metadata(&bytes).map_err(|e| {
-                LoaderError::InvalidFormat(format!(
-                    "safetensors read_metadata: {:?}",
-                    e
-                ))
+                LoaderError::InvalidFormat(format!("safetensors read_metadata: {:?}", e))
             })?;
         let metadata: Option<HashMap<String, String>> = hdr_metadata.metadata().clone();
 
         // `safetensors::SafeTensors::deserialize` validates the
         // header-size prefix, parses the JSON, and checks that every
         // declared tensor's `data_offsets` falls within the body.
-        let view = safetensors::SafeTensors::deserialize(&bytes).map_err(|e| {
-            LoaderError::InvalidFormat(format!("safetensors deserialize: {:?}", e))
-        })?;
+        let view = safetensors::SafeTensors::deserialize(&bytes)
+            .map_err(|e| LoaderError::InvalidFormat(format!("safetensors deserialize: {:?}", e)))?;
 
         // Compute the header-size prefix so we can translate
         // body-relative offsets (what `TensorView::data()` returns a
@@ -130,8 +126,7 @@ impl SafetensorsReader {
                 "file shorter than 8-byte header-size prefix".to_string(),
             ));
         }
-        let header_len =
-            u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes")) as usize;
+        let header_len = u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes")) as usize;
         let body_base = 8usize.checked_add(header_len).ok_or_else(|| {
             LoaderError::InvalidFormat(format!(
                 "header_len ({}) overflows usize when added to 8-byte prefix",
@@ -150,12 +145,8 @@ impl SafetensorsReader {
         let mut names_in_order: Vec<String> = Vec::new();
 
         for (name, tv) in view.tensors() {
-            let dtype = map_dtype(tv.dtype()).map_err(|msg| {
-                LoaderError::InvalidFormat(format!(
-                    "tensor '{}': {}",
-                    name, msg
-                ))
-            })?;
+            let dtype = map_dtype(tv.dtype())
+                .map_err(|msg| LoaderError::InvalidFormat(format!("tensor '{}': {}", name, msg)))?;
 
             let shape: Vec<usize> = tv.shape().to_vec();
             let data = tv.data();
@@ -295,9 +286,7 @@ impl TensorEntry<'_> {
                 }
                 let mut out = Vec::with_capacity(actual_elements);
                 for chunk in self.raw_bytes.chunks_exact(4) {
-                    out.push(f32::from_le_bytes([
-                        chunk[0], chunk[1], chunk[2], chunk[3],
-                    ]));
+                    out.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
                 }
                 Ok(out)
             }

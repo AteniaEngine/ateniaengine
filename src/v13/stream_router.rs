@@ -27,11 +27,16 @@ impl StreamRouter {
         let mut submitted_task_ids = Vec::new();
 
         // Rule 2: inject SSD prefetch task if any tensor resides on SSD.
-        if tensor_tiers.iter().any(|tier| matches!(tier, MemoryTier::Ssd)) {
+        if tensor_tiers
+            .iter()
+            .any(|tier| matches!(tier, MemoryTier::Ssd))
+        {
             let prefetch_name = format!("prefetch:{}", kernel.name);
             let id = exec.submit(
                 StreamKind::SsdPrefetch,
-                TaskKind::Io { name: prefetch_name },
+                TaskKind::Io {
+                    name: prefetch_name,
+                },
                 1,
             );
             submitted_task_ids.push(id);
@@ -44,11 +49,7 @@ impl StreamRouter {
         };
 
         let compute_name = kernel.name.clone();
-        let compute_id = exec.submit(
-            stream,
-            TaskKind::Compute { name: compute_name },
-            1,
-        );
+        let compute_id = exec.submit(stream, TaskKind::Compute { name: compute_name }, 1);
         submitted_task_ids.push(compute_id);
 
         RoutedBundle {
@@ -78,7 +79,8 @@ impl StreamRouter {
 
         let tensor_tiers: Vec<MemoryTier> = id_and_tier.iter().map(|(_, t)| *t).collect();
 
-        let base_plan = HybridExecutionPlanner::plan(kernel, &tensor_tiers, snapshot, gpu_available);
+        let base_plan =
+            HybridExecutionPlanner::plan(kernel, &tensor_tiers, snapshot, gpu_available);
 
         let mut submitted_task_ids = Vec::new();
         let mut degraded_to_cpu = false;
@@ -96,7 +98,9 @@ impl StreamRouter {
                 let prefetch_name = format!("prefetch:{}", id);
                 let task_id = exec.submit(
                     StreamKind::SsdPrefetch,
-                    TaskKind::Io { name: prefetch_name },
+                    TaskKind::Io {
+                        name: prefetch_name,
+                    },
                     1,
                 );
                 submitted_task_ids.push(task_id);
@@ -132,22 +136,12 @@ impl StreamRouter {
                         }
 
                         let (stream, name) = match target {
-                            MemoryTier::Ram => (
-                                StreamKind::Cpu,
-                                format!("move:ssd->ram:{}", id),
-                            ),
-                            MemoryTier::Vram => (
-                                StreamKind::Gpu,
-                                format!("move:ssd->vram:{}", id),
-                            ),
+                            MemoryTier::Ram => (StreamKind::Cpu, format!("move:ssd->ram:{}", id)),
+                            MemoryTier::Vram => (StreamKind::Gpu, format!("move:ssd->vram:{}", id)),
                             _ => (StreamKind::Cpu, format!("move:ssd->other:{}", id)),
                         };
 
-                        let task_id = exec.submit(
-                            stream,
-                            TaskKind::Transfer { name },
-                            1,
-                        );
+                        let task_id = exec.submit(stream, TaskKind::Transfer { name }, 1);
                         submitted_task_ids.push(task_id);
                     }
                     Err(_) => {
@@ -185,11 +179,7 @@ impl StreamRouter {
                         }
 
                         let name = format!("move:ram->vram:{}", id);
-                        let task_id = exec.submit(
-                            StreamKind::Gpu,
-                            TaskKind::Transfer { name },
-                            1,
-                        );
+                        let task_id = exec.submit(StreamKind::Gpu, TaskKind::Transfer { name }, 1);
                         submitted_task_ids.push(task_id);
                     }
                     Err(_) => {
@@ -226,11 +216,7 @@ impl StreamRouter {
                         }
 
                         let name = format!("move:vram->ram:{}", id);
-                        let task_id = exec.submit(
-                            StreamKind::Cpu,
-                            TaskKind::Transfer { name },
-                            1,
-                        );
+                        let task_id = exec.submit(StreamKind::Cpu, TaskKind::Transfer { name }, 1);
                         submitted_task_ids.push(task_id);
                     }
                     Err(_) => {

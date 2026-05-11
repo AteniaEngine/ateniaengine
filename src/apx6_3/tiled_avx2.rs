@@ -1,21 +1,9 @@
 use std::arch::x86_64::{
-    _mm_loadu_ps,
-    _mm_fmadd_ps,
-    _mm_prefetch,
-    _MM_HINT_T0,
-    _mm_setzero_ps,
-    _mm_storeu_ps,
+    _MM_HINT_T0, _mm_fmadd_ps, _mm_loadu_ps, _mm_prefetch, _mm_setzero_ps, _mm_storeu_ps,
 };
 
 #[inline(always)]
-pub fn matmul_tiled_avx2(
-    a: &[f32],
-    b: &[f32],
-    out: &mut [f32],
-    m: usize,
-    k: usize,
-    n: usize,
-) {
+pub fn matmul_tiled_avx2(a: &[f32], b: &[f32], out: &mut [f32], m: usize, k: usize, n: usize) {
     assert_eq!(a.len(), m * k);
     assert_eq!(b.len(), k * n);
     assert_eq!(out.len(), m * n);

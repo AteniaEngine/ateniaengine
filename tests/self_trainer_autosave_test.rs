@@ -2,8 +2,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use atenia_engine::v13::auto_trainer_loop::{AutoTrainerConfig, AutoTrainerLoop};
-use atenia_engine::v13::checkpoint::{WarmStartAction, WarmStartDecision, WarmStartPlan};
 use atenia_engine::v13::checkpoint::drift::DriftReport;
+use atenia_engine::v13::checkpoint::{WarmStartAction, WarmStartDecision, WarmStartPlan};
 use atenia_engine::v13::memory_types::MemoryTier;
 use atenia_engine::v13::self_trainer::{BackendChoice, ExecutionContext};
 use atenia_engine::v13::self_trainer_integration::ExecResult;
@@ -20,7 +20,9 @@ fn make_gpu_plan() -> WarmStartPlan {
         is_grad: false,
         current: MemoryTier::Ram,
         desired: Some(MemoryTier::Vram),
-        action: WarmStartAction::HintPromote { to: MemoryTier::Vram },
+        action: WarmStartAction::HintPromote {
+            to: MemoryTier::Vram,
+        },
         reason: "Desired VRAM and GPU available".to_string(),
     };
 

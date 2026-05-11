@@ -3,7 +3,7 @@ use std::ffi::{CString, c_void};
 use std::ptr;
 
 use super::CudaLoaderError;
-use super::module_cache::{get_cached_module, insert_cached_module, hash_ptx};
+use super::module_cache::{get_cached_module, hash_ptx, insert_cached_module};
 use crate::gpu::loader::compat_layer::CompatLoader;
 
 type CUmodule = *mut std::os::raw::c_void;
@@ -46,7 +46,9 @@ impl CudaLoader {
 
         if let Some(handle) = get_cached_module(hash) {
             println!("[MODULE CACHE] Using cached module for hash {}", hash);
-            return Ok(CudaModule { handle: handle as CUmodule });
+            return Ok(CudaModule {
+                handle: handle as CUmodule,
+            });
         }
 
         let module = CompatLoader::try_all_paths(self, ptx)?;
@@ -59,11 +61,11 @@ impl CudaLoader {
     /// Direct PTX load path using cuModuleLoadData (no internal cache).
     pub fn load_module_from_ptx_direct(&self, ptx: &str) -> Result<CudaModule, CudaLoaderError> {
         unsafe {
-            let cu_init: Symbol<unsafe extern "C" fn(u32) -> i32> =
-                self.get_symbol(b"cuInit\0")?;
+            let cu_init: Symbol<unsafe extern "C" fn(u32) -> i32> = self.get_symbol(b"cuInit\0")?;
 
-            let cu_module_load_data: Symbol<unsafe extern "C" fn(*mut CUmodule, *const std::os::raw::c_void) -> i32> =
-                self.get_symbol(b"cuModuleLoadData\0")?;
+            let cu_module_load_data: Symbol<
+                unsafe extern "C" fn(*mut CUmodule, *const std::os::raw::c_void) -> i32,
+            > = self.get_symbol(b"cuModuleLoadData\0")?;
 
             let _ = cu_init(0);
 
@@ -81,11 +83,11 @@ impl CudaLoader {
     /// Load a CUDA module from an in-memory CUBIN buffer.
     pub fn load_module_from_cubin(&self, cubin: &[u8]) -> Result<CudaModule, CudaLoaderError> {
         unsafe {
-            let cu_init: Symbol<unsafe extern "C" fn(u32) -> i32> =
-                self.get_symbol(b"cuInit\0")?;
+            let cu_init: Symbol<unsafe extern "C" fn(u32) -> i32> = self.get_symbol(b"cuInit\0")?;
 
-            let cu_module_load_data: Symbol<unsafe extern "C" fn(*mut CUmodule, *const std::os::raw::c_void) -> i32> =
-                self.get_symbol(b"cuModuleLoadData\0")?;
+            let cu_module_load_data: Symbol<
+                unsafe extern "C" fn(*mut CUmodule, *const std::os::raw::c_void) -> i32,
+            > = self.get_symbol(b"cuModuleLoadData\0")?;
 
             let _ = cu_init(0);
 
@@ -104,8 +106,7 @@ impl CudaLoader {
     pub fn load_module_from_ptx_ex(&self, ptx: &[u8]) -> Result<CudaModule, CudaLoaderError> {
         unsafe {
             // Initialize driver
-            let cu_init: Symbol<unsafe extern "C" fn(u32) -> i32> =
-                self.get_symbol(b"cuInit\0")?;
+            let cu_init: Symbol<unsafe extern "C" fn(u32) -> i32> = self.get_symbol(b"cuInit\0")?;
 
             type CuModuleLoadDataExFn = unsafe extern "C" fn(
                 *mut CUmodule,
@@ -124,16 +125,11 @@ impl CudaLoader {
             const CU_JIT_OPTIMIZATION_LEVEL: u32 = 7;
             const CU_JIT_TARGET_FROM_CUCONTEXT: u32 = 8;
 
-            let jit_options: [u32; 2] = [
-                CU_JIT_TARGET_FROM_CUCONTEXT,
-                CU_JIT_OPTIMIZATION_LEVEL,
-            ];
+            let jit_options: [u32; 2] = [CU_JIT_TARGET_FROM_CUCONTEXT, CU_JIT_OPTIMIZATION_LEVEL];
 
             let mut opt_level: u32 = 4;
-            let jit_values: [*mut c_void; 2] = [
-                ptr::null_mut(),
-                &mut opt_level as *mut u32 as *mut c_void,
-            ];
+            let jit_values: [*mut c_void; 2] =
+                [ptr::null_mut(), &mut opt_level as *mut u32 as *mut c_void];
 
             let mut module: CUmodule = ptr::null_mut();
             let res = cu_module_load_data_ex(
@@ -158,12 +154,15 @@ impl CudaLoader {
         }
     }
 
-    pub fn get_function(&self, module: &CudaModule, name: &str)
-        -> Result<CudaFunction, CudaLoaderError>
-    {
+    pub fn get_function(
+        &self,
+        module: &CudaModule,
+        name: &str,
+    ) -> Result<CudaFunction, CudaLoaderError> {
         unsafe {
-            let cu_get_function: Symbol<unsafe extern "C" fn(*mut CUfunction, CUmodule, *const i8) -> i32> =
-                self.get_symbol(b"cuModuleGetFunction\0")?;
+            let cu_get_function: Symbol<
+                unsafe extern "C" fn(*mut CUfunction, CUmodule, *const i8) -> i32,
+            > = self.get_symbol(b"cuModuleGetFunction\0")?;
 
             let mut func: CUfunction = ptr::null_mut();
             let cname = CString::new(name).unwrap();

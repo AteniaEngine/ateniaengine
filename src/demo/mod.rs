@@ -41,27 +41,24 @@
 //! existing engine code surfaced behind a stable public API.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 use uuid::Uuid;
 
 use crate::amg::builder::GraphBuilder;
 use crate::amg::graph::Graph;
 use crate::amg::reactive::ReactiveExecutionContext;
+use crate::amg::weight_store::WeightStore;
 use crate::amm::ram_probe::{RamProbeApi, RamProbeError, RamSnapshot};
 use crate::amm::signal_bus::SignalBus;
 use crate::amm::vram_probe::{VramProbeApi, VramProbeError, VramSnapshot};
-use crate::amg::weight_store::WeightStore;
 use crate::nn::llama::{
-    build_llama, build_llama_with_store, llama_weight_mapper, LlamaConfig,
-    LlamaRuntime,
+    LlamaConfig, LlamaRuntime, build_llama, build_llama_with_store, llama_weight_mapper,
 };
 use crate::v15::policy::types::DecisionBias;
 use crate::v16::contract::constraints::{Constraints, RuntimeState};
-use crate::v16::contract::execution_contract::{
-    ExecutionBackend, ExecutionContract,
-};
+use crate::v16::contract::execution_contract::{ExecutionBackend, ExecutionContract};
 use crate::v16::guards::execution_guard::ExecutionGuard;
 use crate::v16::guards::guard_manager::GuardManager;
 use crate::v16::guards::simple_memory_pressure_guard::SimpleMemoryPressureGuard;
@@ -212,10 +209,7 @@ pub fn permissive_contract() -> ExecutionContract {
 /// reads) and lets the FIRST guard checkpoint produce a
 /// `Degrade → DeepDegrade` promotion. Subsequent checkpoints
 /// see low-pressure values and return `Continue`.
-pub fn make_context(
-    cache_dir: PathBuf,
-    high_pressure: bool,
-) -> ReactiveExecutionContext {
+pub fn make_context(cache_dir: PathBuf, high_pressure: bool) -> ReactiveExecutionContext {
     let bus = if high_pressure {
         Arc::new(SignalBus::with_probes(
             None,
@@ -239,8 +233,7 @@ pub fn make_context(
             Some(Arc::new(LowPressureRamProbe)),
         ))
     };
-    let guards: Vec<Box<dyn ExecutionGuard>> =
-        vec![Box::new(SimpleMemoryPressureGuard::new())];
+    let guards: Vec<Box<dyn ExecutionGuard>> = vec![Box::new(SimpleMemoryPressureGuard::new())];
     let gm = GuardManager::new(guards);
     ReactiveExecutionContext::new_without_gc(bus, permissive_contract(), gm)
         .with_cache_dir(cache_dir)
@@ -365,13 +358,10 @@ pub fn build_and_load_llama(
         );
     }
     let load_start = Instant::now();
-    let sharded = ShardedSafetensorsReader::open(
-        &model_dir.join("model.safetensors.index.json"),
-    )
-    .expect("open sharded reader");
-    let mut mapper =
-        llama_weight_mapper(&cfg, &handles.param_names, &handles.param_ids)
-            .expect("llama weight mapper");
+    let sharded = ShardedSafetensorsReader::open(&model_dir.join("model.safetensors.index.json"))
+        .expect("open sharded reader");
+    let mut mapper = llama_weight_mapper(&cfg, &handles.param_names, &handles.param_ids)
+        .expect("llama weight mapper");
     mapper.set_store_params_as_bf16(true);
 
     // Tier-aware load (M6 + M7 + M8 + M8.7) — same path
@@ -390,17 +380,12 @@ pub fn build_and_load_llama(
             numel * (m.dtype.size_in_bytes() as u64)
         })
         .sum();
-    let kernel_dtype = if std::env::var("ATENIA_M8_BF16_KERNEL")
-        .as_deref()
-        == Ok("1")
-    {
+    let kernel_dtype = if std::env::var("ATENIA_M8_BF16_KERNEL").as_deref() == Ok("1") {
         crate::tensor::DType::BF16
     } else {
         crate::tensor::DType::F32
     };
-    mapper.set_bf16_kernel_active(Some(
-        kernel_dtype == crate::tensor::DType::BF16,
-    ));
+    mapper.set_bf16_kernel_active(Some(kernel_dtype == crate::tensor::DType::BF16));
     let plan_input = crate::gpu::tier_plan::TierPlanInput {
         tensors: metas,
         free_vram_bytes: crate::gpu::safety::resource_check::probe_free_vram_bytes(),
@@ -422,10 +407,7 @@ pub fn build_and_load_llama(
     drop(scratch_graph);
     let load_secs = load_start.elapsed().as_secs_f32();
     if verbose {
-        println!(
-            "Loaded {} tensors in {:.2}s",
-            report.loaded, load_secs,
-        );
+        println!("Loaded {} tensors in {:.2}s", report.loaded, load_secs,);
     }
 
     // ---- Rebuild graph wired to the store ----
@@ -443,15 +425,8 @@ pub fn build_and_load_llama(
     // but VRAM / disk handles are owned by the store).
     let mut gb2 = GraphBuilder::new();
     let token_input_id_2 = gb2.input();
-    let handles2 = build_llama_with_store(
-        &mut gb2,
-        &cfg,
-        &runtime,
-        token_input_id_2,
-        &store,
-        None,
-    )
-    .expect("build_llama_with_store");
+    let handles2 = build_llama_with_store(&mut gb2, &cfg, &runtime, token_input_id_2, &store, None)
+        .expect("build_llama_with_store");
     let _ = gb2.output(handles2.logits_id);
     let graph = gb2.build();
 
@@ -479,9 +454,7 @@ pub fn argmax_row(slice: &[f32], vocab: usize) -> (usize, f32) {
     slice
         .iter()
         .enumerate()
-        .max_by(|(_, x), (_, y)| {
-            x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal)
-        })
+        .max_by(|(_, x), (_, y)| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal))
         .map(|(i, v)| (i, *v))
         .unwrap()
 }

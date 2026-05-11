@@ -1,5 +1,5 @@
-﻿use atenia_engine::amg::builder::GraphBuilder;
-use atenia_engine::tensor::{Tensor, Device};
+use atenia_engine::amg::builder::GraphBuilder;
+use atenia_engine::tensor::{Device, Tensor};
 
 #[test]
 fn apx_4_6_full_pipeline_runs_gpu_segments_correctly() {
@@ -10,7 +10,7 @@ fn apx_4_6_full_pipeline_runs_gpu_segments_correctly() {
 
     let mut gb = GraphBuilder::new();
 
-    let x = gb.input();           // batch 4, shape will come from the runtime input
+    let x = gb.input(); // batch 4, shape will come from the runtime input
     let w1 = gb.parameter(Tensor::randn(&[32, 32], Device::CPU));
     let b1 = gb.parameter(Tensor::randn(&[32], Device::CPU));
     let h1 = gb.linear(x, w1, Some(b1));

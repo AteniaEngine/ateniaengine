@@ -56,9 +56,7 @@
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 
-use crate::v17::loader::gguf_reader::{
-    GgufError, GgufReader, GgufTensorType, TensorDescriptor,
-};
+use crate::v17::loader::gguf_reader::{GgufError, GgufReader, GgufTensorType, TensorDescriptor};
 
 /// Q8_0 block size in elements, per spec (`QK8_0`).
 pub const Q8_0_BLOCK_ELEMS: usize = 32;
@@ -74,8 +72,7 @@ pub const Q6_K_BLOCK_ELEMS: usize = 256;
 pub const Q6_K_QL_BYTES: usize = Q6_K_BLOCK_ELEMS / 2;
 pub const Q6_K_QH_BYTES: usize = Q6_K_BLOCK_ELEMS / 4;
 pub const Q6_K_SCALE_BYTES: usize = Q6_K_BLOCK_ELEMS / 16;
-pub const Q6_K_BLOCK_BYTES: usize =
-    Q6_K_QL_BYTES + Q6_K_QH_BYTES + Q6_K_SCALE_BYTES + 2;
+pub const Q6_K_BLOCK_BYTES: usize = Q6_K_QL_BYTES + Q6_K_QH_BYTES + Q6_K_SCALE_BYTES + 2;
 
 /// Decode a tensor's data into a fresh `Vec<f32>` in row-major
 /// contiguous layout. Reopens the file and seeks to
@@ -168,11 +165,7 @@ fn compute_numel(descriptor: &TensorDescriptor) -> Result<usize, GgufError> {
 /// F32 decoder: read `numel * 4` bytes, transmute as
 /// little-endian f32. (On every platform Atenia targets,
 /// f32 is LE; the read is byte-for-byte then bit-cast.)
-fn decode_f32(
-    buf: &mut BufReader<File>,
-    numel: usize,
-    name: &str,
-) -> Result<Vec<f32>, GgufError> {
+fn decode_f32(buf: &mut BufReader<File>, numel: usize, name: &str) -> Result<Vec<f32>, GgufError> {
     let mut bytes = vec![0u8; numel * 4];
     buf.read_exact(&mut bytes).map_err(|e| {
         GgufError::IoError(format!(
@@ -191,11 +184,7 @@ fn decode_f32(
 /// F16 decoder: read `numel * 2` bytes; decode each LE u16
 /// as a `half::f16` and convert to f32 via the crate's
 /// IEEE-754-bit-exact `to_f32()`.
-fn decode_f16(
-    buf: &mut BufReader<File>,
-    numel: usize,
-    name: &str,
-) -> Result<Vec<f32>, GgufError> {
+fn decode_f16(buf: &mut BufReader<File>, numel: usize, name: &str) -> Result<Vec<f32>, GgufError> {
     let mut bytes = vec![0u8; numel * 2];
     buf.read_exact(&mut bytes).map_err(|e| {
         GgufError::IoError(format!(
@@ -221,11 +210,7 @@ fn decode_f16(
 /// For TinyLlama 1.1B's `token_embd.weight`
 /// (32000 × 2048 = 65 536 000 elements → 2 048 000 blocks
 /// → 69 632 000 bytes) the read is a single ~70 MB chunk.
-fn decode_q8_0(
-    buf: &mut BufReader<File>,
-    numel: usize,
-    name: &str,
-) -> Result<Vec<f32>, GgufError> {
+fn decode_q8_0(buf: &mut BufReader<File>, numel: usize, name: &str) -> Result<Vec<f32>, GgufError> {
     if numel % Q8_0_BLOCK_ELEMS != 0 {
         return Err(GgufError::InvalidFormat(format!(
             "GGUF decode '{name}': Q8_0 numel {numel} is not a multiple of \
@@ -259,11 +244,7 @@ fn decode_q8_0(
     Ok(out)
 }
 
-fn decode_q4_k(
-    buf: &mut BufReader<File>,
-    numel: usize,
-    name: &str,
-) -> Result<Vec<f32>, GgufError> {
+fn decode_q4_k(buf: &mut BufReader<File>, numel: usize, name: &str) -> Result<Vec<f32>, GgufError> {
     if numel % Q4_K_BLOCK_ELEMS != 0 {
         return Err(GgufError::InvalidFormat(format!(
             "GGUF decode '{name}': Q4_K numel {numel} is not a multiple of \
@@ -284,11 +265,8 @@ fn decode_q4_k(
     let mut out: Vec<f32> = Vec::with_capacity(numel);
     for b in 0..n_blocks {
         let block_off = b * Q4_K_BLOCK_BYTES;
-        let d = half::f16::from_bits(u16::from_le_bytes([
-            bytes[block_off],
-            bytes[block_off + 1],
-        ]))
-        .to_f32();
+        let d = half::f16::from_bits(u16::from_le_bytes([bytes[block_off], bytes[block_off + 1]]))
+            .to_f32();
         let dmin = half::f16::from_bits(u16::from_le_bytes([
             bytes[block_off + 2],
             bytes[block_off + 3],
@@ -328,11 +306,7 @@ fn get_scale_min_k4(j: usize, q: &[u8]) -> (u8, u8) {
     }
 }
 
-fn decode_q6_k(
-    buf: &mut BufReader<File>,
-    numel: usize,
-    name: &str,
-) -> Result<Vec<f32>, GgufError> {
+fn decode_q6_k(buf: &mut BufReader<File>, numel: usize, name: &str) -> Result<Vec<f32>, GgufError> {
     if numel % Q6_K_BLOCK_ELEMS != 0 {
         return Err(GgufError::InvalidFormat(format!(
             "GGUF decode '{name}': Q6_K numel {numel} is not a multiple of \
@@ -357,8 +331,7 @@ fn decode_q6_k(
         let qh_off = ql_off + Q6_K_QL_BYTES;
         let sc_off = qh_off + Q6_K_QH_BYTES;
         let d_off = sc_off + Q6_K_SCALE_BYTES;
-        let d = half::f16::from_bits(u16::from_le_bytes([bytes[d_off], bytes[d_off + 1]]))
-            .to_f32();
+        let d = half::f16::from_bits(u16::from_le_bytes([bytes[d_off], bytes[d_off + 1]])).to_f32();
         let base_out = b * Q6_K_BLOCK_ELEMS;
         for n in (0..Q6_K_BLOCK_ELEMS).step_by(128) {
             let ql = ql_off + (n / 128) * 64;
@@ -366,25 +339,18 @@ fn decode_q6_k(
             let sc = sc_off + (n / 128) * 8;
             for l in 0..32 {
                 let is = l / 16;
-                let q1 = (((bytes[ql + l] & 0x0F)
-                    | (((bytes[qh + l] >> 0) & 0x03) << 4)) as i8)
+                let q1 =
+                    (((bytes[ql + l] & 0x0F) | (((bytes[qh + l] >> 0) & 0x03) << 4)) as i8) - 32;
+                let q2 = (((bytes[ql + l + 32] & 0x0F) | (((bytes[qh + l] >> 2) & 0x03) << 4))
+                    as i8)
                     - 32;
-                let q2 = (((bytes[ql + l + 32] & 0x0F)
-                    | (((bytes[qh + l] >> 2) & 0x03) << 4)) as i8)
-                    - 32;
-                let q3 = (((bytes[ql + l] >> 4)
-                    | (((bytes[qh + l] >> 4) & 0x03) << 4)) as i8)
-                    - 32;
-                let q4 = (((bytes[ql + l + 32] >> 4)
-                    | (((bytes[qh + l] >> 6) & 0x03) << 4)) as i8)
-                    - 32;
+                let q3 = (((bytes[ql + l] >> 4) | (((bytes[qh + l] >> 4) & 0x03) << 4)) as i8) - 32;
+                let q4 =
+                    (((bytes[ql + l + 32] >> 4) | (((bytes[qh + l] >> 6) & 0x03) << 4)) as i8) - 32;
                 out[base_out + n + l] = d * (bytes[sc + is] as i8 as f32) * (q1 as f32);
-                out[base_out + n + l + 32] =
-                    d * (bytes[sc + is + 2] as i8 as f32) * (q2 as f32);
-                out[base_out + n + l + 64] =
-                    d * (bytes[sc + is + 4] as i8 as f32) * (q3 as f32);
-                out[base_out + n + l + 96] =
-                    d * (bytes[sc + is + 6] as i8 as f32) * (q4 as f32);
+                out[base_out + n + l + 32] = d * (bytes[sc + is + 2] as i8 as f32) * (q2 as f32);
+                out[base_out + n + l + 64] = d * (bytes[sc + is + 4] as i8 as f32) * (q3 as f32);
+                out[base_out + n + l + 96] = d * (bytes[sc + is + 6] as i8 as f32) * (q4 as f32);
             }
         }
     }
@@ -552,8 +518,8 @@ mod tests {
     #[test]
     fn decode_q8_0_with_scale() {
         let qs: [i8; 32] = [
-            1, -1, 64, -64, 100, -100, 127, -127, 0, 32, -32, 50, -50, 10, -10,
-            5, -5, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+            1, -1, 64, -64, 100, -100, 127, -127, 0, 32, -32, 50, -50, 10, -10, 5, -5, 1, 2, 3, 4,
+            5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
         ];
         let scale = 2.5_f32;
         let block = build_q8_0_block(scale, &qs);

@@ -37,7 +37,8 @@ impl DecisionReasoner {
             timestamp: ts,
         };
 
-        let record = DecisionRecord::new(event, factors, avoided_alternative, justification_code, ts);
+        let record =
+            DecisionRecord::new(event, factors, avoided_alternative, justification_code, ts);
         self.records.push(record);
     }
 
@@ -164,7 +165,10 @@ fn serialize_factors(f: &ReasoningFactors, out: &mut String) {
     out.push('}');
 }
 
-fn serialize_snapshot(snap: &crate::v14::memory::pressure_snapshot::PressureSnapshot, out: &mut String) {
+fn serialize_snapshot(
+    snap: &crate::v14::memory::pressure_snapshot::PressureSnapshot,
+    out: &mut String,
+) {
     out.push('{');
     out.push_str("\"layer\":\"");
     let layer_str = match snap.layer {
