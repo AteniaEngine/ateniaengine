@@ -1,5 +1,6 @@
 #include <cuda_runtime.h>
 #include <cstdio>
+#include "cuda_common.h"
 
 extern "C" __global__
 void matmul_f32_kernel(
@@ -25,8 +26,8 @@ void matmul_f32_kernel(
 // The Rust side (`src/cuda/matmul.rs`) owns the alloc / H↔D copy / free
 // cycle via `pool_alloc` + `cudaMemcpy`; this launcher only dispatches
 // the kernel and synchronizes.
-extern "C" __declspec(dllexport)
-void matmul_f32_launch_device(
+extern "C" CUDA_EXPORT
+int matmul_f32_launch_device(
     const float* A,
     const float* B,
     float* C,
@@ -40,13 +41,15 @@ void matmul_f32_launch_device(
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
-        printf("Kernel launch failed: %s\n", cudaGetErrorString(err));
-        return;
+        fprintf(stderr, "Kernel launch failed: %s\n", cudaGetErrorString(err));
+        return static_cast<int>(err);
     }
 
     err = cudaDeviceSynchronize();
     if (err != cudaSuccess) {
-        printf("cudaDeviceSynchronize failed: %s\n", cudaGetErrorString(err));
-        return;
+        fprintf(stderr, "cudaDeviceSynchronize failed: %s\n", cudaGetErrorString(err));
+        return static_cast<int>(err);
     }
+
+    return 0;
 }

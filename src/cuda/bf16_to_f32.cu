@@ -18,6 +18,7 @@
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
 #include <stdio.h>
+#include "cuda_common.h"
 
 extern "C" __global__
 void bf16_to_f32_kernel(
@@ -41,7 +42,7 @@ void bf16_to_f32_kernel(
 // device-pointer launchers in the codebase return void; this one uses
 // an i32 status code so the example test harness can distinguish a
 // real failure from a no-op).
-extern "C" __declspec(dllexport)
+extern "C" CUDA_EXPORT
 int bf16_to_f32_launch_device(
     const void* d_src_bf16,
     float* d_dst_f32,
@@ -58,15 +59,15 @@ int bf16_to_f32_launch_device(
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
-        printf("bf16_to_f32 kernel launch failed: %s\n",
-               cudaGetErrorString(err));
+        fprintf(stderr, "bf16_to_f32 kernel launch failed: %s\n",
+                cudaGetErrorString(err));
         return 1;
     }
 
     err = cudaDeviceSynchronize();
     if (err != cudaSuccess) {
-        printf("bf16_to_f32 cudaDeviceSynchronize failed: %s\n",
-               cudaGetErrorString(err));
+        fprintf(stderr, "bf16_to_f32 cudaDeviceSynchronize failed: %s\n",
+                cudaGetErrorString(err));
         return 2;
     }
 

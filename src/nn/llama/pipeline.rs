@@ -69,7 +69,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::builder::{build_llama, LlamaRuntime};
+use super::builder::{LlamaRuntime, build_llama};
 use super::numcert;
 use super::phi3;
 use crate::amg::builder::GraphBuilder;
@@ -186,7 +186,7 @@ pub fn init_fast_mode_active(manifest: Option<&numcert::NumcertManifest>) -> boo
     resolved
 }
 use super::generator::{
-    generate_greedy, GenerateError, GeneratedToken, GenerationConfig, TokenSink,
+    GenerateError, GeneratedToken, GenerationConfig, TokenSink, generate_greedy,
 };
 
 /// Bundles everything needed to run inference against one
@@ -1188,9 +1188,15 @@ fn log_tier_plan(
         .filter(|m| crate::gpu::tier_plan::is_gpu_eligible(m))
         .map(|m| m.vram_cost_bytes(input.kernel_dtype))
         .sum();
+    let certified_upload_reserve = if input.kernel_dtype == crate::tensor::DType::F32 {
+        crate::gpu::tier_plan::CERTIFIED_BF16_UPLOAD_STAGING_BYTES
+    } else {
+        0
+    };
     let vram_budget = input
         .free_vram_bytes
-        .saturating_sub(crate::gpu::tier_plan::VRAM_HEADROOM_BYTES);
+        .saturating_sub(crate::gpu::tier_plan::VRAM_HEADROOM_BYTES)
+        .saturating_sub(certified_upload_reserve);
     let final_vram_budget = if plan.disk_bytes_assigned > 0 {
         vram_budget.saturating_sub(crate::gpu::tier_plan::DISK_PIPELINE_STAGING_BYTES)
     } else {
@@ -1218,7 +1224,8 @@ fn log_tier_plan(
 
     eprintln!(
         "[ATENIA] Tier planner inputs: source {:.2} GiB, all-resident estimate {:.2} GiB \
-         at {:?}, free VRAM {:.2} GiB, VRAM budget {:.2} GiB ({:.2} GiB after staging), \
+         at {:?}, free VRAM {:.2} GiB, VRAM budget {:.2} GiB ({:.2} GiB after staging; \
+         certified upload reserve {:.2} GiB), \
          GPU-eligible {} / {} tensors ({:.2} GiB source -> {:.2} GiB resident).",
         gib(input.model_total_bytes),
         gib(total_resident_if_vram),
@@ -1226,6 +1233,7 @@ fn log_tier_plan(
         gib(input.free_vram_bytes),
         gib(vram_budget),
         gib(final_vram_budget),
+        gib(certified_upload_reserve),
         gpu_eligible_count,
         input.tensors.len(),
         gib(gpu_eligible_source_bytes),

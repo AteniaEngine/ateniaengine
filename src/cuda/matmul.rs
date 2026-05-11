@@ -17,7 +17,7 @@ unsafe extern "C" {
         m: c_int,
         k: c_int,
         n: c_int,
-    );
+    ) -> c_int;
 }
 
 // Direct cudart FFI for the non-pooled path. Re-declared here (also
@@ -26,12 +26,7 @@ unsafe extern "C" {
 // declarations to the same symbol in the cudart shared library.
 #[link(name = "cudart")]
 unsafe extern "C" {
-    fn cudaMemcpy(
-        dst: *mut c_void,
-        src: *const c_void,
-        count: usize,
-        kind: c_int,
-    ) -> c_int;
+    fn cudaMemcpy(dst: *mut c_void, src: *const c_void, count: usize, kind: c_int) -> c_int;
 }
 
 // Wrappers around `cudaMalloc`/`cudaFree` provided by the project's
@@ -52,12 +47,27 @@ const CUDA_MEMCPY_DEVICE_TO_HOST: c_int = 2;
 /// [`crate::cuda::pool_helpers::with_pooled_device_buffers`] so this
 /// function only has to describe the kernel-specific invocation.
 ///
-/// Panics on pool exhaustion or CUDA-driver failure with a
-/// [`crate::tensor::StorageTransferError`] diagnostic in the message.
-/// The panic is consistent with the rest of the CPU-path CUDA ops,
-/// which do not propagate `Result` up because their callers assign
-/// the return tensor directly into the graph node's `output` slot.
+/// Falls back to the non-pooled CUDA path when the legacy pool cannot
+/// provide the three fixed-size blocks this roundtrip path needs.
+/// If both CUDA roundtrip paths fail, it returns the plain CPU matmul
+/// result instead of aborting generation.
 pub fn cuda_matmul(a: &Tensor, b: &Tensor, m: usize, k: usize, n: usize) -> Tensor {
+    try_cuda_matmul_roundtrip(a, b, m, k, n).unwrap_or_else(|| a.matmul(b))
+}
+
+/// Try the CPU-path CUDA matmul without panicking.
+///
+/// The pooled route is cheaper when the APX pool has spare blocks, but
+/// 7B-class certified runs can legitimately leave too few blocks free
+/// after model residency. In that case, retry with exact non-pooled
+/// allocations so a tiny decode matmul is not killed by pool pressure.
+pub fn try_cuda_matmul_roundtrip(
+    a: &Tensor,
+    b: &Tensor,
+    m: usize,
+    k: usize,
+    n: usize,
+) -> Option<Tensor> {
     let mut out = Tensor::zeros_new(&[m, n], Device::CPU);
 
     let m_ci = m as c_int;
@@ -68,23 +78,21 @@ pub fn cuda_matmul(a: &Tensor, b: &Tensor, m: usize, k: usize, n: usize) -> Tens
         with_pooled_device_buffers(
             &[a.as_cpu_slice(), b.as_cpu_slice()],
             out.as_cpu_slice_mut(),
-            |d_in, d_out| {
-                // `matmul_f32_launch_device` returns void; it prints
-                // to stderr and returns without signalling on kernel
-                // launch / sync failure (pre-existing limitation from
-                // before the `_device_ptrs` return-code convention).
-                // Report success unconditionally.
-                matmul_f32_launch_device(d_in[0], d_in[1], d_out, m_ci, k_ci, n_ci);
-                0
-            },
+            |d_in, d_out| matmul_f32_launch_device(d_in[0], d_in[1], d_out, m_ci, k_ci, n_ci),
         )
     };
 
-    if let Err(e) = result {
-        panic!("cuda_matmul failed: {:?}", e);
+    if let Err(err) = result {
+        if std::env::var("ATENIA_GPU_FALLBACK_TRACE").as_deref() == Ok("1") {
+            eprintln!(
+                "[ATENIA] pooled cuda_matmul failed ({:?}); retrying non-pooled",
+                err
+            );
+        }
+        return cuda_matmul_non_pooled(a.as_cpu_slice(), b.as_cpu_slice(), m, k, n);
     }
 
-    out
+    Some(out)
 }
 
 /// Residency-aware CUDA matmul (M4.7.3.a).
@@ -101,21 +109,10 @@ pub fn cuda_matmul(a: &Tensor, b: &Tensor, m: usize, k: usize, n: usize) -> Tens
 /// `out` with `TensorStorage::Cuda` before calling this — see
 /// [`Tensor::zeros_new_cuda`].
 ///
-/// The underlying `matmul_f32_launch_device` returns `void`; on
-/// kernel launch / sync failure it prints to stderr but does not
-/// signal back. This is a pre-existing ABI limitation versus the
-/// `_device_ptrs` return-code convention used by `cuda_linear` and
-/// friends. M4.7.3 trusts the launcher and assumes success; promoting
-/// the kernel to a `_device_ptrs` ABI variant returning `i32` is a
-/// known follow-up.
-pub fn cuda_matmul_inplace(
-    a: &Tensor,
-    b: &Tensor,
-    out: &mut Tensor,
-    m: usize,
-    k: usize,
-    n: usize,
-) {
+/// The underlying `matmul_f32_launch_device` returns a cudart status
+/// code. If a resident launch fails, the function materialises CPU
+/// operands and writes a CPU output so the graph can keep going.
+pub fn cuda_matmul_inplace(a: &Tensor, b: &Tensor, out: &mut Tensor, m: usize, k: usize, n: usize) {
     let all_cuda = matches!(
         (&a.storage, &b.storage, &out.storage),
         (
@@ -130,15 +127,23 @@ pub fn cuda_matmul_inplace(
         let d_b = cuda_device_ptr(&b.storage);
         let d_out = cuda_device_ptr_mut(&out.storage);
 
-        unsafe {
-            matmul_f32_launch_device(
-                d_a,
-                d_b,
-                d_out,
-                m as c_int,
-                k as c_int,
-                n as c_int,
-            );
+        let rc = unsafe {
+            matmul_f32_launch_device(d_a, d_b, d_out, m as c_int, k as c_int, n as c_int)
+        };
+        if rc != 0 {
+            let mut a_local = a.clone();
+            let mut b_local = b.clone();
+            a_local
+                .ensure_cpu()
+                .expect("cuda_matmul_inplace all-cuda fallback: ensure_cpu on operand A failed");
+            b_local
+                .ensure_cpu()
+                .expect("cuda_matmul_inplace all-cuda fallback: ensure_cpu on operand B failed");
+            let computed = a_local.matmul(&b_local);
+            out.ensure_cpu()
+                .expect("cuda_matmul_inplace all-cuda fallback: ensure_cpu on output failed");
+            out.as_cpu_slice_mut()
+                .clone_from_slice(computed.as_cpu_slice());
         }
     } else {
         // Mixed or all-Cpu storage: delegate to the CPU-roundtrip
@@ -240,7 +245,11 @@ pub fn cuda_matmul_non_pooled(
     #[cfg(feature = "gpu-trace")]
     eprintln!(
         "[GPU-TRACE] cuda_matmul_non_pooled ENTRY: m={}, k={}, n={}, a.len={}, b.len={}",
-        m, k, n, a.len(), b.len()
+        m,
+        k,
+        n,
+        a.len(),
+        b.len()
     );
 
     // Guard: refuse to issue a CUDA kernel call when the driver is
@@ -250,7 +259,10 @@ pub fn cuda_matmul_non_pooled(
     // `gpu_can_run_matmul`.
     let cuda_ok = super::cuda_available();
     #[cfg(feature = "gpu-trace")]
-    eprintln!("[GPU-TRACE] cuda_matmul_non_pooled: cuda_available()={}", cuda_ok);
+    eprintln!(
+        "[GPU-TRACE] cuda_matmul_non_pooled: cuda_available()={}",
+        cuda_ok
+    );
     if !cuda_ok {
         #[cfg(feature = "gpu-trace")]
         eprintln!("[GPU-TRACE] cuda_matmul_non_pooled: EXIT=None (cuda_available=false)");
@@ -278,7 +290,10 @@ pub fn cuda_matmul_non_pooled(
         }
     };
     #[cfg(feature = "gpu-trace")]
-    eprintln!("[GPU-TRACE] cuda_malloc A ok: {:.1}MB", bytes_a as f64 / (1024.0 * 1024.0));
+    eprintln!(
+        "[GPU-TRACE] cuda_malloc A ok: {:.1}MB",
+        bytes_a as f64 / (1024.0 * 1024.0)
+    );
 
     let d_b = match allocs.alloc(bytes_b) {
         Some(p) => p,
@@ -292,7 +307,10 @@ pub fn cuda_matmul_non_pooled(
         }
     };
     #[cfg(feature = "gpu-trace")]
-    eprintln!("[GPU-TRACE] cuda_malloc B ok: {:.1}MB", bytes_b as f64 / (1024.0 * 1024.0));
+    eprintln!(
+        "[GPU-TRACE] cuda_malloc B ok: {:.1}MB",
+        bytes_b as f64 / (1024.0 * 1024.0)
+    );
 
     let d_out = match allocs.alloc(bytes_out) {
         Some(p) => p,
@@ -307,8 +325,14 @@ pub fn cuda_matmul_non_pooled(
     };
     #[cfg(feature = "gpu-trace")]
     {
-        eprintln!("[GPU-TRACE] cuda_malloc OUT ok: {:.1}MB", bytes_out as f64 / (1024.0 * 1024.0));
-        eprintln!("[GPU-TRACE] cuda_malloc total: {:.2}ms", t_alloc.elapsed().as_secs_f64() * 1000.0);
+        eprintln!(
+            "[GPU-TRACE] cuda_malloc OUT ok: {:.1}MB",
+            bytes_out as f64 / (1024.0 * 1024.0)
+        );
+        eprintln!(
+            "[GPU-TRACE] cuda_malloc total: {:.2}ms",
+            t_alloc.elapsed().as_secs_f64() * 1000.0
+        );
     }
 
     // H→D: stage both inputs into VRAM. On any failure the RAII
@@ -324,10 +348,17 @@ pub fn cuda_matmul_non_pooled(
             CUDA_MEMCPY_HOST_TO_DEVICE,
         );
         #[cfg(feature = "gpu-trace")]
-        eprintln!("[GPU-TRACE] cudaMemcpy H2D A: rc={}, {:.1}MB", rc, bytes_a as f64 / (1024.0 * 1024.0));
+        eprintln!(
+            "[GPU-TRACE] cudaMemcpy H2D A: rc={}, {:.1}MB",
+            rc,
+            bytes_a as f64 / (1024.0 * 1024.0)
+        );
         if rc != 0 {
             #[cfg(feature = "gpu-trace")]
-            eprintln!("[GPU-TRACE] cuda_matmul_non_pooled: EXIT=None (memcpy A failed, rc={})", rc);
+            eprintln!(
+                "[GPU-TRACE] cuda_matmul_non_pooled: EXIT=None (memcpy A failed, rc={})",
+                rc
+            );
             return None;
         }
         let rc = cudaMemcpy(
@@ -337,21 +368,31 @@ pub fn cuda_matmul_non_pooled(
             CUDA_MEMCPY_HOST_TO_DEVICE,
         );
         #[cfg(feature = "gpu-trace")]
-        eprintln!("[GPU-TRACE] cudaMemcpy H2D B: rc={}, {:.1}MB", rc, bytes_b as f64 / (1024.0 * 1024.0));
+        eprintln!(
+            "[GPU-TRACE] cudaMemcpy H2D B: rc={}, {:.1}MB",
+            rc,
+            bytes_b as f64 / (1024.0 * 1024.0)
+        );
         if rc != 0 {
             #[cfg(feature = "gpu-trace")]
-            eprintln!("[GPU-TRACE] cuda_matmul_non_pooled: EXIT=None (memcpy B failed, rc={})", rc);
+            eprintln!(
+                "[GPU-TRACE] cuda_matmul_non_pooled: EXIT=None (memcpy B failed, rc={})",
+                rc
+            );
             return None;
         }
         #[cfg(feature = "gpu-trace")]
-        eprintln!("[GPU-TRACE] H2D total: {:.2}ms", t_h2d.elapsed().as_secs_f64() * 1000.0);
+        eprintln!(
+            "[GPU-TRACE] H2D total: {:.2}ms",
+            t_h2d.elapsed().as_secs_f64() * 1000.0
+        );
 
-        // Kernel launch. `matmul_f32_launch_device` returns void
-        // and syncs internally; no error code is propagated, so we
-        // assume success consistent with `cuda_matmul`.
+        // Kernel launch. The checked launcher returns a CUDA runtime
+        // error code on launch / sync failure, letting callers fall
+        // back rather than consuming an invalid output buffer.
         #[cfg(feature = "gpu-trace")]
         let t_kernel = std::time::Instant::now();
-        matmul_f32_launch_device(
+        let rc = matmul_f32_launch_device(
             d_a as *const f32,
             d_b as *const f32,
             d_out as *mut f32,
@@ -359,8 +400,19 @@ pub fn cuda_matmul_non_pooled(
             k as c_int,
             n as c_int,
         );
+        if rc != 0 {
+            #[cfg(feature = "gpu-trace")]
+            eprintln!(
+                "[GPU-TRACE] cuda_matmul_non_pooled: EXIT=None (kernel failed, rc={})",
+                rc
+            );
+            return None;
+        }
         #[cfg(feature = "gpu-trace")]
-        eprintln!("[GPU-TRACE] kernel matmul_f32_launch_device: {:.2}ms", t_kernel.elapsed().as_secs_f64() * 1000.0);
+        eprintln!(
+            "[GPU-TRACE] kernel matmul_f32_launch_device: {:.2}ms",
+            t_kernel.elapsed().as_secs_f64() * 1000.0
+        );
 
         // D→H: pull the output back into a fresh host Vec. Allocated
         // here (rather than into a pre-built `Tensor::zeros_new`) so
@@ -376,17 +428,25 @@ pub fn cuda_matmul_non_pooled(
             CUDA_MEMCPY_DEVICE_TO_HOST,
         );
         #[cfg(feature = "gpu-trace")]
-        eprintln!("[GPU-TRACE] cudaMemcpy D2H OUT: rc={}, {:.1}MB, {:.2}ms",
-            rc, bytes_out as f64 / (1024.0 * 1024.0),
-            t_d2h.elapsed().as_secs_f64() * 1000.0);
+        eprintln!(
+            "[GPU-TRACE] cudaMemcpy D2H OUT: rc={}, {:.1}MB, {:.2}ms",
+            rc,
+            bytes_out as f64 / (1024.0 * 1024.0),
+            t_d2h.elapsed().as_secs_f64() * 1000.0
+        );
         if rc != 0 {
             #[cfg(feature = "gpu-trace")]
-            eprintln!("[GPU-TRACE] cuda_matmul_non_pooled: EXIT=None (memcpy D2H failed, rc={})", rc);
+            eprintln!(
+                "[GPU-TRACE] cuda_matmul_non_pooled: EXIT=None (memcpy D2H failed, rc={})",
+                rc
+            );
             return None;
         }
 
         #[cfg(feature = "gpu-trace")]
-        eprintln!("[GPU-TRACE] cuda_matmul_non_pooled: EXIT=Some (success), 3x cuda_free pending on guard drop");
+        eprintln!(
+            "[GPU-TRACE] cuda_matmul_non_pooled: EXIT=Some (success), 3x cuda_free pending on guard drop"
+        );
 
         // Guard drops here when `Some(...)` returns, freeing all 3
         // device buffers before the host Vec is wrapped into the
@@ -587,7 +647,8 @@ fn cublas_handle() -> Option<cublasHandle_t> {
             let rc = cublasCreate_v2(&mut handle);
             assert_eq!(
                 rc, 0,
-                "cublasCreate_v2 returned {} during M8.2 handle init", rc
+                "cublasCreate_v2 returned {} during M8.2 handle init",
+                rc
             );
             assert!(!handle.is_null(), "cublasCreate_v2 returned null handle");
         }
@@ -710,11 +771,10 @@ pub fn cuda_matmul_bf16_inplace(
     //    transient on-device. Wrapped in `TensorGPU` so its `Drop`
     //    frees the buffer when this function returns; no manual
     //    free required.
-    let b_f32_transient =
-        match crate::cuda::bf16_to_f32::bf16_to_f32_transient_in_vram(b_gpu) {
-            Some(g) => g,
-            None => return false,
-        };
+    let b_f32_transient = match crate::cuda::bf16_to_f32::bf16_to_f32_transient_in_vram(b_gpu) {
+        Some(g) => g,
+        None => return false,
+    };
 
     // 5. Allocate the per-call F32 activation upload buffer and the
     //    F32 output buffer via `NonPooledAllocs`. The F32 weight
@@ -768,17 +828,26 @@ pub fn cuda_matmul_bf16_inplace(
         }
         let rc = cublasGemmEx(
             handle,
-            CUBLAS_OP_N, CUBLAS_OP_N,
-            n as c_int, m as c_int, k as c_int,
+            CUBLAS_OP_N,
+            CUBLAS_OP_N,
+            n as c_int,
+            m as c_int,
+            k as c_int,
             &alpha as *const f32 as *const c_void,
             // First operand in column-major view = B^T (the row-major
             // weight `b`, now upcasted to F32). Leading dim n.
-            b_f32_transient.device_ptr() as *const c_void, CUDA_R_32F, n as c_int,
+            b_f32_transient.device_ptr() as *const c_void,
+            CUDA_R_32F,
+            n as c_int,
             // Second operand = A^T (the row-major activation, F32).
             // Leading dim k.
-            d_a_f32, CUDA_R_32F, k as c_int,
+            d_a_f32,
+            CUDA_R_32F,
+            k as c_int,
             &beta as *const f32 as *const c_void,
-            d_out_f32, CUDA_R_32F, n as c_int,
+            d_out_f32,
+            CUDA_R_32F,
+            n as c_int,
             CUBLAS_COMPUTE_32F_FAST_TF32,
             CUBLAS_GEMM_DEFAULT,
         );
@@ -978,17 +1047,26 @@ pub fn cuda_matmul_bf16_native_inplace(
         }
         let rc = cublasGemmEx(
             handle,
-            CUBLAS_OP_N, CUBLAS_OP_N,
-            n as c_int, m as c_int, k as c_int,
+            CUBLAS_OP_N,
+            CUBLAS_OP_N,
+            n as c_int,
+            m as c_int,
+            k as c_int,
             &alpha as *const f32 as *const c_void,
             // First operand in column-major view = B^T (the row-major
             // BF16 weight `b`). Leading dim n.
-            b_gpu.device_ptr() as *const c_void, CUDA_R_16BF, n as c_int,
+            b_gpu.device_ptr() as *const c_void,
+            CUDA_R_16BF,
+            n as c_int,
             // Second operand = A^T (the row-major BF16 activation).
             // Leading dim k.
-            d_a_bf16, CUDA_R_16BF, k as c_int,
+            d_a_bf16,
+            CUDA_R_16BF,
+            k as c_int,
             &beta as *const f32 as *const c_void,
-            d_out_f32, CUDA_R_32F, n as c_int,
+            d_out_f32,
+            CUDA_R_32F,
+            n as c_int,
             CUBLAS_COMPUTE_32F,
             CUBLAS_GEMM_DEFAULT,
         );
@@ -1132,15 +1210,14 @@ pub fn cuda_matmul_disk_streamed_bf16(
     //    prereq planner change (`DISK_PIPELINE_STAGING_BYTES`) has
     //    already reserved 270 MiB of VRAM headroom for exactly this
     //    allocation, so it should not race the resident plan.
-    let staging_gpu =
-        match crate::cuda::bf16_to_f32::bf16_to_vram_no_upcast_from_raw_bytes(
-            &raw_bytes,
-            handle.numel(),
-            &[k, n],
-        ) {
-            Some(g) => g,
-            None => return false,
-        };
+    let staging_gpu = match crate::cuda::bf16_to_f32::bf16_to_vram_no_upcast_from_raw_bytes(
+        &raw_bytes,
+        handle.numel(),
+        &[k, n],
+    ) {
+        Some(g) => g,
+        None => return false,
+    };
 
     // 4. Wrap as a transient `Tensor` and dispatch through M8.4c
     //    Path B (BF16 weight in VRAM + F32 transient upcast +
@@ -1235,12 +1312,10 @@ mod cuda_matmul_non_pooled_tests {
 #[cfg(test)]
 mod cuda_matmul_bf16_tests {
     use super::{cuda_matmul_bf16_inplace, vram_bf16_matmul_count};
-    use crate::cuda::bf16_to_f32::{
-        bf16_to_vram_no_upcast, BF16_COUNTER_TEST_LOCK,
-    };
+    use crate::cuda::bf16_to_f32::{BF16_COUNTER_TEST_LOCK, bf16_to_vram_no_upcast};
     use crate::cuda::cuda_available;
-    use crate::tensor::tensor::f32_to_bf16_bits;
     use crate::tensor::Tensor;
+    use crate::tensor::tensor::f32_to_bf16_bits;
 
     /// Hand-rolled F32 reference matmul. Same formula as the M6
     /// non-pooled test; included here so this test module has no
@@ -1328,7 +1403,13 @@ mod cuda_matmul_bf16_tests {
         // Dispatch. `stream = null` selects the default stream,
         // bit-exact with the M8.4c-original behaviour pre-M8.7.1.r.
         let ok = cuda_matmul_bf16_inplace(
-            &a_tensor, &b_tensor, &mut out_tensor, m, k, n, std::ptr::null_mut(),
+            &a_tensor,
+            &b_tensor,
+            &mut out_tensor,
+            m,
+            k,
+            n,
+            std::ptr::null_mut(),
         );
         assert!(
             ok,
@@ -1468,8 +1549,7 @@ mod cuda_matmul_bf16_tests {
         let b_host_f32: Vec<f32> = (0..(k * n))
             .map(|i| ((i as f32) * 0.007 + 0.4).cos() * 0.3)
             .collect();
-        let b_bf16: Vec<u16> =
-            b_host_f32.iter().map(|&v| f32_to_bf16_bits(v)).collect();
+        let b_bf16: Vec<u16> = b_host_f32.iter().map(|&v| f32_to_bf16_bits(v)).collect();
 
         let gpu = crate::cuda::bf16_to_f32::bf16_to_vram_no_upcast(&b_bf16, &[k, n])
             .expect("bf16_to_vram_no_upcast on a CUDA host");
@@ -1561,12 +1641,10 @@ mod cuda_matmul_bf16_tests {
                 .expect("bf16_to_f32_on_device returned None");
 
         // Path B — upload as BF16 TensorGPU (M8.1) + transient F32 upcast (M8.4c).
-        let bf16_gpu =
-            crate::cuda::bf16_to_f32::bf16_to_vram_no_upcast(&host_bf16, &[64])
-                .expect("bf16_to_vram_no_upcast returned None");
-        let f32_transient =
-            crate::cuda::bf16_to_f32::bf16_to_f32_transient_in_vram(&bf16_gpu)
-                .expect("bf16_to_f32_transient_in_vram returned None");
+        let bf16_gpu = crate::cuda::bf16_to_f32::bf16_to_vram_no_upcast(&host_bf16, &[64])
+            .expect("bf16_to_vram_no_upcast returned None");
+        let f32_transient = crate::cuda::bf16_to_f32::bf16_to_f32_transient_in_vram(&bf16_gpu)
+            .expect("bf16_to_f32_transient_in_vram returned None");
         // Sanity: transient is F32-typed and matches the BF16 size × 2.
         assert_eq!(
             f32_transient.dtype(),
@@ -1583,10 +1661,7 @@ mod cuda_matmul_bf16_tests {
             .expect("D→H download of F32 transient");
 
         // Bit-exact comparison.
-        assert_eq!(
-            from_on_device.len(),
-            from_transient.len()
-        );
+        assert_eq!(from_on_device.len(), from_transient.len());
         let mut bitwise_mismatches = 0_usize;
         for (a, b) in from_on_device.iter().zip(from_transient.iter()) {
             if a.to_bits() != b.to_bits() {
@@ -1594,7 +1669,8 @@ mod cuda_matmul_bf16_tests {
             }
         }
         assert_eq!(
-            bitwise_mismatches, 0,
+            bitwise_mismatches,
+            0,
             "bf16_to_f32_transient_in_vram must produce bit-exact output \
              vs bf16_to_f32_on_device (both wrap the same M6 kernel); \
              {} elements diverged out of {}",
@@ -1636,7 +1712,13 @@ mod cuda_matmul_bf16_tests {
         let certified_before = super::vram_bf16_matmul_count();
 
         let ok = super::cuda_matmul_bf16_native_inplace(
-            &a_tensor, &b_tensor, &mut out_tensor, m, k, n, std::ptr::null_mut(),
+            &a_tensor,
+            &b_tensor,
+            &mut out_tensor,
+            m,
+            k,
+            n,
+            std::ptr::null_mut(),
         );
         assert!(
             ok,
@@ -1685,7 +1767,13 @@ mod cuda_matmul_bf16_tests {
         let native_before = super::vram_bf16_native_matmul_count();
 
         let ok = super::cuda_matmul_bf16_inplace(
-            &a_tensor, &b_tensor, &mut out_tensor, m, k, n, std::ptr::null_mut(),
+            &a_tensor,
+            &b_tensor,
+            &mut out_tensor,
+            m,
+            k,
+            n,
+            std::ptr::null_mut(),
         );
         assert!(ok, "certified path returned false on a known-good triple");
 
@@ -1706,7 +1794,7 @@ mod cuda_matmul_disk_streamed_tests {
     use super::*;
     use crate::cuda::bf16_to_f32::BF16_COUNTER_TEST_LOCK;
     use crate::cuda::cuda_available;
-    use crate::tensor::{disk_tier, Tensor};
+    use crate::tensor::{Tensor, disk_tier};
 
     /// Bit pattern of `f32_to_bf16` truncation — round-toward-zero,
     /// no rounding. Same helper the existing M8.2 tests use.
@@ -1750,10 +1838,7 @@ mod cuda_matmul_disk_streamed_tests {
     /// the end of the test.
     fn cache_dir() -> std::path::PathBuf {
         let mut p = std::env::temp_dir();
-        p.push(format!(
-            "atenia_m8_7_0_disk_test_{}",
-            std::process::id()
-        ));
+        p.push(format!("atenia_m8_7_0_disk_test_{}", std::process::id()));
         p
     }
 
@@ -1804,9 +1889,8 @@ mod cuda_matmul_disk_streamed_tests {
 
         // Dispatch under test. `next_handle = None` covers the
         // M8.7.1.a "no further Disk-streamed matmul ahead" branch.
-        let ok = cuda_matmul_disk_streamed_bf16(
-            &a_tensor, &b_tensor, &mut out_tensor, m, k, n, None,
-        );
+        let ok =
+            cuda_matmul_disk_streamed_bf16(&a_tensor, &b_tensor, &mut out_tensor, m, k, n, None);
         assert!(
             ok,
             "cuda_matmul_disk_streamed_bf16 returned false on a known-good triple"
@@ -1814,7 +1898,8 @@ mod cuda_matmul_disk_streamed_tests {
 
         let after = disk_streamed_matmul_count();
         assert_eq!(
-            after - before, 1,
+            after - before,
+            1,
             "DISK_STREAMED_MATMUL_COUNT must advance by exactly 1 per dispatch"
         );
 

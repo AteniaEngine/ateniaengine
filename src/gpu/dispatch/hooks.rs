@@ -13,18 +13,18 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::tensor::{DType, Tensor, TensorStorage};
-use crate::cuda::{
-    self,
-    matmul::cuda_matmul,
-    matmul::{cuda_matmul_bf16_inplace, cuda_matmul_bf16_native_inplace},
-    matmul::cuda_matmul_inplace,
-    matmul::cuda_matmul_non_pooled,
-    fused_linear_silu::cuda_fused_linear_silu,
-};
 use crate::amg::graph::Graph;
 use crate::apx4_12::pool_dispatcher::try_gpu_with_pool;
+use crate::cuda::{
+    self,
+    fused_linear_silu::cuda_fused_linear_silu,
+    matmul::cuda_matmul_inplace,
+    matmul::cuda_matmul_non_pooled,
+    matmul::try_cuda_matmul_roundtrip,
+    matmul::{cuda_matmul_bf16_inplace, cuda_matmul_bf16_native_inplace},
+};
 use crate::gpu::tensor::TensorGPU;
+use crate::tensor::{DType, Tensor, TensorStorage};
 
 fn apx_trace_enabled() -> bool {
     matches!(std::env::var("APX_TRACE").as_deref(), Ok("1")) && !crate::apx_is_silent()
@@ -170,7 +170,10 @@ pub fn gpu_can_run_matmul(m: usize, k: usize, n: usize) -> bool {
     let ops = m.saturating_mul(k).saturating_mul(n);
     if ops <= 256 {
         #[cfg(feature = "gpu-trace")]
-        eprintln!("[GPU-TRACE] gpu_can_run_matmul: REJECT (ops={} <= 256)", ops);
+        eprintln!(
+            "[GPU-TRACE] gpu_can_run_matmul: REJECT (ops={} <= 256)",
+            ops
+        );
         return false;
     }
 
@@ -181,7 +184,10 @@ pub fn gpu_can_run_matmul(m: usize, k: usize, n: usize) -> bool {
     // `INVESTIGATION_M6_DEEP.md`.
     let cuda_ok = cuda::cuda_available();
     #[cfg(feature = "gpu-trace")]
-    eprintln!("[GPU-TRACE] gpu_can_run_matmul: cuda_available()={}", cuda_ok);
+    eprintln!(
+        "[GPU-TRACE] gpu_can_run_matmul: cuda_available()={}",
+        cuda_ok
+    );
     if !cuda_ok {
         #[cfg(feature = "gpu-trace")]
         eprintln!("[GPU-TRACE] gpu_can_run_matmul: REJECT (cuda_available=false)");
@@ -221,9 +227,15 @@ pub fn try_gpu_matmul(a: &Tensor, b: &Tensor, out: &mut Tensor) -> bool {
     #[cfg(feature = "gpu-trace")]
     eprintln!(
         "[GPU-TRACE] try_gpu_matmul ENTRY: a.storage={} b.storage={} out.storage={} | a.dtype={:?} b.dtype={:?} out.dtype={:?} | a.shape={:?} b.shape={:?} out.shape={:?}",
-        storage_kind(a), storage_kind(b), storage_kind(out),
-        a.dtype, b.dtype, out.dtype,
-        a.shape, b.shape, out.shape,
+        storage_kind(a),
+        storage_kind(b),
+        storage_kind(out),
+        a.dtype,
+        b.dtype,
+        out.dtype,
+        a.shape,
+        b.shape,
+        out.shape,
     );
 
     if a.dtype != b.dtype || a.dtype != out.dtype {
@@ -408,9 +420,7 @@ pub fn try_gpu_matmul(a: &Tensor, b: &Tensor, out: &mut Tensor) -> bool {
     };
     if mixed_resident_b {
         #[cfg(feature = "gpu-trace")]
-        eprintln!(
-            "[GPU-TRACE] try_gpu_matmul: BRANCH=mixed_resident (a=Cpu, b=Cuda, out=Cpu)"
-        );
+        eprintln!("[GPU-TRACE] try_gpu_matmul: BRANCH=mixed_resident (a=Cpu, b=Cuda, out=Cpu)");
 
         // Upload activation `a` to VRAM. Cheap (KB-scale on Llama
         // decode hot path) — unlike the 270 MB weight, this is
@@ -419,7 +429,9 @@ pub fn try_gpu_matmul(a: &Tensor, b: &Tensor, out: &mut Tensor) -> bool {
             Ok(g) => g,
             Err(_) => {
                 #[cfg(feature = "gpu-trace")]
-                eprintln!("[GPU-TRACE] try_gpu_matmul: EXIT=false (mixed: activation upload failed)");
+                eprintln!(
+                    "[GPU-TRACE] try_gpu_matmul: EXIT=false (mixed: activation upload failed)"
+                );
                 return false;
             }
         };
@@ -487,7 +499,9 @@ pub fn try_gpu_matmul(a: &Tensor, b: &Tensor, out: &mut Tensor) -> bool {
         #[cfg(feature = "gpu-trace")]
         eprintln!(
             "[GPU-TRACE] try_gpu_matmul: REJECT (mixed storage: a={} b={} out={})",
-            storage_kind(a), storage_kind(b), storage_kind(out),
+            storage_kind(a),
+            storage_kind(b),
+            storage_kind(out),
         );
         return false;
     }
@@ -568,13 +582,15 @@ pub fn try_gpu_matmul(a: &Tensor, b: &Tensor, out: &mut Tensor) -> bool {
         try_gpu_with_pool(
             bytes_needed,
             || {
-                let gpu_out = cuda_matmul(a, b, m, k, n);
-                if gpu_out.shape == out.shape {
-                    out.as_cpu_slice_mut().clone_from_slice(gpu_out.as_cpu_slice());
-                    ran_gpu = true;
-                    GPU_MATMUL_ROUNDTRIP_COUNT.fetch_add(1, Ordering::Relaxed);
-                    if apx_trace_enabled() {
-                        println!("[APX 4.11] GPU MatMul executed (CPU-roundtrip)");
+                if let Some(gpu_out) = try_cuda_matmul_roundtrip(a, b, m, k, n) {
+                    if gpu_out.shape == out.shape {
+                        out.as_cpu_slice_mut()
+                            .clone_from_slice(gpu_out.as_cpu_slice());
+                        ran_gpu = true;
+                        GPU_MATMUL_ROUNDTRIP_COUNT.fetch_add(1, Ordering::Relaxed);
+                        if apx_trace_enabled() {
+                            println!("[APX 4.11] GPU MatMul executed (CPU-roundtrip)");
+                        }
                     }
                 }
             },
@@ -642,15 +658,7 @@ pub unsafe fn fused_linear_silu_gpu(
             .expect("fused_linear_silu: missing bias output")
             .clone();
 
-        cuda_fused_linear_silu(
-            &x,
-            &w,
-            &b,
-            &mut out,
-            m,
-            k,
-            n,
-        );
+        cuda_fused_linear_silu(&x, &w, &b, &mut out, m, k, n);
         graph.nodes[out_id].set_output(out);
     } else {
         // No bias: use the standard CPU Linear + SiLU path.
@@ -693,8 +701,8 @@ mod m6_step_2b_routing_tests {
     use std::sync::Mutex;
 
     use super::{
-        gpu_matmul_non_pooled_count, gpu_matmul_resident_count,
-        gpu_matmul_roundtrip_count, try_gpu_matmul,
+        gpu_matmul_non_pooled_count, gpu_matmul_resident_count, gpu_matmul_roundtrip_count,
+        try_gpu_matmul,
     };
     use crate::cuda::cuda_available;
     use crate::gpu::tensor::TensorGPU;
@@ -782,8 +790,8 @@ mod m6_step_2b_routing_tests {
         // production: the weight is already device-resident at
         // matmul time.
         let b_data: Vec<f32> = (0..k * n).map(|i| (i as f32) * 0.05 + 0.3).collect();
-        let b_gpu_inner = TensorGPU::new_from_cpu(&b_data, k, n)
-            .expect("VRAM upload for weight failed");
+        let b_gpu_inner =
+            TensorGPU::new_from_cpu(&b_data, k, n).expect("VRAM upload for weight failed");
         let b = Tensor::from_cuda_gpu(vec![k, n], b_gpu_inner);
 
         // Output `out`: pre-allocated Cpu buffer, mirroring the

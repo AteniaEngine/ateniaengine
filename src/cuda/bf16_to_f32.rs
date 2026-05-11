@@ -23,8 +23,9 @@
 //! `cuda_available()` guard. Encapsulating it here keeps every
 //! future caller on the same vetted error-handling chain.
 
-use std::ffi::c_void;
-use std::os::raw::c_int;
+use std::ffi::{CStr, c_void};
+use std::fmt;
+use std::os::raw::{c_char, c_int};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::gpu::tensor::TensorGPU;
@@ -66,8 +67,7 @@ pub fn cuda_bf16_resident_count() -> usize {
 /// AND asserts on the delta MUST acquire this lock first.
 /// `pub(crate)` so the matmul module's BF16 tests can share it.
 #[cfg(test)]
-pub(crate) static BF16_COUNTER_TEST_LOCK: std::sync::Mutex<()> =
-    std::sync::Mutex::new(());
+pub(crate) static BF16_COUNTER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 // FFI symbols needed by this module. `bf16_to_f32_launch_device`
 // lives in the `bf16_to_f32` static library produced by
@@ -75,21 +75,15 @@ pub(crate) static BF16_COUNTER_TEST_LOCK: std::sync::Mutex<()> =
 // `cuda_free` live in `atenia_kernels` (already linked elsewhere).
 #[link(name = "bf16_to_f32", kind = "static")]
 unsafe extern "C" {
-    fn bf16_to_f32_launch_device(
-        d_src_bf16: *const c_void,
-        d_dst_f32: *mut f32,
-        n: c_int,
-    ) -> c_int;
+    fn bf16_to_f32_launch_device(d_src_bf16: *const c_void, d_dst_f32: *mut f32, n: c_int)
+    -> c_int;
 }
 
 #[link(name = "cudart")]
 unsafe extern "C" {
-    fn cudaMemcpy(
-        dst: *mut c_void,
-        src: *const c_void,
-        count: usize,
-        kind: c_int,
-    ) -> c_int;
+    fn cudaMemcpy(dst: *mut c_void, src: *const c_void, count: usize, kind: c_int) -> c_int;
+    fn cudaMemGetInfo(free: *mut usize, total: *mut usize) -> c_int;
+    fn cudaGetErrorString(error: c_int) -> *const c_char;
 }
 
 unsafe extern "C" {
@@ -99,6 +93,83 @@ unsafe extern "C" {
 
 const CUDA_MEMCPY_HOST_TO_DEVICE: c_int = 1;
 const CUDA_MEMCPY_DEVICE_TO_HOST: c_int = 2;
+
+#[derive(Clone, Debug)]
+pub struct Bf16UploadError {
+    pub stage: &'static str,
+    pub message: String,
+    pub shape: Vec<usize>,
+    pub numel: usize,
+    pub bf16_bytes: usize,
+    pub f32_bytes: usize,
+    pub free_vram_bytes: Option<usize>,
+    pub total_vram_bytes: Option<usize>,
+}
+
+impl Bf16UploadError {
+    fn new(stage: &'static str, message: impl Into<String>, shape: &[usize], numel: usize) -> Self {
+        let (free_vram_bytes, total_vram_bytes) = cuda_mem_info().unwrap_or((0, 0));
+        Self {
+            stage,
+            message: message.into(),
+            shape: shape.to_vec(),
+            numel,
+            bf16_bytes: numel.saturating_mul(std::mem::size_of::<u16>()),
+            f32_bytes: numel.saturating_mul(std::mem::size_of::<f32>()),
+            free_vram_bytes: (free_vram_bytes > 0).then_some(free_vram_bytes),
+            total_vram_bytes: (total_vram_bytes > 0).then_some(total_vram_bytes),
+        }
+    }
+}
+
+impl fmt::Display for Bf16UploadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "stage={} shape={:?} numel={} bf16={} MiB f32={} MiB",
+            self.stage,
+            self.shape,
+            self.numel,
+            bytes_to_mib(self.bf16_bytes),
+            bytes_to_mib(self.f32_bytes)
+        )?;
+        if let (Some(free), Some(total)) = (self.free_vram_bytes, self.total_vram_bytes) {
+            write!(
+                f,
+                " vram_free={} MiB vram_total={} MiB",
+                bytes_to_mib(free),
+                bytes_to_mib(total)
+            )?;
+        }
+        write!(f, " ({})", self.message)
+    }
+}
+
+impl std::error::Error for Bf16UploadError {}
+
+fn bytes_to_mib(bytes: usize) -> usize {
+    bytes / (1024 * 1024)
+}
+
+fn cuda_mem_info() -> Option<(usize, usize)> {
+    if !super::cuda_available() {
+        return None;
+    }
+    let mut free = 0usize;
+    let mut total = 0usize;
+    let rc = unsafe { cudaMemGetInfo(&mut free, &mut total) };
+    (rc == 0).then_some((free, total))
+}
+
+fn cudart_error(rc: c_int) -> String {
+    let ptr = unsafe { cudaGetErrorString(rc) };
+    if ptr.is_null() {
+        return format!("CUDA error code {rc}");
+    }
+    unsafe { CStr::from_ptr(ptr) }
+        .to_string_lossy()
+        .into_owned()
+}
 
 /// RAII guard mirroring the pattern in
 /// `cuda::matmul::cuda_matmul_non_pooled`: every successfully
@@ -258,20 +329,38 @@ pub fn bf16_to_f32_on_device(src: &[u16], dst_len: usize) -> Option<Vec<f32>> {
 /// to end on a 70.7M-element FFN-down weight in
 /// `examples/test_bf16_upload.rs` (0 mismatches over 70M
 /// elements).
-pub fn bf16_to_f32_resident_in_vram(
+pub fn bf16_to_f32_resident_in_vram(src: &[u16], shape: &[usize]) -> Option<TensorGPU> {
+    bf16_to_f32_resident_in_vram_detailed(src, shape).ok()
+}
+
+pub fn bf16_to_f32_resident_in_vram_detailed(
     src: &[u16],
     shape: &[usize],
-) -> Option<TensorGPU> {
+) -> Result<TensorGPU, Bf16UploadError> {
+    let numel: usize = shape.iter().product();
     if !super::cuda_available() {
-        return None;
+        return Err(Bf16UploadError::new(
+            "cuda_available",
+            "CUDA probe is unavailable",
+            shape,
+            numel,
+        ));
     }
 
-    let numel: usize = shape.iter().product();
     if src.len() != numel {
         // Caller-provided shape disagrees with the buffer size;
         // refusing to upload is safer than truncating or
         // over-reading. None lets the caller fall back to CPU.
-        return None;
+        return Err(Bf16UploadError::new(
+            "length_check",
+            format!(
+                "src.len()={} does not match shape product {}",
+                src.len(),
+                numel
+            ),
+            shape,
+            numel,
+        ));
     }
 
     let bytes_bf16 = numel * std::mem::size_of::<u16>();
@@ -280,14 +369,28 @@ pub fn bf16_to_f32_resident_in_vram(
     // path used by `cuda::matmul::cuda_matmul_non_pooled`. Will
     // be freed by `DeviceAllocs::drop` on every return path.
     let mut transient = DeviceAllocs::new();
-    let d_bf16 = transient.alloc(bytes_bf16)?;
+    let d_bf16 = transient.alloc(bytes_bf16).ok_or_else(|| {
+        Bf16UploadError::new(
+            "alloc_bf16_staging",
+            format!("cuda_malloc returned null for {bytes_bf16} bytes"),
+            shape,
+            numel,
+        )
+    })?;
 
     // Allocate the F32 destination via the engine-managed
     // `TensorGPU::empty` so the buffer's RAII lifecycle is
     // consistent with the rest of the engine. If the call
     // beyond this point fails, dropping `gpu_f32` triggers
     // `InnerGpuPtr::drop` which frees the buffer.
-    let gpu_f32 = TensorGPU::empty(numel, 1).ok()?;
+    let gpu_f32 = TensorGPU::empty(numel, 1).map_err(|_| {
+        Bf16UploadError::new(
+            "alloc_f32_destination",
+            format!("TensorGPU::empty failed for {} bytes", numel * 4),
+            shape,
+            numel,
+        )
+    })?;
 
     unsafe {
         let rc = cudaMemcpy(
@@ -297,23 +400,30 @@ pub fn bf16_to_f32_resident_in_vram(
             CUDA_MEMCPY_HOST_TO_DEVICE,
         );
         if rc != 0 {
-            return None;
+            return Err(Bf16UploadError::new(
+                "memcpy_h2d_bf16",
+                format!("cudaMemcpy H2D failed: {}", cudart_error(rc)),
+                shape,
+                numel,
+            ));
         }
 
-        let rc = bf16_to_f32_launch_device(
-            d_bf16,
-            gpu_f32.device_ptr() as *mut f32,
-            numel as c_int,
-        );
+        let rc =
+            bf16_to_f32_launch_device(d_bf16, gpu_f32.device_ptr() as *mut f32, numel as c_int);
         if rc != 0 {
-            return None;
+            return Err(Bf16UploadError::new(
+                "kernel_bf16_to_f32",
+                format!("bf16_to_f32_launch_device returned {rc}"),
+                shape,
+                numel,
+            ));
         }
     }
 
     // `transient` (BF16) drops here on success, freeing the
     // staging buffer. `gpu_f32` is moved into the return value
     // and survives.
-    Some(gpu_f32)
+    Ok(gpu_f32)
 }
 
 /// **M6 replan sub-fase 2** — zero-host-copy variant of
@@ -351,8 +461,21 @@ pub fn bf16_to_f32_resident_in_vram_from_raw_bytes(
     numel: usize,
     shape: &[usize],
 ) -> Option<TensorGPU> {
+    bf16_to_f32_resident_in_vram_from_raw_bytes_detailed(raw_bytes, numel, shape).ok()
+}
+
+pub fn bf16_to_f32_resident_in_vram_from_raw_bytes_detailed(
+    raw_bytes: &[u8],
+    numel: usize,
+    shape: &[usize],
+) -> Result<TensorGPU, Bf16UploadError> {
     if !super::cuda_available() {
-        return None;
+        return Err(Bf16UploadError::new(
+            "cuda_available",
+            "CUDA probe is unavailable",
+            shape,
+            numel,
+        ));
     }
 
     let bytes_bf16 = numel * std::mem::size_of::<u16>();
@@ -360,17 +483,48 @@ pub fn bf16_to_f32_resident_in_vram_from_raw_bytes(
         // Length mismatch — refusing to upload would risk reading
         // past the source slice on the device side. Caller falls
         // back to CPU.
-        return None;
+        return Err(Bf16UploadError::new(
+            "length_check",
+            format!(
+                "raw_bytes.len()={} does not match expected BF16 byte length {}",
+                raw_bytes.len(),
+                bytes_bf16
+            ),
+            shape,
+            numel,
+        ));
     }
     let shape_numel: usize = shape.iter().product();
     if shape_numel != numel {
-        return None;
+        return Err(Bf16UploadError::new(
+            "shape_check",
+            format!(
+                "shape product {} does not match numel {}",
+                shape_numel, numel
+            ),
+            shape,
+            numel,
+        ));
     }
 
     let mut transient = DeviceAllocs::new();
-    let d_bf16 = transient.alloc(bytes_bf16)?;
+    let d_bf16 = transient.alloc(bytes_bf16).ok_or_else(|| {
+        Bf16UploadError::new(
+            "alloc_bf16_staging",
+            format!("cuda_malloc returned null for {bytes_bf16} bytes"),
+            shape,
+            numel,
+        )
+    })?;
 
-    let gpu_f32 = TensorGPU::empty(numel, 1).ok()?;
+    let gpu_f32 = TensorGPU::empty(numel, 1).map_err(|_| {
+        Bf16UploadError::new(
+            "alloc_f32_destination",
+            format!("TensorGPU::empty failed for {} bytes", numel * 4),
+            shape,
+            numel,
+        )
+    })?;
 
     unsafe {
         let rc = cudaMemcpy(
@@ -380,20 +534,27 @@ pub fn bf16_to_f32_resident_in_vram_from_raw_bytes(
             CUDA_MEMCPY_HOST_TO_DEVICE,
         );
         if rc != 0 {
-            return None;
+            return Err(Bf16UploadError::new(
+                "memcpy_h2d_bf16",
+                format!("cudaMemcpy H2D failed: {}", cudart_error(rc)),
+                shape,
+                numel,
+            ));
         }
 
-        let rc = bf16_to_f32_launch_device(
-            d_bf16,
-            gpu_f32.device_ptr() as *mut f32,
-            numel as c_int,
-        );
+        let rc =
+            bf16_to_f32_launch_device(d_bf16, gpu_f32.device_ptr() as *mut f32, numel as c_int);
         if rc != 0 {
-            return None;
+            return Err(Bf16UploadError::new(
+                "kernel_bf16_to_f32",
+                format!("bf16_to_f32_launch_device returned {rc}"),
+                shape,
+                numel,
+            ));
         }
     }
 
-    Some(gpu_f32)
+    Ok(gpu_f32)
 }
 
 // ===========================================================================
@@ -438,10 +599,7 @@ pub fn bf16_to_f32_resident_in_vram_from_raw_bytes(
 /// with the buffer length, or the engine alloc / copy fails. The
 /// counter is **not** incremented on failure — same convention
 /// as the M6 / M7 fast-path counters.
-pub fn bf16_to_vram_no_upcast(
-    src: &[u16],
-    shape: &[usize],
-) -> Option<TensorGPU> {
+pub fn bf16_to_vram_no_upcast(src: &[u16], shape: &[usize]) -> Option<TensorGPU> {
     if !super::cuda_available() {
         return None;
     }
@@ -506,9 +664,8 @@ pub fn bf16_to_vram_no_upcast_from_raw_bytes(
     //   - host alignment of `raw_bytes` only needs to be `2` for
     //     the `&[u16]` slice to be well-defined; safetensors
     //     buffers are page-aligned so this trivially holds.
-    let bits: &[u16] = unsafe {
-        std::slice::from_raw_parts(raw_bytes.as_ptr() as *const u16, numel)
-    };
+    let bits: &[u16] =
+        unsafe { std::slice::from_raw_parts(raw_bytes.as_ptr() as *const u16, numel) };
     let gpu = TensorGPU::new_bf16_from_cpu(bits).ok()?;
     BF16_RESIDENT_COUNT.fetch_add(1, Ordering::Relaxed);
     Some(gpu)
@@ -574,9 +731,7 @@ pub fn bf16_to_vram_no_upcast_from_raw_bytes(
 /// elements at M6 commit `66910d5`). The transient F32 buffer
 /// holds the **lossless** F32 representation of the BF16
 /// pattern — no further rounding occurs in this primitive.
-pub fn bf16_to_f32_transient_in_vram(
-    bf16_gpu: &TensorGPU,
-) -> Option<TensorGPU> {
+pub fn bf16_to_f32_transient_in_vram(bf16_gpu: &TensorGPU) -> Option<TensorGPU> {
     if !super::cuda_available() {
         return None;
     }
@@ -618,8 +773,8 @@ pub fn bf16_to_f32_transient_in_vram(
 #[cfg(test)]
 mod tests {
     use super::{
-        bf16_to_f32_on_device, bf16_to_vram_no_upcast, cuda_bf16_resident_count,
-        BF16_COUNTER_TEST_LOCK,
+        BF16_COUNTER_TEST_LOCK, bf16_to_f32_on_device, bf16_to_vram_no_upcast,
+        cuda_bf16_resident_count,
     };
     use crate::cuda::cuda_available;
     use crate::gpu::tensor::TensorGPU;
@@ -668,7 +823,8 @@ mod tests {
             }
         }
         assert_eq!(
-            bitwise_mismatches, 0,
+            bitwise_mismatches,
+            0,
             "GPU upcast produced {} bit-level mismatches vs host decode \
              on {} elements; the design assumption \
              `__bfloat162float() == AVX2 decode` is violated",
@@ -752,7 +908,8 @@ mod tests {
             }
         }
         assert_eq!(
-            mismatches, 0,
+            mismatches,
+            0,
             "BF16 round-trip produced {} bit mismatches over {} elements; \
              the H→D + D→H byte path corrupted the buffer",
             mismatches,

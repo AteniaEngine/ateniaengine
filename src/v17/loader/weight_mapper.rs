@@ -221,7 +221,9 @@ pub enum LoadTransform {
     /// Multiply every element by `factor`. Used to pre-fold the
     /// `1/sqrt(head_dim)` attention scale into K_proj weights so
     /// the graph does not need a separate scaling node.
-    Scale { factor: f32 },
+    Scale {
+        factor: f32,
+    },
 
     /// Reshape (metadata only) the loaded tensor to `target`. The
     /// new shape must have the same numel as the current shape;
@@ -229,7 +231,9 @@ pub enum LoadTransform {
     /// Use case: aligning a 1D RMSNorm `[hidden]` gamma with the
     /// graph parameter `[1, 1, hidden]` that `BroadcastMul`
     /// expects (M4.5-b1).
-    Reshape { target: Vec<usize> },
+    Reshape {
+        target: Vec<usize>,
+    },
 
     /// **M11.C step 3** — add `scalar` to every element of the
     /// tensor at load time: `out[i] = in[i] + scalar`.
@@ -255,9 +259,13 @@ pub enum LoadTransform {
     /// never fires alongside `AddScalar` in practice; the
     /// composition test exists to pin the behaviour for future
     /// 2-D applications.
-    AddScalar { scalar: f32 },
+    AddScalar {
+        scalar: f32,
+    },
 
-    LlamaRopeUnpermuteRows { head_dim: usize },
+    LlamaRopeUnpermuteRows {
+        head_dim: usize,
+    },
 }
 
 /// One entry in [`WeightMapper`]: the graph parameter node that
@@ -672,15 +680,15 @@ impl WeightMapper {
                         ))
                     })?
                 } else {
-                    crate::cuda::bf16_to_f32::bf16_to_f32_resident_in_vram_from_raw_bytes(
+                    crate::cuda::bf16_to_f32::bf16_to_f32_resident_in_vram_from_raw_bytes_detailed(
                         entry.raw_bytes,
                         numel,
                         entry.shape,
                     )
-                    .ok_or_else(|| {
+                    .map_err(|err| {
                         LoaderError::InvalidFormat(format!(
-                            "BF16→VRAM fast-path upload failed for '{}'",
-                            entry.name
+                            "BF16→VRAM fast-path upload failed for '{}': {}",
+                            entry.name, err
                         ))
                     })?
                 };
@@ -998,14 +1006,14 @@ impl WeightMapper {
                                     ))
                                 })?
                         } else {
-                            crate::cuda::bf16_to_f32::bf16_to_f32_resident_in_vram(
+                            crate::cuda::bf16_to_f32::bf16_to_f32_resident_in_vram_detailed(
                                 &bits,
                                 &current_shape,
                             )
-                            .ok_or_else(|| {
+                            .map_err(|err| {
                                 LoaderError::InvalidFormat(format!(
-                                    "BF16→VRAM slow-path upload failed for '{}'",
-                                    entry.name
+                                    "BF16→VRAM slow-path upload failed for '{}': {}",
+                                    entry.name, err
                                 ))
                             })?
                         };
@@ -1312,8 +1320,12 @@ impl WeightMapper {
             let node_id = mapping.node_id;
             let tier = plan.get(hf_name).unwrap_or(Tier::Ram);
             let mut values = decode_tensor(reader, descriptor)?;
-            let mut current_shape: Vec<usize> =
-                descriptor.dimensions.iter().rev().map(|d| *d as usize).collect();
+            let mut current_shape: Vec<usize> = descriptor
+                .dimensions
+                .iter()
+                .rev()
+                .map(|d| *d as usize)
+                .collect();
             apply_transforms(
                 &mut values,
                 &mut current_shape,
@@ -1357,8 +1369,12 @@ impl WeightMapper {
                 continue;
             };
             let mut values = decode_tensor(reader, descriptor)?;
-            let mut current_shape: Vec<usize> =
-                descriptor.dimensions.iter().rev().map(|d| *d as usize).collect();
+            let mut current_shape: Vec<usize> = descriptor
+                .dimensions
+                .iter()
+                .rev()
+                .map(|d| *d as usize)
+                .collect();
             apply_transforms(
                 &mut values,
                 &mut current_shape,
@@ -1458,13 +1474,16 @@ impl WeightMapper {
                             ))
                         })?
                 } else {
-                    crate::cuda::bf16_to_f32::bf16_to_f32_resident_in_vram(&bits, &current_shape)
-                        .ok_or_else(|| {
-                            LoaderError::InvalidFormat(format!(
-                                "BF16-to-VRAM GGUF upload failed for '{}'",
-                                name
-                            ))
-                        })?
+                    crate::cuda::bf16_to_f32::bf16_to_f32_resident_in_vram_detailed(
+                        &bits,
+                        &current_shape,
+                    )
+                    .map_err(|err| {
+                        LoaderError::InvalidFormat(format!(
+                            "BF16-to-VRAM GGUF upload failed for '{}': {}",
+                            name, err
+                        ))
+                    })?
                 };
                 store.params.push(SharedParam::Cuda {
                     shape: current_shape,
@@ -1665,8 +1684,10 @@ fn apply_transforms(
                 apply_add_scalar_in_place(values, *scalar);
             }
             LoadTransform::LlamaRopeUnpermuteRows { head_dim } => {
-                *values = llama_rope_unpermute_rows(values, current_shape, *head_dim)
-                    .map_err(|msg| LoaderError::InvalidFormat(format!("tensor '{}': {}", name, msg)))?;
+                *values =
+                    llama_rope_unpermute_rows(values, current_shape, *head_dim).map_err(|msg| {
+                        LoaderError::InvalidFormat(format!("tensor '{}': {}", name, msg))
+                    })?;
             }
         }
     }
@@ -2059,4 +2080,3 @@ mod tests {
         );
     }
 }
-

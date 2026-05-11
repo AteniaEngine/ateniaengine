@@ -281,6 +281,21 @@ impl TierPlan {
 }
 
 pub const VRAM_HEADROOM_BYTES: u64 = 1024 * 1024 * 1024;
+/// Extra VRAM reserve for the certified BF16 -> F32 upload path.
+///
+/// The planner's free-VRAM snapshot is taken before the loader has
+/// necessarily paid the CUDA context / allocator overhead. In the
+/// certified path (`kernel_dtype = F32`) each BF16 weight upload also
+/// needs a transient BF16 staging allocation while the final F32
+/// resident buffer is being built. The RTX 3090 Pass 2 run showed the
+/// old 1 GiB generic headroom could leave only 55-93 MiB free at the
+/// failing tensor. A first 1 GiB reserve still failed with 237 MiB free
+/// for a 224 MiB allocation, and Falcon3 then proved that 2 GiB can
+/// load successfully but still leave too little runtime margin for
+/// resident matmul launches. Keep 3 GiB reserved for certified
+/// 7B-class plans. BF16-resident fast mode does not use this F32
+/// upcast path.
+pub const CERTIFIED_BF16_UPLOAD_STAGING_BYTES: u64 = 3 * 1024 * 1024 * 1024;
 /// **M8.7 prerequisite** — staging buffers reserved at the top of the
 /// VRAM budget when the plan would otherwise put any tensor on Disk.
 ///
@@ -361,7 +376,15 @@ pub fn is_gpu_eligible(meta: &TensorMeta) -> bool {
 /// planner stays a pure function (no I/O, no allocations beyond the
 /// returned `TierPlan`).
 pub fn plan(input: &TierPlanInput) -> TierPlan {
-    let m8_budget = input.free_vram_bytes.saturating_sub(VRAM_HEADROOM_BYTES);
+    let certified_upload_reserve = if input.kernel_dtype == DType::F32 {
+        CERTIFIED_BF16_UPLOAD_STAGING_BYTES
+    } else {
+        0
+    };
+    let m8_budget = input
+        .free_vram_bytes
+        .saturating_sub(VRAM_HEADROOM_BYTES)
+        .saturating_sub(certified_upload_reserve);
     let dry_run = plan_inner(input, m8_budget);
     if dry_run.disk_bytes_assigned == 0 {
         return dry_run;
@@ -694,7 +717,7 @@ mod tests {
 
         let input = TierPlanInput {
             tensors,
-            free_vram_bytes: 25 * 1024 * 1024 * 1024 / 10, // 2.5 GiB
+            free_vram_bytes: 45 * 1024 * 1024 * 1024 / 10, // 4.5 GiB
             free_ram_bytes: 32 * 1024 * 1024 * 1024,
             model_total_bytes: model_total,
             total_ram_bytes: 32 * 1024 * 1024 * 1024,
@@ -891,8 +914,8 @@ mod tests {
         // (5 × 7 = 35) and at most 6 layers' worth (6 × 7 = 42).
         let vram_count = p.count(Tier::Vram);
         assert!(
-            vram_count >= 35 && vram_count <= 42,
-            "expected 35..=42 proj weights on Vram (5-6 layers), got {}",
+            vram_count >= 21 && vram_count <= 28,
+            "expected 21..=28 proj weights on Vram (3-4 layers), got {}",
             vram_count
         );
 
@@ -930,7 +953,7 @@ mod tests {
         // (the usable budget).
         let vram_gib = p.vram_bytes_assigned as f64 / (1024.0_f64.powi(3));
         assert!(
-            vram_gib >= 5.0 && vram_gib <= 7.0,
+            vram_gib >= 4.0 && vram_gib <= 5.0,
             "expected 5..=7 GiB on Vram, got {:.2} GiB",
             vram_gib
         );
@@ -1238,8 +1261,8 @@ mod tests {
         // tensors. The M7.2 test already locks this range; we
         // re-confirm here as a baseline anchor.
         assert!(
-            (35..=42).contains(&vram_f32),
-            "F32 baseline expected 35..=42 VRAM tensors, got {}",
+            (21..=28).contains(&vram_f32),
+            "F32 baseline expected 21..=28 VRAM tensors, got {}",
             vram_f32
         );
         // BF16 should fit ~11.56 layers = 78..=84 _proj tensors.
@@ -1267,9 +1290,10 @@ mod tests {
         // Aggregate byte accounting: BF16 vram_bytes_assigned
         // is per-tensor `numel × 2`. F32 was `numel × 4`.
         // Both should respect the 7 GiB usable budget.
-        let usable_vram = (8 - 1) * 1024 * 1024 * 1024_u64;
-        assert!(p_f32.vram_bytes_assigned <= usable_vram);
-        assert!(p_bf16.vram_bytes_assigned <= usable_vram);
+        let usable_vram_f32 = (8 - 1 - 3) * 1024 * 1024 * 1024_u64;
+        let usable_vram_bf16 = (8 - 1) * 1024 * 1024 * 1024_u64;
+        assert!(p_f32.vram_bytes_assigned <= usable_vram_f32);
+        assert!(p_bf16.vram_bytes_assigned <= usable_vram_bf16);
     }
 
     /// 12. **13B with F32 kernel default** — regression-zero
@@ -1307,16 +1331,16 @@ mod tests {
         // Same range as M7.2 test 5.
         let vram_count = p.vram_count();
         assert!(
-            (35..=42).contains(&vram_count),
-            "F32 default expected 35..=42 VRAM tensors (M7.2 baseline), got {}",
+            (21..=28).contains(&vram_count),
+            "F32 default expected 21..=28 VRAM tensors (certified reserve), got {}",
             vram_count
         );
         // The bytes should be in the F32 ballpark (vram_count × ~150 MiB).
         // Sanity: F32 VRAM bytes per layer = 1.21 GiB; 5 layers = 6.05 GiB.
         let vram_gib = p.vram_bytes_assigned as f64 / (1024.0_f64.powi(3));
         assert!(
-            vram_gib >= 5.0 && vram_gib <= 7.0,
-            "F32 VRAM bytes expected 5..=7 GiB, got {:.2}",
+            vram_gib >= 3.0 && vram_gib <= 4.0,
+            "F32 VRAM bytes expected 3..=4 GiB, got {:.2}",
             vram_gib
         );
     }
