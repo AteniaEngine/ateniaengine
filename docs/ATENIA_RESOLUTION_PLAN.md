@@ -342,6 +342,19 @@ Phase 2 keeps the same rule and adds internal adapter metadata:
 Planner integration is intentionally deferred until the hints can be validated
 against RTX 3090 traces family by family.
 
+Phase 3 keeps the same runtime contract and splits the internal adapter layer
+into family modules:
+
+- `llama_family` owns Llama, Qwen2, and Mistral delegating adapters;
+- `phi3` owns LongRope and fused-weight routing;
+- `gemma2` owns softcap/sliding-window routing metadata;
+- `mod.rs` keeps only the public-internal traits, registry, and tests.
+
+Falcon3 remains on the Llama adapter for now because the local Falcon3
+checkpoint advertises `architectures=["LlamaForCausalLM"]` and
+`model_type="llama"`. Split it only if a future checkpoint exposes real
+family-specific build, mapping, or residency behavior.
+
 ## Future Research Note - Long Context Governor
 
 Do not fold this into Pass 3 / Pass 4. The current passes are about making the

@@ -5,18 +5,23 @@
 //! while Atenia Core keeps owning execution, memory planning, kernels, and
 //! numeric policy.
 
+mod common;
+mod gemma2;
+mod llama_family;
+mod phi3;
+
 use crate::amg::builder::GraphBuilder;
 use crate::amg::kv_cache::KvCacheBuildSpec;
 use crate::amg::weight_store::WeightStore;
-use crate::nn::llama::builder::{LlamaRuntime, build_llama};
+use crate::nn::llama::builder::LlamaRuntime;
 use crate::nn::llama::builder_shared::{BuildError, LlamaHandlesShared};
 use crate::nn::llama::config::LlamaConfig;
-use crate::nn::llama::gguf_weight_loading::{
-    gemma2_gguf_weight_mapper, llama_gguf_weight_mapper, phi3_gguf_weight_mapper,
-};
-use crate::nn::llama::weight_loading::llama_weight_mapper;
 use crate::v17::loader::loader_errors::LoaderError;
 use crate::v17::loader::weight_mapper::WeightMapper;
+
+use gemma2::Gemma2Adapter;
+use llama_family::{LlamaFamilyAdapter, MistralAdapter, Qwen2Adapter};
+use phi3::Phi3Adapter;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ModelFormat {
@@ -58,7 +63,7 @@ pub struct AdapterCapabilities {
 }
 
 impl AdapterCapabilities {
-    const fn llama_like() -> Self {
+    pub(super) const fn llama_like() -> Self {
         Self {
             hf_safetensors: true,
             gguf: true,
@@ -159,420 +164,6 @@ impl<T> AteniaModelAdapter for T where
 {
 }
 
-struct LlamaFamilyAdapter;
-struct Qwen2Adapter;
-struct MistralAdapter;
-struct Phi3Adapter;
-struct Gemma2Adapter;
-
-fn build_llama_scratch(
-    gb: &mut GraphBuilder,
-    config: &LlamaConfig,
-    runtime: &LlamaRuntime,
-    token_input_id: usize,
-) -> ScratchGraphBuild {
-    let h = build_llama(gb, config, runtime, token_input_id);
-    ScratchGraphBuild {
-        logits_id: h.logits_id,
-        param_ids: h.param_ids,
-        param_names: h.param_names,
-    }
-}
-
-fn build_llama_store_graph(
-    gb: &mut GraphBuilder,
-    config: &LlamaConfig,
-    runtime: &LlamaRuntime,
-    token_input_id: usize,
-    store: &WeightStore,
-    kv_cache: Option<&KvCacheBuildSpec>,
-) -> Result<LlamaHandlesShared, BuildError> {
-    crate::nn::llama::builder_shared::build_llama_with_store(
-        gb,
-        config,
-        runtime,
-        token_input_id,
-        store,
-        kv_cache,
-    )
-}
-
-impl ModelAdapter for LlamaFamilyAdapter {
-    fn id(&self) -> &'static str {
-        "llama"
-    }
-
-    fn family(&self) -> ModelFamily {
-        ModelFamily::Llama
-    }
-
-    fn capabilities(&self) -> AdapterCapabilities {
-        AdapterCapabilities::llama_like()
-    }
-
-    fn supports(&self, metadata: &ModelMetadata<'_>) -> bool {
-        metadata.architecture == "LlamaForCausalLM"
-    }
-
-    fn build_scratch_graph(
-        &self,
-        gb: &mut GraphBuilder,
-        config: &LlamaConfig,
-        runtime: &LlamaRuntime,
-        token_input_id: usize,
-    ) -> ScratchGraphBuild {
-        build_llama_scratch(gb, config, runtime, token_input_id)
-    }
-}
-
-impl HfWeightMapper for LlamaFamilyAdapter {
-    fn map_hf_weights(
-        &self,
-        config: &LlamaConfig,
-        param_names: &[String],
-        param_ids: &[usize],
-    ) -> Result<WeightMapper, LoaderError> {
-        llama_weight_mapper(config, param_names, param_ids)
-    }
-}
-
-impl GgufWeightMapper for LlamaFamilyAdapter {
-    fn map_gguf_weights(
-        &self,
-        config: &LlamaConfig,
-        param_names: &[String],
-        param_ids: &[usize],
-    ) -> Result<WeightMapper, LoaderError> {
-        llama_gguf_weight_mapper(config, param_names, param_ids)
-    }
-}
-
-impl StoreBackedGraphBuilder for LlamaFamilyAdapter {
-    fn build_store_graph(
-        &self,
-        gb: &mut GraphBuilder,
-        config: &LlamaConfig,
-        runtime: &LlamaRuntime,
-        token_input_id: usize,
-        store: &WeightStore,
-        kv_cache: Option<&KvCacheBuildSpec>,
-    ) -> Result<LlamaHandlesShared, BuildError> {
-        build_llama_store_graph(gb, config, runtime, token_input_id, store, kv_cache)
-    }
-}
-
-impl ResidencyHints for LlamaFamilyAdapter {}
-
-impl ModelAdapter for Qwen2Adapter {
-    fn id(&self) -> &'static str {
-        "qwen2"
-    }
-
-    fn family(&self) -> ModelFamily {
-        ModelFamily::Qwen2
-    }
-
-    fn capabilities(&self) -> AdapterCapabilities {
-        AdapterCapabilities::llama_like()
-    }
-
-    fn supports(&self, metadata: &ModelMetadata<'_>) -> bool {
-        metadata.architecture == "Qwen2ForCausalLM" || metadata.model_type == Some("qwen2")
-    }
-
-    fn build_scratch_graph(
-        &self,
-        gb: &mut GraphBuilder,
-        config: &LlamaConfig,
-        runtime: &LlamaRuntime,
-        token_input_id: usize,
-    ) -> ScratchGraphBuild {
-        build_llama_scratch(gb, config, runtime, token_input_id)
-    }
-}
-
-impl HfWeightMapper for Qwen2Adapter {
-    fn map_hf_weights(
-        &self,
-        config: &LlamaConfig,
-        param_names: &[String],
-        param_ids: &[usize],
-    ) -> Result<WeightMapper, LoaderError> {
-        llama_weight_mapper(config, param_names, param_ids)
-    }
-}
-
-impl GgufWeightMapper for Qwen2Adapter {
-    fn map_gguf_weights(
-        &self,
-        config: &LlamaConfig,
-        param_names: &[String],
-        param_ids: &[usize],
-    ) -> Result<WeightMapper, LoaderError> {
-        llama_gguf_weight_mapper(config, param_names, param_ids)
-    }
-}
-
-impl StoreBackedGraphBuilder for Qwen2Adapter {
-    fn build_store_graph(
-        &self,
-        gb: &mut GraphBuilder,
-        config: &LlamaConfig,
-        runtime: &LlamaRuntime,
-        token_input_id: usize,
-        store: &WeightStore,
-        kv_cache: Option<&KvCacheBuildSpec>,
-    ) -> Result<LlamaHandlesShared, BuildError> {
-        build_llama_store_graph(gb, config, runtime, token_input_id, store, kv_cache)
-    }
-}
-
-impl ResidencyHints for Qwen2Adapter {}
-
-impl ModelAdapter for MistralAdapter {
-    fn id(&self) -> &'static str {
-        "mistral"
-    }
-
-    fn family(&self) -> ModelFamily {
-        ModelFamily::Mistral
-    }
-
-    fn capabilities(&self) -> AdapterCapabilities {
-        AdapterCapabilities::llama_like()
-    }
-
-    fn supports(&self, metadata: &ModelMetadata<'_>) -> bool {
-        metadata.architecture == "MistralForCausalLM" || metadata.model_type == Some("mistral")
-    }
-
-    fn build_scratch_graph(
-        &self,
-        gb: &mut GraphBuilder,
-        config: &LlamaConfig,
-        runtime: &LlamaRuntime,
-        token_input_id: usize,
-    ) -> ScratchGraphBuild {
-        build_llama_scratch(gb, config, runtime, token_input_id)
-    }
-}
-
-impl HfWeightMapper for MistralAdapter {
-    fn map_hf_weights(
-        &self,
-        config: &LlamaConfig,
-        param_names: &[String],
-        param_ids: &[usize],
-    ) -> Result<WeightMapper, LoaderError> {
-        llama_weight_mapper(config, param_names, param_ids)
-    }
-}
-
-impl GgufWeightMapper for MistralAdapter {
-    fn map_gguf_weights(
-        &self,
-        config: &LlamaConfig,
-        param_names: &[String],
-        param_ids: &[usize],
-    ) -> Result<WeightMapper, LoaderError> {
-        llama_gguf_weight_mapper(config, param_names, param_ids)
-    }
-}
-
-impl StoreBackedGraphBuilder for MistralAdapter {
-    fn build_store_graph(
-        &self,
-        gb: &mut GraphBuilder,
-        config: &LlamaConfig,
-        runtime: &LlamaRuntime,
-        token_input_id: usize,
-        store: &WeightStore,
-        kv_cache: Option<&KvCacheBuildSpec>,
-    ) -> Result<LlamaHandlesShared, BuildError> {
-        build_llama_store_graph(gb, config, runtime, token_input_id, store, kv_cache)
-    }
-}
-
-impl ResidencyHints for MistralAdapter {}
-
-impl ModelAdapter for Phi3Adapter {
-    fn id(&self) -> &'static str {
-        "phi3"
-    }
-
-    fn family(&self) -> ModelFamily {
-        ModelFamily::Phi3
-    }
-
-    fn capabilities(&self) -> AdapterCapabilities {
-        AdapterCapabilities {
-            fused_qkv_weight_mapping: true,
-            fused_gate_up_weight_mapping: true,
-            ..AdapterCapabilities::llama_like()
-        }
-    }
-
-    fn supports(&self, metadata: &ModelMetadata<'_>) -> bool {
-        metadata.architecture == "Phi3ForCausalLM" || metadata.model_type == Some("phi3")
-    }
-
-    fn log_selection(&self) {
-        eprintln!(
-            "[ATENIA] Architecture: Phi3ForCausalLM - routing to phi3 adapter \
-             (LongRope + fused QKV / gate_up split via SliceLastDim)."
-        );
-    }
-
-    fn build_scratch_graph(
-        &self,
-        gb: &mut GraphBuilder,
-        config: &LlamaConfig,
-        runtime: &LlamaRuntime,
-        token_input_id: usize,
-    ) -> ScratchGraphBuild {
-        let h = crate::nn::llama::phi3::build_phi3(gb, config, runtime, token_input_id);
-        ScratchGraphBuild {
-            logits_id: h.logits_id,
-            param_ids: h.param_ids,
-            param_names: h.param_names,
-        }
-    }
-}
-
-impl HfWeightMapper for Phi3Adapter {
-    fn map_hf_weights(
-        &self,
-        config: &LlamaConfig,
-        param_names: &[String],
-        param_ids: &[usize],
-    ) -> Result<WeightMapper, LoaderError> {
-        crate::nn::llama::phi3::phi3_weight_mapper(config, param_names, param_ids)
-    }
-}
-
-impl GgufWeightMapper for Phi3Adapter {
-    fn map_gguf_weights(
-        &self,
-        config: &LlamaConfig,
-        param_names: &[String],
-        param_ids: &[usize],
-    ) -> Result<WeightMapper, LoaderError> {
-        phi3_gguf_weight_mapper(config, param_names, param_ids)
-    }
-}
-
-impl StoreBackedGraphBuilder for Phi3Adapter {
-    fn build_store_graph(
-        &self,
-        gb: &mut GraphBuilder,
-        config: &LlamaConfig,
-        runtime: &LlamaRuntime,
-        token_input_id: usize,
-        store: &WeightStore,
-        kv_cache: Option<&KvCacheBuildSpec>,
-    ) -> Result<LlamaHandlesShared, BuildError> {
-        crate::nn::llama::phi3::build_phi3_with_store(
-            gb,
-            config,
-            runtime,
-            token_input_id,
-            store,
-            kv_cache,
-        )
-    }
-}
-
-impl ResidencyHints for Phi3Adapter {}
-
-impl ModelAdapter for Gemma2Adapter {
-    fn id(&self) -> &'static str {
-        "gemma2"
-    }
-
-    fn family(&self) -> ModelFamily {
-        ModelFamily::Gemma2
-    }
-
-    fn capabilities(&self) -> AdapterCapabilities {
-        AdapterCapabilities {
-            gemma2_softcaps: true,
-            ..AdapterCapabilities::llama_like()
-        }
-    }
-
-    fn supports(&self, metadata: &ModelMetadata<'_>) -> bool {
-        metadata.architecture == "Gemma2ForCausalLM" || metadata.model_type == Some("gemma2")
-    }
-
-    fn log_selection(&self) {
-        eprintln!(
-            "[ATENIA] Architecture: Gemma2ForCausalLM - routing to gemma2 adapter \
-             (dual-norm, GeGLU, SoftCap@50/30, embedding scale; sliding-window \
-             deferred - full causal attention for context < 4096)."
-        );
-    }
-
-    fn build_scratch_graph(
-        &self,
-        gb: &mut GraphBuilder,
-        config: &LlamaConfig,
-        runtime: &LlamaRuntime,
-        token_input_id: usize,
-    ) -> ScratchGraphBuild {
-        let h = crate::nn::llama::gemma2::build_gemma2(gb, config, runtime, token_input_id);
-        ScratchGraphBuild {
-            logits_id: h.logits_id,
-            param_ids: h.param_ids,
-            param_names: h.param_names,
-        }
-    }
-}
-
-impl HfWeightMapper for Gemma2Adapter {
-    fn map_hf_weights(
-        &self,
-        config: &LlamaConfig,
-        param_names: &[String],
-        param_ids: &[usize],
-    ) -> Result<WeightMapper, LoaderError> {
-        crate::nn::llama::gemma2::gemma2_weight_mapper(config, param_names, param_ids)
-    }
-}
-
-impl GgufWeightMapper for Gemma2Adapter {
-    fn map_gguf_weights(
-        &self,
-        config: &LlamaConfig,
-        param_names: &[String],
-        param_ids: &[usize],
-    ) -> Result<WeightMapper, LoaderError> {
-        gemma2_gguf_weight_mapper(config, param_names, param_ids)
-    }
-}
-
-impl StoreBackedGraphBuilder for Gemma2Adapter {
-    fn build_store_graph(
-        &self,
-        gb: &mut GraphBuilder,
-        config: &LlamaConfig,
-        runtime: &LlamaRuntime,
-        token_input_id: usize,
-        store: &WeightStore,
-        kv_cache: Option<&KvCacheBuildSpec>,
-    ) -> Result<LlamaHandlesShared, BuildError> {
-        crate::nn::llama::gemma2::build_gemma2_with_store(
-            gb,
-            config,
-            runtime,
-            token_input_id,
-            store,
-            kv_cache,
-        )
-    }
-}
-
-impl ResidencyHints for Gemma2Adapter {}
-
 static LLAMA_FAMILY_ADAPTER: LlamaFamilyAdapter = LlamaFamilyAdapter;
 static QWEN2_ADAPTER: Qwen2Adapter = Qwen2Adapter;
 static MISTRAL_ADAPTER: MistralAdapter = MistralAdapter;
@@ -664,6 +255,18 @@ mod tests {
             format: ModelFormat::HfSafetensors,
         };
         assert!(resolve_adapter(&metadata).is_none());
+    }
+
+    #[test]
+    fn falcon3_llama_compatible_config_resolves_to_llama_adapter() {
+        let metadata = ModelMetadata {
+            architecture: "LlamaForCausalLM",
+            model_type: Some("llama"),
+            format: ModelFormat::HfSafetensors,
+        };
+        let adapter = resolve_adapter(&metadata).expect("falcon3 config shape resolves");
+        assert_eq!(adapter.id(), "llama");
+        assert_eq!(adapter.family(), ModelFamily::Llama);
     }
 
     #[test]
