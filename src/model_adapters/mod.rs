@@ -102,6 +102,22 @@ impl Default for ResidencyPolicyHints {
     }
 }
 
+pub(in crate::model_adapters) fn llama_like_residency_hints() -> ResidencyPolicyHints {
+    llama_like_residency_hints_from_flag(
+        std::env::var("ATENIA_ADAPTER_LM_HEAD_CPU").as_deref() == Ok("1"),
+    )
+}
+
+pub(in crate::model_adapters) fn llama_like_residency_hints_from_flag(
+    keep_lm_head_cpu: bool,
+) -> ResidencyPolicyHints {
+    let mut hints = ResidencyPolicyHints::default();
+    if keep_lm_head_cpu {
+        hints.lm_head = LmHeadResidency::KeepCpu;
+    }
+    hints
+}
+
 pub trait ModelAdapter: Sync {
     fn id(&self) -> &'static str;
     fn family(&self) -> ModelFamily;
@@ -325,5 +341,21 @@ mod tests {
         assert!(hints.embeddings_cpu_only);
         assert!(hints.norms_cpu_only);
         assert!(hints.prefer_layer_local_projection_packing);
+    }
+
+    #[test]
+    fn llama_like_residency_flag_can_keep_lm_head_on_cpu() {
+        let hints = llama_like_residency_hints_from_flag(true);
+        assert!(hints.projection_weights_vram_eligible);
+        assert_eq!(hints.lm_head, LmHeadResidency::KeepCpu);
+        assert!(hints.embeddings_cpu_only);
+        assert!(hints.norms_cpu_only);
+        assert!(hints.prefer_layer_local_projection_packing);
+    }
+
+    #[test]
+    fn llama_like_residency_default_keeps_current_lm_head_policy() {
+        let hints = llama_like_residency_hints_from_flag(false);
+        assert_eq!(hints, ResidencyPolicyHints::default());
     }
 }

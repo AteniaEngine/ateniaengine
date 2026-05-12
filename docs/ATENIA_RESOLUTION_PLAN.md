@@ -371,6 +371,18 @@ Phase 5 makes adapter policy observable in bench logs:
 - RTX 3090 traces can now tie a tier plan directly to the adapter policy that
   produced it.
 
+Phase 6 adds the first opt-in adapter residency control without changing the
+default planner policy:
+
+- Llama-family adapters now own their residency hint construction instead of
+  relying only on the trait default;
+- `ATENIA_ADAPTER_LM_HEAD_CPU=1` asks Llama, Qwen2, and Mistral adapters to keep
+  `lm_head.weight` CPU/RAM-resident;
+- this gives RTX 3090 runs a reversible A/B switch for comparing late-layer
+  projection residency against large-vocab LM-head residency;
+- default behavior remains unchanged: untied `lm_head.weight` is still
+  GPU-eligible unless the opt-in flag is set.
+
 ## Future Research Note - Long Context Governor
 
 Do not fold this into Pass 3 / Pass 4. The current passes are about making the

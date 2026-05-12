@@ -12,7 +12,8 @@ use crate::v17::loader::weight_mapper::WeightMapper;
 use super::common::{build_llama_scratch, build_llama_store_graph};
 use super::{
     AdapterCapabilities, GgufWeightMapper, HfWeightMapper, ModelAdapter, ModelFamily,
-    ModelMetadata, ResidencyHints, ScratchGraphBuild, StoreBackedGraphBuilder,
+    ModelMetadata, ResidencyHints, ResidencyPolicyHints, ScratchGraphBuild,
+    StoreBackedGraphBuilder, llama_like_residency_hints,
 };
 
 pub(super) struct LlamaFamilyAdapter;
@@ -83,7 +84,11 @@ impl StoreBackedGraphBuilder for LlamaFamilyAdapter {
     }
 }
 
-impl ResidencyHints for LlamaFamilyAdapter {}
+impl ResidencyHints for LlamaFamilyAdapter {
+    fn residency_hints(&self, _config: &LlamaConfig) -> ResidencyPolicyHints {
+        llama_like_residency_hints()
+    }
+}
 
 impl ModelAdapter for Qwen2Adapter {
     fn id(&self) -> &'static str {
@@ -149,7 +154,11 @@ impl StoreBackedGraphBuilder for Qwen2Adapter {
     }
 }
 
-impl ResidencyHints for Qwen2Adapter {}
+impl ResidencyHints for Qwen2Adapter {
+    fn residency_hints(&self, _config: &LlamaConfig) -> ResidencyPolicyHints {
+        llama_like_residency_hints()
+    }
+}
 
 impl ModelAdapter for MistralAdapter {
     fn id(&self) -> &'static str {
@@ -215,4 +224,8 @@ impl StoreBackedGraphBuilder for MistralAdapter {
     }
 }
 
-impl ResidencyHints for MistralAdapter {}
+impl ResidencyHints for MistralAdapter {
+    fn residency_hints(&self, _config: &LlamaConfig) -> ResidencyPolicyHints {
+        llama_like_residency_hints()
+    }
+}
