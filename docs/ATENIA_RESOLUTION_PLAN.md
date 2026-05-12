@@ -364,6 +364,13 @@ changing default behavior:
   the tier planner;
 - current adapters still return hints equivalent to the existing global policy.
 
+Phase 5 makes adapter policy observable in bench logs:
+
+- the pipeline logs the selected adapter id and family;
+- capability flags are printed next to the residency hints;
+- RTX 3090 traces can now tie a tier plan directly to the adapter policy that
+  produced it.
+
 ## Future Research Note - Long Context Governor
 
 Do not fold this into Pass 3 / Pass 4. The current passes are about making the

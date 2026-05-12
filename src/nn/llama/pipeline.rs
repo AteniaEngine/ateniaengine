@@ -73,7 +73,9 @@ use super::builder::LlamaRuntime;
 use super::numcert;
 use crate::amg::builder::GraphBuilder;
 use crate::amg::weight_store::{UploadReport, WeightStore, WeightStoreError};
-use crate::model_adapters::{ModelFormat, ModelMetadata, resolve_adapter};
+use crate::model_adapters::{
+    AteniaModelAdapter, ModelFormat, ModelMetadata, ResidencyPolicyHints, resolve_adapter,
+};
 use crate::nn::llama::config::{ConfigError, LlamaConfig};
 use crate::tokenizer::{AteniaTokenizer, ChatMessage, TokenizerError};
 use crate::v17::loader::gguf_config::{architecture_from_gguf, llama_config_from_gguf};
@@ -519,6 +521,7 @@ impl GenerationPipeline {
         })?;
         adapter.log_selection();
         let residency_hints = adapter.residency_hints(&config);
+        log_adapter_residency_policy(adapter, residency_hints);
 
         // 3. Scratch graph (zero-init parameters; will get
         //    populated by the loader and then hoisted into
@@ -1117,6 +1120,31 @@ fn log_adaptive_headroom(
         headroom_gib,
         base_gib,
         overflow_gib,
+    );
+}
+
+fn log_adapter_residency_policy(adapter: &dyn AteniaModelAdapter, hints: ResidencyPolicyHints) {
+    if crate::apx_is_silent() {
+        return;
+    }
+    let caps = adapter.capabilities();
+    eprintln!(
+        "[ATENIA] Adapter residency policy: adapter={} family={:?} \
+         hf={} gguf={} store={} fused_qkv={} fused_gate_up={} gemma2_softcaps={} \
+         hints(proj_vram={}, lm_head={:?}, embeddings_cpu={}, norms_cpu={}, layer_local={})",
+        adapter.id(),
+        adapter.family(),
+        caps.hf_safetensors,
+        caps.gguf,
+        caps.store_backed_generation,
+        caps.fused_qkv_weight_mapping,
+        caps.fused_gate_up_weight_mapping,
+        caps.gemma2_softcaps,
+        hints.projection_weights_vram_eligible,
+        hints.lm_head,
+        hints.embeddings_cpu_only,
+        hints.norms_cpu_only,
+        hints.prefer_layer_local_projection_packing,
     );
 }
 
