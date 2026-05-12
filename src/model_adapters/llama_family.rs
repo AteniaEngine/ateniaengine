@@ -33,6 +33,14 @@ impl ModelAdapter for LlamaFamilyAdapter {
         AdapterCapabilities::llama_like()
     }
 
+    fn supported_architectures(&self) -> &'static [&'static str] {
+        &["LlamaForCausalLM"]
+    }
+
+    fn supported_model_types(&self) -> &'static [&'static str] {
+        &["llama"]
+    }
+
     fn supports(&self, metadata: &ModelMetadata<'_>) -> bool {
         metadata.architecture == "LlamaForCausalLM"
     }
@@ -103,6 +111,14 @@ impl ModelAdapter for Qwen2Adapter {
         AdapterCapabilities::llama_like()
     }
 
+    fn supported_architectures(&self) -> &'static [&'static str] {
+        &["Qwen2ForCausalLM"]
+    }
+
+    fn supported_model_types(&self) -> &'static [&'static str] {
+        &["qwen2"]
+    }
+
     fn supports(&self, metadata: &ModelMetadata<'_>) -> bool {
         metadata.architecture == "Qwen2ForCausalLM" || metadata.model_type == Some("qwen2")
     }
@@ -171,6 +187,14 @@ impl ModelAdapter for MistralAdapter {
 
     fn capabilities(&self) -> AdapterCapabilities {
         AdapterCapabilities::llama_like()
+    }
+
+    fn supported_architectures(&self) -> &'static [&'static str] {
+        &["MistralForCausalLM"]
+    }
+
+    fn supported_model_types(&self) -> &'static [&'static str] {
+        &["mistral"]
     }
 
     fn supports(&self, metadata: &ModelMetadata<'_>) -> bool {

@@ -31,6 +31,14 @@ impl ModelAdapter for Gemma2Adapter {
         }
     }
 
+    fn supported_architectures(&self) -> &'static [&'static str] {
+        &["Gemma2ForCausalLM"]
+    }
+
+    fn supported_model_types(&self) -> &'static [&'static str] {
+        &["gemma2"]
+    }
+
     fn supports(&self, metadata: &ModelMetadata<'_>) -> bool {
         metadata.architecture == "Gemma2ForCausalLM" || metadata.model_type == Some("gemma2")
     }

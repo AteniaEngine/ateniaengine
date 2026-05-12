@@ -32,6 +32,14 @@ impl ModelAdapter for Phi3Adapter {
         }
     }
 
+    fn supported_architectures(&self) -> &'static [&'static str] {
+        &["Phi3ForCausalLM"]
+    }
+
+    fn supported_model_types(&self) -> &'static [&'static str] {
+        &["phi3"]
+    }
+
     fn supports(&self, metadata: &ModelMetadata<'_>) -> bool {
         metadata.architecture == "Phi3ForCausalLM" || metadata.model_type == Some("phi3")
     }

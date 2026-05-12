@@ -79,6 +79,8 @@ impl AdapterCapabilities {
 pub struct AdapterContract {
     pub id: &'static str,
     pub family: ModelFamily,
+    pub supported_architectures: &'static [&'static str],
+    pub supported_model_types: &'static [&'static str],
     pub capabilities: AdapterCapabilities,
 }
 
@@ -129,6 +131,12 @@ pub trait ModelAdapter: Sync {
     fn id(&self) -> &'static str;
     fn family(&self) -> ModelFamily;
     fn capabilities(&self) -> AdapterCapabilities;
+    fn supported_architectures(&self) -> &'static [&'static str] {
+        &[]
+    }
+    fn supported_model_types(&self) -> &'static [&'static str] {
+        &[]
+    }
     fn supports(&self, metadata: &ModelMetadata<'_>) -> bool;
     fn log_selection(&self) {}
 
@@ -214,31 +222,62 @@ pub fn registered_adapter_contracts() -> Vec<AdapterContract> {
         .map(|adapter| AdapterContract {
             id: adapter.id(),
             family: adapter.family(),
+            supported_architectures: adapter.supported_architectures(),
+            supported_model_types: adapter.supported_model_types(),
             capabilities: adapter.capabilities(),
         })
         .collect()
 }
 
-pub fn resolve_adapter_for_config(config: &LlamaConfig) -> &'static dyn AteniaModelAdapter {
-    let architecture = match config.model_type.as_deref() {
-        Some("phi3") => "Phi3ForCausalLM",
-        Some("gemma2") => "Gemma2ForCausalLM",
-        Some("qwen2") => "Qwen2ForCausalLM",
-        Some("mistral") => "MistralForCausalLM",
-        _ => "LlamaForCausalLM",
-    };
-    let metadata = ModelMetadata {
+pub fn model_metadata_for_config(config: &LlamaConfig) -> ModelMetadata<'_> {
+    let model_type = config.model_type.as_deref();
+    let architecture = model_type
+        .and_then(default_architecture_for_model_type)
+        .unwrap_or("LlamaForCausalLM");
+    ModelMetadata {
         architecture,
-        model_type: config.model_type.as_deref(),
+        model_type,
         format: ModelFormat::HfSafetensors,
-    };
+    }
+}
+
+fn default_architecture_for_model_type(model_type: &str) -> Option<&'static str> {
+    ADAPTERS.iter().find_map(|adapter| {
+        if adapter.supported_model_types().contains(&model_type) {
+            adapter.supported_architectures().first().copied()
+        } else {
+            None
+        }
+    })
+}
+
+pub fn resolve_adapter_for_config(config: &LlamaConfig) -> &'static dyn AteniaModelAdapter {
+    let metadata = model_metadata_for_config(config);
     resolve_adapter(&metadata).unwrap_or(&LLAMA_FAMILY_ADAPTER)
 }
 
-pub fn supported_architectures_message() -> &'static str {
-    "Atenia today supports LlamaForCausalLM, Qwen2ForCausalLM, \
-     MistralForCausalLM, Phi3ForCausalLM, and Gemma2ForCausalLM \
-     through the internal model adapter layer."
+pub fn supported_architectures_message() -> String {
+    let entries = registered_adapter_contracts()
+        .into_iter()
+        .map(|contract| {
+            let architectures = contract.supported_architectures.join("/");
+            if contract.supported_model_types.is_empty() {
+                format!("{} [{}]", contract.id, architectures)
+            } else {
+                format!(
+                    "{} [{}; model_type={}]",
+                    contract.id,
+                    architectures,
+                    contract.supported_model_types.join("/")
+                )
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "Atenia today supports these internal adapters: {entries}. \
+         Adapters are selected from architecture/model_type metadata."
+    )
 }
 
 #[cfg(test)]
@@ -386,6 +425,7 @@ mod tests {
         let mut unique_ids = std::collections::BTreeSet::new();
         for contract in &contracts {
             assert!(unique_ids.insert(contract.id));
+            assert!(!contract.supported_architectures.is_empty());
             assert!(contract.capabilities.hf_safetensors);
             assert!(contract.capabilities.gguf);
             assert!(contract.capabilities.store_backed_generation);
@@ -411,5 +451,69 @@ mod tests {
         assert_eq!(gemma2.family, ModelFamily::Gemma2);
         assert!(gemma2.capabilities.gemma2_softcaps);
         assert!(!gemma2.capabilities.fused_qkv_weight_mapping);
+    }
+
+    #[test]
+    fn supported_architectures_message_is_registry_backed() {
+        let message = supported_architectures_message();
+        for expected in [
+            "phi3",
+            "gemma2",
+            "qwen2",
+            "mistral",
+            "llama",
+            "Phi3ForCausalLM",
+            "Gemma2ForCausalLM",
+            "Qwen2ForCausalLM",
+            "MistralForCausalLM",
+            "LlamaForCausalLM",
+        ] {
+            assert!(
+                message.contains(expected),
+                "{expected} missing from {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn config_metadata_uses_registered_model_type_contracts() {
+        let cases = [
+            ("phi3", "Phi3ForCausalLM"),
+            ("gemma2", "Gemma2ForCausalLM"),
+            ("qwen2", "Qwen2ForCausalLM"),
+            ("mistral", "MistralForCausalLM"),
+            ("llama", "LlamaForCausalLM"),
+        ];
+        for (model_type, expected_architecture) in cases {
+            assert_eq!(
+                default_architecture_for_model_type(model_type),
+                Some(expected_architecture)
+            );
+        }
+    }
+
+    #[test]
+    fn config_metadata_falls_back_to_llama_for_unknown_or_absent_model_type() {
+        let config = LlamaConfig::from_json_str(
+            r#"{
+                "vocab_size": 32000,
+                "hidden_size": 64,
+                "num_hidden_layers": 1,
+                "num_attention_heads": 4,
+                "num_key_value_heads": 4,
+                "intermediate_size": 128,
+                "max_position_embeddings": 128,
+                "rope_theta": 10000,
+                "rms_norm_eps": 0.000001,
+                "tie_word_embeddings": true,
+                "model_type": "custom_llama_like",
+                "bos_token_id": 1,
+                "eos_token_id": 2
+            }"#,
+        )
+        .expect("test config parses");
+        let metadata = model_metadata_for_config(&config);
+        assert_eq!(metadata.architecture, "LlamaForCausalLM");
+        assert_eq!(metadata.model_type, Some("custom_llama_like"));
     }
 }

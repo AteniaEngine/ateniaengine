@@ -391,6 +391,23 @@ Phase 7 turns adapter registration into a testable internal contract:
 - tests also verify that Phi3 and Gemma2 keep their family-specific capability
   flags visible at the registry boundary.
 
+Phase 8 makes adapter support diagnostics registry-backed:
+
+- adapters now report the architecture strings and `model_type` values they
+  support as part of the internal contract;
+- the unsupported-model message is generated from the registered adapters
+  instead of a hand-written list;
+- tests verify that the diagnostic message stays aligned with the registry.
+
+Phase 9 moves config-to-adapter metadata inference onto the same registry
+contract:
+
+- `model_metadata_for_config()` derives adapter metadata from `model_type`
+  using registered adapter contracts;
+- `resolve_adapter_for_config()` no longer carries its own hand-written
+  `model_type` match;
+- unknown or absent `model_type` still falls back to the Llama-compatible path.
+
 ## Future Research Note - Long Context Governor
 
 Do not fold this into Pass 3 / Pass 4. The current passes are about making the
