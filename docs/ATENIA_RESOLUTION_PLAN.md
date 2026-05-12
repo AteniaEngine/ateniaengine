@@ -303,6 +303,33 @@ It is low risk, ADR-safe, and gives us the evidence needed to avoid guessing.
 After Pass 1, a short RTX 3090 rerun should tell us whether to attack the
 BF16 upload failure first or the tied LM-head bottleneck first.
 
+## Architecture Detour - Internal Model Adapter Layer
+
+Before adding more model-family features to the core, freeze current behavior
+behind an internal adapter layer. This is not a public SDK yet; the trait can
+still change while the design settles.
+
+Internal law:
+
+```text
+Atenia Core executes; adapters describe models.
+```
+
+Initial order:
+
+- Keep current Llama / Qwen2 / Mistral / Phi3 / Gemma2 behavior intact.
+- Introduce a small internal registry plus modular traits for graph building,
+  HF mapping, GGUF mapping, and future residency hints.
+- Migrate Llama-family routing first because it is the baseline path.
+- Keep Phi3 and Gemma2 as thin adapters around their existing specialized
+  builders and mappers.
+- Split Qwen2, Mistral, and Falcon3 only after the base layer proves stable.
+- Consider a public Atenia Adapter SDK only after the internal contract has
+  survived several model-family migrations.
+
+First-pass acceptance rule: same behavior, same tests passing, no required
+performance gain.
+
 ## Future Research Note - Long Context Governor
 
 Do not fold this into Pass 3 / Pass 4. The current passes are about making the

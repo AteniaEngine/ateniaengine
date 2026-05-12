@@ -69,16 +69,12 @@
 
 use std::path::{Path, PathBuf};
 
-use super::builder::{LlamaRuntime, build_llama};
+use super::builder::LlamaRuntime;
 use super::numcert;
-use super::phi3;
 use crate::amg::builder::GraphBuilder;
 use crate::amg::weight_store::{UploadReport, WeightStore, WeightStoreError};
+use crate::model_adapters::{ModelFormat, ModelMetadata, resolve_adapter};
 use crate::nn::llama::config::{ConfigError, LlamaConfig};
-use crate::nn::llama::gguf_weight_loading::{
-    gemma2_gguf_weight_mapper, llama_gguf_weight_mapper, phi3_gguf_weight_mapper,
-};
-use crate::nn::llama::weight_loading::llama_weight_mapper;
 use crate::tokenizer::{AteniaTokenizer, ChatMessage, TokenizerError};
 use crate::v17::loader::gguf_config::{architecture_from_gguf, llama_config_from_gguf};
 use crate::v17::loader::gguf_reader::GgufReader;
@@ -504,6 +500,24 @@ impl GenerationPipeline {
             read_architectures_first(&config_path)?
                 .unwrap_or_else(|| "LlamaForCausalLM".to_string())
         };
+        let metadata = ModelMetadata {
+            architecture: architecture.as_str(),
+            model_type: config.model_type.as_deref(),
+            format: if is_gguf {
+                ModelFormat::Gguf
+            } else {
+                ModelFormat::HfSafetensors
+            },
+        };
+        let adapter = resolve_adapter(&metadata).ok_or_else(|| {
+            PipelineError::Loader(LoaderError::InvalidFormat(format!(
+                "unsupported architecture/model_type: architecture=\"{}\", model_type={:?}; {}",
+                architecture,
+                config.model_type,
+                crate::model_adapters::supported_architectures_message()
+            )))
+        })?;
+        adapter.log_selection();
 
         // 3. Scratch graph (zero-init parameters; will get
         //    populated by the loader and then hoisted into
@@ -511,71 +525,21 @@ impl GenerationPipeline {
         let runtime = LlamaRuntime { batch: 1, seq: 1 };
         let mut gb = GraphBuilder::new();
         let token_input_id = gb.input();
-        // Build the architecture-specific graph and extract the
-        // shared (logits, param_ids, param_names) shape.
-        let (logits_id, param_ids, param_names): (usize, Vec<usize>, Vec<String>) =
-            match architecture.as_str() {
-                "Phi3ForCausalLM" => {
-                    eprintln!(
-                        "[ATENIA] Architecture: Phi3ForCausalLM — routing to phi3 builder \
-                         (LongRope + fused QKV / gate_up split via SliceLastDim)."
-                    );
-                    let h = phi3::build_phi3(&mut gb, &config, &runtime, token_input_id);
-                    (h.logits_id, h.param_ids, h.param_names)
-                }
-                "Gemma2ForCausalLM" => {
-                    eprintln!(
-                        "[ATENIA] Architecture: Gemma2ForCausalLM — routing to gemma2 builder \
-                         (dual-norm, GeGLU, SoftCap@50/30, embedding scale; sliding-window \
-                         deferred — full causal attention for context < 4096)."
-                    );
-                    let h = crate::nn::llama::gemma2::build_gemma2(
-                        &mut gb,
-                        &config,
-                        &runtime,
-                        token_input_id,
-                    );
-                    (h.logits_id, h.param_ids, h.param_names)
-                }
-                "LlamaForCausalLM" | "Qwen2ForCausalLM" | "MistralForCausalLM" => {
-                    let h = build_llama(&mut gb, &config, &runtime, token_input_id);
-                    (h.logits_id, h.param_ids, h.param_names)
-                }
-                other => {
-                    return Err(PipelineError::Loader(LoaderError::InvalidFormat(format!(
-                        "unsupported architectures[0] = \"{other}\"; \
-                         Atenia today supports LlamaForCausalLM (and \
-                         Qwen2 / Mistral variants), Phi3ForCausalLM, and \
-                         Gemma2ForCausalLM. See M11.B for Phi-3 routing, \
-                         M11.C for Gemma 2 routing, and the M11.D track for \
-                         further architectures."
-                    ))));
-                }
-            };
+        // Build the adapter-specific graph and extract the shared
+        // (logits, param_ids, param_names) shape.
+        let scratch = adapter.build_scratch_graph(&mut gb, &config, &runtime, token_input_id);
+        let logits_id = scratch.logits_id;
+        let param_ids = scratch.param_ids;
+        let param_names = scratch.param_names;
         let _ = gb.output(logits_id);
         let mut scratch_graph = gb.build();
 
-        // 4. Load weights. Mapper is also architecture-specific
-        //    because Phi-3 has fused weight names (qkv_proj,
-        //    gate_up_proj) the Llama mapper doesn't know about.
+        // 4. Load weights. Mapper selection is adapter-specific because
+        //    families differ in names, layout transforms, and fused tensors.
         let mut mapper = if is_gguf {
-            match architecture.as_str() {
-                "Phi3ForCausalLM" => phi3_gguf_weight_mapper(&config, &param_names, &param_ids)?,
-                "Gemma2ForCausalLM" => {
-                    gemma2_gguf_weight_mapper(&config, &param_names, &param_ids)?
-                }
-                _ => llama_gguf_weight_mapper(&config, &param_names, &param_ids)?,
-            }
+            adapter.map_gguf_weights(&config, &param_names, &param_ids)?
         } else {
-            match architecture.as_str() {
-                "Phi3ForCausalLM" => phi3::phi3_weight_mapper(&config, &param_names, &param_ids)?,
-                "Gemma2ForCausalLM" => crate::nn::llama::gemma2::gemma2_weight_mapper(
-                    &config,
-                    &param_names,
-                    &param_ids,
-                )?,
-                _ => llama_weight_mapper(&config, &param_names, &param_ids)?,
-            }
+            adapter.map_hf_weights(&config, &param_names, &param_ids)?
         };
         mapper.set_store_params_as_bf16(bf16_storage);
 

@@ -44,13 +44,13 @@ use std::io::Write;
 
 use super::builder::LlamaRuntime;
 use super::builder_shared::{BuildError, LlamaHandlesShared};
-use super::phi3::build_with_store;
 use crate::amg::builder::GraphBuilder;
 use crate::amg::graph::Graph;
 use crate::amg::kv_cache::{
     KvCacheBuildSpec, KvCacheHandles, cast_kv_cell_bf16_to_f32, cast_kv_cell_f32_to_bf16,
 };
 use crate::amg::weight_store::WeightStore;
+use crate::model_adapters::resolve_adapter_for_config;
 use crate::nn::llama::config::LlamaConfig;
 use crate::tensor::Tensor;
 
@@ -243,8 +243,9 @@ where
         seq: prompt_len,
     };
     let spec = KvCacheBuildSpec { cached_len: 0 };
+    let adapter = resolve_adapter_for_config(cfg);
     let h: LlamaHandlesShared =
-        build_with_store(&mut gb, cfg, &runtime, token_in, store, Some(&spec))?;
+        adapter.build_store_graph(&mut gb, cfg, &runtime, token_in, store, Some(&spec))?;
     let _ = gb.output(h.logits_id);
     let mut g_prefill = gb.build();
 
@@ -310,7 +311,14 @@ where
         let token_in_d = gb_d.input();
         let runtime_d = LlamaRuntime { batch: 1, seq: 1 };
         let spec_d = KvCacheBuildSpec { cached_len };
-        let h_d = build_with_store(&mut gb_d, cfg, &runtime_d, token_in_d, store, Some(&spec_d))?;
+        let h_d = adapter.build_store_graph(
+            &mut gb_d,
+            cfg,
+            &runtime_d,
+            token_in_d,
+            store,
+            Some(&spec_d),
+        )?;
         let _ = gb_d.output(h_d.logits_id);
         let mut g_d = gb_d.build();
 
