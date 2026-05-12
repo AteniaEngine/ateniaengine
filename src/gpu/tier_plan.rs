@@ -66,6 +66,7 @@
 
 use std::collections::HashMap;
 
+use crate::model_adapters::{LmHeadResidency, ResidencyPolicyHints};
 use crate::tensor::DType;
 
 /// Tier assignment for a single parameter.
@@ -352,15 +353,30 @@ pub fn adaptive_ram_headroom(model_total_bytes: u64, free_ram_bytes: u64) -> (u6
 /// benefit from direct VRAM placement. See module docs for the full
 /// rationale.
 pub fn is_gpu_eligible(meta: &TensorMeta) -> bool {
-    meta.shape.len() >= 2 && (meta.name.ends_with("_proj.weight") || meta.name == "lm_head.weight")
+    is_gpu_eligible_with_hints(meta, ResidencyPolicyHints::default())
 }
 
-fn gpu_candidate_order(input: &TierPlanInput) -> Vec<usize> {
+pub fn is_gpu_eligible_with_hints(meta: &TensorMeta, hints: ResidencyPolicyHints) -> bool {
+    if meta.shape.len() < 2 {
+        return false;
+    }
+
+    if hints.projection_weights_vram_eligible && meta.name.ends_with("_proj.weight") {
+        return true;
+    }
+
+    match hints.lm_head {
+        LmHeadResidency::UntiedOnly => meta.name == "lm_head.weight",
+        LmHeadResidency::KeepCpu => false,
+    }
+}
+
+fn gpu_candidate_order(input: &TierPlanInput, hints: ResidencyPolicyHints) -> Vec<usize> {
     let mut candidates: Vec<usize> = input
         .tensors
         .iter()
         .enumerate()
-        .filter_map(|(idx, meta)| is_gpu_eligible(meta).then_some(idx))
+        .filter_map(|(idx, meta)| is_gpu_eligible_with_hints(meta, hints).then_some(idx))
         .collect();
 
     candidates.sort_by(|&a, &b| {
@@ -397,6 +413,10 @@ fn gpu_candidate_order(input: &TierPlanInput) -> Vec<usize> {
 /// planner stays a pure function (no I/O, no allocations beyond the
 /// returned `TierPlan`).
 pub fn plan(input: &TierPlanInput) -> TierPlan {
+    plan_with_hints(input, ResidencyPolicyHints::default())
+}
+
+pub fn plan_with_hints(input: &TierPlanInput, hints: ResidencyPolicyHints) -> TierPlan {
     let certified_upload_reserve = if input.kernel_dtype == DType::F32 {
         CERTIFIED_BF16_UPLOAD_STAGING_BYTES
     } else {
@@ -406,12 +426,12 @@ pub fn plan(input: &TierPlanInput) -> TierPlan {
         .free_vram_bytes
         .saturating_sub(VRAM_HEADROOM_BYTES)
         .saturating_sub(certified_upload_reserve);
-    let dry_run = plan_inner(input, m8_budget);
+    let dry_run = plan_inner(input, m8_budget, hints);
     if dry_run.disk_bytes_assigned == 0 {
         return dry_run;
     }
     let m8_7_budget = m8_budget.saturating_sub(DISK_PIPELINE_STAGING_BYTES);
-    plan_inner(input, m8_7_budget)
+    plan_inner(input, m8_7_budget, hints)
 }
 
 /// **M9.6 (post-smoke)** — operator-side override of the M7.2
@@ -512,7 +532,11 @@ fn resolve_ram_headroom(model_total_bytes: u64, free_ram_bytes: u64) -> (u64, u6
 ///   the trigger does not fire under either calculation.
 /// - The two-pass cost is one extra walk of the tensor list with
 ///   no allocations beyond a single u64 accumulator. Negligible.
-fn plan_inner(input: &TierPlanInput, vram_budget_bytes: u64) -> TierPlan {
+fn plan_inner(
+    input: &TierPlanInput,
+    vram_budget_bytes: u64,
+    hints: ResidencyPolicyHints,
+) -> TierPlan {
     // ---- Pass 1: dry VRAM simulation. -----------------------------
     //
     // Accumulate the **source-dtype** byte cost (`ram_cost_bytes`)
@@ -522,7 +546,7 @@ fn plan_inner(input: &TierPlanInput, vram_budget_bytes: u64) -> TierPlan {
     // and `demo/mod.rs`); subtracting one from the other yields a
     // RAM-pressure value in the same units, free of the M9 INT8
     // cost-vs-allocation discrepancy.
-    let candidate_order = gpu_candidate_order(input);
+    let candidate_order = gpu_candidate_order(input, hints);
     let mut vram_remaining_dry = vram_budget_bytes;
     let mut vram_assigned_in_source_dtype: u64 = 0;
     for &idx in &candidate_order {
@@ -889,6 +913,39 @@ mod tests {
         assert_eq!(p.count(Tier::Vram), 2);
         assert_eq!(p.count(Tier::Ram), 4);
         assert_eq!(p.count(Tier::Disk), 0);
+    }
+
+    #[test]
+    fn residency_hints_can_keep_lm_head_on_cpu_without_changing_projection_policy() {
+        let tensors = vec![
+            make_meta(
+                "model.layers.0.self_attn.q_proj.weight",
+                vec![4096, 4096],
+                DType::BF16,
+            ),
+            make_meta("lm_head.weight", vec![32000, 4096], DType::BF16),
+        ];
+        let model_total = sum_model_bytes(&tensors);
+        let input = TierPlanInput {
+            tensors,
+            free_vram_bytes: 100 * 1024 * 1024 * 1024,
+            free_ram_bytes: 100 * 1024 * 1024 * 1024,
+            model_total_bytes: model_total,
+            total_ram_bytes: 128 * 1024 * 1024 * 1024,
+            kernel_dtype: DType::F32,
+        };
+        let hints = ResidencyPolicyHints {
+            lm_head: LmHeadResidency::KeepCpu,
+            ..ResidencyPolicyHints::default()
+        };
+
+        let p = plan_with_hints(&input, hints);
+
+        assert_eq!(
+            p.get("model.layers.0.self_attn.q_proj.weight"),
+            Some(Tier::Vram)
+        );
+        assert_eq!(p.get("lm_head.weight"), Some(Tier::Ram));
     }
 
     /// 5. Llama 2 13B real shape — 40 capas, 8 GiB VRAM libre,
@@ -1555,7 +1612,7 @@ mod tests {
 
         // Reference: M8 baseline budget (no staging reservation).
         let baseline_budget = input.free_vram_bytes.saturating_sub(VRAM_HEADROOM_BYTES);
-        let p_baseline = plan_inner(&input, baseline_budget);
+        let p_baseline = plan_inner(&input, baseline_budget, ResidencyPolicyHints::default());
 
         // Sanity: the dry-run scenario actually overflows to Disk —
         // otherwise the staging reservation wouldn't apply.
@@ -1680,7 +1737,7 @@ mod tests {
         };
 
         let baseline_budget = input.free_vram_bytes.saturating_sub(VRAM_HEADROOM_BYTES);
-        let p_baseline = plan_inner(&input, baseline_budget);
+        let p_baseline = plan_inner(&input, baseline_budget, ResidencyPolicyHints::default());
 
         // Sanity: no Disk overflow on this configuration.
         assert_eq!(

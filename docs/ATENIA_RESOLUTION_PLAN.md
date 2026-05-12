@@ -355,6 +355,15 @@ checkpoint advertises `architectures=["LlamaForCausalLM"]` and
 `model_type="llama"`. Split it only if a future checkpoint exposes real
 family-specific build, mapping, or residency behavior.
 
+Phase 4 wires the descriptive residency hints into the tier planner without
+changing default behavior:
+
+- `plan(input)` remains backward-compatible and uses default hints;
+- `plan_with_hints(input, hints)` is available for adapter-driven planning;
+- the generation pipeline now passes `adapter.residency_hints(config)` into
+  the tier planner;
+- current adapters still return hints equivalent to the existing global policy.
+
 ## Future Research Note - Long Context Governor
 
 Do not fold this into Pass 3 / Pass 4. The current passes are about making the

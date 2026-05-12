@@ -518,6 +518,7 @@ impl GenerationPipeline {
             )))
         })?;
         adapter.log_selection();
+        let residency_hints = adapter.residency_hints(&config);
 
         // 3. Scratch graph (zero-init parameters; will get
         //    populated by the loader and then hoisted into
@@ -689,7 +690,7 @@ impl GenerationPipeline {
                     total_ram_bytes,
                     kernel_dtype,
                 };
-                let plan = crate::gpu::tier_plan::plan(&plan_input);
+                let plan = crate::gpu::tier_plan::plan_with_hints(&plan_input, residency_hints);
                 log_adaptive_headroom(
                     plan_input.model_total_bytes,
                     plan_input.free_ram_bytes,
@@ -744,7 +745,7 @@ impl GenerationPipeline {
                     total_ram_bytes,
                     kernel_dtype,
                 };
-                let plan = crate::gpu::tier_plan::plan(&plan_input);
+                let plan = crate::gpu::tier_plan::plan_with_hints(&plan_input, residency_hints);
                 log_adaptive_headroom(
                     plan_input.model_total_bytes,
                     plan_input.free_ram_bytes,
@@ -791,7 +792,7 @@ impl GenerationPipeline {
                     total_ram_bytes,
                     kernel_dtype,
                 };
-                let plan = crate::gpu::tier_plan::plan(&plan_input);
+                let plan = crate::gpu::tier_plan::plan_with_hints(&plan_input, residency_hints);
                 log_adaptive_headroom(
                     plan_input.model_total_bytes,
                     plan_input.free_ram_bytes,
