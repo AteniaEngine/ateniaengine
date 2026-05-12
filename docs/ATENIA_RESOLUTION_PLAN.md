@@ -256,3 +256,30 @@ Start with Pass 1.
 It is low risk, ADR-safe, and gives us the evidence needed to avoid guessing.
 After Pass 1, a short RTX 3090 rerun should tell us whether to attack the
 BF16 upload failure first or the tied LM-head bottleneck first.
+
+## Future Research Note - Long Context Governor
+
+Do not fold this into Pass 3 / Pass 4. The current passes are about making the
+existing exact Llama-family execution path faster and more honest.
+
+There is a separate future track worth preserving: an optional Atenia Long
+Context Governor inspired by subquadratic / sparse-attention systems. It should
+remain a layer on top of the certified core, not a replacement for it.
+
+Possible staged path:
+
+- Paged KV cache and KV block residency across VRAM / RAM / disk. This should
+  not change model math.
+- Content-aware KV block priority for long sessions: recent blocks, system
+  prompt, referenced code/doc spans, and attention-hot blocks stay closer to
+  VRAM.
+- Experimental selective attention over KV blocks, behind an explicit opt-in
+  such as `ATENIA_EXPERIMENTAL_SPARSE_ATTENTION=1`. This changes the math and
+  must not claim ADR-004 strict equivalence by default.
+- Native support for future sparse / linear-attention model families if open
+  checkpoints appear, rather than pretending existing dense-attention
+  checkpoints can be converted by runtime alone.
+
+Acceptance rule: exact execution remains the default; experimental long-context
+execution must be measurable, reversible, clearly logged, and separately
+documented.

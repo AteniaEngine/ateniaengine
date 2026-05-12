@@ -80,6 +80,7 @@ Atenia Engine is currently working through APX v20 (Real Model Runtime Integrati
 - **Track γ (GPTQ / AWQ with calibration).** State-of-the-art INT8/INT4 quality. Larger scope than β; revisit if β under-delivers on drift.
 - **Track δ (production hardening, no quantisation).** Folded into M12.
 - **Track α (M9.5 FFN-only).** Investigation already showed this is unlikely to pass ADR-004 in 4/4 models; superseded by M10.3.1.1's per-tensor mechanism (FFN-only fast is now expressible as a per-tensor manifest policy without a milestone).
+- **Track ε (Atenia Long Context Governor, experimental).** Future opt-in layer for long-context efficiency inspired by subquadratic / sparse-attention work, without changing Atenia's certified core. The exact engine remains the default: full attention, ADR-004 / ADR-005 numeric contracts, deterministic generation, and auditable tiering. The experimental layer would start with paged KV cache and content-aware KV block residency (no math change), then optionally add selective attention over KV blocks behind an explicit non-certified flag such as `ATENIA_EXPERIMENTAL_SPARSE_ATTENTION=1`. This is not a shortcut to retrofit SubQ-style architecture into existing Llama-family checkpoints; any approximation must ship with separate metrics, logs, and certification language.
 
 ### Hardware limits discovered (M10.0 + M10.1)
 
