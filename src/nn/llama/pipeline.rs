@@ -74,7 +74,8 @@ use super::numcert;
 use crate::amg::builder::GraphBuilder;
 use crate::amg::weight_store::{UploadReport, WeightStore, WeightStoreError};
 use crate::model_adapters::{
-    AteniaModelAdapter, ModelFormat, ModelMetadata, ResidencyPolicyHints, resolve_adapter,
+    AteniaModelAdapter, ModelFormat, ResidencyPolicyHints, model_metadata_from_parts,
+    resolve_adapter,
 };
 use crate::nn::llama::config::{ConfigError, LlamaConfig};
 use crate::tokenizer::{AteniaTokenizer, ChatMessage, TokenizerError};
@@ -499,22 +500,21 @@ impl GenerationPipeline {
         let architecture = if let Some(reader) = gguf_reader.as_ref() {
             architecture_from_gguf(reader)?
         } else {
-            read_architectures_first(&config_path)?
-                .unwrap_or_else(|| "LlamaForCausalLM".to_string())
+            read_architectures_first(&config_path)?.unwrap_or_default()
         };
-        let metadata = ModelMetadata {
-            architecture: architecture.as_str(),
-            model_type: config.model_type.as_deref(),
-            format: if is_gguf {
+        let metadata = model_metadata_from_parts(
+            (!architecture.is_empty()).then_some(architecture.as_str()),
+            config.model_type.as_deref(),
+            if is_gguf {
                 ModelFormat::Gguf
             } else {
                 ModelFormat::HfSafetensors
             },
-        };
+        );
         let adapter = resolve_adapter(&metadata).ok_or_else(|| {
             PipelineError::Loader(LoaderError::InvalidFormat(format!(
                 "unsupported architecture/model_type: architecture=\"{}\", model_type={:?}; {}",
-                architecture,
+                metadata.architecture,
                 config.model_type,
                 crate::model_adapters::supported_architectures_message()
             )))

@@ -230,14 +230,25 @@ pub fn registered_adapter_contracts() -> Vec<AdapterContract> {
 }
 
 pub fn model_metadata_for_config(config: &LlamaConfig) -> ModelMetadata<'_> {
-    let model_type = config.model_type.as_deref();
-    let architecture = model_type
-        .and_then(default_architecture_for_model_type)
+    model_metadata_from_parts(
+        None,
+        config.model_type.as_deref(),
+        ModelFormat::HfSafetensors,
+    )
+}
+
+pub fn model_metadata_from_parts<'a>(
+    architecture: Option<&'a str>,
+    model_type: Option<&'a str>,
+    format: ModelFormat,
+) -> ModelMetadata<'a> {
+    let architecture = architecture
+        .or_else(|| model_type.and_then(default_architecture_for_model_type))
         .unwrap_or("LlamaForCausalLM");
     ModelMetadata {
         architecture,
         model_type,
-        format: ModelFormat::HfSafetensors,
+        format,
     }
 }
 
@@ -515,5 +526,22 @@ mod tests {
         let metadata = model_metadata_for_config(&config);
         assert_eq!(metadata.architecture, "LlamaForCausalLM");
         assert_eq!(metadata.model_type, Some("custom_llama_like"));
+    }
+
+    #[test]
+    fn metadata_from_parts_preserves_explicit_architecture_and_format() {
+        let metadata =
+            model_metadata_from_parts(Some("Phi3ForCausalLM"), Some("phi3"), ModelFormat::Gguf);
+        assert_eq!(metadata.architecture, "Phi3ForCausalLM");
+        assert_eq!(metadata.model_type, Some("phi3"));
+        assert_eq!(metadata.format, ModelFormat::Gguf);
+    }
+
+    #[test]
+    fn metadata_from_parts_infers_architecture_from_model_type() {
+        let metadata = model_metadata_from_parts(None, Some("gemma2"), ModelFormat::HfSafetensors);
+        assert_eq!(metadata.architecture, "Gemma2ForCausalLM");
+        assert_eq!(metadata.model_type, Some("gemma2"));
+        assert_eq!(metadata.format, ModelFormat::HfSafetensors);
     }
 }

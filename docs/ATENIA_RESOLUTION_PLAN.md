@@ -408,6 +408,15 @@ contract:
   `model_type` match;
 - unknown or absent `model_type` still falls back to the Llama-compatible path.
 
+Phase 10 centralizes pipeline metadata construction behind the adapter layer:
+
+- `model_metadata_from_parts()` combines optional architecture, optional
+  `model_type`, and checkpoint format into registry-compatible metadata;
+- `pipeline.rs` no longer hardcodes the Llama fallback while building
+  `ModelMetadata`;
+- HF configs without `architectures[0]` and unknown model types still route
+  through the Llama-compatible fallback.
+
 ## Future Research Note - Long Context Governor
 
 Do not fold this into Pass 3 / Pass 4. The current passes are about making the
