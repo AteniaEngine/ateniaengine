@@ -38,8 +38,69 @@ pub struct ScratchGraphBuild {
     pub param_names: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ModelFamily {
+    Llama,
+    Qwen2,
+    Mistral,
+    Phi3,
+    Gemma2,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AdapterCapabilities {
+    pub hf_safetensors: bool,
+    pub gguf: bool,
+    pub store_backed_generation: bool,
+    pub fused_qkv_weight_mapping: bool,
+    pub fused_gate_up_weight_mapping: bool,
+    pub gemma2_softcaps: bool,
+}
+
+impl AdapterCapabilities {
+    const fn llama_like() -> Self {
+        Self {
+            hf_safetensors: true,
+            gguf: true,
+            store_backed_generation: true,
+            fused_qkv_weight_mapping: false,
+            fused_gate_up_weight_mapping: false,
+            gemma2_softcaps: false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LmHeadResidency {
+    UntiedOnly,
+    KeepCpu,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResidencyPolicyHints {
+    pub projection_weights_vram_eligible: bool,
+    pub lm_head: LmHeadResidency,
+    pub embeddings_cpu_only: bool,
+    pub norms_cpu_only: bool,
+    pub prefer_layer_local_projection_packing: bool,
+}
+
+impl Default for ResidencyPolicyHints {
+    fn default() -> Self {
+        Self {
+            projection_weights_vram_eligible: true,
+            lm_head: LmHeadResidency::UntiedOnly,
+            embeddings_cpu_only: true,
+            norms_cpu_only: true,
+            prefer_layer_local_projection_packing: true,
+        }
+    }
+}
+
 pub trait ModelAdapter: Sync {
     fn id(&self) -> &'static str;
+    fn family(&self) -> ModelFamily;
+    fn capabilities(&self) -> AdapterCapabilities;
     fn supports(&self, metadata: &ModelMetadata<'_>) -> bool;
     fn log_selection(&self) {}
 
@@ -82,13 +143,19 @@ pub trait StoreBackedGraphBuilder {
     ) -> Result<LlamaHandlesShared, BuildError>;
 }
 
+pub trait ResidencyHints {
+    fn residency_hints(&self, _config: &LlamaConfig) -> ResidencyPolicyHints {
+        ResidencyPolicyHints::default()
+    }
+}
+
 pub trait AteniaModelAdapter:
-    ModelAdapter + HfWeightMapper + GgufWeightMapper + StoreBackedGraphBuilder
+    ModelAdapter + HfWeightMapper + GgufWeightMapper + StoreBackedGraphBuilder + ResidencyHints
 {
 }
 
 impl<T> AteniaModelAdapter for T where
-    T: ModelAdapter + HfWeightMapper + GgufWeightMapper + StoreBackedGraphBuilder
+    T: ModelAdapter + HfWeightMapper + GgufWeightMapper + StoreBackedGraphBuilder + ResidencyHints
 {
 }
 
@@ -133,6 +200,14 @@ fn build_llama_store_graph(
 impl ModelAdapter for LlamaFamilyAdapter {
     fn id(&self) -> &'static str {
         "llama"
+    }
+
+    fn family(&self) -> ModelFamily {
+        ModelFamily::Llama
+    }
+
+    fn capabilities(&self) -> AdapterCapabilities {
+        AdapterCapabilities::llama_like()
     }
 
     fn supports(&self, metadata: &ModelMetadata<'_>) -> bool {
@@ -186,9 +261,19 @@ impl StoreBackedGraphBuilder for LlamaFamilyAdapter {
     }
 }
 
+impl ResidencyHints for LlamaFamilyAdapter {}
+
 impl ModelAdapter for Qwen2Adapter {
     fn id(&self) -> &'static str {
         "qwen2"
+    }
+
+    fn family(&self) -> ModelFamily {
+        ModelFamily::Qwen2
+    }
+
+    fn capabilities(&self) -> AdapterCapabilities {
+        AdapterCapabilities::llama_like()
     }
 
     fn supports(&self, metadata: &ModelMetadata<'_>) -> bool {
@@ -242,9 +327,19 @@ impl StoreBackedGraphBuilder for Qwen2Adapter {
     }
 }
 
+impl ResidencyHints for Qwen2Adapter {}
+
 impl ModelAdapter for MistralAdapter {
     fn id(&self) -> &'static str {
         "mistral"
+    }
+
+    fn family(&self) -> ModelFamily {
+        ModelFamily::Mistral
+    }
+
+    fn capabilities(&self) -> AdapterCapabilities {
+        AdapterCapabilities::llama_like()
     }
 
     fn supports(&self, metadata: &ModelMetadata<'_>) -> bool {
@@ -298,9 +393,23 @@ impl StoreBackedGraphBuilder for MistralAdapter {
     }
 }
 
+impl ResidencyHints for MistralAdapter {}
+
 impl ModelAdapter for Phi3Adapter {
     fn id(&self) -> &'static str {
         "phi3"
+    }
+
+    fn family(&self) -> ModelFamily {
+        ModelFamily::Phi3
+    }
+
+    fn capabilities(&self) -> AdapterCapabilities {
+        AdapterCapabilities {
+            fused_qkv_weight_mapping: true,
+            fused_gate_up_weight_mapping: true,
+            ..AdapterCapabilities::llama_like()
+        }
     }
 
     fn supports(&self, metadata: &ModelMetadata<'_>) -> bool {
@@ -373,9 +482,22 @@ impl StoreBackedGraphBuilder for Phi3Adapter {
     }
 }
 
+impl ResidencyHints for Phi3Adapter {}
+
 impl ModelAdapter for Gemma2Adapter {
     fn id(&self) -> &'static str {
         "gemma2"
+    }
+
+    fn family(&self) -> ModelFamily {
+        ModelFamily::Gemma2
+    }
+
+    fn capabilities(&self) -> AdapterCapabilities {
+        AdapterCapabilities {
+            gemma2_softcaps: true,
+            ..AdapterCapabilities::llama_like()
+        }
     }
 
     fn supports(&self, metadata: &ModelMetadata<'_>) -> bool {
@@ -449,6 +571,8 @@ impl StoreBackedGraphBuilder for Gemma2Adapter {
     }
 }
 
+impl ResidencyHints for Gemma2Adapter {}
+
 static LLAMA_FAMILY_ADAPTER: LlamaFamilyAdapter = LlamaFamilyAdapter;
 static QWEN2_ADAPTER: Qwen2Adapter = Qwen2Adapter;
 static MISTRAL_ADAPTER: MistralAdapter = MistralAdapter;
@@ -499,13 +623,28 @@ mod tests {
     #[test]
     fn registry_resolves_core_architectures() {
         let cases = [
-            ("LlamaForCausalLM", None, "llama"),
-            ("Qwen2ForCausalLM", Some("qwen2"), "qwen2"),
-            ("MistralForCausalLM", Some("mistral"), "mistral"),
-            ("Phi3ForCausalLM", Some("phi3"), "phi3"),
-            ("Gemma2ForCausalLM", Some("gemma2"), "gemma2"),
+            ("LlamaForCausalLM", None, "llama", ModelFamily::Llama),
+            (
+                "Qwen2ForCausalLM",
+                Some("qwen2"),
+                "qwen2",
+                ModelFamily::Qwen2,
+            ),
+            (
+                "MistralForCausalLM",
+                Some("mistral"),
+                "mistral",
+                ModelFamily::Mistral,
+            ),
+            ("Phi3ForCausalLM", Some("phi3"), "phi3", ModelFamily::Phi3),
+            (
+                "Gemma2ForCausalLM",
+                Some("gemma2"),
+                "gemma2",
+                ModelFamily::Gemma2,
+            ),
         ];
-        for (architecture, model_type, expected_id) in cases {
+        for (architecture, model_type, expected_id, expected_family) in cases {
             let metadata = ModelMetadata {
                 architecture,
                 model_type,
@@ -513,6 +652,7 @@ mod tests {
             };
             let adapter = resolve_adapter(&metadata).expect("adapter must resolve");
             assert_eq!(adapter.id(), expected_id);
+            assert_eq!(adapter.family(), expected_family);
         }
     }
 
@@ -524,5 +664,63 @@ mod tests {
             format: ModelFormat::HfSafetensors,
         };
         assert!(resolve_adapter(&metadata).is_none());
+    }
+
+    #[test]
+    fn adapter_capabilities_document_family_specific_features() {
+        let phi3 = resolve_adapter(&ModelMetadata {
+            architecture: "Phi3ForCausalLM",
+            model_type: Some("phi3"),
+            format: ModelFormat::HfSafetensors,
+        })
+        .expect("phi3 adapter");
+        let phi3_caps = phi3.capabilities();
+        assert!(phi3_caps.fused_qkv_weight_mapping);
+        assert!(phi3_caps.fused_gate_up_weight_mapping);
+        assert!(!phi3_caps.gemma2_softcaps);
+
+        let gemma2 = resolve_adapter(&ModelMetadata {
+            architecture: "Gemma2ForCausalLM",
+            model_type: Some("gemma2"),
+            format: ModelFormat::HfSafetensors,
+        })
+        .expect("gemma2 adapter");
+        let gemma2_caps = gemma2.capabilities();
+        assert!(gemma2_caps.gemma2_softcaps);
+        assert!(!gemma2_caps.fused_qkv_weight_mapping);
+    }
+
+    #[test]
+    fn default_residency_hints_match_current_tier_policy() {
+        let adapter = resolve_adapter(&ModelMetadata {
+            architecture: "MistralForCausalLM",
+            model_type: Some("mistral"),
+            format: ModelFormat::HfSafetensors,
+        })
+        .expect("mistral adapter");
+        let config = LlamaConfig::from_json_str(
+            r#"{
+                "vocab_size": 32000,
+                "hidden_size": 64,
+                "num_hidden_layers": 1,
+                "num_attention_heads": 4,
+                "num_key_value_heads": 4,
+                "intermediate_size": 128,
+                "max_position_embeddings": 128,
+                "rope_theta": 10000,
+                "rms_norm_eps": 0.000001,
+                "tie_word_embeddings": true,
+                "model_type": "mistral",
+                "bos_token_id": 1,
+                "eos_token_id": 2
+            }"#,
+        )
+        .expect("test config parses");
+        let hints = adapter.residency_hints(&config);
+        assert!(hints.projection_weights_vram_eligible);
+        assert_eq!(hints.lm_head, LmHeadResidency::UntiedOnly);
+        assert!(hints.embeddings_cpu_only);
+        assert!(hints.norms_cpu_only);
+        assert!(hints.prefer_layer_local_projection_packing);
     }
 }

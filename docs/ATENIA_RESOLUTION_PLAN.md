@@ -330,6 +330,18 @@ Initial order:
 First-pass acceptance rule: same behavior, same tests passing, no required
 performance gain.
 
+Phase 2 keeps the same rule and adds internal adapter metadata:
+
+- stable model-family identity separate from raw HuggingFace architecture
+  strings;
+- capability flags for family-specific features such as Phi3 fused QKV /
+  gate-up mapping and Gemma2 softcaps;
+- descriptive residency hints that mirror today's tier policy, but do not yet
+  drive the planner.
+
+Planner integration is intentionally deferred until the hints can be validated
+against RTX 3090 traces family by family.
+
 ## Future Research Note - Long Context Governor
 
 Do not fold this into Pass 3 / Pass 4. The current passes are about making the
