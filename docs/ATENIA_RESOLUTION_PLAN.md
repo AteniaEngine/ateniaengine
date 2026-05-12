@@ -383,6 +383,14 @@ default planner policy:
 - default behavior remains unchanged: untied `lm_head.weight` is still
   GPU-eligible unless the opt-in flag is set.
 
+Phase 7 turns adapter registration into a testable internal contract:
+
+- `registered_adapter_contracts()` exposes the registered adapter id, family,
+  and capability flags without exposing adapter implementation details;
+- tests lock the current registry order and ensure adapter ids stay unique;
+- tests also verify that Phi3 and Gemma2 keep their family-specific capability
+  flags visible at the registry boundary.
+
 ## Future Research Note - Long Context Governor
 
 Do not fold this into Pass 3 / Pass 4. The current passes are about making the

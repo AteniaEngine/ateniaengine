@@ -76,6 +76,13 @@ impl AdapterCapabilities {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AdapterContract {
+    pub id: &'static str,
+    pub family: ModelFamily,
+    pub capabilities: AdapterCapabilities,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LmHeadResidency {
     UntiedOnly,
     KeepCpu,
@@ -199,6 +206,17 @@ pub fn resolve_adapter(metadata: &ModelMetadata<'_>) -> Option<&'static dyn Aten
         .iter()
         .copied()
         .find(|adapter| adapter.supports(metadata))
+}
+
+pub fn registered_adapter_contracts() -> Vec<AdapterContract> {
+    ADAPTERS
+        .iter()
+        .map(|adapter| AdapterContract {
+            id: adapter.id(),
+            family: adapter.family(),
+            capabilities: adapter.capabilities(),
+        })
+        .collect()
 }
 
 pub fn resolve_adapter_for_config(config: &LlamaConfig) -> &'static dyn AteniaModelAdapter {
@@ -357,5 +375,41 @@ mod tests {
     fn llama_like_residency_default_keeps_current_lm_head_policy() {
         let hints = llama_like_residency_hints_from_flag(false);
         assert_eq!(hints, ResidencyPolicyHints::default());
+    }
+
+    #[test]
+    fn registered_adapter_contracts_are_stable_and_unique() {
+        let contracts = registered_adapter_contracts();
+        let ids: Vec<_> = contracts.iter().map(|contract| contract.id).collect();
+        assert_eq!(ids, ["phi3", "gemma2", "qwen2", "mistral", "llama"]);
+
+        let mut unique_ids = std::collections::BTreeSet::new();
+        for contract in &contracts {
+            assert!(unique_ids.insert(contract.id));
+            assert!(contract.capabilities.hf_safetensors);
+            assert!(contract.capabilities.gguf);
+            assert!(contract.capabilities.store_backed_generation);
+        }
+    }
+
+    #[test]
+    fn registered_adapter_contracts_capture_family_specialization() {
+        let contracts = registered_adapter_contracts();
+        let phi3 = contracts
+            .iter()
+            .find(|contract| contract.id == "phi3")
+            .expect("phi3 contract");
+        assert_eq!(phi3.family, ModelFamily::Phi3);
+        assert!(phi3.capabilities.fused_qkv_weight_mapping);
+        assert!(phi3.capabilities.fused_gate_up_weight_mapping);
+        assert!(!phi3.capabilities.gemma2_softcaps);
+
+        let gemma2 = contracts
+            .iter()
+            .find(|contract| contract.id == "gemma2")
+            .expect("gemma2 contract");
+        assert_eq!(gemma2.family, ModelFamily::Gemma2);
+        assert!(gemma2.capabilities.gemma2_softcaps);
+        assert!(!gemma2.capabilities.fused_qkv_weight_mapping);
     }
 }
