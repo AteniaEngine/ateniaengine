@@ -46,12 +46,11 @@
 //! `DISK_PIPELINE_STAGING_BYTES / 2` per-slot budget reserved
 //! by the M8.7 prereq planner change) are excluded from the
 //! prefetch path. The single Llama 13B weight that exceeds this
-//! cap is `lm_head.weight` (32000 × 5120 × 2 = 312 MiB BF16);
-//! the planner already keeps `lm_head.weight` off the GPU-eligible
-//! VRAM tier (see `tier_plan::is_gpu_eligible`), so when it
-//! lands on Disk it falls back to the synchronous CPU path
-//! through the legacy `ensure_decoded` route — exactly one
-//! matmul per token, ~138 ms on AVX2, irrelevant in the budget.
+//! cap is `lm_head.weight` (32000 × 5120 × 2 = 312 MiB BF16).
+//! Untied LM heads are now GPU-eligible because MatMul can consume
+//! them directly, but this Disk prefetch path still refuses payloads
+//! above the fixed staging cap and leaves them on the normal CPU
+//! materialisation path.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};

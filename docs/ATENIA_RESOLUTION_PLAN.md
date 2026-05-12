@@ -164,11 +164,12 @@ Validation:
 - Expected result: either both load, or we get a precise CUDA failure instead
   of `InvalidFormat("... upload failed ...")`.
 
-### Pass 3 - remove the biggest CPU tax before chasing Tensor Core speed
+### Pass 3 - remove the remaining CPU/GPU roundtrip tax
 
-Goal: improve utilization where the code has an obvious bottleneck.
+Goal: improve utilization after Pass 1 removed the tied-LM-head and embedding
+decode bottlenecks.
 
-First target: tied LM head.
+Original first target: tied LM head.
 
 Current path:
 
@@ -190,6 +191,51 @@ Validation:
 - Rerun Qwen 1.5B, Llama 3.2 1B, Gemma2 2B with 100 tokens.
 - Expected result: Gemma2/Qwen should improve more than TinyLlama because their
   vocabularies are large.
+
+Status:
+
+- Original tied-head target already landed during Pass 1:
+  - Pass 1.2 replaced per-forward `Transpose2D(embed_tokens.weight)` with
+    `MatMulRhsTransposed`.
+  - Pass 1.3 made `IndexSelect` decode only selected BF16 embedding rows.
+- Pass 3.1 adds `ATENIA_MATMUL_TRACE=1`, an opt-in MatMul trace that records:
+  - branch: `resident_or_mixed`, `roundtrip`, `non_pooled`, `legacy_gpu`,
+    `cpu_ato`, or `cpu_fallback`
+  - RHS storage tier before dispatch
+  - RHS parameter name when the graph builder knows it
+  - MatMul shape and elapsed time
+- The CLI prints a top-40 MatMul trace summary when the flag is enabled.
+- RTX 3090 Falcon trace showed the remaining cost is not random spilling:
+  `lm_head.weight` and late-layer MLP projections were the top CPU
+  `non_pooled` MatMuls.
+- Pass 3.2 starts the fix in the tier planner:
+  - untied `lm_head.weight` is GPU-eligible because MatMul can now consume it
+    directly;
+  - VRAM packing remains layer-local for projection weights, with `lm_head`
+    considered after projections so large vocab heads do not evict many
+    resident layer weights;
+  - embeddings, norms, biases, and tied embedding tables remain CPU/RAM unless
+    a supported GPU consumer exists.
+- A first pure-hotness ordering was tested on Falcon and rejected: it removed
+  `lm_head` from the top CPU list but dropped resident matmuls too much and
+  inflated `roundtrip` dispatches.
+- Pass 3.3 adds an opt-in `ATENIA_MATMUL_WEIGHT_CACHE=1` experiment for
+  inference-only `lm_head.weight`: if post-load VRAM has room, Atenia uploads
+  the CPU LM head once and reuses it through the mixed-resident MatMul path.
+  If allocation fails, execution falls back to the normal CPU/non-pooled path.
+
+Next validation:
+
+- On RTX 3090, rerun a short certified Falcon probe with:
+
+```text
+ATENIA_MATMUL_TRACE=1 ATENIA_GPU_FALLBACK_TRACE=1 atenia generate ...
+```
+
+- Expected result with `ATENIA_MATMUL_WEIGHT_CACHE=1`: `lm_head.weight` should
+  move from `non_pooled b_storage=Cpu` to `resident_or_mixed b_storage=Cuda`
+  when spare VRAM exists. Remaining CPU entries should guide the next choice
+  between layer-block packing and a broader transient/LRU VRAM cache.
 
 ### Pass 4 - Gemma2-specific CPU-only ops
 

@@ -164,6 +164,7 @@ fn register_param_from_store(
     }
     let tensor = p.to_tensor();
     let node_id = gb.parameter(tensor);
+    gb.set_node_debug_name(node_id, full_name);
     param_ids.push(node_id);
     param_names.push(full_name.to_string());
     Ok(node_id)

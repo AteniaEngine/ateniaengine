@@ -481,6 +481,7 @@ pub struct Node {
     pub inputs: Vec<usize>,
     pub output: Option<Tensor>,
     pub target: ExecutionTarget,
+    pub debug_name: Option<String>,
 }
 
 impl Node {
@@ -491,10 +492,15 @@ impl Node {
             inputs,
             output: None,
             target: ExecutionTarget::CPU,
+            debug_name: None,
         }
     }
 
     pub fn set_output(&mut self, tensor: Tensor) {
         self.output = Some(tensor);
+    }
+
+    pub fn set_debug_name(&mut self, name: impl Into<String>) {
+        self.debug_name = Some(name.into());
     }
 }

@@ -362,6 +362,9 @@ pub fn run(args: GenerateArgs) -> i32 {
     if std::env::var("ATENIA_NODE_TIMING").as_deref() == Ok("1") {
         crate::amg::graph::reset_node_timings();
     }
+    if std::env::var("ATENIA_MATMUL_TRACE").as_deref() == Ok("1") {
+        crate::amg::graph::reset_matmul_traces();
+    }
     let counters_before_generation = counters_after_load;
     let gen_start = std::time::Instant::now();
 
@@ -425,6 +428,12 @@ pub fn run(args: GenerateArgs) -> i32 {
     if std::env::var("ATENIA_NODE_TIMING").as_deref() == Ok("1") {
         eprintln!("[ATENIA] Node timing summary (top 30 by total time):");
         for line in crate::amg::graph::node_timing_report_lines(30) {
+            eprintln!("{line}");
+        }
+    }
+    if std::env::var("ATENIA_MATMUL_TRACE").as_deref() == Ok("1") {
+        eprintln!("[ATENIA] MatMul trace summary (top 40 by total time):");
+        for line in crate::amg::graph::matmul_trace_report_lines(40) {
             eprintln!("{line}");
         }
     }

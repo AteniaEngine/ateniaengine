@@ -200,6 +200,7 @@ fn register_param(
     let data = vec![0.0_f32; numel];
     let tensor = Tensor::new_cpu(shape, data);
     let node_id = gb.parameter(tensor);
+    gb.set_node_debug_name(node_id, full_name);
     param_ids.push(node_id);
     param_names.push(full_name.to_string());
     node_id
@@ -597,6 +598,7 @@ pub fn build_phi3_with_store(
         }
         let tensor = p.to_tensor();
         let node_id = gb.parameter(tensor);
+        gb.set_node_debug_name(node_id, full_name);
         param_ids.push(node_id);
         param_names.push(full_name.to_string());
         Ok(node_id)

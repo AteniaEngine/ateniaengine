@@ -29,6 +29,7 @@ use crate::tensor::{DType, Layout, StorageTransferError, Tensor, TensorStorage};
 use crate::v16::guards::guard_action::GuardAction;
 use crate::v16::guards::guard_errors::GuardError;
 use rayon::prelude::*;
+use std::borrow::Cow;
 use std::collections::HashMap;
 #[cfg(debug_assertions)]
 use std::collections::HashSet;
@@ -1142,6 +1143,217 @@ fn record_node_timing(label: &str, dt: std::time::Duration) {
         stats.count += 1;
         stats.total_us += elapsed_us;
         stats.max_us = stats.max_us.max(elapsed_us);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct MatmulTraceStats {
+    count: u64,
+    total_us: u128,
+    max_us: u128,
+}
+
+static MATMUL_TRACES: OnceLock<Mutex<HashMap<String, MatmulTraceStats>>> = OnceLock::new();
+
+fn matmul_trace_enabled() -> bool {
+    std::env::var("ATENIA_MATMUL_TRACE").as_deref() == Ok("1")
+}
+
+fn matmul_trace_store() -> &'static Mutex<HashMap<String, MatmulTraceStats>> {
+    MATMUL_TRACES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub fn reset_matmul_traces() {
+    if let Ok(mut traces) = matmul_trace_store().lock() {
+        traces.clear();
+    }
+}
+
+pub fn matmul_trace_report_lines(limit: usize) -> Vec<String> {
+    let Ok(traces) = matmul_trace_store().lock() else {
+        return Vec::new();
+    };
+    let mut rows: Vec<_> = traces
+        .iter()
+        .map(|(label, stats)| (label.clone(), *stats))
+        .collect();
+    rows.sort_by(|a, b| {
+        b.1.total_us
+            .cmp(&a.1.total_us)
+            .then_with(|| b.1.count.cmp(&a.1.count))
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    rows.into_iter()
+        .take(limit)
+        .map(|(label, stats)| {
+            let avg_us = if stats.count > 0 {
+                stats.total_us as f64 / stats.count as f64
+            } else {
+                0.0
+            };
+            format!(
+                "  {label}: count={} total={:.3}s avg={:.3}ms max={:.3}ms",
+                stats.count,
+                stats.total_us as f64 / 1_000_000.0,
+                avg_us / 1000.0,
+                stats.max_us as f64 / 1000.0,
+            )
+        })
+        .collect()
+}
+
+fn record_matmul_trace(label: &str, dt: std::time::Duration) {
+    let elapsed_us = dt.as_micros();
+    if let Ok(mut traces) = matmul_trace_store().lock() {
+        let stats = traces.entry(label.to_string()).or_default();
+        stats.count += 1;
+        stats.total_us += elapsed_us;
+        stats.max_us = stats.max_us.max(elapsed_us);
+    }
+}
+
+static MATMUL_WEIGHT_CACHE: OnceLock<Mutex<HashMap<String, Tensor>>> = OnceLock::new();
+
+fn matmul_weight_cache_enabled() -> bool {
+    std::env::var("ATENIA_MATMUL_WEIGHT_CACHE").as_deref() == Ok("1")
+}
+
+fn try_cached_matmul_weight(name: &str, tensor: &Tensor) -> Option<Tensor> {
+    if !matmul_weight_cache_enabled() {
+        return None;
+    }
+    if !name.ends_with("lm_head.weight") {
+        return None;
+    }
+    if matmul_trace_enabled() && !crate::apx_is_silent() {
+        eprintln!(
+            "[ATENIA] MATMUL_WEIGHT_CACHE attempt {} storage={} dtype={:?} shape={:?}",
+            name,
+            tensor_storage_kind(tensor),
+            tensor.dtype,
+            tensor.shape
+        );
+    }
+    if tensor.shape.len() != 2 {
+        if matmul_trace_enabled() && !crate::apx_is_silent() {
+            eprintln!(
+                "[ATENIA] MATMUL_WEIGHT_CACHE skipped {}: rank={} shape={:?}",
+                name,
+                tensor.shape.len(),
+                tensor.shape
+            );
+        }
+        return None;
+    }
+    if !matches!(tensor.dtype, DType::F32 | DType::BF16) {
+        if matmul_trace_enabled() && !crate::apx_is_silent() {
+            eprintln!(
+                "[ATENIA] MATMUL_WEIGHT_CACHE skipped {}: dtype={:?}",
+                name, tensor.dtype
+            );
+        }
+        return None;
+    }
+    let host_data: Cow<'_, [f32]> = match &tensor.storage {
+        TensorStorage::Cpu(v) => Cow::Borrowed(v.as_slice()),
+        TensorStorage::CpuShared(arc) => Cow::Borrowed(arc.as_slice()),
+        TensorStorage::CpuBf16(_) | TensorStorage::CpuBf16Shared(_) => {
+            Cow::Owned(tensor.copy_to_cpu_vec())
+        }
+        TensorStorage::Cuda(_) => {
+            if matmul_trace_enabled() && !crate::apx_is_silent() {
+                eprintln!(
+                    "[ATENIA] MATMUL_WEIGHT_CACHE skipped {}: storage={}",
+                    name, "Cuda"
+                );
+            }
+            return None;
+        }
+        TensorStorage::Disk(_) => {
+            if matmul_trace_enabled() && !crate::apx_is_silent() {
+                eprintln!(
+                    "[ATENIA] MATMUL_WEIGHT_CACHE skipped {}: storage={}",
+                    name, "Disk"
+                );
+            }
+            return None;
+        }
+        TensorStorage::CpuInt8 { .. } => {
+            if matmul_trace_enabled() && !crate::apx_is_silent() {
+                eprintln!(
+                    "[ATENIA] MATMUL_WEIGHT_CACHE skipped {}: storage={}",
+                    name, "CpuInt8"
+                );
+            }
+            return None;
+        }
+    };
+
+    if host_data.len() != tensor.numel() {
+        if matmul_trace_enabled() && !crate::apx_is_silent() {
+            eprintln!(
+                "[ATENIA] MATMUL_WEIGHT_CACHE skipped {}: host_len={} numel={}",
+                name,
+                host_data.len(),
+                tensor.numel()
+            );
+        }
+        return None;
+    }
+
+    let key = format!("{}:{:?}", name, tensor.shape);
+    let cache = MATMUL_WEIGHT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(guard) = cache.lock() {
+        if let Some(cached) = guard.get(&key) {
+            return Some(cached.clone());
+        }
+    }
+
+    let gpu = match crate::gpu::tensor::TensorGPU::new_from_cpu(
+        &host_data,
+        tensor.shape[0],
+        tensor.shape[1],
+    ) {
+        Ok(gpu) => gpu,
+        Err(_) => {
+            if matmul_trace_enabled() && !crate::apx_is_silent() {
+                eprintln!(
+                    "[ATENIA] MATMUL_WEIGHT_CACHE upload failed {} shape={:?} bytes={:.2} MiB",
+                    name,
+                    tensor.shape,
+                    tensor.numel() as f64 * 4.0 / (1024.0 * 1024.0)
+                );
+            }
+            return None;
+        }
+    };
+    let cached = Tensor::from_cuda_gpu(tensor.shape.clone(), gpu);
+    if let Ok(mut guard) = cache.lock() {
+        let entry = guard.entry(key).or_insert_with(|| {
+            if matmul_trace_enabled() && !crate::apx_is_silent() {
+                eprintln!(
+                    "[ATENIA] MATMUL_WEIGHT_CACHE uploaded {} shape={:?} bytes={:.2} MiB",
+                    name,
+                    tensor.shape,
+                    tensor.numel() as f64 * 4.0 / (1024.0 * 1024.0)
+                );
+            }
+            cached.clone()
+        });
+        return Some(entry.clone());
+    }
+    Some(cached)
+}
+
+fn tensor_storage_kind(t: &Tensor) -> &'static str {
+    match &t.storage {
+        TensorStorage::Cpu(_) => "Cpu",
+        TensorStorage::CpuBf16(_) => "CpuBf16",
+        TensorStorage::CpuShared(_) => "CpuShared",
+        TensorStorage::CpuBf16Shared(_) => "CpuBf16Shared",
+        TensorStorage::Cuda(_) => "Cuda",
+        TensorStorage::Disk(_) => "Disk",
+        TensorStorage::CpuInt8 { .. } => "CpuInt8",
     }
 }
 
@@ -3584,6 +3796,18 @@ impl Graph {
                 let k = a.shape[1];
                 assert_eq!(b.shape[0], k, "MatMul inner dimension mismatch");
                 let n = b.shape[1];
+                let matmul_trace = matmul_trace_enabled();
+                let b_debug_name = self.nodes[b_id]
+                    .debug_name
+                    .clone()
+                    .unwrap_or_else(|| "<activation>".to_string());
+                if !record_tape {
+                    if let Some(cached_b) = try_cached_matmul_weight(&b_debug_name, &b) {
+                        b = cached_b;
+                    }
+                }
+                let a_storage_before = tensor_storage_kind(&a);
+                let b_storage_before = tensor_storage_kind(&b);
 
                 // M4.7.3.a: when both operands live on VRAM, allocate
                 // the output directly in VRAM so the kernel writes in
@@ -3637,6 +3861,10 @@ impl Graph {
                     "[GPU-TRACE] graph.MatMul ENTRY: shape m={}, k={}, n={}",
                     m, k, n
                 );
+                let resident_before = gpu_hooks::gpu_matmul_resident_count();
+                let roundtrip_before = gpu_hooks::gpu_matmul_roundtrip_count();
+                let non_pooled_before = gpu_hooks::gpu_matmul_non_pooled_count();
+                let legacy_before = gpu_hooks::gpu_matmul_legacy_count();
                 let gate_pass = gpu_hooks::gpu_can_run_matmul(m, k, n);
                 let gpu_ran = gate_pass && gpu_hooks::try_gpu_matmul(&a, &b, &mut out);
                 #[cfg(feature = "gpu-trace")]
@@ -3646,6 +3874,32 @@ impl Graph {
                 );
                 if gpu_ran {
                     device_chosen = DeviceTarget::GPU;
+                    if matmul_trace {
+                        let resident_after = gpu_hooks::gpu_matmul_resident_count();
+                        let roundtrip_after = gpu_hooks::gpu_matmul_roundtrip_count();
+                        let non_pooled_after = gpu_hooks::gpu_matmul_non_pooled_count();
+                        let legacy_after = gpu_hooks::gpu_matmul_legacy_count();
+                        let branch = if resident_after > resident_before {
+                            "resident_or_mixed"
+                        } else if non_pooled_after > non_pooled_before {
+                            "non_pooled"
+                        } else if roundtrip_after > roundtrip_before {
+                            "roundtrip"
+                        } else if legacy_after > legacy_before {
+                            "legacy"
+                        } else {
+                            "gpu_unknown"
+                        };
+                        let elapsed = start_time.elapsed();
+                        let label = format!(
+                            "branch={branch} b_storage={b_storage_before} b={b_debug_name} shape=[{m},{k}]x[{k},{n}]"
+                        );
+                        record_matmul_trace(&label, elapsed);
+                        eprintln!(
+                            "[ATENIA] MATMUL_TRACE node={node_id} branch={branch} gate=true a_storage={a_storage_before} b_storage={b_storage_before} b={b_debug_name} shape=[{m},{k}]x[{k},{n}] elapsed_ms={:.3}",
+                            elapsed.as_secs_f64() * 1000.0
+                        );
+                    }
 
                     // Register a sample only in 5.4 mode, without changing
                     // semantics nor execution path.
@@ -3736,6 +3990,17 @@ impl Graph {
 
                     // In 6.6 mode we do not register explicit 5.4 samples here
                     // to avoid coupling ATO with the statistics system.
+                    if matmul_trace {
+                        let elapsed = start_time.elapsed();
+                        let label = format!(
+                            "branch=cpu_ato b_storage={b_storage_before} b={b_debug_name} shape=[{m},{k}]x[{k},{n}]"
+                        );
+                        record_matmul_trace(&label, elapsed);
+                        eprintln!(
+                            "[ATENIA] MATMUL_TRACE node={node_id} branch=cpu_ato gate={gate_pass} a_storage={a_storage_before} b_storage={b_storage_before} b={b_debug_name} shape=[{m},{k}]x[{k},{n}] elapsed_ms={:.3}",
+                            elapsed.as_secs_f64() * 1000.0
+                        );
+                    }
                     self.nodes[node_id].set_output(out);
                     if record_tape {
                         let op_inputs = self.nodes[node_id].inputs.clone();
@@ -3887,6 +4152,25 @@ impl Graph {
                 // but sufficient for initial statistics.
                 if matches!(target, Apx4ExecTarget::GPU) {
                     device_chosen = DeviceTarget::GPU;
+                }
+                if matmul_trace {
+                    let legacy_after = gpu_hooks::gpu_matmul_legacy_count();
+                    let branch = if legacy_after > legacy_before {
+                        "legacy_gpu"
+                    } else if matches!(target, Apx4ExecTarget::GPU) {
+                        "legacy_gpu_requested"
+                    } else {
+                        "cpu_fallback"
+                    };
+                    let elapsed = start_time.elapsed();
+                    let label = format!(
+                        "branch={branch} b_storage={b_storage_before} b={b_debug_name} shape=[{m},{k}]x[{k},{n}]"
+                    );
+                    record_matmul_trace(&label, elapsed);
+                    eprintln!(
+                        "[ATENIA] MATMUL_TRACE node={node_id} branch={branch} gate={gate_pass} a_storage={a_storage_before} b_storage={b_storage_before} b={b_debug_name} shape=[{m},{k}]x[{k},{n}] elapsed_ms={:.3}",
+                        elapsed.as_secs_f64() * 1000.0
+                    );
                 }
 
                 // Register a sample only in 5.4 mode, after MatMul completes.

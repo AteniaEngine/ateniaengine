@@ -36,6 +36,12 @@ impl GraphBuilder {
         id
     }
 
+    pub fn set_node_debug_name(&mut self, node_id: usize, name: impl Into<String>) {
+        if let Some(node) = self.nodes.get_mut(node_id) {
+            node.set_debug_name(name);
+        }
+    }
+
     pub fn add(&mut self, a: usize, b: usize) -> usize {
         self.add_node(NodeType::Add, vec![a, b])
     }
