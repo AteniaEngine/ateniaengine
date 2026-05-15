@@ -53,9 +53,8 @@ use crate::amg::weight_store::WeightStore;
 use crate::amm::ram_probe::{RamProbeApi, RamProbeError, RamSnapshot};
 use crate::amm::signal_bus::SignalBus;
 use crate::amm::vram_probe::{VramProbeApi, VramProbeError, VramSnapshot};
-use crate::nn::llama::{
-    LlamaConfig, LlamaRuntime, build_llama, build_llama_with_store, llama_weight_mapper,
-};
+use crate::model_adapters::resolve_adapter_for_config;
+use crate::nn::llama::{LlamaConfig, LlamaRuntime};
 use crate::v15::policy::types::DecisionBias;
 use crate::v16::contract::constraints::{Constraints, RuntimeState};
 use crate::v16::contract::execution_contract::{ExecutionBackend, ExecutionContract};
@@ -315,10 +314,27 @@ pub fn build_and_load_llama(
     let cfg = LlamaConfig::from_json_file(&model_dir.join("config.json"))
         .expect("config.json must parse");
 
+    // **Adapter Phase 11.1** — resolve the model-family adapter
+    // once and drive every architecture-specific step (graph
+    // build, weight mapping, store-backed rebuild) through it.
+    // Before Phase 11.1 this helper called `build_llama` /
+    // `llama_weight_mapper` / `build_llama_with_store` directly,
+    // which silently assumed every checkpoint was Llama-shaped
+    // and refused Phi-3 / Gemma 2 with a parameter-shape
+    // mismatch deep in the loader. The adapter layer is the
+    // single source of truth for that dispatch and is shared
+    // with `LlamaPipeline::load`, so `atenia run` now supports
+    // the same architecture set as `atenia generate`.
+    let adapter = resolve_adapter_for_config(&cfg);
+
     if verbose {
         println!(
-            "Building Llama graph at seq={} ({} layers, hidden {}, vocab {}) ...",
-            runtime.seq, cfg.num_hidden_layers, cfg.hidden_size, cfg.vocab_size,
+            "Building {} graph at seq={} ({} layers, hidden {}, vocab {}) ...",
+            adapter.id(),
+            runtime.seq,
+            cfg.num_hidden_layers,
+            cfg.hidden_size,
+            cfg.vocab_size,
         );
     }
     // ---- Build scratch graph ----
@@ -331,25 +347,25 @@ pub fn build_and_load_llama(
     // never writes the parameter slots in the graph it
     // received (only Ram-tier weights are extracted via
     // `finalize_ram_extract`). The forward graph is rebuilt
-    // below with `build_llama_with_store` so every parameter
-    // node is connected to the store via
+    // below with `adapter.build_store_graph(...)` so every
+    // parameter node is connected to the store via
     // `register_param_from_store`. Same canonical pattern
     // as `LlamaPipeline::load` / `generate_greedy`.
     let build_start = Instant::now();
     let mut gb = GraphBuilder::new();
     let token_input_id = gb.input();
-    let handles = build_llama(&mut gb, &cfg, &runtime, token_input_id);
-    let _ = gb.output(handles.logits_id);
+    let scratch = adapter.build_scratch_graph(&mut gb, &cfg, &runtime, token_input_id);
+    let _ = gb.output(scratch.logits_id);
     let mut scratch_graph = gb.build();
     let build_secs = build_start.elapsed().as_secs_f32();
     if verbose {
         println!(
             "Graph built in {:.2}s ({} parameter nodes)",
             build_secs,
-            handles.param_ids.len(),
+            scratch.param_ids.len(),
         );
     }
-    let param_count = handles.param_ids.len();
+    let param_count = scratch.param_ids.len();
 
     if verbose {
         println!(
@@ -360,8 +376,9 @@ pub fn build_and_load_llama(
     let load_start = Instant::now();
     let sharded = ShardedSafetensorsReader::open(&model_dir.join("model.safetensors.index.json"))
         .expect("open sharded reader");
-    let mut mapper = llama_weight_mapper(&cfg, &handles.param_names, &handles.param_ids)
-        .expect("llama weight mapper");
+    let mut mapper = adapter
+        .map_hf_weights(&cfg, &scratch.param_names, &scratch.param_ids)
+        .expect("adapter weight mapper");
     mapper.set_store_params_as_bf16(true);
 
     // Tier-aware load (M6 + M7 + M8 + M8.7) — same path
@@ -400,8 +417,8 @@ pub fn build_and_load_llama(
             &mut scratch_graph,
             &mapper,
             &plan,
-            &handles.param_ids,
-            &handles.param_names,
+            &scratch.param_ids,
+            &scratch.param_names,
         )
         .expect("load_into_with_residency_plan");
     drop(scratch_graph);
@@ -425,8 +442,9 @@ pub fn build_and_load_llama(
     // but VRAM / disk handles are owned by the store).
     let mut gb2 = GraphBuilder::new();
     let token_input_id_2 = gb2.input();
-    let handles2 = build_llama_with_store(&mut gb2, &cfg, &runtime, token_input_id_2, &store, None)
-        .expect("build_llama_with_store");
+    let handles2 = adapter
+        .build_store_graph(&mut gb2, &cfg, &runtime, token_input_id_2, &store, None)
+        .expect("adapter build_store_graph");
     let _ = gb2.output(handles2.logits_id);
     let graph = gb2.build();
 
