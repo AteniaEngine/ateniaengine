@@ -185,13 +185,69 @@ pub trait ResidencyHints {
     }
 }
 
+/// **Phase 12** — adapter-supplied defaults for HuggingFace
+/// `config.json` fields that some checkpoints omit. Used by
+/// [`crate::nn::llama::config::LlamaConfig::from_json_str`] to
+/// resolve missing fields at parse time without hard-coding
+/// `match model_type` branches inside the config parser.
+///
+/// Default impl returns `None` for every method, meaning "no
+/// adapter-supplied default — the field must be present in
+/// the JSON or the parser hard-errors". Adapters opt in by
+/// overriding individual methods.
+///
+/// Today's per-adapter overrides:
+/// - `Gemma2Adapter::default_tie_word_embeddings = Some(true)`
+///   — Gemma 2's official config omits the field and upstream
+///   `Gemma2Config` defaults it to `True`.
+/// - `Qwen2Adapter::default_attention_bias = Some(true)` —
+///   Qwen2 omits the field entirely and hard-codes QKV biases
+///   on inside `Qwen2Attention`.
+///
+/// Every other adapter (Llama, Mistral, Phi-3) inherits the
+/// default `None` for both methods, preserving the existing
+/// fail-loud behaviour for unexpected config shapes.
+pub trait ConfigPolicy {
+    /// Default value for `tie_word_embeddings` when the field
+    /// is absent from `config.json`. `None` means "no
+    /// adapter-supplied default; require the field". `Some(b)`
+    /// means "treat as `b` if absent".
+    fn default_tie_word_embeddings(&self) -> Option<bool> {
+        None
+    }
+
+    /// Default value for `attention_bias` when the field is
+    /// absent from `config.json`. `None` means "no
+    /// adapter-supplied default; treat as `false`". `Some(b)`
+    /// means "treat as `b` if absent". The semantic difference
+    /// from `default_tie_word_embeddings` is that
+    /// `attention_bias` is consumed via
+    /// `LlamaConfig::effective_attention_bias()`, which
+    /// already had a `false` fallback for unknown families
+    /// before Phase 12. Adapters that need a different default
+    /// return `Some(true)` (Qwen2 today).
+    fn default_attention_bias(&self) -> Option<bool> {
+        None
+    }
+}
+
 pub trait AteniaModelAdapter:
-    ModelAdapter + HfWeightMapper + GgufWeightMapper + StoreBackedGraphBuilder + ResidencyHints
+    ModelAdapter
+    + HfWeightMapper
+    + GgufWeightMapper
+    + StoreBackedGraphBuilder
+    + ResidencyHints
+    + ConfigPolicy
 {
 }
 
 impl<T> AteniaModelAdapter for T where
-    T: ModelAdapter + HfWeightMapper + GgufWeightMapper + StoreBackedGraphBuilder + ResidencyHints
+    T: ModelAdapter
+        + HfWeightMapper
+        + GgufWeightMapper
+        + StoreBackedGraphBuilder
+        + ResidencyHints
+        + ConfigPolicy
 {
 }
 
@@ -535,6 +591,60 @@ mod tests {
         assert_eq!(metadata.architecture, "Phi3ForCausalLM");
         assert_eq!(metadata.model_type, Some("phi3"));
         assert_eq!(metadata.format, ModelFormat::Gguf);
+    }
+
+    #[test]
+    fn config_policy_defaults_are_family_specific() {
+        // Phase 12 — only Gemma2Adapter opts into the
+        // tie_word_embeddings default. Llama / Mistral / Phi-3 /
+        // Qwen2 must return None so config.rs hard-errors when
+        // the field is missing on those families.
+        let gemma2 = resolve_adapter(&ModelMetadata {
+            architecture: "Gemma2ForCausalLM",
+            model_type: Some("gemma2"),
+            format: ModelFormat::HfSafetensors,
+        })
+        .expect("gemma2 adapter");
+        assert_eq!(gemma2.default_tie_word_embeddings(), Some(true));
+        assert_eq!(gemma2.default_attention_bias(), None);
+
+        // Phase 12 — only Qwen2Adapter opts into the
+        // attention_bias default. Everyone else returns None
+        // (which `effective_attention_bias` translates to
+        // `false` if `attention_bias` field is absent).
+        let qwen2 = resolve_adapter(&ModelMetadata {
+            architecture: "Qwen2ForCausalLM",
+            model_type: Some("qwen2"),
+            format: ModelFormat::HfSafetensors,
+        })
+        .expect("qwen2 adapter");
+        assert_eq!(qwen2.default_attention_bias(), Some(true));
+        assert_eq!(qwen2.default_tie_word_embeddings(), None);
+
+        // Llama / Mistral / Phi-3: no adapter-supplied default
+        // for either field.
+        for (arch, model_type) in [
+            ("LlamaForCausalLM", Some("llama")),
+            ("MistralForCausalLM", Some("mistral")),
+            ("Phi3ForCausalLM", Some("phi3")),
+        ] {
+            let adapter = resolve_adapter(&ModelMetadata {
+                architecture: arch,
+                model_type,
+                format: ModelFormat::HfSafetensors,
+            })
+            .expect("adapter resolves");
+            assert_eq!(
+                adapter.default_tie_word_embeddings(),
+                None,
+                "{arch} must not supply a tie_word_embeddings default"
+            );
+            assert_eq!(
+                adapter.default_attention_bias(),
+                None,
+                "{arch} must not supply an attention_bias default"
+            );
+        }
     }
 
     #[test]

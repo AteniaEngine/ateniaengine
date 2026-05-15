@@ -9,8 +9,8 @@ use crate::v17::loader::loader_errors::LoaderError;
 use crate::v17::loader::weight_mapper::WeightMapper;
 
 use super::{
-    AdapterCapabilities, GgufWeightMapper, HfWeightMapper, ModelAdapter, ModelFamily,
-    ModelMetadata, ResidencyHints, ScratchGraphBuild, StoreBackedGraphBuilder,
+    AdapterCapabilities, ConfigPolicy, GgufWeightMapper, HfWeightMapper, ModelAdapter,
+    ModelFamily, ModelMetadata, ResidencyHints, ScratchGraphBuild, StoreBackedGraphBuilder,
 };
 
 pub(super) struct Phi3Adapter;
@@ -111,3 +111,5 @@ impl StoreBackedGraphBuilder for Phi3Adapter {
 }
 
 impl ResidencyHints for Phi3Adapter {}
+
+impl ConfigPolicy for Phi3Adapter {}

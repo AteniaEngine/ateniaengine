@@ -11,8 +11,8 @@ use crate::v17::loader::weight_mapper::WeightMapper;
 
 use super::common::{build_llama_scratch, build_llama_store_graph};
 use super::{
-    AdapterCapabilities, GgufWeightMapper, HfWeightMapper, ModelAdapter, ModelFamily,
-    ModelMetadata, ResidencyHints, ResidencyPolicyHints, ScratchGraphBuild,
+    AdapterCapabilities, ConfigPolicy, GgufWeightMapper, HfWeightMapper, ModelAdapter,
+    ModelFamily, ModelMetadata, ResidencyHints, ResidencyPolicyHints, ScratchGraphBuild,
     StoreBackedGraphBuilder, llama_like_residency_hints,
 };
 
@@ -98,6 +98,8 @@ impl ResidencyHints for LlamaFamilyAdapter {
     }
 }
 
+impl ConfigPolicy for LlamaFamilyAdapter {}
+
 impl ModelAdapter for Qwen2Adapter {
     fn id(&self) -> &'static str {
         "qwen2"
@@ -173,6 +175,17 @@ impl StoreBackedGraphBuilder for Qwen2Adapter {
 impl ResidencyHints for Qwen2Adapter {
     fn residency_hints(&self, _config: &LlamaConfig) -> ResidencyPolicyHints {
         llama_like_residency_hints()
+    }
+}
+
+impl ConfigPolicy for Qwen2Adapter {
+    /// Qwen2 omits `attention_bias` from its official config
+    /// and hard-codes QKV biases on inside `Qwen2Attention`.
+    /// Phase 12 surfaces that default here so
+    /// `LlamaConfig::effective_attention_bias()` no longer
+    /// needs to hard-code `matches!(model_type, Some("qwen2"))`.
+    fn default_attention_bias(&self) -> Option<bool> {
+        Some(true)
     }
 }
 
@@ -253,3 +266,5 @@ impl ResidencyHints for MistralAdapter {
         llama_like_residency_hints()
     }
 }
+
+impl ConfigPolicy for MistralAdapter {}

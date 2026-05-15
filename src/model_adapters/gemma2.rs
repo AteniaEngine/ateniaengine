@@ -9,8 +9,8 @@ use crate::v17::loader::loader_errors::LoaderError;
 use crate::v17::loader::weight_mapper::WeightMapper;
 
 use super::{
-    AdapterCapabilities, GgufWeightMapper, HfWeightMapper, ModelAdapter, ModelFamily,
-    ModelMetadata, ResidencyHints, ScratchGraphBuild, StoreBackedGraphBuilder,
+    AdapterCapabilities, ConfigPolicy, GgufWeightMapper, HfWeightMapper, ModelAdapter,
+    ModelFamily, ModelMetadata, ResidencyHints, ScratchGraphBuild, StoreBackedGraphBuilder,
 };
 
 pub(super) struct Gemma2Adapter;
@@ -111,3 +111,16 @@ impl StoreBackedGraphBuilder for Gemma2Adapter {
 }
 
 impl ResidencyHints for Gemma2Adapter {}
+
+impl ConfigPolicy for Gemma2Adapter {
+    /// Gemma 2's official HuggingFace config omits
+    /// `tie_word_embeddings` entirely; upstream `Gemma2Config`
+    /// defaults it to `True`. Phase 12 surfaces that default
+    /// via the adapter trait instead of a `match model_type`
+    /// branch inside `LlamaConfig::from_json_str`. The same
+    /// default applies to any future `gemma1` checkpoint that
+    /// resolves through this adapter family.
+    fn default_tie_word_embeddings(&self) -> Option<bool> {
+        Some(true)
+    }
+}
