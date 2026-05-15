@@ -349,6 +349,7 @@ fn parse_llama_3_2_config_with_rope_scaling_and_head_dim() {
             assert!((*high_freq_factor - 4.0).abs() < 1e-6);
             assert_eq!(*original_max_position_embeddings, 8192);
         }
+        RopeScaling::LongRope { .. } => panic!("expected Llama3 scaling, got LongRope"),
     }
 }
 
@@ -439,5 +440,8 @@ fn parse_llama_3_2_real_config_file_on_disk() {
         .expect("must have llama3 scaling");
     match scaling {
         RopeScaling::Llama3 { factor, .. } => assert!((*factor - 32.0).abs() < 1e-6),
+        RopeScaling::LongRope { .. } => {
+            panic!("expected Llama3 scaling for Llama 3.2, got LongRope")
+        }
     }
 }
