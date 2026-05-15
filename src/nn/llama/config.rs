@@ -496,14 +496,30 @@ fn get_optional_f32(v: &Value, key: &str) -> Result<Option<f32>, ConfigError> {
 /// field absent still trigger the original "missing field"
 /// parse error to preserve fail-loud behaviour for unexpected
 /// config shapes.
+///
+/// **Phase 12.2** — the family-aware default is now sourced
+/// from the adapter registry via
+/// [`crate::model_adapters::ConfigPolicy::default_tie_word_embeddings`]
+/// instead of a hard-coded `match model_type` here. The
+/// behaviour is unchanged: `Gemma2Adapter` returns
+/// `Some(true)`; every other adapter inherits the trait
+/// default `None`, which produces the same hard-error this
+/// function returned pre-Phase-12.2.
 fn get_tie_word_embeddings(v: &Value) -> Result<bool, ConfigError> {
     if let Some(explicit) = get_optional_bool(v, "tie_word_embeddings")? {
         return Ok(explicit);
     }
     let model_type = v.get("model_type").and_then(|x| x.as_str());
-    match model_type {
-        Some("gemma") | Some("gemma2") => Ok(true),
-        _ => Err(ConfigError::Parse(
+    let metadata = crate::model_adapters::model_metadata_from_parts(
+        None,
+        model_type,
+        crate::model_adapters::ModelFormat::HfSafetensors,
+    );
+    match crate::model_adapters::resolve_adapter(&metadata)
+        .and_then(|adapter| adapter.default_tie_word_embeddings())
+    {
+        Some(default) => Ok(default),
+        None => Err(ConfigError::Parse(
             "missing or non-bool field `tie_word_embeddings`".into(),
         )),
     }
