@@ -1,4 +1,4 @@
-use crate::nn::llama::config::{LlamaConfig, ROPE_THETA_LEGACY_DEFAULT, RopeScaling};
+use crate::nn::llama::config::{LlamaConfig, ROPE_THETA_LEGACY_DEFAULT};
 use crate::v17::loader::gguf_reader::{GgufError, GgufReader, MetadataValue};
 
 pub fn architecture_from_gguf(reader: &GgufReader) -> Result<String, GgufError> {
@@ -57,22 +57,29 @@ pub fn llama_config_from_gguf(reader: &GgufReader) -> Result<LlamaConfig, GgufEr
         ),
     };
 
-    if arch == "phi3" {
-        cfg.rope_scaling = longrope_from_gguf(reader, prefix, cfg.max_position_embeddings)?;
-        cfg.head_dim = Some(explicit_head_dim.unwrap_or(inferred_head_dim));
+    // **Phase 15** — the resolved adapter owns family config
+    // policy for both formats. The GGUF parser only translates
+    // its rope-scaling metadata into the same HF-shaped JSON the
+    // adapter already consumes (Phi-3 LongRope via
+    // `Phi3Adapter::parse_rope_scaling`, Phase 12.4); the
+    // Gemma 2 softcaps and the Phi-3/Gemma-2 explicit-head_dim
+    // policy move to `apply_config_defaults`. `GgufReader` never
+    // crosses into the adapter layer. `resolve_adapter_for_config`
+    // returns a `'static` reference, so `cfg` stays free to be
+    // mutated below.
+    let adapter = crate::model_adapters::resolve_adapter_for_config(&cfg);
+    if let Some(rope_json) = gguf_rope_scaling_json(reader, prefix, cfg.max_position_embeddings)? {
+        cfg.rope_scaling = adapter
+            .parse_rope_scaling(&rope_json)
+            .map_err(|e| GgufError::InvalidFormat(format!("GGUF config rope_scaling: {e}")))?;
     }
-    if arch == "gemma2" {
-        cfg.head_dim = Some(explicit_head_dim.unwrap_or(inferred_head_dim));
-        cfg.attn_logit_softcapping = cfg.attn_logit_softcapping.or(Some(50.0));
-        cfg.final_logit_softcapping = cfg.final_logit_softcapping.or(Some(30.0));
-        cfg.query_pre_attn_scalar = cfg.query_pre_attn_scalar.or(cfg.head_dim.map(|d| d as f32));
-    }
+    adapter.apply_config_defaults(&mut cfg);
 
     cfg.validate()
         .map_err(|e| GgufError::InvalidFormat(format!("GGUF config validation failed: {e}")))?;
     // **Phase 13** — family-specific config validation, parity
     // with the safetensors `LlamaConfig::from_json_str` path.
-    crate::model_adapters::resolve_adapter_for_config(&cfg)
+    adapter
         .validate_config(&cfg)
         .map_err(|e| GgufError::InvalidFormat(format!("GGUF config validation failed: {e}")))?;
     Ok(cfg)
@@ -171,11 +178,25 @@ fn f32_array(reader: &GgufReader, key: &str) -> Result<Option<Vec<f32>>, GgufErr
     Ok(Some(out))
 }
 
-fn longrope_from_gguf(
+/// **Phase 15** — translate GGUF `{prefix}.rope.scaling.*`
+/// metadata into the HF-shaped `serde_json::Value` that
+/// [`crate::model_adapters::ConfigPolicy::parse_rope_scaling`]
+/// consumes. Pure format translation: GGUF encodes LongRope by
+/// the presence of `short_factor`/`long_factor` arrays; HF
+/// encodes it via an explicit `rope_scaling.type = "longrope"`
+/// discriminator plus top-level position-embedding fields. The
+/// *semantics* (which family owns longrope, building
+/// `RopeScaling::LongRope`, factor-length validation) stay in
+/// `Phi3Adapter::parse_rope_scaling`. Returns `None` when the
+/// GGUF carries no rope-scaling arrays — the common case for
+/// Llama / Gemma 2 GGUF, exactly as the pre-Phase-15
+/// `if arch == "phi3"` gate behaved by never invoking this for
+/// other families.
+fn gguf_rope_scaling_json(
     reader: &GgufReader,
     prefix: &str,
     max_position_embeddings: usize,
-) -> Result<Option<RopeScaling>, GgufError> {
+) -> Result<Option<serde_json::Value>, GgufError> {
     let Some(short_factor) = f32_array(reader, &format!("{prefix}.rope.scaling.short_factor"))?
     else {
         return Ok(None);
@@ -183,8 +204,7 @@ fn longrope_from_gguf(
     let long_factor = f32_array(reader, &format!("{prefix}.rope.scaling.long_factor"))?
         .ok_or_else(|| {
             GgufError::InvalidFormat(
-                "GGUF config: phi3 LongRope short_factor present but long_factor missing"
-                    .to_string(),
+                "GGUF config: LongRope short_factor present but long_factor missing".to_string(),
             )
         })?;
     let original_max_position_embeddings = optional_u32(
@@ -192,12 +212,15 @@ fn longrope_from_gguf(
         &format!("{prefix}.rope.scaling.original_context_length"),
     )
     .unwrap_or(max_position_embeddings as u32);
-    Ok(Some(RopeScaling::LongRope {
-        short_factor,
-        long_factor,
-        original_max_position_embeddings,
-        max_position_embeddings: max_position_embeddings as u32,
-    }))
+    Ok(Some(serde_json::json!({
+        "rope_scaling": {
+            "type": "longrope",
+            "short_factor": short_factor,
+            "long_factor": long_factor,
+        },
+        "original_max_position_embeddings": original_max_position_embeddings,
+        "max_position_embeddings": max_position_embeddings as u32,
+    })))
 }
 
 #[cfg(test)]
@@ -310,5 +333,132 @@ mod tests {
         let reader = tiny_reader(true);
         let cfg = llama_config_from_gguf(&reader).expect("config");
         assert!(!cfg.tie_word_embeddings);
+    }
+
+    /// Small synthetic reader for non-Llama families. `prefix`
+    /// is the GGUF arch (`"phi3"` / `"gemma2"`); dims kept tiny
+    /// (hidden 64, 4 heads → head_dim 16) so the structural
+    /// validators pass without large fixtures. Family-specific
+    /// metadata (rope scaling, softcaps) is inserted by the
+    /// caller via `reader.metadata`.
+    fn small_family_reader(arch: &str) -> GgufReader {
+        let mut metadata = HashMap::new();
+        let p = |k: &str| format!("{arch}.{k}");
+        metadata.insert(
+            "general.architecture".to_string(),
+            MetadataValue::String(arch.to_string()),
+        );
+        metadata.insert(p("context_length"), MetadataValue::UInt32(4096));
+        metadata.insert(p("embedding_length"), MetadataValue::UInt32(64));
+        metadata.insert(p("block_count"), MetadataValue::UInt32(2));
+        metadata.insert(p("attention.head_count"), MetadataValue::UInt32(4));
+        metadata.insert(p("attention.head_count_kv"), MetadataValue::UInt32(4));
+        metadata.insert(p("feed_forward_length"), MetadataValue::UInt32(128));
+        metadata.insert(
+            p("attention.layer_norm_rms_epsilon"),
+            MetadataValue::Float32(1e-6),
+        );
+        metadata.insert(p("rope.freq_base"), MetadataValue::Float32(10000.0));
+        metadata.insert(
+            "tokenizer.ggml.bos_token_id".to_string(),
+            MetadataValue::UInt32(1),
+        );
+        metadata.insert(
+            "tokenizer.ggml.eos_token_id".to_string(),
+            MetadataValue::UInt32(2),
+        );
+        metadata.insert(
+            "tokenizer.ggml.tokens".to_string(),
+            MetadataValue::Array(MetadataArray {
+                element_type: MetadataType::String,
+                values: (0..256)
+                    .map(|i| MetadataValue::String(format!("tok{i}")))
+                    .collect(),
+            }),
+        );
+        let tensors = vec![TensorDescriptor {
+            name: "token_embd.weight".to_string(),
+            dimensions: vec![64, 256],
+            tensor_type: GgufTensorType::Q8_0,
+            offset: 0,
+        }];
+        GgufReader {
+            version: 3,
+            tensor_count: tensors.len() as u64,
+            metadata,
+            tensors,
+            data_section_offset: 32,
+            alignment: 32,
+            file_path: PathBuf::from("synthetic.gguf"),
+        }
+    }
+
+    fn f32_meta_array(values: &[f32]) -> MetadataValue {
+        MetadataValue::Array(MetadataArray {
+            element_type: MetadataType::Float32,
+            values: values.iter().map(|v| MetadataValue::Float32(*v)).collect(),
+        })
+    }
+
+    /// **Phase 15** — Phi-3 GGUF LongRope: the GGUF parser
+    /// translates `phi3.rope.scaling.*` metadata into HF-shaped
+    /// JSON, and `Phi3Adapter::parse_rope_scaling` (Phase 12.4)
+    /// builds `RopeScaling::LongRope`. `GgufReader` never enters
+    /// the adapter; the family semantics are adapter-owned.
+    #[test]
+    fn phase15_phi3_gguf_longrope_via_adapter() {
+        use crate::nn::llama::config::RopeScaling;
+        let mut reader = small_family_reader("phi3");
+        let short: Vec<f32> = (0..8).map(|i| 1.0 + i as f32 * 0.01).collect();
+        let long: Vec<f32> = (0..8).map(|i| 2.0 + i as f32 * 0.05).collect();
+        reader
+            .metadata
+            .insert("phi3.rope.scaling.short_factor".to_string(), f32_meta_array(&short));
+        reader
+            .metadata
+            .insert("phi3.rope.scaling.long_factor".to_string(), f32_meta_array(&long));
+        reader.metadata.insert(
+            "phi3.rope.scaling.original_context_length".to_string(),
+            MetadataValue::UInt32(4096),
+        );
+
+        let cfg = llama_config_from_gguf(&reader).expect("phi3 GGUF LongRope config must parse");
+        assert_eq!(cfg.model_type.as_deref(), Some("phi3"));
+        match cfg.rope_scaling {
+            Some(RopeScaling::LongRope {
+                ref short_factor,
+                ref long_factor,
+                original_max_position_embeddings,
+                max_position_embeddings,
+            }) => {
+                assert_eq!(short_factor.len(), 8);
+                assert_eq!(long_factor.len(), 8);
+                assert!((short_factor[0] - 1.0).abs() < 1e-6);
+                assert!((long_factor[0] - 2.0).abs() < 1e-6);
+                assert_eq!(original_max_position_embeddings, 4096);
+                assert_eq!(max_position_embeddings, 4096);
+            }
+            other => panic!("expected RopeScaling::LongRope, got {other:?}"),
+        }
+        // Phi3Adapter::apply_config_defaults makes head_dim
+        // explicit (= effective_head_dim = 64 / 4).
+        assert_eq!(cfg.head_dim, Some(16));
+    }
+
+    /// **Phase 15** — Gemma 2 GGUF defaults: with no softcap /
+    /// head_dim metadata, `Gemma2Adapter::apply_config_defaults`
+    /// injects the family constants (50/30, head_dim,
+    /// query_pre_attn_scalar). Behaviour-equivalent to the
+    /// removed `if arch == "gemma2"` block.
+    #[test]
+    fn phase15_gemma2_gguf_defaults_via_adapter() {
+        let reader = small_family_reader("gemma2");
+        let cfg = llama_config_from_gguf(&reader).expect("gemma2 GGUF config must parse");
+        assert_eq!(cfg.model_type.as_deref(), Some("gemma2"));
+        assert_eq!(cfg.head_dim, Some(16)); // effective = 64 / 4
+        assert_eq!(cfg.attn_logit_softcapping, Some(50.0));
+        assert_eq!(cfg.final_logit_softcapping, Some(30.0));
+        assert_eq!(cfg.query_pre_attn_scalar, Some(16.0));
+        assert!(cfg.rope_scaling.is_none());
     }
 }

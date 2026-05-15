@@ -123,4 +123,29 @@ impl ConfigPolicy for Gemma2Adapter {
     fn default_tie_word_embeddings(&self) -> Option<bool> {
         Some(true)
     }
+
+    /// **Phase 15** — Gemma 2 family config defaults, relocated
+    /// from the `if arch == "gemma2"` block in
+    /// `llama_config_from_gguf`. Each setter only fires when the
+    /// field is absent, so an explicit `config.json` value (HF)
+    /// or GGUF metadata value always wins; behaviour for real
+    /// Gemma 2 checkpoints (which ship the caps explicitly) is
+    /// unchanged. `head_dim` is made explicit when absent so the
+    /// graph/validator see the value the kernel uses
+    /// (`effective_head_dim()` = `hidden_size / num_attention_heads`
+    /// when the field is `None`).
+    fn apply_config_defaults(&self, config: &mut LlamaConfig) {
+        if config.head_dim.is_none() {
+            config.head_dim = Some(config.effective_head_dim());
+        }
+        if config.attn_logit_softcapping.is_none() {
+            config.attn_logit_softcapping = Some(50.0);
+        }
+        if config.final_logit_softcapping.is_none() {
+            config.final_logit_softcapping = Some(30.0);
+        }
+        if config.query_pre_attn_scalar.is_none() {
+            config.query_pre_attn_scalar = Some(config.effective_head_dim() as f32);
+        }
+    }
 }

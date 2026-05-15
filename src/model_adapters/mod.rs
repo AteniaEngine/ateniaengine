@@ -285,6 +285,29 @@ pub trait ConfigPolicy {
     ) -> Result<(), crate::nn::llama::config::ConfigError> {
         Ok(())
     }
+
+    /// **Phase 15** — family-specific config defaults, applied
+    /// after parsing and before [`LlamaConfig::validate`], from
+    /// both [`LlamaConfig::from_json_str`] (HF safetensors) and
+    /// `llama_config_from_gguf` (GGUF). This is the single owner
+    /// of family default *values* for both input formats — the
+    /// GGUF parser no longer hard-codes `if arch == "gemma2"`
+    /// softcap injection or the Phi-3/Gemma-2 explicit-`head_dim`
+    /// policy.
+    ///
+    /// Default impl is a no-op: a family with no implicit config
+    /// defaults says nothing. Each setter is `if field.is_none()`
+    /// so an explicit value from `config.json` / GGUF metadata
+    /// always wins. Today's overrides:
+    /// - `Gemma2Adapter` — `attn_logit_softcapping = 50.0`,
+    ///   `final_logit_softcapping = 30.0`,
+    ///   `query_pre_attn_scalar = effective_head_dim`, and
+    ///   explicit `head_dim` when absent.
+    /// - `Phi3Adapter` — explicit `head_dim` when absent.
+    ///
+    /// [`LlamaConfig::validate`]: crate::nn::llama::config::LlamaConfig::validate
+    /// [`LlamaConfig::from_json_str`]: crate::nn::llama::config::LlamaConfig::from_json_str
+    fn apply_config_defaults(&self, _config: &mut crate::nn::llama::config::LlamaConfig) {}
 }
 
 pub trait AteniaModelAdapter:

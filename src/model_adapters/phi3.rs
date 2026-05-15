@@ -189,4 +189,18 @@ impl ConfigPolicy for Phi3Adapter {
             max_position_embeddings,
         }))
     }
+
+    /// **Phase 15** — Phi-3 makes `head_dim` explicit when the
+    /// input did not. Relocated from the `if arch == "phi3"`
+    /// block in `llama_config_from_gguf`. Behaviour-equivalent:
+    /// GGUF set `head_dim = explicit_head_dim.unwrap_or(inferred)`
+    /// for Phi-3, which equals `effective_head_dim()` once the
+    /// generic GGUF `head_size` extraction has run. An explicit
+    /// value (HF `config.json` or GGUF metadata) is preserved
+    /// because the setter only fires when `head_dim.is_none()`.
+    fn apply_config_defaults(&self, config: &mut LlamaConfig) {
+        if config.head_dim.is_none() {
+            config.head_dim = Some(config.effective_head_dim());
+        }
+    }
 }

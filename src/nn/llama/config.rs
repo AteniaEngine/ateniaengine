@@ -600,7 +600,7 @@ impl LlamaConfig {
         let v: Value = serde_json::from_str(s)
             .map_err(|e| ConfigError::Parse(format!("JSON syntax error: {}", e)))?;
 
-        let cfg = LlamaConfig {
+        let mut cfg = LlamaConfig {
             vocab_size: get_usize(&v, "vocab_size")?,
             hidden_size: get_usize(&v, "hidden_size")?,
             num_hidden_layers: get_usize(&v, "num_hidden_layers")?,
@@ -630,13 +630,23 @@ impl LlamaConfig {
             sliding_window: get_optional_u32(&v, "sliding_window")?,
             query_pre_attn_scalar: get_optional_f32(&v, "query_pre_attn_scalar")?,
         };
+        // **Phase 15** — the resolved adapter owns family config
+        // policy. `resolve_adapter_for_config` returns a `'static`
+        // reference (it does not borrow `cfg`), so `cfg` is free
+        // to be mutated by `apply_config_defaults` afterwards.
+        let adapter = crate::model_adapters::resolve_adapter_for_config(&cfg);
+        // **Phase 15** — fill family default values (Gemma 2
+        // softcaps, Phi-3/Gemma-2 explicit head_dim) before the
+        // structural validate. No-op for families without
+        // implicit defaults; explicit values always win.
+        adapter.apply_config_defaults(&mut cfg);
         cfg.validate()?;
         // **Phase 13** — family-specific config validation lives
         // in the adapter layer. The structural `validate()` above
         // stays family-agnostic; the resolved adapter enforces
         // invariants that depend on the model family (today: the
         // Llama-family `hidden_size % num_attention_heads` check).
-        crate::model_adapters::resolve_adapter_for_config(&cfg).validate_config(&cfg)?;
+        adapter.validate_config(&cfg)?;
         Ok(cfg)
     }
 
@@ -1213,5 +1223,41 @@ mod tests {
                 "{model_type}: error must name the type and supported family, got: {msg}"
             );
         }
+    }
+
+    /// **Phase 15** — a Gemma 2 HF config that omits the softcap
+    /// / head_dim / query_pre_attn_scalar fields gets the family
+    /// constants from `Gemma2Adapter::apply_config_defaults`
+    /// (parity with the GGUF path). Real Gemma 2 `config.json`
+    /// ships the caps explicitly — this is the accepted
+    /// behaviour change for the missing-field case; an explicit
+    /// value always wins (covered by
+    /// `gemma2_config_parses_with_softcaps_and_default_tie`).
+    #[test]
+    fn phase15_hf_gemma2_defaults_when_fields_absent() {
+        let v = json!({
+            "architectures": ["Gemma2ForCausalLM"],
+            "model_type": "gemma2",
+            "vocab_size": 256,
+            "hidden_size": 64,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 4,
+            "num_key_value_heads": 4,
+            "intermediate_size": 128,
+            "max_position_embeddings": 8192,
+            "rms_norm_eps": 1e-6,
+            "rope_theta": 10_000.0,
+            "bos_token_id": 2,
+            "eos_token_id": 1
+            // tie_word_embeddings / softcaps / head_dim /
+            // query_pre_attn_scalar intentionally omitted.
+        });
+        let cfg = LlamaConfig::from_json_str(&v.to_string())
+            .expect("minimal gemma2 config must parse with adapter defaults");
+        assert!(cfg.tie_word_embeddings, "gemma2 default tie = true");
+        assert_eq!(cfg.head_dim, Some(16)); // effective = 64 / 4
+        assert_eq!(cfg.attn_logit_softcapping, Some(50.0));
+        assert_eq!(cfg.final_logit_softcapping, Some(30.0));
+        assert_eq!(cfg.query_pre_attn_scalar, Some(16.0));
     }
 }
