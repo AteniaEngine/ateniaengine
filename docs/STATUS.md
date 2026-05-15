@@ -40,9 +40,23 @@ locked by regression tests.
   BF16 KV cache (default on), RAM↔NVMe spill with chunked streaming.
 - **Adapter layer.** Llama / Qwen 2 / Mistral / Phi-3 / Gemma 2 family logic
   lives in `src/model_adapters/`; the execution core is family-agnostic
-  (Phases 11–12).
+  (Phases 11–15). The **config** boundary is closed: all family-specific
+  config semantics — defaults, validation, `rope_scaling` parsing (including
+  the GGUF path) — are adapter-owned via `ConfigPolicy`
+  (`default_*` / `validate_config` / `parse_rope_scaling` /
+  `apply_config_defaults`). `LlamaConfig` and `gguf_config.rs` are now
+  structural / format parsers only.
 - **Determinism.** Greedy generation is reproducible bit-exact (D67 fixture);
-  the lib test suite (320 tests) is green.
+  the lib test suite (346 tests) is green.
+- **CI.** A minimal GitHub Actions workflow runs on push / PR to `main`:
+  a **blocking** `cuda-toolkit` job (mirrors the locally-validated
+  environment; no GPU, device tests auto-skip) running
+  `cargo test --lib -- --test-threads=1` + `cargo test --test
+  tinyllama_config_test`, and a **non-blocking, visible** `cpu-only` job
+  that guards the declared vendor-agnostic invariant (ROADMAP: "the
+  engine's core never assumes NVIDIA-specific behaviour"; ADR-003 "GPU as
+  inference baseline"). Heavy on-disk GGUF / F64 drift tests stay
+  operator-run (`#[ignore]`).
 
 ## Opt-in / experimental (documented profile, not default)
 
@@ -92,7 +106,17 @@ but they bound what you should rely on.
   training. No training loops, no optimisers in the runtime. Training is v25+.
 - **Single vendor.** NVIDIA CUDA only (sm_70+, Linux + Windows). Intel iGPU
   (v22), AMD ROCm (v23), Apple Metal (v24) are roadmap, not shipped. The core
-  never assumes NVIDIA-specific behaviour, but multi-vendor is not built.
+  never assumes NVIDIA-specific behaviour, but multi-vendor is not built. The
+  non-blocking `cpu-only` CI job exists to *expose* any drift between this
+  stated invariant and reality; its first-run verdict (CI-green vs. tracked
+  known issue) is recorded here once observed.
+- **Weight-mapping family boundary still open.** The *config* boundary is
+  closed (Phases 13–15), but `src/v17/loader/gguf_to_hf_naming.rs` and
+  `src/nn/llama/gguf_weight_loading.rs` still carry
+  `if arch == "phi3" / "gemma2"` branches for GGUF→HF weight-name mapping.
+  This is the symmetric counterpart not yet relocated behind the adapters'
+  `GgufWeightMapper` / `HfWeightMapper` traits — the natural **Phase 16**
+  candidate. It does not block M12.
 - **Production hardening pending (v21 / M12).** Guards (v16) / Policies (v15)
   operate on a model that is satisfactory for scaffolding but needs hardening
   for noisy production signals. Known carried-over issue: the adaptive

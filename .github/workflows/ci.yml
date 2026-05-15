@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    # Cost control: docs-only commits skip CI. A commit that also
+    # touches code still runs (paths-ignore skips only when ALL
+    # changed files match).
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
+
+permissions:
+  contents: read
+
+jobs:
+  # ── BLOCKING ────────────────────────────────────────────────────
+  # Mirrors the locally-validated environment: CUDA toolkit present,
+  # no GPU on the runner (device-touching tests auto-skip at runtime
+  # per HANDOFF M11.D.5). This is the contract that exists today and
+  # the only environment under which the 346/346 green was measured.
+  cuda:
+    name: cuda-toolkit (blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install CUDA toolkit
+        uses: Jimver/cuda-toolkit@v0.2.19
+        with:
+          cuda: "12.5.0"
+          method: network
+          sub-packages: '["nvcc","cudart","cudart-dev","cublas","cublas-dev"]'
+      - name: Rust toolchain (stable; edition 2024 needs >= 1.85)
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: cuda
+      - name: Build (lib)
+        run: cargo build --lib --verbose
+      - name: Test (lib, single-threaded per project contract)
+        run: cargo test --lib -- --test-threads=1
+      - name: Test (config integration)
+        run: cargo test --test tinyllama_config_test
+
+  # ── NON-BLOCKING (initially) ────────────────────────────────────
+  # Protects the declared vendor-agnostic invariant: the core must
+  # not require CUDA (ROADMAP "the engine's core never assumes
+  # NVIDIA-specific behaviour"; ADR-003 "GPU as inference baseline").
+  # No CUDA is installed → build.rs takes its early-return
+  # "CPU-only build" path. `cargo build --lib` IS the experiment:
+  # does the crate link without cudart/cublas? continue-on-error
+  # keeps the result VISIBLE (red check) without blocking merges
+  # until we have evidence from the first runs.
+  cpu-only:
+    name: cpu-only / no-CUDA (experimental, non-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain (stable; edition 2024 needs >= 1.85)
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: cpu-only
+      - name: Build (vendor-agnostic invariant — no CUDA)
+        run: cargo build --lib --verbose
+      - name: Test (structural / config / adapter, CPU path)
+        run: cargo test --lib -- --test-threads=1
+      - name: Test (config integration)
+        run: cargo test --test tinyllama_config_test

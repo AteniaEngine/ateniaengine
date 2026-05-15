@@ -271,6 +271,58 @@ becomes a contained change; the execution core stays family-agnostic.
 - **12.4** — Phi-3 LongRope parsing moved to the adapter layer; contract
   revised to **fail-fast on LongRope under a non-Phi3 `model_type`**.
 
+**Phase 13 — family validation → the adapter**
+
+- The family-semantic `hidden_size % num_attention_heads` check (V2) moved
+  out of `LlamaConfig::validate()` into `ConfigPolicy::validate_config`
+  (default `Ok(())`), backed by a shared helper and wired into
+  Llama / Qwen2 / Mistral; Phi-3 / Gemma 2 keep the default (they ship an
+  explicit `head_dim` the derived-head_dim assumption would wrongly reject).
+- Structural fix bundled: `validate()` now checks `effective_head_dim()`
+  (the value the kernel uses) instead of the derived `head_dim()`.
+- `validate()` stays public and family-agnostic; the full contract is
+  `parse → validate() → adapter.validate_config()`. The pre-existing
+  M11.B `RopeScaling` non-exhaustive-match debt in `tinyllama_config_test`
+  was fixed in an isolated commit (`4a09198`).
+
+**Phase 14 — llama3 `rope_scaling` → the adapter**
+
+- The Llama 3 piecewise inverse-frequency parser moved out of
+  `config.rs::get_rope_scaling` into a shared
+  `common::parse_llama3_rope_scaling`, wired into the Llama-family
+  adapters' `parse_rope_scaling` (parallel to Phi-3 LongRope at 12.4).
+- `get_rope_scaling` is now orchestration only: delegate to the adapter,
+  then a fail-fast guard. A recognised discriminator declared under the
+  wrong family now errors (`"llama3"` under non-Llama, symmetric with the
+  longrope-under-non-Phi3 guard) instead of silently downgrading.
+
+**Phase 15 — GGUF family config semantics → the adapter**
+
+- `gguf_config.rs` is now a pure format parser: the `if arch == "phi3"`
+  and `if arch == "gemma2"` blocks are gone. Phi-3 LongRope is parsed by
+  translating the GGUF rope-scaling metadata into the same HF-shaped
+  `serde_json::Value` the adapter already consumes, routed through the
+  existing `Phi3Adapter::parse_rope_scaling` — no HF/GGUF semantic
+  duplication, `GgufReader` never enters the adapter.
+- New `ConfigPolicy::apply_config_defaults` (default no-op) owns family
+  default *values* for both formats: `Gemma2Adapter` injects the 50/30
+  softcaps, `query_pre_attn_scalar`, and explicit `head_dim`;
+  `Phi3Adapter` makes `head_dim` explicit. Called from both
+  `from_json_str` (HF) and `llama_config_from_gguf` (GGUF) before
+  validate; HF Gemma 2 configs missing the caps now get the family
+  defaults (accepted parity change; explicit values always win). The
+  GGUF arch → architecture/model_type mapping stays as a documented
+  format-identity bridge.
+
+**Boundary status.** The **config** boundary is closed (Phases 13–15):
+`LlamaConfig` and `gguf_config.rs` carry no family semantics. The
+symmetric **weight-mapping** boundary (`gguf_to_hf_naming.rs` /
+`gguf_weight_loading.rs` `if arch ==` branches) is still open — the
+**Phase 16** candidate. A 2-tier CI (blocking `cuda-toolkit` + visible
+non-blocking `cpu-only`, the latter guarding the vendor-agnostic
+invariant) plus this doc refresh is the consolidation pass taken before
+M12. See [STATUS.md](./STATUS.md).
+
 ---
 
 ## Beyond v20
