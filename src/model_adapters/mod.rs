@@ -257,6 +257,34 @@ pub trait ConfigPolicy {
     {
         Ok(None)
     }
+
+    /// **Phase 13** — family-specific config validation, run
+    /// after the structural [`LlamaConfig::validate`] from
+    /// [`LlamaConfig::from_json_str`] and the GGUF config path
+    /// (`llama_config_from_gguf`).
+    ///
+    /// [`LlamaConfig::validate`] stays family-agnostic
+    /// (positivity, GQA divisibility, RoPE-even head_dim,
+    /// rms_norm_eps). This hook owns invariants that depend on
+    /// the model family.
+    ///
+    /// Default impl returns `Ok(())`: a family with no
+    /// family-specific config invariant says nothing. The only
+    /// overrides today are the Llama-family adapters (Llama /
+    /// Qwen2 / Mistral), which enforce
+    /// `hidden_size % num_attention_heads == 0` — an invariant
+    /// the structural core validator no longer owns because it
+    /// assumes derived head_dim, which explicit-`head_dim`
+    /// families (Phi-3 / Gemma 2) legitimately break.
+    ///
+    /// [`LlamaConfig::validate`]: crate::nn::llama::config::LlamaConfig::validate
+    /// [`LlamaConfig::from_json_str`]: crate::nn::llama::config::LlamaConfig::from_json_str
+    fn validate_config(
+        &self,
+        _config: &crate::nn::llama::config::LlamaConfig,
+    ) -> Result<(), crate::nn::llama::config::ConfigError> {
+        Ok(())
+    }
 }
 
 pub trait AteniaModelAdapter:

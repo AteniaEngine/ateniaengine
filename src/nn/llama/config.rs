@@ -638,6 +638,12 @@ impl LlamaConfig {
             query_pre_attn_scalar: get_optional_f32(&v, "query_pre_attn_scalar")?,
         };
         cfg.validate()?;
+        // **Phase 13** — family-specific config validation lives
+        // in the adapter layer. The structural `validate()` above
+        // stays family-agnostic; the resolved adapter enforces
+        // invariants that depend on the model family (today: the
+        // Llama-family `hidden_size % num_attention_heads` check).
+        crate::model_adapters::resolve_adapter_for_config(&cfg).validate_config(&cfg)?;
         Ok(cfg)
     }
 
@@ -753,6 +759,16 @@ impl LlamaConfig {
     /// Structural validation. Called from both
     /// [`Self::from_json_str`] and direct constructors so that an
     /// invalid config never escapes the loader.
+    ///
+    /// **Phase 13** — family-agnostic invariants only
+    /// (positivity, GQA divisibility, RoPE-even head_dim,
+    /// `rms_norm_eps`). Family-specific config invariants live in
+    /// [`crate::model_adapters::ConfigPolicy::validate_config`]
+    /// and run right after this in `from_json_str` /
+    /// `llama_config_from_gguf`. The
+    /// `hidden_size % num_attention_heads` check moved there
+    /// because it silently assumes derived head_dim, which
+    /// explicit-`head_dim` families (Phi-3 / Gemma 2) break.
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.hidden_size == 0
             || self.num_attention_heads == 0
@@ -763,19 +779,17 @@ impl LlamaConfig {
                 "vocab/hidden/heads/layers must all be positive".into(),
             ));
         }
-        if self.hidden_size % self.num_attention_heads != 0 {
-            return Err(ConfigError::Validation(format!(
-                "hidden_size ({}) must be divisible by num_attention_heads ({})",
-                self.hidden_size, self.num_attention_heads
-            )));
-        }
         if self.num_attention_heads % self.num_key_value_heads != 0 {
             return Err(ConfigError::Validation(format!(
                 "num_attention_heads ({}) must be a multiple of num_key_value_heads ({}) (GQA)",
                 self.num_attention_heads, self.num_key_value_heads
             )));
         }
-        let head_dim = self.head_dim();
+        // **Phase 13** — validate the head_dim the graph/kernel
+        // actually uses (`effective_head_dim` honours the
+        // explicit `head_dim` field set by Llama 3.2 / Gemma 2 /
+        // Phi-3), not the derived `hidden_size / num_heads`.
+        let head_dim = self.effective_head_dim();
         if head_dim == 0 || head_dim % 2 != 0 {
             return Err(ConfigError::Validation(format!(
                 "head_dim ({}) must be positive and even (RoPE half-split requirement)",
@@ -1062,6 +1076,67 @@ mod tests {
         assert!(
             msg.contains("Phi3"),
             "error should name the supported family, got: {msg}"
+        );
+    }
+
+    /// **Phase 13** — the `hidden_size % num_attention_heads`
+    /// check (V2) moved out of the structural `validate()` into
+    /// `ConfigPolicy::validate_config`. The Llama-family adapters
+    /// (Llama / Qwen2 / Mistral) must still reject a
+    /// non-divisible `hidden_size`, with the byte-identical
+    /// pre-Phase-13 message so string-coupled tests stay green.
+    #[test]
+    fn phase13_llama_family_still_rejects_non_divisible_hidden_size() {
+        for model_type in ["llama", "qwen2", "mistral"] {
+            let mut v = base_config_value(json!(2));
+            v["model_type"] = json!(model_type);
+            // 66 % 4 != 0 → V2 must fire. effective_head_dim =
+            // 66 / 4 = 16 (even, positive) so V4 passes and the
+            // error is unambiguously V2, not the RoPE check.
+            v["hidden_size"] = json!(66);
+            let err = match LlamaConfig::from_json_str(&v.to_string()) {
+                Ok(_) => panic!("{model_type}: non-divisible hidden_size must fail"),
+                Err(e) => e,
+            };
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("divisible by num_attention_heads"),
+                "{model_type}: expected V2 message, got: {msg}"
+            );
+        }
+    }
+
+    /// **Phase 13** — a config whose `hidden_size` is *not*
+    /// divisible by `num_attention_heads` but ships an explicit,
+    /// valid `head_dim` is legitimate for explicit-`head_dim`
+    /// families (Phi-3 / Gemma 2). It must parse when it resolves
+    /// to Phi3 (whose `validate_config` is the default `Ok(())`),
+    /// and still fail under a Llama-family `model_type` — proving
+    /// the relocation is adapter-gated, not globally dropped.
+    #[test]
+    fn phase13_explicit_head_dim_non_divisible_passes_for_phi3_not_llama() {
+        let mut base = base_config_value(json!(32_000));
+        base["hidden_size"] = json!(70); // 70 % 4 != 0
+        base["head_dim"] = json!(16); // explicit, even, positive → V4 ok
+
+        let mut phi3 = base.clone();
+        phi3["model_type"] = json!("phi3");
+        let cfg = LlamaConfig::from_json_str(&phi3.to_string())
+            .expect("phi3 with explicit head_dim must parse despite non-divisible hidden_size");
+        assert_eq!(cfg.effective_head_dim(), 16);
+        assert_ne!(
+            cfg.hidden_size % cfg.num_attention_heads,
+            0,
+            "test is only meaningful when hidden_size is non-divisible"
+        );
+
+        let mut llama = base;
+        llama["model_type"] = json!("llama");
+        let err = LlamaConfig::from_json_str(&llama.to_string())
+            .expect_err("same shape under a Llama-family model_type must still fail V2");
+        assert!(
+            format!("{err}").contains("divisible by num_attention_heads"),
+            "llama path must still enforce V2, got: {err}"
         );
     }
 }

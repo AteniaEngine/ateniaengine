@@ -9,7 +9,7 @@ use crate::nn::llama::weight_loading::llama_weight_mapper;
 use crate::v17::loader::loader_errors::LoaderError;
 use crate::v17::loader::weight_mapper::WeightMapper;
 
-use super::common::{build_llama_scratch, build_llama_store_graph};
+use super::common::{build_llama_scratch, build_llama_store_graph, validate_llama_family_config};
 use super::{
     AdapterCapabilities, ConfigPolicy, GgufWeightMapper, HfWeightMapper, ModelAdapter,
     ModelFamily, ModelMetadata, ResidencyHints, ResidencyPolicyHints, ScratchGraphBuild,
@@ -98,7 +98,14 @@ impl ResidencyHints for LlamaFamilyAdapter {
     }
 }
 
-impl ConfigPolicy for LlamaFamilyAdapter {}
+impl ConfigPolicy for LlamaFamilyAdapter {
+    fn validate_config(
+        &self,
+        config: &LlamaConfig,
+    ) -> Result<(), crate::nn::llama::config::ConfigError> {
+        validate_llama_family_config(config)
+    }
+}
 
 impl ModelAdapter for Qwen2Adapter {
     fn id(&self) -> &'static str {
@@ -187,6 +194,13 @@ impl ConfigPolicy for Qwen2Adapter {
     fn default_attention_bias(&self) -> Option<bool> {
         Some(true)
     }
+
+    fn validate_config(
+        &self,
+        config: &LlamaConfig,
+    ) -> Result<(), crate::nn::llama::config::ConfigError> {
+        validate_llama_family_config(config)
+    }
 }
 
 impl ModelAdapter for MistralAdapter {
@@ -267,4 +281,11 @@ impl ResidencyHints for MistralAdapter {
     }
 }
 
-impl ConfigPolicy for MistralAdapter {}
+impl ConfigPolicy for MistralAdapter {
+    fn validate_config(
+        &self,
+        config: &LlamaConfig,
+    ) -> Result<(), crate::nn::llama::config::ConfigError> {
+        validate_llama_family_config(config)
+    }
+}

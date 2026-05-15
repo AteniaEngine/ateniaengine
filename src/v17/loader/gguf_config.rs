@@ -70,6 +70,11 @@ pub fn llama_config_from_gguf(reader: &GgufReader) -> Result<LlamaConfig, GgufEr
 
     cfg.validate()
         .map_err(|e| GgufError::InvalidFormat(format!("GGUF config validation failed: {e}")))?;
+    // **Phase 13** — family-specific config validation, parity
+    // with the safetensors `LlamaConfig::from_json_str` path.
+    crate::model_adapters::resolve_adapter_for_config(&cfg)
+        .validate_config(&cfg)
+        .map_err(|e| GgufError::InvalidFormat(format!("GGUF config validation failed: {e}")))?;
     Ok(cfg)
 }
 
