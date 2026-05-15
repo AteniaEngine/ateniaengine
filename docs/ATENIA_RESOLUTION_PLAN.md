@@ -417,6 +417,14 @@ Phase 10 centralizes pipeline metadata construction behind the adapter layer:
 - HF configs without `architectures[0]` and unknown model types still route
   through the Llama-compatible fallback.
 
+Phase 11 removes the old Phi3 store-builder dispatcher:
+
+- `phi3::build_with_store()` duplicated the adapter registry by switching on
+  `config.model_type`;
+- no production or test call sites used it anymore;
+- generator and pipeline now rely on `AteniaModelAdapter::build_store_graph`
+  for architecture-specific store-backed graph construction.
+
 ## Future Research Note - Long Context Governor
 
 Do not fold this into Pass 3 / Pass 4. The current passes are about making the

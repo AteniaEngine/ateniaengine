@@ -858,42 +858,6 @@ pub fn build_phi3_with_store(
     })
 }
 
-/// **M11.B step 4** — dispatch wrapper that picks between the
-/// Llama and Phi-3 store-backed builders based on
-/// `config.model_type`. Used by the generator so the prefill /
-/// decode call sites stay architecture-agnostic.
-pub fn build_with_store(
-    gb: &mut GraphBuilder,
-    config: &LlamaConfig,
-    runtime: &LlamaRuntime,
-    token_input_id: usize,
-    store: &crate::amg::weight_store::WeightStore,
-    kv_cache: Option<&crate::amg::kv_cache::KvCacheBuildSpec>,
-) -> Result<
-    crate::nn::llama::builder_shared::LlamaHandlesShared,
-    crate::nn::llama::builder_shared::BuildError,
-> {
-    match config.model_type.as_deref() {
-        Some("phi3") => build_phi3_with_store(gb, config, runtime, token_input_id, store, kv_cache),
-        Some("gemma2") => crate::nn::llama::gemma2::build_gemma2_with_store(
-            gb,
-            config,
-            runtime,
-            token_input_id,
-            store,
-            kv_cache,
-        ),
-        _ => crate::nn::llama::builder_shared::build_llama_with_store(
-            gb,
-            config,
-            runtime,
-            token_input_id,
-            store,
-            kv_cache,
-        ),
-    }
-}
-
 /// Build the [`WeightMapper`] for a Phi-3 / Phi-3.5 checkpoint.
 ///
 /// Differences vs `llama_weight_mapper`:
