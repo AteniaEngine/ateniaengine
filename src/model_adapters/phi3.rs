@@ -112,4 +112,81 @@ impl StoreBackedGraphBuilder for Phi3Adapter {
 
 impl ResidencyHints for Phi3Adapter {}
 
-impl ConfigPolicy for Phi3Adapter {}
+impl ConfigPolicy for Phi3Adapter {
+    /// **Phase 12.4** — decode Phi-3 / Phi-3.5 LongRope
+    /// scaling from the outer config JSON. Pre-Phase-12.4 this
+    /// branch lived inside `LlamaConfig::from_json_str`'s
+    /// `get_rope_scaling` helper. Moved here so the Phi-3
+    /// family owns its own rope_scaling schema; the shared
+    /// `Llama 3 piecewise` parser remains in config.rs as a
+    /// fallback for the family that doesn't need adapter
+    /// dispatch.
+    ///
+    /// The function reads:
+    /// - `rope_scaling.type` (or `rope_scaling.rope_type`)
+    ///   to confirm the shape is `"longrope"`.
+    /// - `rope_scaling.short_factor`, `rope_scaling.long_factor`
+    ///   per-dimension factor arrays.
+    /// - **Top-level** `original_max_position_embeddings` and
+    ///   `max_position_embeddings` (Phi-3 stores these outside
+    ///   the `rope_scaling` block — the doc-comment on
+    ///   `RopeScaling::LongRope` documents the choice).
+    ///
+    /// Returns `Ok(None)` when:
+    /// - `rope_scaling` is absent.
+    /// - `rope_scaling.type` is not `"longrope"`.
+    ///
+    /// Returns `Err(_)` when the shape is recognised as
+    /// longrope but a required field is missing or malformed.
+    fn parse_rope_scaling(
+        &self,
+        outer: &serde_json::Value,
+    ) -> Result<
+        Option<crate::nn::llama::config::RopeScaling>,
+        crate::nn::llama::config::ConfigError,
+    > {
+        use crate::nn::llama::config::{parse_f32_array, ConfigError, RopeScaling};
+        let block = match outer.get("rope_scaling") {
+            None | Some(serde_json::Value::Null) => return Ok(None),
+            Some(other) => other,
+        };
+        if !block.is_object() {
+            return Ok(None);
+        }
+        let rope_type = block
+            .get("rope_type")
+            .or_else(|| block.get("type"))
+            .and_then(|x| x.as_str());
+        if rope_type != Some("longrope") {
+            return Ok(None);
+        }
+        let short_factor = parse_f32_array(block, "short_factor", "rope_scaling.longrope")?;
+        let long_factor = parse_f32_array(block, "long_factor", "rope_scaling.longrope")?;
+        let original_max_position_embeddings = outer
+            .get("original_max_position_embeddings")
+            .and_then(|x| x.as_u64())
+            .ok_or_else(|| {
+                ConfigError::Parse(
+                    "rope_scaling.longrope requires top-level integer \
+                     `original_max_position_embeddings`"
+                        .into(),
+                )
+            })? as u32;
+        let max_position_embeddings = outer
+            .get("max_position_embeddings")
+            .and_then(|x| x.as_u64())
+            .ok_or_else(|| {
+                ConfigError::Parse(
+                    "rope_scaling.longrope requires top-level integer \
+                     `max_position_embeddings`"
+                        .into(),
+                )
+            })? as u32;
+        Ok(Some(RopeScaling::LongRope {
+            short_factor,
+            long_factor,
+            original_max_position_embeddings,
+            max_position_embeddings,
+        }))
+    }
+}

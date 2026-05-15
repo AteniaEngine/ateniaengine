@@ -360,6 +360,28 @@ fn get_rope_scaling(v: &Value) -> Result<Option<RopeScaling>, ConfigError> {
             "field `rope_scaling` must be a JSON object".into(),
         ));
     }
+
+    // **Phase 12.4** — give the resolved family adapter first
+    // chance to decode the `rope_scaling` block. Phi-3
+    // LongRope lives behind `Phi3Adapter::parse_rope_scaling`
+    // and reads top-level `original_max_position_embeddings`
+    // from the outer config, which the local `match rope_type`
+    // below cannot reach without losing its block-only
+    // contract. The shared Llama-3 piecewise parser stays as
+    // a fallback so the common case doesn't pay an adapter
+    // lookup.
+    let model_type = v.get("model_type").and_then(|x| x.as_str());
+    let metadata = crate::model_adapters::model_metadata_from_parts(
+        None,
+        model_type,
+        crate::model_adapters::ModelFormat::HfSafetensors,
+    );
+    if let Some(adapter) = crate::model_adapters::resolve_adapter(&metadata) {
+        if let Some(scaling) = adapter.parse_rope_scaling(v)? {
+            return Ok(Some(scaling));
+        }
+    }
+
     // Accept both `rope_type` (modern) and `type` (legacy).
     let rope_type = block
         .get("rope_type")
@@ -405,44 +427,19 @@ fn get_rope_scaling(v: &Value) -> Result<Option<RopeScaling>, ConfigError> {
                 original_max_position_embeddings,
             }))
         }
-        // **M11.B** — Phi-3 / Phi-3.5 LongRope scaling.
-        Some("longrope") => {
-            let short_factor = parse_f32_array(block, "short_factor", "rope_scaling.longrope")?;
-            let long_factor = parse_f32_array(block, "long_factor", "rope_scaling.longrope")?;
-            // `original_max_position_embeddings` and
-            // `max_position_embeddings` are top-level fields on
-            // the Phi-3 config, not inside the rope_scaling
-            // block. Read them from the outer config `v`.
-            let original_max_position_embeddings = v
-                .get("original_max_position_embeddings")
-                .and_then(|x| x.as_u64())
-                .ok_or_else(|| {
-                    ConfigError::Parse(
-                        "rope_scaling.longrope requires top-level integer \
-                         `original_max_position_embeddings`"
-                            .into(),
-                    )
-                })? as u32;
-            let max_position_embeddings = v
-                .get("max_position_embeddings")
-                .and_then(|x| x.as_u64())
-                .ok_or_else(|| {
-                    ConfigError::Parse(
-                        "rope_scaling.longrope requires top-level integer \
-                         `max_position_embeddings`"
-                            .into(),
-                    )
-                })? as u32;
-            Ok(Some(RopeScaling::LongRope {
-                short_factor,
-                long_factor,
-                original_max_position_embeddings,
-                max_position_embeddings,
-            }))
-        }
+        // **Phase 12.4** — Phi-3 / Phi-3.5 LongRope scaling
+        // is decoded by `Phi3Adapter::parse_rope_scaling`
+        // above this match. The branch lived here pre-Phase
+        // 12.4; moved into the adapter so the Phi-3 family
+        // owns its own rope_scaling schema (the shape reads
+        // top-level config fields, not just the
+        // rope_scaling block).
+        //
         // Unknown / unsupported scaling — treat as no-scaling.
         // Future variants (yarn, dynamic) will land as
-        // explicit branches before this catch-all.
+        // explicit branches before this catch-all (or, if
+        // family-specific, as adapter overrides of
+        // `ConfigPolicy::parse_rope_scaling`).
         _ => Ok(None),
     }
 }
@@ -451,7 +448,15 @@ fn get_rope_scaling(v: &Value) -> Result<Option<RopeScaling>, ConfigError> {
 /// LongRope branch to read the per-dimension factor vectors.
 /// Errors with a clear context-prefixed message when the field
 /// is missing, not an array, or contains a non-numeric element.
-fn parse_f32_array(block: &Value, key: &str, context: &str) -> Result<Vec<f32>, ConfigError> {
+///
+/// **Phase 12.4** — `pub(crate)` so `Phi3Adapter::parse_rope_scaling`
+/// can reuse the same helper instead of duplicating the array
+/// decoder in the adapter module.
+pub(crate) fn parse_f32_array(
+    block: &Value,
+    key: &str,
+    context: &str,
+) -> Result<Vec<f32>, ConfigError> {
     let arr = block
         .get(key)
         .and_then(|x| x.as_array())
@@ -861,7 +866,15 @@ mod tests {
     /// level of the config.
     #[test]
     fn rope_scaling_longrope_parses_into_variant() {
+        // **Phase 12.4** — LongRope parsing now lives in
+        // `Phi3Adapter::parse_rope_scaling`. The base fixture
+        // declares `model_type = "llama"`; override it to
+        // `"phi3"` so `resolve_adapter` routes to Phi3Adapter
+        // and the longrope shape is honoured. Pre-Phase-12.4
+        // the parser accepted longrope regardless of
+        // model_type because the branch was global.
         let mut v = base_config_value(json!(32_000));
+        v["model_type"] = json!("phi3");
         // Top-level fields the LongRope branch needs.
         v["original_max_position_embeddings"] = json!(4096);
         v["max_position_embeddings"] = json!(131_072);
@@ -983,7 +996,17 @@ mod tests {
     /// rope_scaling block per the Phi-3 schema).
     #[test]
     fn rope_scaling_longrope_missing_original_max_pos_fails() {
+        // **Phase 12.4** — override base `model_type = "llama"`
+        // to `"phi3"` so the LongRope parser (now living inside
+        // `Phi3Adapter`) actually runs. With a non-Phi3
+        // model_type, the longrope shape would now silently
+        // downgrade to no-scaling because the Llama adapter's
+        // default `parse_rope_scaling = Ok(None)` and the
+        // shared config.rs match no longer recognises
+        // longrope. That silent downgrade is the new
+        // documented behaviour for a misdeclared config.
         let mut v = base_config_value(json!(32_000));
+        v["model_type"] = json!("phi3");
         v["max_position_embeddings"] = json!(131_072);
         v["rope_scaling"] = json!({
             "type": "longrope",
@@ -996,6 +1019,36 @@ mod tests {
         assert!(
             msg.contains("original_max_position_embeddings"),
             "error should name the missing field, got: {msg}"
+        );
+    }
+
+    /// **Phase 12.4** — a Llama-family config that declares
+    /// `rope_scaling.type = "longrope"` (which is malformed —
+    /// Llama never uses longrope) silently downgrades to
+    /// no-scaling. The Llama adapter's default
+    /// `parse_rope_scaling = Ok(None)` doesn't recognise the
+    /// shape, and the shared config.rs match no longer has a
+    /// `Some("longrope") => ...` branch, so the function
+    /// returns `Ok(None)`. This codifies the new contract
+    /// without making a misdeclared config harder to debug
+    /// (the resulting graph build will fail clearly when it
+    /// expects scaling and gets none).
+    #[test]
+    fn rope_scaling_longrope_on_llama_silently_downgrades() {
+        let mut v = base_config_value(json!(32_000));
+        // model_type stays "llama" from base_config_value;
+        // resolve_adapter routes to LlamaFamilyAdapter, whose
+        // parse_rope_scaling returns Ok(None).
+        v["rope_scaling"] = json!({
+            "type": "longrope",
+            "short_factor": [1.0, 1.0],
+            "long_factor": [2.0, 2.0]
+        });
+        let cfg = LlamaConfig::from_json_str(&v.to_string())
+            .expect("config still parses (longrope downgrades silently)");
+        assert!(
+            cfg.effective_rope_scaling().is_none(),
+            "longrope on a non-Phi3 model_type must downgrade to no-scaling"
         );
     }
 }

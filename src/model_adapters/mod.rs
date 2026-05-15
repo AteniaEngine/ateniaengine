@@ -229,6 +229,34 @@ pub trait ConfigPolicy {
     fn default_attention_bias(&self) -> Option<bool> {
         None
     }
+
+    /// **Phase 12.4** — family-specific parser for the
+    /// `rope_scaling` JSON block. The full **outer** config
+    /// JSON is passed (not just the `rope_scaling` sub-object)
+    /// because some shapes — Phi-3 LongRope — read top-level
+    /// fields like `original_max_position_embeddings` that
+    /// don't live inside the `rope_scaling` block.
+    ///
+    /// Return value:
+    /// - `Ok(None)` — adapter does not recognise the
+    ///   `rope_scaling` shape; the caller falls back to the
+    ///   shared parser (currently Llama 3 piecewise) or
+    ///   silently downgrades to no-scaling.
+    /// - `Ok(Some(scaling))` — adapter recognised and
+    ///   successfully parsed the block.
+    /// - `Err(_)` — adapter recognised the shape but found a
+    ///   malformed field; the parse fails fast.
+    ///
+    /// Default impl returns `Ok(None)`. Today the only override
+    /// is `Phi3Adapter::parse_rope_scaling`, which decodes
+    /// `type = "longrope"`.
+    fn parse_rope_scaling(
+        &self,
+        _outer: &serde_json::Value,
+    ) -> Result<Option<crate::nn::llama::config::RopeScaling>, crate::nn::llama::config::ConfigError>
+    {
+        Ok(None)
+    }
 }
 
 pub trait AteniaModelAdapter:
