@@ -427,14 +427,22 @@ fn get_rope_scaling(v: &Value) -> Result<Option<RopeScaling>, ConfigError> {
                 original_max_position_embeddings,
             }))
         }
-        // **Phase 12.4** — Phi-3 / Phi-3.5 LongRope scaling
-        // is decoded by `Phi3Adapter::parse_rope_scaling`
-        // above this match. The branch lived here pre-Phase
-        // 12.4; moved into the adapter so the Phi-3 family
-        // owns its own rope_scaling schema (the shape reads
-        // top-level config fields, not just the
-        // rope_scaling block).
-        //
+        // **Phase 12.4 (revised)** — `rope_scaling.type = "longrope"`
+        // is owned by `Phi3Adapter::parse_rope_scaling` above
+        // this match. If we reach this branch with
+        // `rope_type == Some("longrope")`, the resolved
+        // adapter returned `Ok(None)` — meaning the config
+        // declared longrope under a non-Phi3 family. That is
+        // a malformed combination, not a silent downgrade
+        // candidate: fail fast with an explicit error naming
+        // the type and the supported family so the operator
+        // sees the mismatch at parse time instead of debugging
+        // a "rope_scaling unexpectedly None" downstream.
+        Some("longrope") => Err(ConfigError::Parse(
+            "rope_scaling type 'longrope' is only supported by Phi3-family adapters; \
+             declared model_type does not resolve to a Phi3 adapter"
+                .into(),
+        )),
         // Unknown / unsupported scaling — treat as no-scaling.
         // Future variants (yarn, dynamic) will land as
         // explicit branches before this catch-all (or, if
@@ -1022,33 +1030,38 @@ mod tests {
         );
     }
 
-    /// **Phase 12.4** — a Llama-family config that declares
-    /// `rope_scaling.type = "longrope"` (which is malformed —
-    /// Llama never uses longrope) silently downgrades to
-    /// no-scaling. The Llama adapter's default
-    /// `parse_rope_scaling = Ok(None)` doesn't recognise the
-    /// shape, and the shared config.rs match no longer has a
-    /// `Some("longrope") => ...` branch, so the function
-    /// returns `Ok(None)`. This codifies the new contract
-    /// without making a misdeclared config harder to debug
-    /// (the resulting graph build will fail clearly when it
-    /// expects scaling and gets none).
+    /// **Phase 12.4 (revised contract)** — a config that
+    /// declares `rope_scaling.type = "longrope"` under a
+    /// non-Phi3 `model_type` is malformed: longrope is owned
+    /// by `Phi3Adapter` and the shared parser refuses to
+    /// downgrade it silently. Fail-fast with an explicit
+    /// error naming the type and the supported family so the
+    /// operator sees the mismatch at parse time instead of
+    /// chasing a confusing "rope_scaling unexpectedly None"
+    /// downstream.
     #[test]
-    fn rope_scaling_longrope_on_llama_silently_downgrades() {
+    fn rope_scaling_longrope_on_non_phi3_errors() {
         let mut v = base_config_value(json!(32_000));
         // model_type stays "llama" from base_config_value;
         // resolve_adapter routes to LlamaFamilyAdapter, whose
-        // parse_rope_scaling returns Ok(None).
+        // default `parse_rope_scaling` returns Ok(None). The
+        // shared match below then hits the explicit
+        // Some("longrope") => Err arm.
         v["rope_scaling"] = json!({
             "type": "longrope",
             "short_factor": [1.0, 1.0],
             "long_factor": [2.0, 2.0]
         });
-        let cfg = LlamaConfig::from_json_str(&v.to_string())
-            .expect("config still parses (longrope downgrades silently)");
+        let err = LlamaConfig::from_json_str(&v.to_string())
+            .expect_err("longrope under non-Phi3 model_type must fail");
+        let msg = format!("{err}");
         assert!(
-            cfg.effective_rope_scaling().is_none(),
-            "longrope on a non-Phi3 model_type must downgrade to no-scaling"
+            msg.contains("longrope"),
+            "error should mention the rope_scaling type, got: {msg}"
+        );
+        assert!(
+            msg.contains("Phi3"),
+            "error should name the supported family, got: {msg}"
         );
     }
 }
