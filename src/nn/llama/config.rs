@@ -65,9 +65,12 @@ pub struct LlamaConfig {
     /// Llama family seen so far the two coincide.
     pub head_dim: Option<usize>,
     /// `rope_scaling` block. `None` for plain RoPE (TinyLlama,
-    /// SmolLM2, Qwen 2.5). Currently the only recognised
-    /// `rope_type` is `"llama3"` (Llama 3.x). Anything else parses
-    /// to `None` with a tracing-friendly warning at parse time.
+    /// SmolLM2, Qwen 2.5). Recognised shapes are decoded by the
+    /// resolved family adapter (Phase 12.4 / Phase 14): `"llama3"`
+    /// piecewise (Llama family) and `"longrope"` (Phi-3). A
+    /// genuinely unknown `rope_type` downgrades to `None`; a
+    /// recognised type declared under the wrong family is a
+    /// fail-fast parse error — see [`get_rope_scaling`].
     pub rope_scaling: Option<RopeScaling>,
     /// **M11.C** — Gemma 2 attention-logit soft-cap (`50.0` for
     /// Gemma 2 2B/9B/27B). When `Some(c)`, the attention scores
@@ -342,14 +345,26 @@ fn get_optional_usize(v: &Value, key: &str) -> Result<Option<usize>, ConfigError
     }
 }
 
-/// Parse the `rope_scaling` JSON object if present and recognised.
+/// Orchestrate `rope_scaling` decoding. **Phase 14** — `config.rs`
+/// no longer knows any family `rope_scaling` schema. The resolved
+/// family adapter owns parsing: Phi-3 LongRope
+/// (`Phi3Adapter::parse_rope_scaling`, Phase 12.4) and Llama 3
+/// piecewise (`common::parse_llama3_rope_scaling` wired into
+/// Llama / Qwen2 / Mistral, Phase 14). This function only:
 ///
-/// Tolerates two field-name conventions for the discriminator:
-/// `"rope_type"` (transformers >=4.43) and `"type"` (legacy /
-/// pre-4.43). Returns `Ok(None)` when the field is missing, JSON
-/// null, or carries an unsupported `rope_type` — Atenia only
-/// recognises `"llama3"` today, so any other value is silently
-/// downgraded to no-scaling rather than failing the whole parse.
+/// 1. guards `rope_scaling` being absent / null (`Ok(None)`) or a
+///    non-object (`Err`);
+/// 2. delegates to the adapter;
+/// 3. fails fast when a *recognised* discriminator (`"llama3"`,
+///    `"longrope"`) survives the adapter — i.e. it was declared
+///    under a family that does not own it;
+/// 4. silently downgrades a genuinely *unknown* `rope_type`
+///    (`"yarn"`, ...) to no-scaling so future variants land as
+///    opt-in extensions, not breaking changes.
+///
+/// Both discriminator conventions are honoured by the adapters:
+/// `"rope_type"` (transformers >= 4.43) and the legacy `"type"`
+/// alias (pre-4.43).
 fn get_rope_scaling(v: &Value) -> Result<Option<RopeScaling>, ConfigError> {
     let block = match v.get("rope_scaling") {
         None | Some(Value::Null) => return Ok(None),
@@ -361,15 +376,15 @@ fn get_rope_scaling(v: &Value) -> Result<Option<RopeScaling>, ConfigError> {
         ));
     }
 
-    // **Phase 12.4** — give the resolved family adapter first
-    // chance to decode the `rope_scaling` block. Phi-3
-    // LongRope lives behind `Phi3Adapter::parse_rope_scaling`
-    // and reads top-level `original_max_position_embeddings`
-    // from the outer config, which the local `match rope_type`
-    // below cannot reach without losing its block-only
-    // contract. The shared Llama-3 piecewise parser stays as
-    // a fallback so the common case doesn't pay an adapter
-    // lookup.
+    // **Phase 12.4 / Phase 14** — the resolved family adapter
+    // owns `rope_scaling` decoding. Phi-3 LongRope lives behind
+    // `Phi3Adapter::parse_rope_scaling`; Llama 3 piecewise behind
+    // the Llama-family adapters' `parse_rope_scaling` (shared
+    // `common::parse_llama3_rope_scaling`). Both read the outer
+    // config (LongRope needs top-level
+    // `original_max_position_embeddings`). The `match rope_type`
+    // below is no longer a parser — it is the fail-fast guard for
+    // a recognised type declared under the wrong family.
     let model_type = v.get("model_type").and_then(|x| x.as_str());
     let metadata = crate::model_adapters::model_metadata_from_parts(
         None,
@@ -388,45 +403,23 @@ fn get_rope_scaling(v: &Value) -> Result<Option<RopeScaling>, ConfigError> {
         .or_else(|| block.get("type"))
         .and_then(|x| x.as_str());
     match rope_type {
-        Some("llama3") => {
-            let factor = block
-                .get("factor")
-                .and_then(|x| x.as_f64())
-                .ok_or_else(|| {
-                    ConfigError::Parse("rope_scaling.llama3 requires numeric `factor`".into())
-                })? as f32;
-            let low_freq_factor = block
-                .get("low_freq_factor")
-                .and_then(|x| x.as_f64())
-                .ok_or_else(|| {
-                    ConfigError::Parse(
-                        "rope_scaling.llama3 requires numeric `low_freq_factor`".into(),
-                    )
-                })? as f32;
-            let high_freq_factor = block
-                .get("high_freq_factor")
-                .and_then(|x| x.as_f64())
-                .ok_or_else(|| {
-                    ConfigError::Parse(
-                        "rope_scaling.llama3 requires numeric `high_freq_factor`".into(),
-                    )
-                })? as f32;
-            let original_max_position_embeddings = block
-                .get("original_max_position_embeddings")
-                .and_then(|x| x.as_u64())
-                .ok_or_else(|| {
-                    ConfigError::Parse(
-                        "rope_scaling.llama3 requires integer `original_max_position_embeddings`"
-                            .into(),
-                    )
-                })? as u32;
-            Ok(Some(RopeScaling::Llama3 {
-                factor,
-                low_freq_factor,
-                high_freq_factor,
-                original_max_position_embeddings,
-            }))
-        }
+        // **Phase 14** — the `"llama3"` piecewise parser moved to
+        // the Llama-family adapter
+        // (`common::parse_llama3_rope_scaling`, wired into
+        // Llama / Qwen2 / Mistral), parallel to the Phi-3
+        // LongRope move at Phase 12.4. Reaching this arm with
+        // `rope_type == Some("llama3")` means the resolved
+        // adapter returned `Ok(None)` — the config declared
+        // llama3 under a family that does not own it (Gemma 2 /
+        // Phi-3). That is malformed, not a silent-downgrade
+        // candidate: fail fast with an explicit error naming the
+        // type and the supported family, symmetric with the
+        // longrope guard below.
+        Some("llama3") => Err(ConfigError::Parse(
+            "rope_scaling type 'llama3' is only supported by Llama-family adapters; \
+             declared model_type does not resolve to a Llama-family adapter"
+                .into(),
+        )),
         // **Phase 12.4 (revised)** — `rope_scaling.type = "longrope"`
         // is owned by `Phi3Adapter::parse_rope_scaling` above
         // this match. If we reach this branch with
@@ -1138,5 +1131,87 @@ mod tests {
             format!("{err}").contains("divisible by num_attention_heads"),
             "llama path must still enforce V2, got: {err}"
         );
+    }
+
+    /// **Phase 14** — the `"llama3"` piecewise parser moved to the
+    /// Llama-family adapter. It must still parse for `model_type =
+    /// "llama"`, for an absent `model_type` (defaults to the Llama
+    /// adapter), and via the legacy `"type"` alias.
+    #[test]
+    fn phase14_llama3_parses_via_llama_family_adapter() {
+        let scaling_block = json!({
+            "rope_type": "llama3",
+            "factor": 32.0,
+            "low_freq_factor": 1.0,
+            "high_freq_factor": 4.0,
+            "original_max_position_embeddings": 8192
+        });
+
+        // (a) explicit model_type = "llama"
+        let mut v = base_config_value(json!(2));
+        v["rope_scaling"] = scaling_block.clone();
+        let cfg = LlamaConfig::from_json_str(&v.to_string())
+            .expect("llama3 under model_type=llama must parse via adapter");
+        assert!(matches!(
+            cfg.effective_rope_scaling(),
+            Some(RopeScaling::Llama3 { factor, .. }) if (*factor - 32.0).abs() < 1e-6
+        ));
+
+        // (b) absent model_type → resolves to the Llama adapter by
+        // default architecture, still parses.
+        let mut v = base_config_value(json!(2));
+        v.as_object_mut().unwrap().remove("model_type");
+        v["rope_scaling"] = scaling_block;
+        let cfg = LlamaConfig::from_json_str(&v.to_string())
+            .expect("llama3 with absent model_type must parse via default Llama adapter");
+        assert!(matches!(
+            cfg.effective_rope_scaling(),
+            Some(RopeScaling::Llama3 { .. })
+        ));
+
+        // (c) legacy `type` alias (transformers < 4.43)
+        let mut v = base_config_value(json!(2));
+        v["rope_scaling"] = json!({
+            "type": "llama3",
+            "factor": 8.0,
+            "low_freq_factor": 1.0,
+            "high_freq_factor": 4.0,
+            "original_max_position_embeddings": 8192
+        });
+        let cfg = LlamaConfig::from_json_str(&v.to_string())
+            .expect("legacy `type` alias for llama3 must still parse");
+        assert!(matches!(
+            cfg.effective_rope_scaling(),
+            Some(RopeScaling::Llama3 { factor, .. }) if (*factor - 8.0).abs() < 1e-6
+        ));
+    }
+
+    /// **Phase 14** — `rope_scaling.type = "llama3"` declared under
+    /// a non-Llama-family `model_type` (Gemma 2 / Phi-3) is
+    /// malformed: the adapter does not own llama3, so `config.rs`
+    /// fails fast (symmetric with the longrope-under-non-Phi3
+    /// guard) instead of silently downgrading to no-scaling.
+    #[test]
+    fn phase14_llama3_under_non_llama_family_fails_fast() {
+        for model_type in ["gemma2", "phi3"] {
+            let mut v = base_config_value(json!(2));
+            v["model_type"] = json!(model_type);
+            v["rope_scaling"] = json!({
+                "rope_type": "llama3",
+                "factor": 32.0,
+                "low_freq_factor": 1.0,
+                "high_freq_factor": 4.0,
+                "original_max_position_embeddings": 8192
+            });
+            let err = match LlamaConfig::from_json_str(&v.to_string()) {
+                Ok(_) => panic!("{model_type}: llama3 under non-Llama family must fail fast"),
+                Err(e) => e,
+            };
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("llama3") && msg.contains("Llama-family"),
+                "{model_type}: error must name the type and supported family, got: {msg}"
+            );
+        }
     }
 }

@@ -9,7 +9,10 @@ use crate::nn::llama::weight_loading::llama_weight_mapper;
 use crate::v17::loader::loader_errors::LoaderError;
 use crate::v17::loader::weight_mapper::WeightMapper;
 
-use super::common::{build_llama_scratch, build_llama_store_graph, validate_llama_family_config};
+use super::common::{
+    build_llama_scratch, build_llama_store_graph, parse_llama3_rope_scaling,
+    validate_llama_family_config,
+};
 use super::{
     AdapterCapabilities, ConfigPolicy, GgufWeightMapper, HfWeightMapper, ModelAdapter,
     ModelFamily, ModelMetadata, ResidencyHints, ResidencyPolicyHints, ScratchGraphBuild,
@@ -104,6 +107,16 @@ impl ConfigPolicy for LlamaFamilyAdapter {
         config: &LlamaConfig,
     ) -> Result<(), crate::nn::llama::config::ConfigError> {
         validate_llama_family_config(config)
+    }
+
+    fn parse_rope_scaling(
+        &self,
+        outer: &serde_json::Value,
+    ) -> Result<
+        Option<crate::nn::llama::config::RopeScaling>,
+        crate::nn::llama::config::ConfigError,
+    > {
+        parse_llama3_rope_scaling(outer)
     }
 }
 
@@ -201,6 +214,16 @@ impl ConfigPolicy for Qwen2Adapter {
     ) -> Result<(), crate::nn::llama::config::ConfigError> {
         validate_llama_family_config(config)
     }
+
+    fn parse_rope_scaling(
+        &self,
+        outer: &serde_json::Value,
+    ) -> Result<
+        Option<crate::nn::llama::config::RopeScaling>,
+        crate::nn::llama::config::ConfigError,
+    > {
+        parse_llama3_rope_scaling(outer)
+    }
 }
 
 impl ModelAdapter for MistralAdapter {
@@ -287,5 +310,15 @@ impl ConfigPolicy for MistralAdapter {
         config: &LlamaConfig,
     ) -> Result<(), crate::nn::llama::config::ConfigError> {
         validate_llama_family_config(config)
+    }
+
+    fn parse_rope_scaling(
+        &self,
+        outer: &serde_json::Value,
+    ) -> Result<
+        Option<crate::nn::llama::config::RopeScaling>,
+        crate::nn::llama::config::ConfigError,
+    > {
+        parse_llama3_rope_scaling(outer)
     }
 }
