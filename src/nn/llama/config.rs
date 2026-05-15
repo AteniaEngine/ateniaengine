@@ -684,13 +684,29 @@ impl LlamaConfig {
     ///
     /// 1. If the config carries an explicit `attention_bias`, that
     ///    value wins.
-    /// 2. Otherwise, the `model_type` drives the default: `"qwen2"`
-    ///    → `true`; everything else → `false`.
+    /// 2. Otherwise, the adapter registry resolves the family-specific
+    ///    default via
+    ///    [`crate::model_adapters::ConfigPolicy::default_attention_bias`]:
+    ///    `Qwen2Adapter` returns `Some(true)`; every other adapter
+    ///    inherits the trait default `None`, which here translates
+    ///    to `false`.
+    ///
+    /// **Phase 12.3** — pre-Phase-12.3 this method matched
+    /// `model_type == "qwen2"` directly. The registry lookup
+    /// preserves the same behaviour while keeping family-specific
+    /// decisions inside the adapter layer.
     pub fn effective_attention_bias(&self) -> bool {
         if let Some(explicit) = self.attention_bias {
             return explicit;
         }
-        matches!(self.model_type.as_deref(), Some("qwen2"))
+        let metadata = crate::model_adapters::model_metadata_from_parts(
+            None,
+            self.model_type.as_deref(),
+            crate::model_adapters::ModelFormat::HfSafetensors,
+        );
+        crate::model_adapters::resolve_adapter(&metadata)
+            .and_then(|adapter| adapter.default_attention_bias())
+            .unwrap_or(false)
     }
 
     /// Rough parameter-count estimate. Used by tests to sanity-check
