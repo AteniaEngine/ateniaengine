@@ -359,6 +359,10 @@ pub fn run(args: RunArgs) -> i32 {
     }
 
     ram_soft_warning();
+    // **M12.3** — one consolidated env/hardware diagnostics block,
+    // after arg validation and before the load. Read-and-echo
+    // only; suppressed under apx_is_silent().
+    crate::diag::log_env_and_hardware_diagnostics();
 
     match args.mode {
         Mode::A => run_mode_a(args),

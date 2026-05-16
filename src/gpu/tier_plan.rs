@@ -412,6 +412,37 @@ fn gpu_candidate_order(input: &TierPlanInput, hints: ResidencyPolicyHints) -> Ve
 /// The two-pass cost is a single extra walk of `input.tensors`; the
 /// planner stays a pure function (no I/O, no allocations beyond the
 /// returned `TierPlan`).
+/// **M12.3** — shared tier-plan summary print, reused by the
+/// `atenia generate` pipeline and the `atenia run` loader so both
+/// surface where weights were placed. Pure output of an
+/// already-computed [`TierPlan`]: no tiering / placement change.
+/// Printed unconditionally, matching the pre-M12.3 generate-path
+/// behaviour (that block was not `apx_is_silent()`-gated). The
+/// per-reason breakdown and `ATENIA_PLAN_TRACE` detail stay in
+/// the pipeline (they depend on planning-time locals not carried
+/// on the plan struct).
+pub fn log_tier_plan_summary(plan: &TierPlan) {
+    fn gib(bytes: u64) -> f64 {
+        bytes as f64 / (1024.0 * 1024.0 * 1024.0)
+    }
+    eprintln!("[ATENIA] Tier-aware loader plan:");
+    eprintln!(
+        "  VRAM: {} tensors ({:.2} GiB)",
+        plan.vram_count(),
+        gib(plan.vram_bytes_assigned)
+    );
+    eprintln!(
+        "  RAM:  {} tensors ({:.2} GiB)",
+        plan.ram_count(),
+        gib(plan.ram_bytes_assigned)
+    );
+    eprintln!(
+        "  Disk: {} tensors ({:.2} GiB)",
+        plan.disk_count(),
+        gib(plan.disk_bytes_assigned)
+    );
+}
+
 pub fn plan(input: &TierPlanInput) -> TierPlan {
     plan_with_hints(input, ResidencyPolicyHints::default())
 }

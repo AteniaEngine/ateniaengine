@@ -303,6 +303,10 @@ pub fn run(args: GenerateArgs) -> i32 {
     let _ = args.cache_dir;
 
     warn_low_ram();
+    // **M12.3** — one consolidated env/hardware diagnostics block,
+    // after arg validation and before the load. Read-and-echo
+    // only; suppressed under apx_is_silent().
+    crate::diag::log_env_and_hardware_diagnostics();
 
     // ---- Load model with heartbeat dots ----
     let counters_before_load = CounterSnapshot::capture();

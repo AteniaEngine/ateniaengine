@@ -41,6 +41,7 @@ pub mod cli_run;
 // always-on in the default build via the demo feature gate.
 #[cfg(feature = "demo")]
 pub mod cli_generate;
+pub mod diag;
 
 // M5.a — public tokenizer surface (HF tokenizers + minijinja
 // chat templates). Always-on; the ~250 KB binary impact is
@@ -288,8 +289,12 @@ fn init_parallel_runtime_entrypoint() {
         );
     }
 
-    // Log current APX mode when debug is active.
-    if crate::apx_debug_enabled() {
+    // **M12.3** — the resolved APX mode flips the entire matmul
+    // dispatch chain (~600x throughput swing), so a silent default
+    // is an operator footgun. Surface it always, suppressed only
+    // under `apx_is_silent()` like the runtime line above (was
+    // previously gated behind ATENIA_DEBUG).
+    if !crate::apx_is_silent() {
         eprintln!("[APX] Using mode {}", crate::apx_mode());
     }
 

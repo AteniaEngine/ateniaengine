@@ -445,6 +445,10 @@ pub fn build_and_load_llama_checked(
         kernel_dtype,
     };
     let plan = crate::gpu::tier_plan::plan(&plan_input);
+    // **M12.3** — `atenia run` now surfaces the same tier-plan
+    // summary as `atenia generate` (shared helper; placement
+    // unchanged).
+    crate::gpu::tier_plan::log_tier_plan_summary(&plan);
     let (store, report) = sharded
         .load_into_with_residency_plan(
             &mut scratch_graph,

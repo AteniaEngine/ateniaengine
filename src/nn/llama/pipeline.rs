@@ -1247,22 +1247,9 @@ fn log_tier_plan(
         gib(gpu_eligible_source_bytes),
         gib(gpu_eligible_resident_bytes),
     );
-    eprintln!("[ATENIA] Tier-aware loader plan:");
-    eprintln!(
-        "  VRAM: {} tensors ({:.2} GiB)",
-        plan.vram_count(),
-        gib(plan.vram_bytes_assigned)
-    );
-    eprintln!(
-        "  RAM:  {} tensors ({:.2} GiB)",
-        plan.ram_count(),
-        gib(plan.ram_bytes_assigned)
-    );
-    eprintln!(
-        "  Disk: {} tensors ({:.2} GiB)",
-        plan.disk_count(),
-        gib(plan.disk_bytes_assigned)
-    );
+    // **M12.3** — shared summary (also used by the `atenia run`
+    // loader). The per-reason line + PLAN_TRACE below stay here.
+    crate::gpu::tier_plan::log_tier_plan_summary(&plan);
     eprintln!(
         "  Reasons: RAM not_gpu_eligible={}, RAM vram_budget_exceeded={}, \
          Disk not_gpu_eligible={}, Disk vram_or_ram_budget_exceeded={}",
