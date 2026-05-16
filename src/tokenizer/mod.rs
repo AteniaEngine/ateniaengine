@@ -564,6 +564,17 @@ mod tests {
             eprintln!("[skip] tinyllama-1.1b not present");
             return;
         };
+        // `model_dir` only checks the directory exists; on CI the
+        // dir is present because `models/<slug>/model.numcert.json`
+        // is versioned, but the tokenizer fixture is not. Skip when
+        // the actual required file is absent.
+        if !dir.join("tokenizer.json").exists() {
+            eprintln!(
+                "skipping tokenizer test: local fixture \
+                 models/tinyllama-1.1b/tokenizer.json not found"
+            );
+            return;
+        }
         let tok = AteniaTokenizer::from_model_dir(&dir).unwrap();
         let rendered = tok
             .apply_chat_template(&[ChatMessage::user("Hello")])
@@ -602,6 +613,18 @@ mod tests {
                 eprintln!("[skip] {name} not present");
                 continue;
             };
+            // `model_dir` only checks the directory exists; on CI
+            // the dir is present because
+            // `models/<slug>/model.numcert.json` is versioned, but
+            // the tokenizer fixture is not. Skip when the actual
+            // required file is absent.
+            if !dir.join("tokenizer.json").exists() {
+                eprintln!(
+                    "skipping tokenizer test: local fixture \
+                     models/{name}/tokenizer.json not found"
+                );
+                continue;
+            }
             let tok = AteniaTokenizer::from_model_dir(&dir)
                 .unwrap_or_else(|e| panic!("{name}: load: {e}"));
             let ids = tok
