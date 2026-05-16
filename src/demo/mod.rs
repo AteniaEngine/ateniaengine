@@ -296,23 +296,30 @@ pub struct LlamaLoadMetrics {
 /// the helper silent so the CLI runner can drive its own
 /// progress UI.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if `config.json` cannot be parsed, the index file
-/// is missing, or the load reports any missing tensors. These
-/// are demo-fatal conditions that should fail loudly during
-/// development — production-grade error handling lands as
-/// part of M4.9.c's `--mode a` runner.
-pub fn build_and_load_llama(
+/// **M12.2** — returns a typed [`DemoLoadError`] (never panics)
+/// when the model-load boundary fails: unparseable `config.json`,
+/// missing sharded index, unsupported family / mismatched param
+/// names, corrupt safetensors header, incompatible tensors or OOM
+/// during load, or store-graph build failure. The CLI maps every
+/// variant to exit code 2 with a remediation hint. The legacy
+/// [`build_and_load_llama`] wrapper panics instead, preserving
+/// behaviour for existing callers / the `m4_7_6_e` tests.
+pub fn build_and_load_llama_checked(
     model_dir: &Path,
     runtime: LlamaRuntime,
     verbose: bool,
-) -> (Graph, WeightStore, LlamaLoadMetrics) {
+) -> Result<(Graph, WeightStore, LlamaLoadMetrics), DemoLoadError> {
     if verbose {
         println!("Reading config.json ...");
     }
-    let cfg = LlamaConfig::from_json_file(&model_dir.join("config.json"))
-        .expect("config.json must parse");
+    let cfg = LlamaConfig::from_json_file(&model_dir.join("config.json")).map_err(|e| {
+        DemoLoadError::ConfigParse {
+            path: model_dir.join("config.json").display().to_string(),
+            detail: format!("{e:?}"),
+        }
+    })?;
 
     // **Adapter Phase 11.1** — resolve the model-family adapter
     // once and drive every architecture-specific step (graph
@@ -375,10 +382,18 @@ pub fn build_and_load_llama(
     }
     let load_start = Instant::now();
     let sharded = ShardedSafetensorsReader::open(&model_dir.join("model.safetensors.index.json"))
-        .expect("open sharded reader");
+        .map_err(|e| DemoLoadError::IndexOpen {
+            path: model_dir
+                .join("model.safetensors.index.json")
+                .display()
+                .to_string(),
+            detail: format!("{e:?}"),
+        })?;
     let mut mapper = adapter
         .map_hf_weights(&cfg, &scratch.param_names, &scratch.param_ids)
-        .expect("adapter weight mapper");
+        .map_err(|e| DemoLoadError::WeightMapper {
+            detail: format!("{e:?}"),
+        })?;
     mapper.set_store_params_as_bf16(true);
 
     // Tier-aware load (M6 + M7 + M8 + M8.7) — same path
@@ -389,7 +404,9 @@ pub fn build_and_load_llama(
     // `load_into_with_residency_plan`.
     let metas: Vec<crate::gpu::tier_plan::TensorMeta> = sharded
         .collect_tensor_metas()
-        .expect("collect_tensor_metas");
+        .map_err(|e| DemoLoadError::TensorMetas {
+            detail: format!("{e:?}"),
+        })?;
     let model_total_bytes: u64 = metas
         .iter()
         .map(|m| {
@@ -436,7 +453,9 @@ pub fn build_and_load_llama(
             &scratch.param_ids,
             &scratch.param_names,
         )
-        .expect("load_into_with_residency_plan");
+        .map_err(|e| DemoLoadError::LoadFailed {
+            detail: format!("{e:?}"),
+        })?;
     drop(scratch_graph);
     let load_secs = load_start.elapsed().as_secs_f32();
     if verbose {
@@ -460,7 +479,9 @@ pub fn build_and_load_llama(
     let token_input_id_2 = gb2.input();
     let handles2 = adapter
         .build_store_graph(&mut gb2, &cfg, &runtime, token_input_id_2, &store, None)
-        .expect("adapter build_store_graph");
+        .map_err(|e| DemoLoadError::GraphBuild {
+            detail: format!("{e:?}"),
+        })?;
     let _ = gb2.output(handles2.logits_id);
     let graph = gb2.build();
 
@@ -473,7 +494,89 @@ pub fn build_and_load_llama(
         config: cfg,
     };
 
-    (graph, store, metrics)
+    Ok((graph, store, metrics))
+}
+
+/// **M12.2** — typed failure of [`build_and_load_llama_checked`]
+/// at the model-load boundary. Each variant names the stage and
+/// carries the underlying error detail; `Display` adds a one-line
+/// operator remediation hint. The CLI maps any variant to exit
+/// code 2 (operator-actionable: wrong dir / partial download /
+/// unsupported or incompatible checkpoint).
+#[derive(Debug)]
+pub enum DemoLoadError {
+    ConfigParse { path: String, detail: String },
+    IndexOpen { path: String, detail: String },
+    WeightMapper { detail: String },
+    TensorMetas { detail: String },
+    LoadFailed { detail: String },
+    GraphBuild { detail: String },
+}
+
+impl std::fmt::Display for DemoLoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DemoLoadError::ConfigParse { path, detail } => write!(
+                f,
+                "config parse failed at {path}: {detail}\n  \
+                 hint: --model must point at a directory containing a HuggingFace \
+                 checkpoint (config.json + *.safetensors + tokenizer). A partial \
+                 download is the most common cause."
+            ),
+            DemoLoadError::IndexOpen { path, detail } => write!(
+                f,
+                "sharded safetensors index could not be opened at {path}: {detail}\n  \
+                 hint: this runner expects a sharded checkpoint \
+                 (model.safetensors.index.json). Single-file .safetensors or an \
+                 incomplete download will not have it — re-run the huggingface-cli \
+                 download for this model."
+            ),
+            DemoLoadError::WeightMapper { detail } => write!(
+                f,
+                "weight mapper construction failed: {detail}\n  \
+                 hint: the model family/architecture may be unsupported, or the \
+                 checkpoint's parameter names do not match the resolved adapter."
+            ),
+            DemoLoadError::TensorMetas { detail } => write!(
+                f,
+                "reading tensor metadata from the safetensors header failed: {detail}\n  \
+                 hint: the checkpoint header is corrupt or the download is \
+                 incomplete."
+            ),
+            DemoLoadError::LoadFailed { detail } => write!(
+                f,
+                "loading weights into the tier plan failed: {detail}\n  \
+                 hint: missing/extra/shape-mismatched tensors (incompatible \
+                 checkpoint) or out of memory during load."
+            ),
+            DemoLoadError::GraphBuild { detail } => write!(
+                f,
+                "store-backed graph build failed: {detail}\n  \
+                 hint: the config parsed but the resolved adapter's graph builder \
+                 does not support this model shape."
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DemoLoadError {}
+
+/// Legacy panic-on-failure wrapper preserved for existing callers
+/// and the `tests/m4_7_6_e_*` integration suite. New code (the
+/// `atenia run` CLI) uses [`build_and_load_llama_checked`] for
+/// clean, exit-coded operator errors.
+///
+/// # Panics
+///
+/// Panics with the [`DemoLoadError`] message on any load-boundary
+/// failure — unchanged behaviour versus pre-M12.2.
+pub fn build_and_load_llama(
+    model_dir: &Path,
+    runtime: LlamaRuntime,
+    verbose: bool,
+) -> (Graph, WeightStore, LlamaLoadMetrics) {
+    build_and_load_llama_checked(model_dir, runtime, verbose)
+        .unwrap_or_else(|e| panic!("{e}"))
 }
 
 // ============================================================
@@ -491,4 +594,89 @@ pub fn argmax_row(slice: &[f32], vocab: usize) -> (usize, f32) {
         .max_by(|(_, x), (_, y)| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal))
         .map(|(i, v)| (i, *v))
         .unwrap()
+}
+
+#[cfg(test)]
+mod m12_2_tests {
+    use super::*;
+
+    fn empty_model_dir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "atenia_m12_2_{}_{}_{}",
+            tag,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|x| x.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).expect("tempdir");
+        d
+    }
+
+    /// Core M12.2 contract: a missing `config.json` is a typed
+    /// error (never a panic), names the stage, and carries an
+    /// operator remediation hint. CI-safe: fails at the first
+    /// statement, no GPU / no model / no graph build.
+    #[test]
+    fn checked_returns_config_parse_error_on_missing_config() {
+        let dir = empty_model_dir("cfg");
+        let rt = LlamaRuntime { batch: 1, seq: 1 };
+        // `match` (not `.expect_err`) because the Ok tuple
+        // (Graph, WeightStore, LlamaLoadMetrics) is not `Debug`
+        // and deriving Debug on those core types is out of scope.
+        let err = match build_and_load_llama_checked(&dir, rt, false) {
+            Ok(_) => panic!("missing config.json must be a typed error, not Ok/panic"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, DemoLoadError::ConfigParse { .. }),
+            "expected ConfigParse, got {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("hint:"), "must carry a remediation hint: {msg}");
+        assert!(msg.contains("config.json"), "must name the stage: {msg}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The legacy wrapper must keep panicking so the
+    /// `tests/m4_7_6_e_*` integration suite is unaffected.
+    #[test]
+    fn legacy_wrapper_still_panics() {
+        let dir = empty_model_dir("panic");
+        let rt = LlamaRuntime { batch: 1, seq: 1 };
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = build_and_load_llama(&dir, rt, false);
+        }));
+        assert!(
+            caught.is_err(),
+            "legacy build_and_load_llama must still panic on a bad load"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn every_variant_display_is_actionable() {
+        let variants = [
+            DemoLoadError::ConfigParse {
+                path: "p".into(),
+                detail: "d".into(),
+            },
+            DemoLoadError::IndexOpen {
+                path: "p".into(),
+                detail: "d".into(),
+            },
+            DemoLoadError::WeightMapper { detail: "d".into() },
+            DemoLoadError::TensorMetas { detail: "d".into() },
+            DemoLoadError::LoadFailed { detail: "d".into() },
+            DemoLoadError::GraphBuild { detail: "d".into() },
+        ];
+        for v in &variants {
+            let s = v.to_string();
+            assert!(!s.is_empty());
+            assert!(s.contains("hint:"), "{v:?} lacks a remediation hint: {s}");
+            assert!(s.contains('d'), "{v:?} must surface the inner detail");
+        }
+    }
 }

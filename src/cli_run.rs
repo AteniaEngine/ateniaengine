@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
-use crate::demo::{argmax_row, build_and_load_llama, cache_dir_for, make_context};
+use crate::demo::{argmax_row, build_and_load_llama_checked, cache_dir_for, make_context};
 use crate::nn::llama::LlamaRuntime;
 use crate::tensor::tensor::Tensor;
 
@@ -408,8 +408,22 @@ fn run_mode_a(args: RunArgs) -> i32 {
     } else {
         None
     };
+    // **M12.2** — the load boundary now returns a typed error
+    // instead of panicking. This is *outside* the forward
+    // `catch_unwind` (which still wraps `graph.execute` below);
+    // a bad/partial/unsupported checkpoint yields a clean
+    // operator message + exit code 2 instead of a backtrace.
     let (mut graph, _store, metrics) =
-        build_and_load_llama(&args.model, runtime, /*verbose=*/ false);
+        match build_and_load_llama_checked(&args.model, runtime, /*verbose=*/ false) {
+            Ok(loaded) => loaded,
+            Err(e) => {
+                if let Some(hb) = hb {
+                    hb.stop();
+                }
+                eprintln!("error: {e}");
+                return 2;
+            }
+        };
     if let Some(hb) = hb {
         hb.stop();
     }
@@ -625,8 +639,22 @@ fn run_mode_b(args: RunArgs) -> i32 {
     } else {
         None
     };
+    // **M12.2** — the load boundary now returns a typed error
+    // instead of panicking. This is *outside* the forward
+    // `catch_unwind` (which still wraps `graph.execute` below);
+    // a bad/partial/unsupported checkpoint yields a clean
+    // operator message + exit code 2 instead of a backtrace.
     let (mut graph, _store, metrics) =
-        build_and_load_llama(&args.model, runtime, /*verbose=*/ false);
+        match build_and_load_llama_checked(&args.model, runtime, /*verbose=*/ false) {
+            Ok(loaded) => loaded,
+            Err(e) => {
+                if let Some(hb) = hb {
+                    hb.stop();
+                }
+                eprintln!("error: {e}");
+                return 2;
+            }
+        };
     if let Some(hb) = hb {
         hb.stop();
     }
@@ -897,8 +925,22 @@ fn run_mode_c(args: RunArgs) -> i32 {
     } else {
         None
     };
+    // **M12.2** — the load boundary now returns a typed error
+    // instead of panicking. This is *outside* the forward
+    // `catch_unwind` (which still wraps `graph.execute` below);
+    // a bad/partial/unsupported checkpoint yields a clean
+    // operator message + exit code 2 instead of a backtrace.
     let (mut graph, _store, metrics) =
-        build_and_load_llama(&args.model, runtime, /*verbose=*/ false);
+        match build_and_load_llama_checked(&args.model, runtime, /*verbose=*/ false) {
+            Ok(loaded) => loaded,
+            Err(e) => {
+                if let Some(hb) = hb {
+                    hb.stop();
+                }
+                eprintln!("error: {e}");
+                return 2;
+            }
+        };
     if let Some(hb) = hb {
         hb.stop();
     }
@@ -1088,5 +1130,40 @@ fn run_mode_c(args: RunArgs) -> i32 {
         // Distinguished from runtime errors (1) and config
         // errors (2) so CI scripts can detect the difference.
         3
+    }
+}
+
+#[cfg(test)]
+mod m12_2_tests {
+    use super::*;
+
+    /// **M12.2** end-to-end: a model dir that exists (passes the
+    /// `model.exists` guard) but has no `config.json` makes the
+    /// load boundary fail at the config stage. `run()` must return
+    /// exit code 2 — not panic with a backtrace. CI-safe: no GPU,
+    /// no model, fails immediately at config parse.
+    #[test]
+    fn run_returns_exit_code_2_on_missing_config() {
+        let dir = std::env::temp_dir().join(format!(
+            "atenia_m12_2_run_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|x| x.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("tempdir");
+        let args = RunArgs {
+            model: dir.clone(),
+            mode: Mode::A,
+            seq: 1,
+            output: OutputFormat::Text,
+            cache_dir: None,
+            no_progress: true,
+        };
+        let code = run(args);
+        assert_eq!(code, 2, "missing config.json must map to exit code 2");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
