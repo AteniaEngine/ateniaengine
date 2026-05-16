@@ -107,9 +107,26 @@ but they bound what you should rely on.
 - **Single vendor.** NVIDIA CUDA only (sm_70+, Linux + Windows). Intel iGPU
   (v22), AMD ROCm (v23), Apple Metal (v24) are roadmap, not shipped. The core
   never assumes NVIDIA-specific behaviour, but multi-vendor is not built. The
-  non-blocking `cpu-only` CI job exists to *expose* any drift between this
-  stated invariant and reality; its first-run verdict (CI-green vs. tracked
-  known issue) is recorded here once observed.
+  non-blocking `cpu-only` CI job exposed a real build-system drift against
+  this invariant on its first run — see *Vendor-agnostic CPU-only build
+  drift* below.
+- **Vendor-agnostic CPU-only build drift (tracked, prioritised debt).** The
+  non-blocking `cpu-only` CI job (no CUDA installed) fails at **link**, not
+  compile: *"could not find native static library `batch_matmul`, perhaps an
+  -L flag is missing?"* (`cargo build --lib`, exit 101). Cause: `build.rs`
+  early-returns on a CUDA-less host (its "CPU-only build" path) and emits no
+  `rustc-link-lib` / `-L` directives, yet the Rust FFI side still declares the
+  CUDA kernel static libraries (`batch_matmul`, `atenia_kernels`,
+  `matmul_kernel`, `linear_cuda`, `fused_linear_silu`, `bf16_to_f32`)
+  unconditionally, so `rustc` cannot link the lib. This is a **build-system /
+  FFI drift against the declared vendor-agnostic invariant** (ROADMAP: "the
+  engine's core never assumes NVIDIA-specific behaviour"; ADR-003 "GPU as
+  inference baseline") — **not** a conceptual failure of the engine: the CUDA
+  path (the blocking `cuda-toolkit` job) is unaffected, and the `cpu-only`
+  job is non-blocking by design precisely to surface this. Remediation is a
+  dedicated future task (cfg-gate / stub / feature-split the CUDA FFI so a
+  genuine CPU-only build links); it is **not** the Phase 16 weight-mapping
+  item below, and it does not block M12.
 - **Weight-mapping family boundary still open.** The *config* boundary is
   closed (Phases 13–15), but `src/v17/loader/gguf_to_hf_naming.rs` and
   `src/nn/llama/gguf_weight_loading.rs` still carry

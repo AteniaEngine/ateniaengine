@@ -37,7 +37,14 @@ jobs:
         with:
           cuda: "12.5.0"
           method: network
-          sub-packages: '["nvcc","cudart","cudart-dev","cublas","cublas-dev"]'
+          # nvcc / cudart follow the `cuda-<pkg>-<ver>` apt naming.
+          # cuBLAS does NOT: it ships as `libcublas-<ver>` /
+          # `libcublas-dev-<ver>` in the CUDA repo, so it must go
+          # through `non-cuda-sub-packages` (installed verbatim with
+          # the version suffix). The first run failed precisely with
+          # `E: Unable to locate package cuda-cublas-12-5`.
+          sub-packages: '["nvcc","cudart","cudart-dev"]'
+          non-cuda-sub-packages: '["libcublas","libcublas-dev"]'
       - name: Rust toolchain (stable; edition 2024 needs >= 1.85)
         uses: dtolnay/rust-toolchain@stable
       - name: Cache cargo + target
