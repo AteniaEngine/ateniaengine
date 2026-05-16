@@ -403,9 +403,25 @@ pub fn build_and_load_llama(
         crate::tensor::DType::F32
     };
     mapper.set_bf16_kernel_active(Some(kernel_dtype == crate::tensor::DType::BF16));
+    // **M12.1** — surface a VRAM-probe failure to the operator
+    // instead of silently feeding the planner a `0` that looks
+    // identical to "GPU has no free VRAM". Value is still `0` on
+    // failure so placement is unchanged.
+    let free_vram_bytes =
+        match crate::gpu::safety::resource_check::probe_free_vram_bytes_detailed() {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!(
+                    "[ATENIA][warn] VRAM probe failed: {e}; treating free VRAM as 0 \
+                     — weights will be placed in RAM/Disk. If this box has an \
+                     NVIDIA GPU, check that `nvidia-smi` is on PATH."
+                );
+                0
+            }
+        };
     let plan_input = crate::gpu::tier_plan::TierPlanInput {
         tensors: metas,
-        free_vram_bytes: crate::gpu::safety::resource_check::probe_free_vram_bytes(),
+        free_vram_bytes,
         free_ram_bytes: crate::gpu::safety::resource_check::probe_free_ram_bytes(),
         model_total_bytes,
         total_ram_bytes: crate::gpu::safety::resource_check::probe_total_ram_bytes(),

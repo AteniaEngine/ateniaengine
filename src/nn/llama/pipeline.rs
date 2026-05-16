@@ -603,7 +603,22 @@ impl GenerationPipeline {
             // then dispatch to the multi-shard or single-shard
             // tier-aware loader.
             let free_ram_bytes = crate::gpu::safety::resource_check::probe_free_ram_bytes();
-            let free_vram_bytes = crate::gpu::safety::resource_check::probe_free_vram_bytes();
+            // **M12.1** — surface a VRAM-probe failure rather than
+            // silently treating it as "0 free VRAM" (which looks
+            // identical to a real GPU with no spare VRAM). Value
+            // stays `0` on failure so the tier plan is unchanged.
+            let free_vram_bytes =
+                match crate::gpu::safety::resource_check::probe_free_vram_bytes_detailed() {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!(
+                            "[ATENIA][warn] VRAM probe failed: {e}; treating free VRAM \
+                             as 0 — weights will be placed in RAM/Disk. If this box has \
+                             an NVIDIA GPU, check that `nvidia-smi` is on PATH."
+                        );
+                        0
+                    }
+                };
             let total_ram_bytes = crate::gpu::safety::resource_check::probe_total_ram_bytes();
 
             // **M8.3 / M8.4c** — kernel dtype for the VRAM-resident

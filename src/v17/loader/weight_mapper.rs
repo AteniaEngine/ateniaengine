@@ -667,16 +667,16 @@ impl WeightMapper {
                 let m8_bf16_kernel = self.m8_bf16_kernel_active();
 
                 let gpu = if m8_bf16_kernel {
-                    crate::cuda::bf16_to_f32::bf16_to_vram_no_upcast_from_raw_bytes(
+                    crate::cuda::bf16_to_f32::bf16_to_vram_no_upcast_from_raw_bytes_detailed(
                         entry.raw_bytes,
                         numel,
                         entry.shape,
                     )
-                    .ok_or_else(|| {
+                    .map_err(|err| {
                         LoaderError::InvalidFormat(format!(
                             "BF16-resident VRAM upload failed for '{}' \
-                             (M8.4 path)",
-                            entry.name
+                             (M8.4 path): {}",
+                            entry.name, err
                         ))
                     })?
                 } else {
@@ -950,17 +950,17 @@ impl WeightMapper {
                         );
                         drop(values);
 
-                        let gpu = crate::cuda::int8_to_bf16::int8_per_group_to_bf16_in_vram(
+                        let gpu = crate::cuda::int8_to_bf16::int8_per_group_to_bf16_in_vram_detailed(
                             &q,
                             &scales,
                             &current_shape,
                             M9_4_GROUP_SIZE,
                         )
-                        .ok_or_else(|| {
+                        .map_err(|err| {
                             LoaderError::InvalidFormat(format!(
                                 "INT8 per-group → BF16 VRAM upload failed for '{}' \
-                                 (M9.4 path, group_size = {})",
-                                entry.name, M9_4_GROUP_SIZE,
+                                 (M9.4 path, group_size = {}): {}",
+                                entry.name, M9_4_GROUP_SIZE, err
                             ))
                         })?;
 
@@ -997,14 +997,17 @@ impl WeightMapper {
                         let m8_bf16_kernel = self.m8_bf16_kernel_active();
 
                         let gpu = if m8_bf16_kernel {
-                            crate::cuda::bf16_to_f32::bf16_to_vram_no_upcast(&bits, &current_shape)
-                                .ok_or_else(|| {
-                                    LoaderError::InvalidFormat(format!(
-                                        "BF16-resident VRAM slow-path upload failed for '{}' \
-                                     (M8.4b path)",
-                                        entry.name
-                                    ))
-                                })?
+                            crate::cuda::bf16_to_f32::bf16_to_vram_no_upcast_detailed(
+                                &bits,
+                                &current_shape,
+                            )
+                            .map_err(|err| {
+                                LoaderError::InvalidFormat(format!(
+                                    "BF16-resident VRAM slow-path upload failed for '{}' \
+                                     (M8.4b path): {}",
+                                    entry.name, err
+                                ))
+                            })?
                         } else {
                             crate::cuda::bf16_to_f32::bf16_to_f32_resident_in_vram_detailed(
                                 &bits,
@@ -1466,13 +1469,16 @@ impl WeightMapper {
                 let bits: Vec<u16> = values.iter().map(|&v| (v.to_bits() >> 16) as u16).collect();
                 let m8_bf16_kernel = self.m8_bf16_kernel_active();
                 let gpu = if m8_bf16_kernel {
-                    crate::cuda::bf16_to_f32::bf16_to_vram_no_upcast(&bits, &current_shape)
-                        .ok_or_else(|| {
-                            LoaderError::InvalidFormat(format!(
-                                "BF16-resident GGUF VRAM upload failed for '{}'",
-                                name
-                            ))
-                        })?
+                    crate::cuda::bf16_to_f32::bf16_to_vram_no_upcast_detailed(
+                        &bits,
+                        &current_shape,
+                    )
+                    .map_err(|err| {
+                        LoaderError::InvalidFormat(format!(
+                            "BF16-resident GGUF VRAM upload failed for '{}': {}",
+                            name, err
+                        ))
+                    })?
                 } else {
                     crate::cuda::bf16_to_f32::bf16_to_f32_resident_in_vram_detailed(
                         &bits,

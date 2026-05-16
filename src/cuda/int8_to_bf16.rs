@@ -230,38 +230,111 @@ pub fn int8_per_group_to_bf16_in_vram(
     shape: &[usize],
     group_size: usize,
 ) -> Option<TensorGPU> {
-    if !super::cuda_available() {
-        return None;
-    }
-    if shape.is_empty() || group_size == 0 {
-        return None;
-    }
+    int8_per_group_to_bf16_in_vram_detailed(q, scales, shape, group_size).ok()
+}
+
+/// **M12.1** — `Result`-returning sibling of
+/// [`int8_per_group_to_bf16_in_vram`]. Success path
+/// bit-identical (same counter, same `TensorGPU`); on failure
+/// returns the shared [`crate::cuda::bf16_to_f32::Bf16UploadError`]
+/// carrying the failing stage, the real `cudaMemcpy` /
+/// kernel-launch rc string, shape/numel and live VRAM
+/// free/total. The legacy `Option` wrapper above preserves every
+/// existing caller and test.
+pub fn int8_per_group_to_bf16_in_vram_detailed(
+    q: &[i8],
+    scales: &[f32],
+    shape: &[usize],
+    group_size: usize,
+) -> Result<TensorGPU, crate::cuda::bf16_to_f32::Bf16UploadError> {
+    use crate::cuda::bf16_to_f32::{Bf16UploadError, cudart_error};
 
     let numel: usize = shape.iter().product();
+    if !super::cuda_available() {
+        return Err(Bf16UploadError::new(
+            "cuda_unavailable",
+            "CUDA engine unavailable",
+            shape,
+            numel,
+        ));
+    }
+    if shape.is_empty() || group_size == 0 {
+        return Err(Bf16UploadError::new(
+            "validate_shape",
+            format!("shape.is_empty()={} group_size={group_size}", shape.is_empty()),
+            shape,
+            numel,
+        ));
+    }
     if q.len() != numel {
-        return None;
+        return Err(Bf16UploadError::new(
+            "validate_shape",
+            format!("q.len()={} != product(shape)={numel}", q.len()),
+            shape,
+            numel,
+        ));
     }
     let n = *shape.last().unwrap();
     if n == 0 {
-        return None;
+        return Err(Bf16UploadError::new(
+            "validate_shape",
+            "shape last dim (n) == 0",
+            shape,
+            numel,
+        ));
     }
     let k: usize = numel / n;
     let num_groups = (k + group_size - 1) / group_size;
     if scales.len() != num_groups * n {
-        return None;
+        return Err(Bf16UploadError::new(
+            "validate_shape",
+            format!(
+                "scales.len()={} != num_groups*n={}",
+                scales.len(),
+                num_groups * n
+            ),
+            shape,
+            numel,
+        ));
     }
     if numel == 0 {
-        return None;
+        return Err(Bf16UploadError::new(
+            "validate_shape",
+            "numel == 0",
+            shape,
+            numel,
+        ));
     }
 
     let bytes_int8 = numel;
     let bytes_scales = scales.len() * std::mem::size_of::<f32>();
 
     let mut scratch = ScratchAllocs::new();
-    let d_int8 = scratch.alloc(bytes_int8)?;
-    let d_scales = scratch.alloc(bytes_scales)?;
+    let d_int8 = scratch.alloc(bytes_int8).ok_or_else(|| {
+        Bf16UploadError::new(
+            "alloc_scratch_int8",
+            "ScratchAllocs::alloc failed (VRAM staging, INT8 bytes)",
+            shape,
+            numel,
+        )
+    })?;
+    let d_scales = scratch.alloc(bytes_scales).ok_or_else(|| {
+        Bf16UploadError::new(
+            "alloc_scratch_scales",
+            "ScratchAllocs::alloc failed (VRAM staging, scales)",
+            shape,
+            numel,
+        )
+    })?;
 
-    let gpu_bf16 = TensorGPU::new_bf16(numel).ok()?;
+    let gpu_bf16 = TensorGPU::new_bf16(numel).map_err(|_| {
+        Bf16UploadError::new(
+            "alloc_bf16",
+            "TensorGPU::new_bf16 failed (VRAM alloc for BF16 destination)",
+            shape,
+            numel,
+        )
+    })?;
 
     unsafe {
         let rc = cudaMemcpy(
@@ -271,7 +344,12 @@ pub fn int8_per_group_to_bf16_in_vram(
             CUDA_MEMCPY_HOST_TO_DEVICE,
         );
         if rc != 0 {
-            return None;
+            return Err(Bf16UploadError::new(
+                "memcpy_h2d_int8",
+                format!("cudaMemcpy H2D (INT8) failed: {}", cudart_error(rc)),
+                shape,
+                numel,
+            ));
         }
         let rc = cudaMemcpy(
             d_scales,
@@ -280,7 +358,12 @@ pub fn int8_per_group_to_bf16_in_vram(
             CUDA_MEMCPY_HOST_TO_DEVICE,
         );
         if rc != 0 {
-            return None;
+            return Err(Bf16UploadError::new(
+                "memcpy_h2d_scales",
+                format!("cudaMemcpy H2D (scales) failed: {}", cudart_error(rc)),
+                shape,
+                numel,
+            ));
         }
 
         let rc = int8_to_bf16_per_group_launch_device(
@@ -292,12 +375,20 @@ pub fn int8_per_group_to_bf16_in_vram(
             group_size as c_int,
         );
         if rc != 0 {
-            return None;
+            return Err(Bf16UploadError::new(
+                "kernel_launch",
+                format!(
+                    "int8_to_bf16_per_group_launch_device failed: {}",
+                    cudart_error(rc)
+                ),
+                shape,
+                numel,
+            ));
         }
     }
 
     INT8_RESIDENT_COUNT.fetch_add(1, Ordering::Relaxed);
-    Some(gpu_bf16)
+    Ok(gpu_bf16)
 }
 
 #[cfg(test)]
@@ -388,5 +479,33 @@ mod tests {
                 bits[idx], expected_bf16,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod m12_1_tests {
+    use super::*;
+
+    /// M12.1: `int8_per_group_to_bf16_in_vram` legacy `Option`
+    /// equals `_detailed().ok()`, and `_detailed` always returns a
+    /// structured `Bf16UploadError` (never an opaque `None`).
+    /// Portable: no-CUDA → `cuda_unavailable`; CUDA → invalid input
+    /// → `validate_shape`. `numel` is computed before the CUDA
+    /// check so the error carries it in both environments.
+    #[test]
+    fn int8_per_group_detailed_mirrors_legacy_and_is_structured() {
+        let q = vec![0i8; 3];
+        let scales = vec![1.0f32; 2];
+        let shape = [2usize, 2]; // product 4 != q.len() 3 → must fail
+        assert!(int8_per_group_to_bf16_in_vram(&q, &scales, &shape, 128).is_none());
+        let err = int8_per_group_to_bf16_in_vram_detailed(&q, &scales, &shape, 128)
+            .expect_err("invalid input must be a structured error, not Ok");
+        assert_eq!(err.numel, 4);
+        assert!(!err.stage.is_empty());
+        assert!(!err.to_string().is_empty());
+        assert_eq!(
+            int8_per_group_to_bf16_in_vram(&q, &scales, &shape, 128).is_none(),
+            int8_per_group_to_bf16_in_vram_detailed(&q, &scales, &shape, 128).is_err(),
+        );
     }
 }

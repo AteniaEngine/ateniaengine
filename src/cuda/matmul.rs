@@ -1210,14 +1210,26 @@ pub fn cuda_matmul_disk_streamed_bf16(
     //    prereq planner change (`DISK_PIPELINE_STAGING_BYTES`) has
     //    already reserved 270 MiB of VRAM headroom for exactly this
     //    allocation, so it should not race the resident plan.
-    let staging_gpu = match crate::cuda::bf16_to_f32::bf16_to_vram_no_upcast_from_raw_bytes(
-        &raw_bytes,
-        handle.numel(),
-        &[k, n],
-    ) {
-        Some(g) => g,
-        None => return false,
-    };
+    // **M12.1** — surfacing only: control flow unchanged (failure
+    // still `return false` so the caller's existing fallback is
+    // untouched), but the detailed variant lets us print the root
+    // cause (stage / rc / shape / VRAM free·total) instead of a
+    // silent disk-streamed-staging drop.
+    let staging_gpu =
+        match crate::cuda::bf16_to_f32::bf16_to_vram_no_upcast_from_raw_bytes_detailed(
+            &raw_bytes,
+            handle.numel(),
+            &[k, n],
+        ) {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!(
+                    "[ATENIA][warn] disk-streamed BF16 staging upload failed \
+                     (matmul falls back): {e}"
+                );
+                return false;
+            }
+        };
 
     // 4. Wrap as a transient `Tensor` and dispatch through M8.4c
     //    Path B (BF16 weight in VRAM + F32 transient upcast +

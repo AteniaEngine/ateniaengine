@@ -99,13 +99,64 @@ pub fn probe_total_ram_bytes() -> u64 {
     sys.total_memory()
 }
 
-/// Probe free VRAM via `nvidia-smi --query-gpu=memory.free`. Spawns
-/// a child process; cost is ~50-300 ms on Windows. Intended for
-/// use at upload time (once per session), not in a hot loop.
-/// Returns 0 if nvidia-smi is unavailable, malformed output, or
-/// any other failure — caller treats this as "no VRAM" and
-/// degrades to CPU.
-pub fn probe_free_vram_bytes() -> u64 {
+/// **M12.1** — why a VRAM probe yielded no value. Lets callers
+/// distinguish "GPU genuinely reports 0 free" / "nvidia-smi
+/// missing" / "nvidia-smi errored" / "unparseable output" instead
+/// of the legacy ambiguous `0`.
+#[derive(Debug, Clone)]
+pub enum VramProbeError {
+    /// `nvidia-smi` could not be spawned (not installed / not on PATH).
+    NvidiaSmiUnavailable,
+    /// `nvidia-smi` ran but exited non-success.
+    NvidiaSmiFailed { code: Option<i32> },
+    /// `nvidia-smi` ran successfully but its output was not a
+    /// parseable free-MiB integer.
+    MalformedOutput { raw: String },
+}
+
+impl std::fmt::Display for VramProbeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VramProbeError::NvidiaSmiUnavailable => {
+                write!(f, "nvidia-smi could not be spawned (not installed or not on PATH)")
+            }
+            VramProbeError::NvidiaSmiFailed { code } => {
+                write!(f, "nvidia-smi exited with non-success status (code {code:?})")
+            }
+            VramProbeError::MalformedOutput { raw } => write!(
+                f,
+                "nvidia-smi output not parseable as free-MiB integer: {:?}",
+                raw.trim()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for VramProbeError {}
+
+/// Pure parser for the `nvidia-smi --query-gpu=memory.free
+/// --format=csv,noheader,nounits` stdout (expected: `"8064"` MiB
+/// on the first line). Exposed for unit testing without spawning
+/// a process — same "pure function for the testable core" pattern
+/// as [`decide`].
+fn parse_nvidia_smi_free_bytes(stdout: &str) -> Result<u64, VramProbeError> {
+    stdout
+        .trim()
+        .lines()
+        .next()
+        .and_then(|l| l.trim().parse::<u64>().ok())
+        .map(|mib| mib * 1024 * 1024)
+        .ok_or_else(|| VramProbeError::MalformedOutput {
+            raw: stdout.to_string(),
+        })
+}
+
+/// **M12.1** — `Result`-returning sibling of
+/// [`probe_free_vram_bytes`]. Same `nvidia-smi` invocation; on
+/// failure the caller learns *which* failure (missing / errored /
+/// malformed) so it can warn the operator instead of silently
+/// treating a probe failure as "0 free VRAM".
+pub fn probe_free_vram_bytes_detailed() -> Result<u64, VramProbeError> {
     let out = match Command::new("nvidia-smi")
         .args(&[
             "--query-gpu=memory.free",
@@ -116,17 +167,30 @@ pub fn probe_free_vram_bytes() -> u64 {
         .output()
     {
         Ok(o) if o.status.success() => o,
-        _ => return 0,
+        Ok(o) => {
+            return Err(VramProbeError::NvidiaSmiFailed {
+                code: o.status.code(),
+            });
+        }
+        Err(_) => return Err(VramProbeError::NvidiaSmiUnavailable),
     };
-    let s = String::from_utf8_lossy(&out.stdout);
-    // Expected output: "8064" (MiB). Trim trailing newline / spaces
-    // and parse.
-    s.trim()
-        .lines()
-        .next()
-        .and_then(|l| l.trim().parse::<u64>().ok())
-        .map(|mib| mib * 1024 * 1024)
-        .unwrap_or(0)
+    parse_nvidia_smi_free_bytes(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// Probe free VRAM via `nvidia-smi --query-gpu=memory.free`. Spawns
+/// a child process; cost is ~50-300 ms on Windows. Intended for
+/// use at upload time (once per session), not in a hot loop.
+/// Returns 0 if nvidia-smi is unavailable, malformed output, or
+/// any other failure — caller treats this as "no VRAM" and
+/// degrades to CPU.
+///
+/// **M12.1** — this is now a thin `unwrap_or(0)` wrapper over
+/// [`probe_free_vram_bytes_detailed`]; the `0`-on-any-failure
+/// contract is preserved bit-for-bit so the tier planner's
+/// placement decisions are unchanged. Operator-facing callers
+/// should prefer the `_detailed` variant to surface the cause.
+pub fn probe_free_vram_bytes() -> u64 {
+    probe_free_vram_bytes_detailed().unwrap_or(0)
 }
 
 /// Decide whether a GPU operation requesting `required_ram_mb` of
@@ -310,5 +374,47 @@ mod tests {
         // result is DegradeToCpu — VRAM is never checked.
         let s = snapshot(4, 100, 4);
         assert_eq!(decide(s), SafetyDecision::DegradeToCpu);
+    }
+}
+
+#[cfg(test)]
+mod m12_1_tests {
+    use super::*;
+
+    #[test]
+    fn parse_nvidia_smi_free_bytes_pure() {
+        assert_eq!(
+            parse_nvidia_smi_free_bytes("8064\n").unwrap(),
+            8064u64 * 1024 * 1024
+        );
+        assert_eq!(
+            parse_nvidia_smi_free_bytes(" 512 ").unwrap(),
+            512u64 * 1024 * 1024
+        );
+        assert!(matches!(
+            parse_nvidia_smi_free_bytes(""),
+            Err(VramProbeError::MalformedOutput { .. })
+        ));
+        assert!(matches!(
+            parse_nvidia_smi_free_bytes("not-a-number"),
+            Err(VramProbeError::MalformedOutput { .. })
+        ));
+        // Multi-line: first line wins (matches legacy `.lines().next()`).
+        assert_eq!(
+            parse_nvidia_smi_free_bytes("1024\n2048\n").unwrap(),
+            1024u64 * 1024 * 1024
+        );
+    }
+
+    /// The legacy `u64` probe must remain bit-for-bit
+    /// `detailed().unwrap_or(0)` so the tier planner's placement
+    /// is unchanged. Environment-portable: holds whatever
+    /// nvidia-smi does on the runner.
+    #[test]
+    fn legacy_probe_is_unwrap_or_zero_of_detailed() {
+        assert_eq!(
+            probe_free_vram_bytes(),
+            probe_free_vram_bytes_detailed().unwrap_or(0)
+        );
     }
 }

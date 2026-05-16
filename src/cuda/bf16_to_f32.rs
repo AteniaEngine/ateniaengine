@@ -107,7 +107,12 @@ pub struct Bf16UploadError {
 }
 
 impl Bf16UploadError {
-    fn new(stage: &'static str, message: impl Into<String>, shape: &[usize], numel: usize) -> Self {
+    pub(crate) fn new(
+        stage: &'static str,
+        message: impl Into<String>,
+        shape: &[usize],
+        numel: usize,
+    ) -> Self {
         let (free_vram_bytes, total_vram_bytes) = cuda_mem_info().unwrap_or((0, 0));
         Self {
             stage,
@@ -161,7 +166,7 @@ fn cuda_mem_info() -> Option<(usize, usize)> {
     (rc == 0).then_some((free, total))
 }
 
-fn cudart_error(rc: c_int) -> String {
+pub(crate) fn cudart_error(rc: c_int) -> String {
     let ptr = unsafe { cudaGetErrorString(rc) };
     if ptr.is_null() {
         return format!("CUDA error code {rc}");
@@ -600,23 +605,57 @@ pub fn bf16_to_f32_resident_in_vram_from_raw_bytes_detailed(
 /// counter is **not** incremented on failure — same convention
 /// as the M6 / M7 fast-path counters.
 pub fn bf16_to_vram_no_upcast(src: &[u16], shape: &[usize]) -> Option<TensorGPU> {
-    if !super::cuda_available() {
-        return None;
-    }
+    bf16_to_vram_no_upcast_detailed(src, shape).ok()
+}
+
+/// **M12.1** — `Result`-returning sibling of
+/// [`bf16_to_vram_no_upcast`]. Same success path (bit-identical:
+/// same counter increment, same `TensorGPU`); on failure returns
+/// a [`Bf16UploadError`] carrying the stage, shape, numel and the
+/// live VRAM free/total so the operator sees the root cause
+/// instead of an opaque `None`. The legacy `Option` wrapper above
+/// preserves every existing caller and test.
+pub fn bf16_to_vram_no_upcast_detailed(
+    src: &[u16],
+    shape: &[usize],
+) -> Result<TensorGPU, Bf16UploadError> {
     let numel: usize = shape.iter().product();
+    if !super::cuda_available() {
+        return Err(Bf16UploadError::new(
+            "cuda_unavailable",
+            "CUDA engine unavailable",
+            shape,
+            numel,
+        ));
+    }
     if src.len() != numel {
-        return None;
+        return Err(Bf16UploadError::new(
+            "validate_shape",
+            format!("src.len()={} != product(shape)={}", src.len(), numel),
+            shape,
+            numel,
+        ));
     }
 
     // `TensorGPU::new_bf16_from_cpu` does the alloc + H→D byte
     // copy in one shot; on any failure the partially-constructed
     // device buffer is freed by `InnerGpuPtr::Drop` before the
-    // `Err(())` surfaces, so this function does not leak VRAM
-    // even if the engine call returns mid-upload.
-    let gpu = TensorGPU::new_bf16_from_cpu(src).ok()?;
+    // error surfaces, so this function does not leak VRAM even if
+    // the engine call returns mid-upload. The engine returns
+    // `Err(())` (no rc), so the message names the stage; the
+    // VRAM free/total captured by `Bf16UploadError::new` lets the
+    // operator distinguish "VRAM exhausted" from other failures.
+    let gpu = TensorGPU::new_bf16_from_cpu(src).map_err(|_| {
+        Bf16UploadError::new(
+            "alloc_h2d_bf16",
+            "TensorGPU::new_bf16_from_cpu failed (VRAM alloc or H2D copy)",
+            shape,
+            numel,
+        )
+    })?;
 
     BF16_RESIDENT_COUNT.fetch_add(1, Ordering::Relaxed);
-    Some(gpu)
+    Ok(gpu)
 }
 
 /// **M8.1** — zero-host-copy variant of [`bf16_to_vram_no_upcast`]
@@ -640,16 +679,48 @@ pub fn bf16_to_vram_no_upcast_from_raw_bytes(
     numel: usize,
     shape: &[usize],
 ) -> Option<TensorGPU> {
+    bf16_to_vram_no_upcast_from_raw_bytes_detailed(raw_bytes, numel, shape).ok()
+}
+
+/// **M12.1** — `Result`-returning sibling of
+/// [`bf16_to_vram_no_upcast_from_raw_bytes`]. Success path
+/// bit-identical; failures carry the root cause via
+/// [`Bf16UploadError`]. The legacy `Option` wrapper above
+/// preserves all existing callers/tests.
+pub fn bf16_to_vram_no_upcast_from_raw_bytes_detailed(
+    raw_bytes: &[u8],
+    numel: usize,
+    shape: &[usize],
+) -> Result<TensorGPU, Bf16UploadError> {
     if !super::cuda_available() {
-        return None;
+        return Err(Bf16UploadError::new(
+            "cuda_unavailable",
+            "CUDA engine unavailable",
+            shape,
+            numel,
+        ));
     }
     let bytes_bf16 = numel * std::mem::size_of::<u16>();
     if raw_bytes.len() != bytes_bf16 {
-        return None;
+        return Err(Bf16UploadError::new(
+            "validate_shape",
+            format!(
+                "raw_bytes.len()={} != numel*2={}",
+                raw_bytes.len(),
+                bytes_bf16
+            ),
+            shape,
+            numel,
+        ));
     }
     let shape_numel: usize = shape.iter().product();
     if shape_numel != numel {
-        return None;
+        return Err(Bf16UploadError::new(
+            "validate_shape",
+            format!("product(shape)={shape_numel} != numel={numel}"),
+            shape,
+            numel,
+        ));
     }
 
     // Reinterpret the raw bytes as `&[u16]` and route through
@@ -666,9 +737,16 @@ pub fn bf16_to_vram_no_upcast_from_raw_bytes(
     //     buffers are page-aligned so this trivially holds.
     let bits: &[u16] =
         unsafe { std::slice::from_raw_parts(raw_bytes.as_ptr() as *const u16, numel) };
-    let gpu = TensorGPU::new_bf16_from_cpu(bits).ok()?;
+    let gpu = TensorGPU::new_bf16_from_cpu(bits).map_err(|_| {
+        Bf16UploadError::new(
+            "alloc_h2d_bf16",
+            "TensorGPU::new_bf16_from_cpu failed (VRAM alloc or H2D copy)",
+            shape,
+            numel,
+        )
+    })?;
     BF16_RESIDENT_COUNT.fetch_add(1, Ordering::Relaxed);
-    Some(gpu)
+    Ok(gpu)
 }
 
 // ===========================================================================
@@ -955,5 +1033,47 @@ mod tests {
         assert_eq!(gpu.dtype(), DType::F32);
         let back = gpu.to_cpu().expect("F32 to_cpu");
         assert_eq!(back, data);
+    }
+}
+
+#[cfg(test)]
+mod m12_1_tests {
+    use super::*;
+
+    /// M12.1 contract: the legacy `Option` wrapper is exactly
+    /// `_detailed().ok()`, and `_detailed` never returns an opaque
+    /// failure — it always carries a structured `Bf16UploadError`
+    /// (stage / shape / numel). Portable across environments: with
+    /// no CUDA the error stage is `cuda_unavailable`; with CUDA the
+    /// invalid shape yields `validate_shape`. Either way the
+    /// wrapper==detailed.ok() invariant and the structured-error
+    /// guarantee hold without needing a GPU.
+    #[test]
+    fn no_upcast_detailed_mirrors_legacy_and_is_structured() {
+        let src = vec![0u16; 3];
+        let shape = [2usize, 2]; // product 4 != src.len() 3 → must fail
+        assert!(bf16_to_vram_no_upcast(&src, &shape).is_none());
+        let err = bf16_to_vram_no_upcast_detailed(&src, &shape)
+            .expect_err("invalid input must be a structured error, not Ok");
+        assert_eq!(err.shape, shape.to_vec());
+        assert_eq!(err.numel, 4);
+        assert!(!err.stage.is_empty());
+        assert!(!err.to_string().is_empty());
+        assert_eq!(
+            bf16_to_vram_no_upcast(&src, &shape).is_none(),
+            bf16_to_vram_no_upcast_detailed(&src, &shape).is_err(),
+            "legacy Option must equal _detailed().ok()"
+        );
+    }
+
+    #[test]
+    fn no_upcast_from_raw_bytes_detailed_mirrors_legacy_and_is_structured() {
+        let raw = vec![0u8; 4]; // 2 u16; numel says 4 → mismatch
+        let shape = [2usize, 2];
+        assert!(bf16_to_vram_no_upcast_from_raw_bytes(&raw, 4, &shape).is_none());
+        let err = bf16_to_vram_no_upcast_from_raw_bytes_detailed(&raw, 4, &shape)
+            .expect_err("invalid input must be a structured error");
+        assert_eq!(err.numel, 4);
+        assert!(!err.to_string().is_empty());
     }
 }
