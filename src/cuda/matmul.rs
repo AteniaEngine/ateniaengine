@@ -1,7 +1,7 @@
 use std::ffi::c_void;
 use std::os::raw::c_int;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::amg::nodes::NodeType;
 use crate::cuda::pool_helpers::with_pooled_device_buffers;
@@ -51,8 +51,40 @@ const CUDA_MEMCPY_DEVICE_TO_HOST: c_int = 2;
 /// provide the three fixed-size blocks this roundtrip path needs.
 /// If both CUDA roundtrip paths fail, it returns the plain CPU matmul
 /// result instead of aborting generation.
+/// Process-global latch: flips to `true` the first time `cuda_matmul`
+/// silently degrades to the CPU path. Prevents the decode loop from
+/// emitting one warning per matmul (~thousands of lines on a real
+/// generation).
+static CUDA_CPU_FALLBACK_WARNED: AtomicBool = AtomicBool::new(false);
+
+/// Returns `true` exactly once per `flag`, `false` on every later
+/// call. Pure (`flag`-parameterised) so the test can exercise the
+/// once-only contract against a fresh local `AtomicBool` instead of
+/// the shared process-global one.
+fn take_first_warn(flag: &AtomicBool) -> bool {
+    flag.compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
+}
+
 pub fn cuda_matmul(a: &Tensor, b: &Tensor, m: usize, k: usize, n: usize) -> Tensor {
-    try_cuda_matmul_roundtrip(a, b, m, k, n).unwrap_or_else(|| a.matmul(b))
+    try_cuda_matmul_roundtrip(a, b, m, k, n).unwrap_or_else(|| {
+        // **M12.4 H1** — the terminal `None` (both the pooled and the
+        // non-pooled CUDA roundtrip failed) used to drop to the CPU
+        // path completely silently. Surface it once per run so the
+        // operator knows throughput is degraded; the result is still
+        // the exact same CPU matmul, so control flow / numerics are
+        // unchanged. Per-call detail stays behind
+        // `ATENIA_GPU_FALLBACK_TRACE=1` (see `try_cuda_matmul_roundtrip`).
+        if take_first_warn(&CUDA_CPU_FALLBACK_WARNED) {
+            eprintln!(
+                "[ATENIA][warn] CUDA matmul unavailable; falling back to CPU \
+                 for this and all subsequent matmuls this run (degraded \
+                 throughput). Set ATENIA_GPU_FALLBACK_TRACE=1 for per-call \
+                 detail."
+            );
+        }
+        a.matmul(b)
+    })
 }
 
 /// Try the CPU-path CUDA matmul without panicking.
@@ -1995,5 +2027,29 @@ mod cuda_matmul_disk_streamed_tests {
             after, before,
             "counter must not advance on precondition failure"
         );
+    }
+}
+
+// ===========================================================================
+// M12.4 H1 — once-per-run CPU-fallback warning latch
+// ===========================================================================
+
+#[cfg(test)]
+mod m12_4 {
+    use super::take_first_warn;
+    use std::sync::atomic::AtomicBool;
+
+    /// The latch must fire exactly once: the first observation of a
+    /// silent CUDA→CPU degrade emits the warning, every later matmul
+    /// in the same run stays quiet (no per-call decode-loop spam).
+    /// Exercised against a fresh local flag so the shared
+    /// process-global `CUDA_CPU_FALLBACK_WARNED` (which other lib
+    /// tests may have already tripped) cannot make this flaky.
+    #[test]
+    fn take_first_warn_is_true_once_then_false() {
+        let flag = AtomicBool::new(false);
+        assert!(take_first_warn(&flag), "first call must warn");
+        assert!(!take_first_warn(&flag), "second call must stay silent");
+        assert!(!take_first_warn(&flag), "third call must stay silent");
     }
 }

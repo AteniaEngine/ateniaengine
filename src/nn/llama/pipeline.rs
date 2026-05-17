@@ -215,7 +215,7 @@ impl std::fmt::Display for PipelineError {
             PipelineError::Io(e) => write!(f, "pipeline io: {e}"),
             PipelineError::Config(e) => write!(f, "pipeline config: {e}"),
             PipelineError::Tokenizer(e) => write!(f, "pipeline tokenizer: {e}"),
-            PipelineError::Loader(e) => write!(f, "pipeline loader: {e:?}"),
+            PipelineError::Loader(e) => write!(f, "pipeline loader: {e}"),
             PipelineError::WeightStore(e) => write!(f, "pipeline weight_store: {e}"),
             PipelineError::Generate(e) => write!(f, "pipeline generate: {e}"),
             PipelineError::MissingFile(s) => write!(f, "pipeline: required file not found: {s}"),
@@ -380,6 +380,27 @@ fn gguf_tensor_metas(
         });
     }
     Ok(metas)
+}
+
+/// **M12.4 H2** — render the M6 legacy-residency summary line.
+/// Pulled out as a pure function so the degrade-visibility contract
+/// (failed-layer count appended when `failed > 0`) is unit-testable
+/// without a live `WeightStore`. The success-only shape is
+/// byte-identical to the pre-M12.4 line.
+fn format_m6_residency_summary(total: &UploadReport, failed: usize) -> String {
+    let mut s = format!(
+        "[M6] Residency total: {} params, {:.2} GiB in VRAM, {:.2} GiB RAM freed",
+        total.params_uploaded,
+        total.vram_bytes_used as f64 / 1024.0_f64.powi(3),
+        total.ram_bytes_freed as f64 / 1024.0_f64.powi(3),
+    );
+    if failed > 0 {
+        s.push_str(&format!(
+            "; {failed} layer(s) failed and stayed on CPU (degraded — see \
+             the [M6] Layer … upload failed lines above)"
+        ));
+    }
+    s
 }
 
 impl GenerationPipeline {
@@ -928,6 +949,13 @@ impl GenerationPipeline {
         if !tier_aware && std::env::var("ATENIA_GPU_RESIDENCY").as_deref() == Ok("1") {
             let n_layers: usize = 5;
             let mut total_report = UploadReport::default();
+            // **M12.4 H2** — count layers that failed to upload so the
+            // summary line can surface the degrade. Without this an
+            // operator scanning logs sees "Residency total: N params"
+            // and may not notice that some layers silently stayed on
+            // CPU. Bounded loop (≤5), one-time at load — not a hot
+            // path, so the per-layer line stays as-is.
+            let mut failed: usize = 0;
             for layer_idx in 0..n_layers {
                 match store.upload_layer_bf16_to_vram(layer_idx) {
                     Ok(report) => {
@@ -943,6 +971,7 @@ impl GenerationPipeline {
                         total_report.ram_bytes_freed += report.ram_bytes_freed;
                     }
                     Err(e) => {
+                        failed += 1;
                         eprintln!(
                             "[M6] Layer {} upload failed: {} \
                              — staying on CPU",
@@ -951,13 +980,7 @@ impl GenerationPipeline {
                     }
                 }
             }
-            eprintln!(
-                "[M6] Residency total: {} params, {:.2} GiB in VRAM, \
-                 {:.2} GiB RAM freed",
-                total_report.params_uploaded,
-                total_report.vram_bytes_used as f64 / 1024.0_f64.powi(3),
-                total_report.ram_bytes_freed as f64 / 1024.0_f64.powi(3),
-            );
+            eprintln!("{}", format_m6_residency_summary(&total_report, failed));
         }
 
         Ok(Self {
@@ -1459,5 +1482,56 @@ mod tests {
             "[M11.D.4] TinyLlama Q4_K_M GGUF one-token generation: token_id={}, text=\"{}\"",
             sink.tokens[0].token_id, text
         );
+    }
+
+    // ----- M12.4 -----
+
+    /// **M12.4 H2** — success-only summary is byte-identical to the
+    /// pre-M12.4 line (no behavioural drift for a healthy upload).
+    #[test]
+    fn m6_residency_summary_no_failures_is_unchanged() {
+        let total = UploadReport {
+            params_uploaded: 1234,
+            vram_bytes_used: 2 * 1024 * 1024 * 1024,
+            ram_bytes_freed: 1024 * 1024 * 1024,
+        };
+        let s = format_m6_residency_summary(&total, 0);
+        assert_eq!(
+            s,
+            "[M6] Residency total: 1234 params, 2.00 GiB in VRAM, 1.00 GiB RAM freed"
+        );
+        assert!(!s.contains("failed"));
+    }
+
+    /// **M12.4 H2** — a partial degrade appends an explicit
+    /// failed-layer count so the operator sees it in the summary.
+    #[test]
+    fn m6_residency_summary_appends_failed_count() {
+        let total = UploadReport {
+            params_uploaded: 10,
+            vram_bytes_used: 0,
+            ram_bytes_freed: 0,
+        };
+        let s = format_m6_residency_summary(&total, 3);
+        assert!(s.starts_with("[M6] Residency total: 10 params,"));
+        assert!(s.contains("3 layer(s) failed and stayed on CPU"));
+    }
+
+    /// **M12.4 H5** — `PipelineError::Loader` now renders the inner
+    /// `LoaderError` via `Display` (human text), not the raw `{:?}`
+    /// debug form, so a CLI load failure is operator-readable.
+    #[test]
+    fn pipeline_error_loader_uses_display_not_debug() {
+        let e = PipelineError::Loader(LoaderError::InvalidFormat(
+            "config.json missing required field 'hidden_size'".to_string(),
+        ));
+        let s = e.to_string();
+        assert_eq!(
+            s,
+            "pipeline loader: invalid format: config.json missing required \
+             field 'hidden_size'"
+        );
+        // Must not leak the Rust enum-debug shape.
+        assert!(!s.contains("InvalidFormat("));
     }
 }

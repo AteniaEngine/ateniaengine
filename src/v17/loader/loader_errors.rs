@@ -39,3 +39,38 @@ pub enum LoaderError {
         actual: Vec<usize>,
     },
 }
+
+/// **M12.4 H5** — operator-readable rendering. Before this, the only
+/// way a `LoaderError` reached a CLI surface was through
+/// `PipelineError::Loader`'s `{:?}` debug form, which leaked the
+/// raw Rust enum shape (`InvalidFormat("…")`) instead of a sentence.
+/// Each variant already carries a human-facing inner string.
+impl std::fmt::Display for LoaderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LoaderError::FileNotFound(p) => write!(f, "file not found: {p}"),
+            LoaderError::SizeMismatch { expected, actual } => {
+                write!(f, "size mismatch: expected {expected} bytes, got {actual}")
+            }
+            LoaderError::InsufficientMemory {
+                required,
+                available,
+            } => write!(
+                f,
+                "insufficient memory: need {required} bytes, {available} available"
+            ),
+            LoaderError::PolicyDenied(s) => write!(f, "policy denied: {s}"),
+            LoaderError::IoError(s) => write!(f, "io error: {s}"),
+            LoaderError::InvalidFormat(s) => write!(f, "invalid format: {s}"),
+            LoaderError::UnsupportedDType(s) => write!(f, "unsupported dtype: {s}"),
+            LoaderError::ShapeMismatch {
+                tensor_name,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "shape mismatch for tensor '{tensor_name}': expected {expected:?}, got {actual:?}"
+            ),
+        }
+    }
+}

@@ -331,6 +331,13 @@ pub fn run(args: GenerateArgs) -> i32 {
                 hb.stop();
             }
             eprintln!("error: failed to load model: {e}");
+            // **M12.4 H5** — a raw error is not actionable on its
+            // own; point the operator at the usual causes.
+            eprintln!(
+                "hint: verify the model path exists and contains either a \
+                 valid config.json plus weight files, or exactly one .gguf \
+                 file."
+            );
             return 1;
         }
     };
