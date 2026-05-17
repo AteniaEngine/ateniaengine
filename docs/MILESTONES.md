@@ -1,8 +1,9 @@
 # Milestones
 
 A chronological narrative of every shipped milestone in Atenia Engine, from the
-first native graph primitives (M1) through the GGUF production unlock (M11.D.5)
-and the adapter-layer migration (Phases 11–12).
+first native graph primitives (M1) through the GGUF production unlock (M11.D.5),
+the adapter-layer migration (Phases 11–15), and the M12 operability-hardening
+series.
 
 This document is the *history*. For where the engine stands **right now** —
 what is cabled to production signals versus what is still scaffolding — see
@@ -321,7 +322,71 @@ symmetric **weight-mapping** boundary (`gguf_to_hf_naming.rs` /
 **Phase 16** candidate. A 2-tier CI (blocking `cuda-toolkit` + visible
 non-blocking `cpu-only`, the latter guarding the vendor-agnostic
 invariant) plus this doc refresh is the consolidation pass taken before
-M12. See [STATUS.md](./STATUS.md).
+M12. The M12 series that followed is below. See [STATUS.md](./STATUS.md).
+
+---
+
+## M12 — Operability & diagnostics hardening
+
+A tightly-scoped, sub-phased series that made the engine surface *why* it
+fails instead of swallowing the cause. Each sub-phase followed the same
+contract: audit → microplan → gate → implement → local tests → single
+commit → CI. No control-flow, numeric, tiering, or placement changes; the
+success path is byte-stable throughout.
+
+**M12.1 — CUDA root-cause / VRAM-probe diagnostics**
+
+The CUDA upload helpers and the VRAM probe used to collapse real driver
+errors into a generic `None` / `0`. Split into `_detailed` sibling
+functions returning typed errors (`Bf16UploadError` reused,
+`VramProbeError` added with a pure `nvidia-smi` parser); the legacy
+signatures stay as thin `.ok()` / `.unwrap_or(0)` wrappers so the
+value-on-failure (and therefore the tier plan) is unchanged. The root
+cause is now propagated to the caller and the operator.
+
+**M12.2 — `atenia run` load panics → clean errors + exit 2**
+
+The `atenia run` load path `.expect()`-panicked on a bad model. Introduced
+`DemoLoadError` and `build_and_load_llama_checked` returning a `Result`;
+the three CLI callers stop the heartbeat, print `error: {e}`, and return
+exit code 2. The legacy `build_and_load_llama` is preserved as a
+panic-wrapper so the `m4_7_6_e` momento-guau path is untouched.
+
+**M12.3 — env/hardware diagnostics + tier-plan summary**
+
+One consolidated, read-and-echo env/hardware diagnostics block
+(`src/diag.rs`, a pure `render_env_diagnostics` + 6 tests, suppressed
+under `apx_is_silent()`) printed once on the `generate` / `run` paths, and
+a shared `gpu::tier_plan::log_tier_plan_summary` so the run path emits the
+same tier-plan summary the pipeline already did. `[APX] Using mode` was
+un-gated from `apx_debug_enabled()` to `!apx_is_silent()`.
+
+**M12.4 — visible fallbacks + actionable CLI errors**
+
+Silent degrades became visible: H1 — a once-per-run `[ATENIA][warn]` when
+`cuda_matmul` falls back to CPU (latch, no decode-loop spam); H2 — the M6
+legacy-residency summary now appends a failed-layer count; H3 —
+`try_all_paths` accumulates per-attempt reasons and flushes them on the
+terminal CPU fallback (success path unchanged); H5 — `impl Display for
+LoaderError` (root cause of a raw `{:?}` leak), `PipelineError::Loader`
+switched to it, plus a remediation hint on the `atenia generate` load
+failure.
+
+**M12.5 — `cuInit` checked + JSON render failures exit ≠ 0**
+
+The `cuInit` CUresult was discarded at three loader sites; a pure
+`map_cu_init_rc` helper now turns a non-zero code into a specific
+`LoadError` (which also flows into the M12.4 `[COMPAT][warn]` reasons).
+`cli_run`'s `render` / `render_mode_b` return `bool`, and the three Mode
+A/B/C callers map a JSON serialise failure to a non-zero exit instead of
+exiting `0` with empty stdout.
+
+**Series close.** `cargo test --lib` 369/369, `tinyllama_config_test`
+15/0/3, blocking `cuda-toolkit` CI green per sub-phase. Carried debts
+unchanged and still tracked in [STATUS.md](./STATUS.md): the
+vendor-agnostic CPU-only link drift (non-blocking `cpu-only` job) and the
+Phase 16 weight-mapping boundary. This marks the transition from "engine
+that runs" to "engine that explains itself".
 
 ---
 

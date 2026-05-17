@@ -47,7 +47,7 @@ locked by regression tests.
   `apply_config_defaults`). `LlamaConfig` and `gguf_config.rs` are now
   structural / format parsers only.
 - **Determinism.** Greedy generation is reproducible bit-exact (D67 fixture);
-  the lib test suite (346 tests) is green.
+  the lib test suite (369 tests) is green.
 - **CI.** A minimal GitHub Actions workflow runs on push / PR to `main`:
   a **blocking** `cuda-toolkit` job (mirrors the locally-validated
   environment; no GPU, device tests auto-skip) running
@@ -57,6 +57,18 @@ locked by regression tests.
   engine's core never assumes NVIDIA-specific behaviour"; ADR-003 "GPU as
   inference baseline"). Heavy on-disk GGUF / F64 drift tests stay
   operator-run (`#[ignore]`).
+- **Operability hardening (M12, complete & CI-green).** The engine now
+  explains failures instead of hiding them. The M12.1–M12.5 series closed
+  the diagnostics/error-surface gaps: CUDA root-cause & VRAM-probe failures
+  propagate instead of being swallowed (M12.1); `atenia run` load failures
+  are clean errors with exit 2, not panics (M12.2); a consolidated
+  env/hardware diagnostics block + shared tier-plan summary print on the
+  run path (M12.3); silent CPU/RAM fallbacks are now visible — once-per-run
+  `cuda_matmul` warn, M6 residency failed-layer aggregate, `try_all_paths`
+  reasons, `impl Display for LoaderError` + actionable CLI hints (M12.4);
+  `cuInit` CUresult is checked and a JSON-render serialise failure exits
+  ≠ 0 (M12.5). No control-flow / numeric / tiering changes; success path
+  unchanged.
 
 ## Opt-in / experimental (documented profile, not default)
 
@@ -126,21 +138,23 @@ but they bound what you should rely on.
   job is non-blocking by design precisely to surface this. Remediation is a
   dedicated future task (cfg-gate / stub / feature-split the CUDA FFI so a
   genuine CPU-only build links); it is **not** the Phase 16 weight-mapping
-  item below, and it does not block M12.
+  item below, and it did not block M12.
 - **Weight-mapping family boundary still open.** The *config* boundary is
   closed (Phases 13–15), but `src/v17/loader/gguf_to_hf_naming.rs` and
   `src/nn/llama/gguf_weight_loading.rs` still carry
   `if arch == "phi3" / "gemma2"` branches for GGUF→HF weight-name mapping.
   This is the symmetric counterpart not yet relocated behind the adapters'
   `GgufWeightMapper` / `HfWeightMapper` traits — the natural **Phase 16**
-  candidate. It does not block M12.
-- **Production hardening pending (v21 / M12).** Guards (v16) / Policies (v15)
-  operate on a model that is satisfactory for scaffolding but needs hardening
-  for noisy production signals. Known carried-over issue: the adaptive
-  memory-pressure threshold (`0.85`) sits above the OS pagefile trigger on
-  RAM-dominated boxes, so the OS pages before the reaction loop reacts.
-  Structured logging, replay harnesses, and installer/first-run UX are not
-  done.
+  candidate. It did not block M12.
+- **Production hardening — diagnostics slice done (M12), UX/logging pending
+  (v21).** The M12.1–M12.5 series closed the observability/error-surface
+  slice (see *Operability hardening* above): failures now propagate with a
+  root cause and an exit code instead of being swallowed or panicking. Still
+  pending for v21: structured logging, replay harnesses, and the
+  installer/first-run UX. Known carried-over issue (untouched by M12): the
+  adaptive memory-pressure threshold (`0.85`) sits above the OS pagefile
+  trigger on RAM-dominated boxes, so the OS pages before the reaction loop
+  reacts.
 
 ---
 
@@ -154,9 +168,9 @@ but they bound what you should rely on.
 - **Researchers / reviewers** — the per-checkpoint F64 certificate is the
   unique, auditable artefact; every number in [numcert/](./numcert/) is
   reproducible offline with a single `cargo test` invocation.
-- **End users wanting a turnkey local-LLM tool** — not yet. M12 is the
-  milestone that turns "runs on a developer box with the right env vars" into
-  "installable by a non-developer".
+- **End users wanting a turnkey local-LLM tool** — not yet. M12 hardened the
+  diagnostics and error surfaces (a prerequisite slice); the turnkey
+  installer / first-run UX remains the v21 step.
 
 *Hardware reference for every empirical number above: RTX 4070 Laptop, 8 GB
 VRAM, 32 GB DDR5-5600, NVMe SN770, Windows 11.*
