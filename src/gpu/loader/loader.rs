@@ -21,6 +21,22 @@ pub struct CudaLoader {
     driver: Library,
 }
 
+/// **M12.5 A** — map a `cuInit` CUresult to a typed error. Before
+/// this the result was discarded (`let _ = cu_init(0);`), so a
+/// failed driver init (no driver / no GPU) fell through to a
+/// generic `ModuleLoadFailed` further down. Returning the specific
+/// code makes the root cause show up in the M12.4 `[COMPAT][warn]`
+/// fallback reasons. Pure, so it is unit-testable without a driver.
+fn map_cu_init_rc(rc: i32) -> Result<(), CudaLoaderError> {
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(CudaLoaderError::LoadError(format!(
+            "cuInit failed (CUresult {rc})"
+        )))
+    }
+}
+
 impl CudaLoader {
     pub fn new() -> Result<Self, CudaLoaderError> {
         unsafe {
@@ -37,6 +53,16 @@ impl CudaLoader {
             self.driver.get(name).map_err(|_| {
                 CudaLoaderError::MissingSymbol(String::from_utf8_lossy(name).to_string())
             })
+        }
+    }
+
+    /// **M12.5 A** — fetch and invoke `cuInit(0)`, surfacing a
+    /// non-zero CUresult instead of silently discarding it.
+    unsafe fn cu_init_checked(&self) -> Result<(), CudaLoaderError> {
+        unsafe {
+            let cu_init: Symbol<unsafe extern "C" fn(u32) -> i32> =
+                self.get_symbol(b"cuInit\0")?;
+            map_cu_init_rc(cu_init(0))
         }
     }
 
@@ -61,13 +87,11 @@ impl CudaLoader {
     /// Direct PTX load path using cuModuleLoadData (no internal cache).
     pub fn load_module_from_ptx_direct(&self, ptx: &str) -> Result<CudaModule, CudaLoaderError> {
         unsafe {
-            let cu_init: Symbol<unsafe extern "C" fn(u32) -> i32> = self.get_symbol(b"cuInit\0")?;
-
             let cu_module_load_data: Symbol<
                 unsafe extern "C" fn(*mut CUmodule, *const std::os::raw::c_void) -> i32,
             > = self.get_symbol(b"cuModuleLoadData\0")?;
 
-            let _ = cu_init(0);
+            self.cu_init_checked()?;
 
             let mut module: CUmodule = ptr::null_mut();
             let res = cu_module_load_data(&mut module, ptx.as_ptr() as *const _);
@@ -83,13 +107,11 @@ impl CudaLoader {
     /// Load a CUDA module from an in-memory CUBIN buffer.
     pub fn load_module_from_cubin(&self, cubin: &[u8]) -> Result<CudaModule, CudaLoaderError> {
         unsafe {
-            let cu_init: Symbol<unsafe extern "C" fn(u32) -> i32> = self.get_symbol(b"cuInit\0")?;
-
             let cu_module_load_data: Symbol<
                 unsafe extern "C" fn(*mut CUmodule, *const std::os::raw::c_void) -> i32,
             > = self.get_symbol(b"cuModuleLoadData\0")?;
 
-            let _ = cu_init(0);
+            self.cu_init_checked()?;
 
             let mut module: CUmodule = ptr::null_mut();
             let res = cu_module_load_data(&mut module, cubin.as_ptr() as *const _);
@@ -105,9 +127,6 @@ impl CudaLoader {
     /// Extended version using cuModuleLoadDataEx with JIT options.
     pub fn load_module_from_ptx_ex(&self, ptx: &[u8]) -> Result<CudaModule, CudaLoaderError> {
         unsafe {
-            // Initialize driver
-            let cu_init: Symbol<unsafe extern "C" fn(u32) -> i32> = self.get_symbol(b"cuInit\0")?;
-
             type CuModuleLoadDataExFn = unsafe extern "C" fn(
                 *mut CUmodule,
                 *const c_void,
@@ -119,7 +138,8 @@ impl CudaLoader {
             let cu_module_load_data_ex: Symbol<CuModuleLoadDataExFn> =
                 self.get_symbol(b"cuModuleLoadDataEx\0")?;
 
-            let _ = cu_init(0);
+            // Initialize driver (M12.5 A — surface a failed cuInit).
+            self.cu_init_checked()?;
 
             // Minimal JIT constants (values per CUjit_option enum)
             const CU_JIT_OPTIMIZATION_LEVEL: u32 = 7;
@@ -174,6 +194,27 @@ impl CudaLoader {
             }
 
             Ok(CudaFunction { handle: func })
+        }
+    }
+}
+
+#[cfg(test)]
+mod m12_5 {
+    use super::{CudaLoaderError, map_cu_init_rc};
+
+    #[test]
+    fn cu_init_rc_zero_is_ok() {
+        assert!(map_cu_init_rc(0).is_ok());
+    }
+
+    #[test]
+    fn cu_init_rc_nonzero_is_loaderror_with_code() {
+        match map_cu_init_rc(999) {
+            Err(CudaLoaderError::LoadError(s)) => {
+                assert!(s.contains("cuInit"), "message should name cuInit: {s}");
+                assert!(s.contains("999"), "message should carry the CUresult: {s}");
+            }
+            other => panic!("expected LoadError, got {other:?}"),
         }
     }
 }

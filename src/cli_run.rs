@@ -234,16 +234,25 @@ fn cache_dir_disk_probe(cache_dir: &Path) -> Option<f64> {
 // Output renderer
 // ============================================================
 
-fn render(report: &DemoReport, format: OutputFormat) {
+/// Returns `false` when JSON serialisation failed, so the caller
+/// can map it to a non-zero exit code (**M12.5 D** — previously a
+/// serialise failure printed to stderr but the process still exited
+/// `0` with empty stdout, which a JSON consumer reads as success).
+fn render(report: &DemoReport, format: OutputFormat) -> bool {
     match format {
         OutputFormat::Json => match serde_json::to_string_pretty(report) {
-            Ok(s) => println!("{}", s),
+            Ok(s) => {
+                println!("{}", s);
+                true
+            }
             Err(e) => {
                 eprintln!("error: failed to serialise report as JSON: {}", e);
+                false
             }
         },
         OutputFormat::Text => {
             render_text(report);
+            true
         }
     }
 }
@@ -506,9 +515,9 @@ fn run_mode_a(args: RunArgs) -> i32 {
         total_seconds,
     };
 
-    render(&report, args.output);
+    let rendered_ok = render(&report, args.output);
 
-    0
+    if rendered_ok { 0 } else { 1 }
 }
 
 // ============================================================
@@ -771,20 +780,36 @@ fn run_mode_b(args: RunArgs) -> i32 {
         total_seconds,
     };
 
-    render_mode_b(&report, args.output);
+    let rendered_ok = render_mode_b(&report, args.output);
 
     if args.cache_dir.is_none() {
         let _ = std::fs::remove_dir_all(&cache_dir);
     }
 
-    if trigger_ok { 0 } else { 1 }
+    // A broken JSON render means the consumer got nothing usable on
+    // stdout, so it outranks the trigger outcome for the exit code.
+    if !rendered_ok {
+        1
+    } else if trigger_ok {
+        0
+    } else {
+        1
+    }
 }
 
-fn render_mode_b(r: &ModeBReport, format: OutputFormat) {
+/// Returns `false` when JSON serialisation failed (see [`render`]
+/// for the M12.5 D rationale).
+fn render_mode_b(r: &ModeBReport, format: OutputFormat) -> bool {
     match format {
         OutputFormat::Json => match serde_json::to_string_pretty(r) {
-            Ok(s) => println!("{}", s),
-            Err(e) => eprintln!("error: failed to serialise report: {}", e),
+            Ok(s) => {
+                println!("{}", s);
+                true
+            }
+            Err(e) => {
+                eprintln!("error: failed to serialise report: {}", e);
+                false
+            }
         },
         OutputFormat::Text => {
             println!();
@@ -858,6 +883,7 @@ fn render_mode_b(r: &ModeBReport, format: OutputFormat) {
                 r.total_seconds / 60.0,
             );
             println!();
+            true
         }
     }
 }
@@ -1119,7 +1145,7 @@ fn run_mode_c(args: RunArgs) -> i32 {
         total_seconds,
     };
 
-    render(&report, args.output);
+    let rendered_ok = render(&report, args.output);
 
     // Best-effort cleanup of the cache directory if we
     // created it ourselves (i.e. user did not pass --cache-dir).
@@ -1127,7 +1153,9 @@ fn run_mode_c(args: RunArgs) -> i32 {
         let _ = std::fs::remove_dir_all(&cache_dir);
     }
 
-    if bit_exact {
+    if !rendered_ok {
+        1
+    } else if bit_exact {
         0
     } else {
         // Exit code 3: mathematical contract violation.
