@@ -39,12 +39,21 @@ pub fn gguf_to_hf_name_common(gguf_name: &str) -> Option<String> {
     }
 }
 
-/// **Phase 16.1** — Phi-3-specific GGUF suffix(es) not covered by
-/// [`gguf_to_hf_name_common`]: the fused QKV projection.
+/// **Phase 16** — Phi-3-specific GGUF suffixes that the common
+/// Llama-layout table maps differently. Phi-3 fuses both the QKV
+/// projection (`attn_qkv` → `qkv_proj`) and the MLP gate/up
+/// projection: llama.cpp stores the latter as a single
+/// `blk.N.ffn_up.weight` of width `2 * intermediate_size`, which
+/// the common table would mis-map to the separate `up_proj` —
+/// Phi-3's graph expects the fused `gate_up_proj`. These
+/// overrides must be tried *before* `gguf_to_hf_name_common`
+/// (the common table also matches `ffn_up.weight`), see
+/// `Phi3Adapter`'s `GgufNameMapper`.
 pub fn phi3_gguf_extra(gguf_name: &str) -> Option<String> {
     let (prefix, suffix) = split_blk(gguf_name)?;
     match suffix {
         "attn_qkv.weight" => Some(format!("{prefix}.self_attn.qkv_proj.weight")),
+        "ffn_up.weight" => Some(format!("{prefix}.mlp.gate_up_proj.weight")),
         _ => None,
     }
 }
@@ -202,8 +211,22 @@ mod tests {
             phi3_gguf_extra("blk.3.attn_qkv.weight").as_deref(),
             Some("model.layers.3.self_attn.qkv_proj.weight")
         );
+        // Phi-3 fuses gate/up into a single `ffn_up.weight`; it
+        // must map to the fused `gate_up_proj`, NOT the common
+        // `up_proj`.
+        assert_eq!(
+            phi3_gguf_extra("blk.3.ffn_up.weight").as_deref(),
+            Some("model.layers.3.mlp.gate_up_proj.weight")
+        );
         assert_eq!(phi3_gguf_extra("blk.3.attn_q.weight"), None);
+        assert_eq!(phi3_gguf_extra("blk.3.ffn_down.weight"), None);
         assert_eq!(phi3_gguf_extra("token_embd.weight"), None);
+        // Regression: the common table is unchanged — `ffn_up`
+        // still maps to the separate `up_proj` there (llama path).
+        assert_eq!(
+            gguf_to_hf_name_common("blk.3.ffn_up.weight").as_deref(),
+            Some("model.layers.3.mlp.up_proj.weight")
+        );
     }
 
     #[test]

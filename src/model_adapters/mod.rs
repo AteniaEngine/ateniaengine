@@ -762,6 +762,39 @@ mod tests {
     }
 
     #[test]
+    fn phi3_adapter_maps_fused_gate_up_overriding_common() {
+        // Phi-3 override must win over the common `ffn_up`→`up_proj`
+        // (composition order: phi3_gguf_extra first).
+        assert_eq!(
+            PHI3_ADAPTER
+                .gguf_to_hf_name("blk.3.ffn_up.weight")
+                .as_deref(),
+            Some("model.layers.3.mlp.gate_up_proj.weight")
+        );
+        // Non-overridden Phi-3 names still fall through to common.
+        assert_eq!(
+            PHI3_ADAPTER
+                .gguf_to_hf_name("blk.3.ffn_down.weight")
+                .as_deref(),
+            Some("model.layers.3.mlp.down_proj.weight")
+        );
+        assert_eq!(
+            PHI3_ADAPTER
+                .gguf_to_hf_name("token_embd.weight")
+                .as_deref(),
+            Some("model.embed_tokens.weight")
+        );
+        // Regression: llama-family adapters keep the separate
+        // `up_proj` (common table unchanged).
+        assert_eq!(
+            LLAMA_FAMILY_ADAPTER
+                .gguf_to_hf_name("blk.3.ffn_up.weight")
+                .as_deref(),
+            Some("model.layers.3.mlp.up_proj.weight")
+        );
+    }
+
+    #[test]
     fn llama_family_default_does_not_map_fused_qkv() {
         assert_eq!(LLAMA_FAMILY_ADAPTER.gguf_to_hf_name("blk.3.attn_qkv.weight"), None);
         // Qwen2 / Mistral inherit the same default.

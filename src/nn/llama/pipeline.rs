@@ -769,12 +769,17 @@ impl GenerationPipeline {
                     &param_ids,
                     &param_names,
                 )?;
-                // Allow rope_freqs as skipped tensor (RoPE scaling metadata, not a model weight)
-                let acceptable_skipped: Vec<&str> = vec!["rope_freqs"];
+                // A skipped GGUF tensor is acceptable when it is not
+                // a model weight: legacy `rope_freqs` (RoPE metadata)
+                // or any tensor classified by the Phase-16 predicate
+                // `is_gguf_non_weight_tensor` (e.g. Phi-3 LongRope
+                // `rope_factors_{short,long}.weight`, consumed at
+                // config-parse time). Single source of truth — no
+                // hard-coded list duplicated here.
                 let unexpected_skipped: Vec<_> = report
                     .skipped
                     .iter()
-                    .filter(|s| !acceptable_skipped.iter().any(|a| s.contains(a)))
+                    .filter(|s| !s.contains("rope_freqs") && !is_gguf_non_weight_tensor(s))
                     .cloned()
                     .collect();
                 if !unexpected_skipped.is_empty() || !report.missing.is_empty() {
@@ -883,12 +888,17 @@ impl GenerationPipeline {
             if let Some(reader) = gguf_reader.as_ref() {
                 let name_map = build_gguf_name_map(reader, adapter)?;
                 let report = mapper.load_gguf_into(&mut scratch_graph, reader, &name_map)?;
-                // Allow rope_freqs as skipped tensor (RoPE scaling metadata, not a model weight)
-                let acceptable_skipped: Vec<&str> = vec!["rope_freqs"];
+                // A skipped GGUF tensor is acceptable when it is not
+                // a model weight: legacy `rope_freqs` (RoPE metadata)
+                // or any tensor classified by the Phase-16 predicate
+                // `is_gguf_non_weight_tensor` (e.g. Phi-3 LongRope
+                // `rope_factors_{short,long}.weight`, consumed at
+                // config-parse time). Single source of truth — no
+                // hard-coded list duplicated here.
                 let unexpected_skipped: Vec<_> = report
                     .skipped
                     .iter()
-                    .filter(|s| !acceptable_skipped.iter().any(|a| s.contains(a)))
+                    .filter(|s| !s.contains("rope_freqs") && !is_gguf_non_weight_tensor(s))
                     .cloned()
                     .collect();
                 if !unexpected_skipped.is_empty() || !report.missing.is_empty() {

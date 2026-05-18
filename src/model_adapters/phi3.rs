@@ -91,11 +91,16 @@ impl GgufWeightMapper for Phi3Adapter {
     }
 }
 
-// **Phase 16.2** — Phi-3 adds the fused QKV tensor on top of the
-// common Llama-layout names.
+// **Phase 16** — Phi-3 fuses QKV (`attn_qkv`→`qkv_proj`) and MLP
+// gate/up (`ffn_up`→`gate_up_proj`). The Phi-3 overrides are tried
+// **first**: the common Llama-layout table also matches
+// `ffn_up.weight` (→ the separate `up_proj`), which would shadow
+// the fused `gate_up_proj` Phi-3's graph expects. Names with no
+// Phi-3 override fall through to `gguf_to_hf_name_common`
+// unchanged.
 impl GgufNameMapper for Phi3Adapter {
     fn gguf_to_hf_name(&self, gguf_name: &str) -> Option<String> {
-        gguf_to_hf_name_common(gguf_name).or_else(|| phi3_gguf_extra(gguf_name))
+        phi3_gguf_extra(gguf_name).or_else(|| gguf_to_hf_name_common(gguf_name))
     }
 }
 
