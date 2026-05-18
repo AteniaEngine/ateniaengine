@@ -199,6 +199,16 @@ fn detect_compiler_bin() -> Result<String, String> {
 }
 
 fn main() {
+    // **CPU-1 (vendor-agnostic build).** Declare the custom cfg on
+    // *every* build path (including the two CPU-only early returns
+    // below) so `#[cfg(atenia_cuda)]` never trips the
+    // `unexpected_cfgs` lint. The cfg itself is only *set* on the
+    // success path (last line of `main`), after the CUDA kernels
+    // have actually compiled and linked. No source reads it yet —
+    // CPU-1 is the foundation only; the FFI gating that makes a
+    // CUDA-less `cargo build --lib` link is CPU-2.
+    println!("cargo::rustc-check-cfg=cfg(atenia_cuda)");
+
     let cu_path = "src/cuda/atenia_kernels.cu";
 
     // Auto-detected toolchain paths. Overridable via CUDA_PATH / MSVC_TOOLS_PATH.
@@ -356,6 +366,13 @@ fn main() {
         println!("cargo:rustc-link-lib=static=fused_linear_silu");
         println!("cargo:rustc-link-lib=static=bf16_to_f32");
     }
+
+    // Reached only when CUDA + compiler were detected and all
+    // kernels compiled and archived above (the two early returns
+    // exited otherwise). Setting the cfg here — as the last action
+    // — guarantees `#[cfg(atenia_cuda)]` is on iff the CUDA backend
+    // is actually linkable.
+    println!("cargo::rustc-cfg=atenia_cuda");
 }
 
 fn compile_cuda_kernel(
