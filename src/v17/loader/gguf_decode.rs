@@ -73,6 +73,16 @@ pub const Q6_K_QL_BYTES: usize = Q6_K_BLOCK_ELEMS / 2;
 pub const Q6_K_QH_BYTES: usize = Q6_K_BLOCK_ELEMS / 4;
 pub const Q6_K_SCALE_BYTES: usize = Q6_K_BLOCK_ELEMS / 16;
 pub const Q6_K_BLOCK_BYTES: usize = Q6_K_QL_BYTES + Q6_K_QH_BYTES + Q6_K_SCALE_BYTES + 2;
+// Q5_K (`block_q5_K`, QK_K = 256): f16 `d` + f16 `dmin` +
+// 12-byte 6-bit packed scales/mins (identical layout to Q4_K,
+// shared `get_scale_min_k4`) + 32-byte `qh` (1 high bit per
+// weight) + 128-byte `qs` (4 low bits per weight). 176 B / 256.
+pub const Q5_K_BLOCK_ELEMS: usize = 256;
+pub const Q5_K_SCALE_BYTES: usize = 12;
+pub const Q5_K_QH_BYTES: usize = Q5_K_BLOCK_ELEMS / 8;
+pub const Q5_K_QS_BYTES: usize = Q5_K_BLOCK_ELEMS / 2;
+pub const Q5_K_BLOCK_BYTES: usize =
+    2 + 2 + Q5_K_SCALE_BYTES + Q5_K_QH_BYTES + Q5_K_QS_BYTES;
 
 /// Decode a tensor's data into a fresh `Vec<f32>` in row-major
 /// contiguous layout. Reopens the file and seeks to
@@ -126,6 +136,7 @@ pub fn decode_tensor(
         GgufTensorType::F16 => decode_f16(&mut buf, numel, &descriptor.name),
         GgufTensorType::Q8_0 => decode_q8_0(&mut buf, numel, &descriptor.name),
         GgufTensorType::Q4_K => decode_q4_k(&mut buf, numel, &descriptor.name),
+        GgufTensorType::Q5_K => decode_q5_k(&mut buf, numel, &descriptor.name),
         GgufTensorType::Q6_K => decode_q6_k(&mut buf, numel, &descriptor.name),
         other => Err(GgufError::UnsupportedDType(format!(
             "GGUF decode '{}': tensor type {:?} (raw {}) is not implemented \
@@ -357,6 +368,70 @@ fn decode_q6_k(buf: &mut BufReader<File>, numel: usize, name: &str) -> Result<Ve
     Ok(out)
 }
 
+/// Q5_K decoder. Mirrors `decode_q4_k` (same f16 `d`/`dmin`, same
+/// 12-byte 6-bit `get_scale_min_k4` packing, same per-64-element
+/// scale/min split) plus the `qh` high-bit plane handled exactly
+/// as upstream llama.cpp `dequantize_row_q5_K`: the quant value is
+/// `(qs nibble) + (16 if the qh bit is set)`, with the qh bit
+/// selector shifting left by 2 every 64-element group.
+fn decode_q5_k(buf: &mut BufReader<File>, numel: usize, name: &str) -> Result<Vec<f32>, GgufError> {
+    if numel % Q5_K_BLOCK_ELEMS != 0 {
+        return Err(GgufError::InvalidFormat(format!(
+            "GGUF decode '{name}': Q5_K numel {numel} is not a multiple of \
+             block size {Q5_K_BLOCK_ELEMS}; partial blocks are not defined \
+             under the GGUF spec"
+        )));
+    }
+    let n_blocks = numel / Q5_K_BLOCK_ELEMS;
+    let total_bytes = n_blocks * Q5_K_BLOCK_BYTES;
+    let mut bytes = vec![0u8; total_bytes];
+    buf.read_exact(&mut bytes).map_err(|e| {
+        GgufError::IoError(format!(
+            "GGUF decode '{name}': Q5_K read of {total_bytes} bytes \
+             ({n_blocks} blocks × {Q5_K_BLOCK_BYTES} B) failed: {e}"
+        ))
+    })?;
+
+    let mut out: Vec<f32> = Vec::with_capacity(numel);
+    for b in 0..n_blocks {
+        let block_off = b * Q5_K_BLOCK_BYTES;
+        let d = half::f16::from_bits(u16::from_le_bytes([bytes[block_off], bytes[block_off + 1]]))
+            .to_f32();
+        let dmin = half::f16::from_bits(u16::from_le_bytes([
+            bytes[block_off + 2],
+            bytes[block_off + 3],
+        ]))
+        .to_f32();
+        let scales = &bytes[block_off + 4..block_off + 4 + Q5_K_SCALE_BYTES];
+        let qh_off = block_off + 4 + Q5_K_SCALE_BYTES;
+        let mut qs = qh_off + Q5_K_QH_BYTES;
+        let mut is = 0usize;
+        let mut u1: u8 = 1;
+        let mut u2: u8 = 2;
+        for _ in (0..Q5_K_BLOCK_ELEMS).step_by(64) {
+            let (sc1, m1) = get_scale_min_k4(is, scales);
+            let d1 = d * (sc1 as f32);
+            let min1 = dmin * (m1 as f32);
+            let (sc2, m2) = get_scale_min_k4(is + 1, scales);
+            let d2 = d * (sc2 as f32);
+            let min2 = dmin * (m2 as f32);
+            for l in 0..32 {
+                let hi = if bytes[qh_off + l] & u1 != 0 { 16.0 } else { 0.0 };
+                out.push(d1 * (((bytes[qs + l] & 0x0F) as f32) + hi) - min1);
+            }
+            for l in 0..32 {
+                let hi = if bytes[qh_off + l] & u2 != 0 { 16.0 } else { 0.0 };
+                out.push(d2 * (((bytes[qs + l] >> 4) as f32) + hi) - min2);
+            }
+            qs += 32;
+            is += 2;
+            u1 <<= 2;
+            u2 <<= 2;
+        }
+    }
+    Ok(out)
+}
+
 // ===== Tests ========================================================
 
 #[cfg(test)]
@@ -408,6 +483,29 @@ mod tests {
             }
         }
         assert_eq!(bytes.len(), Q4_K_BLOCK_BYTES);
+        bytes
+    }
+
+    /// One synthetic Q5_K block. Same scale/min packing as Q4_K
+    /// (`set_scale_min_k4`, 12 bytes) plus the 32-byte `qh`
+    /// high-bit plane and 128-byte `qs` low-nibble plane.
+    /// Deterministic content: `qh[l] = l`, `qs[i] = i`.
+    fn build_q5_k_block(d: f32, dmin: f32, scales_mins: &[(u8, u8); 8]) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(Q5_K_BLOCK_BYTES);
+        bytes.extend_from_slice(&half::f16::from_f32(d).to_bits().to_le_bytes());
+        bytes.extend_from_slice(&half::f16::from_f32(dmin).to_bits().to_le_bytes());
+        let mut scales = [0u8; Q4_K_SCALE_BYTES];
+        for (j, &(scale, min)) in scales_mins.iter().enumerate() {
+            set_scale_min_k4(j, &mut scales, scale, min);
+        }
+        bytes.extend_from_slice(&scales);
+        for l in 0..Q5_K_QH_BYTES {
+            bytes.push(l as u8);
+        }
+        for i in 0..Q5_K_QS_BYTES {
+            bytes.push(i as u8);
+        }
+        assert_eq!(bytes.len(), Q5_K_BLOCK_BYTES);
         bytes
     }
 
@@ -643,6 +741,87 @@ mod tests {
                 idx += 1;
             }
         }
+    }
+
+    /// **Q5_K synthetic block** — same scale/min split as Q4_K
+    /// plus the `qh` 5th-bit plane. Re-derives the expected
+    /// dequant independently from the canonical llama.cpp
+    /// `dequantize_row_q5_K` so a packing / bit-selector bug is
+    /// caught (not a tautology against the implementation).
+    #[test]
+    fn decode_q5_k_synthetic_block() {
+        let scales_mins = [
+            (1, 0),
+            (2, 1),
+            (3, 2),
+            (4, 3),
+            (5, 4),
+            (6, 5),
+            (7, 6),
+            (8, 7),
+        ];
+        let d = 0.5_f32;
+        let dmin = 0.25_f32;
+        let block = build_q5_k_block(d, dmin, &scales_mins);
+        let (reader, desc) = write_minimal_gguf_and_open(
+            "tensor.q5_k",
+            GgufTensorType::Q5_K,
+            &[256],
+            &block,
+            "atenia_gguf_decode_q5_k.gguf",
+        );
+        let out = decode_tensor(&reader, &desc).expect("decode");
+        let _ = std::fs::remove_file(&reader.file_path);
+        assert_eq!(out.len(), 256);
+
+        // Mirror build_q5_k_block: qh[l] = l, qs[i] = i.
+        let mut idx = 0;
+        for j in 0..4 {
+            let (sc1, min1) = scales_mins[j * 2];
+            let (sc2, min2) = scales_mins[j * 2 + 1];
+            let d1 = d * (sc1 as f32);
+            let m1 = dmin * (min1 as f32);
+            let d2 = d * (sc2 as f32);
+            let m2 = dmin * (min2 as f32);
+            let u1: u8 = 1 << (2 * j);
+            let u2: u8 = 2 << (2 * j);
+            for l in 0..32 {
+                let qs = (j * 32 + l) as u8; // qs[i] = i
+                let qh = l as u8; // qh[l] = l
+                let hi = if qh & u1 != 0 { 16.0 } else { 0.0 };
+                let expected = d1 * (((qs & 0x0F) as f32) + hi) - m1;
+                assert_eq!(out[idx], expected, "Q5_K low nibble group {j} lane {l}");
+                idx += 1;
+            }
+            for l in 0..32 {
+                let qs = (j * 32 + l) as u8;
+                let qh = l as u8;
+                let hi = if qh & u2 != 0 { 16.0 } else { 0.0 };
+                let expected = d2 * (((qs >> 4) as f32) + hi) - m2;
+                assert_eq!(out[idx], expected, "Q5_K high nibble group {j} lane {l}");
+                idx += 1;
+            }
+        }
+    }
+
+    /// Q5_K decoder rejects a `numel` that is not a multiple of
+    /// the 256-element block (mirrors the Q4_K guard).
+    #[test]
+    fn decode_q5_k_rejects_non_multiple_numel() {
+        let block = build_q5_k_block(1.0, 0.0, &[(1, 0); 8]);
+        let (reader, desc) = write_minimal_gguf_and_open(
+            "tensor.q5_k.bad",
+            GgufTensorType::Q5_K,
+            &[255],
+            &block,
+            "atenia_gguf_decode_q5_k_bad.gguf",
+        );
+        let err = decode_tensor(&reader, &desc).expect_err("must fail");
+        let _ = std::fs::remove_file(&reader.file_path);
+        assert!(
+            matches!(err, GgufError::InvalidFormat(_)),
+            "expected InvalidFormat, got {err:?}"
+        );
     }
 
     #[test]

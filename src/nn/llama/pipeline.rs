@@ -376,6 +376,7 @@ fn gguf_tensor_metas(
             | crate::v17::loader::gguf_reader::GgufTensorType::F16
             | crate::v17::loader::gguf_reader::GgufTensorType::Q8_0
             | crate::v17::loader::gguf_reader::GgufTensorType::Q4_K
+            | crate::v17::loader::gguf_reader::GgufTensorType::Q5_K
             | crate::v17::loader::gguf_reader::GgufTensorType::Q6_K => {}
             other => {
                 return Err(PipelineError::Loader(LoaderError::UnsupportedDType(
