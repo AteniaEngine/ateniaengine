@@ -63,22 +63,13 @@ pub fn gemma2_gguf_extra(gguf_name: &str) -> Option<String> {
     }
 }
 
-/// GGUF → HF tensor-name mapping. Behaviour-identical to the
-/// pre-16.1 single function: try the architecture-agnostic common
-/// rules first, then fall back to the family-specific extras for
-/// `phi3` / `gemma2`. (Phase 16.2 moves the family dispatch behind
-/// the adapter; this composing entry point is kept until 16.3
-/// rewires the caller.)
-pub fn gguf_to_hf_name(gguf_name: &str, arch: &str) -> Option<String> {
-    if let Some(hf) = gguf_to_hf_name_common(gguf_name) {
-        return Some(hf);
-    }
-    match arch {
-        "phi3" => phi3_gguf_extra(gguf_name),
-        "gemma2" => gemma2_gguf_extra(gguf_name),
-        _ => None,
-    }
-}
+// **Phase 16.3** — the arch-branching composing free function
+// `gguf_to_hf_name(name, arch)` was removed. The core no longer
+// owns GGUF→HF name structure: `pipeline::build_gguf_name_map`
+// calls `adapter.gguf_to_hf_name(name)` (the `GgufNameMapper`
+// trait), which composes `gguf_to_hf_name_common` with the
+// family extras. Only the pure, arch-agnostic pieces above remain
+// here; the family dispatch lives behind the adapter.
 
 #[cfg(test)]
 mod tests {
@@ -87,15 +78,15 @@ mod tests {
     #[test]
     fn maps_top_level_names() {
         assert_eq!(
-            gguf_to_hf_name("token_embd.weight", "llama").as_deref(),
+            gguf_to_hf_name_common("token_embd.weight").as_deref(),
             Some("model.embed_tokens.weight")
         );
         assert_eq!(
-            gguf_to_hf_name("output_norm.weight", "llama").as_deref(),
+            gguf_to_hf_name_common("output_norm.weight").as_deref(),
             Some("model.norm.weight")
         );
         assert_eq!(
-            gguf_to_hf_name("output.weight", "llama").as_deref(),
+            gguf_to_hf_name_common("output.weight").as_deref(),
             Some("lm_head.weight")
         );
     }
@@ -138,32 +129,33 @@ mod tests {
             ),
         ];
         for (gguf, hf) in cases {
-            assert_eq!(gguf_to_hf_name(gguf, "llama").as_deref(), Some(hf));
+            assert_eq!(gguf_to_hf_name_common(gguf).as_deref(), Some(hf));
         }
     }
 
     #[test]
     fn maps_architecture_specific_names() {
         assert_eq!(
-            gguf_to_hf_name("blk.3.attn_qkv.weight", "phi3").as_deref(),
+            phi3_gguf_extra("blk.3.attn_qkv.weight").as_deref(),
             Some("model.layers.3.self_attn.qkv_proj.weight")
         );
         assert_eq!(
-            gguf_to_hf_name("blk.3.attn_post_norm.weight", "gemma2").as_deref(),
+            gemma2_gguf_extra("blk.3.attn_post_norm.weight").as_deref(),
             Some("model.layers.3.post_attention_layernorm.weight")
         );
         assert_eq!(
-            gguf_to_hf_name("blk.3.ffn_post_norm.weight", "gemma2").as_deref(),
+            gemma2_gguf_extra("blk.3.ffn_post_norm.weight").as_deref(),
             Some("model.layers.3.post_feedforward_layernorm.weight")
         );
     }
 
     #[test]
     fn rejects_unknown_or_malformed_names() {
-        assert_eq!(gguf_to_hf_name("general.foo", "llama"), None);
-        assert_eq!(gguf_to_hf_name("blk.x.attn_q.weight", "llama"), None);
-        assert_eq!(gguf_to_hf_name("blk.0.unknown.weight", "llama"), None);
-        assert_eq!(gguf_to_hf_name("blk.0.attn_qkv.weight", "llama"), None);
+        assert_eq!(gguf_to_hf_name_common("general.foo"), None);
+        assert_eq!(gguf_to_hf_name_common("blk.x.attn_q.weight"), None);
+        assert_eq!(gguf_to_hf_name_common("blk.0.unknown.weight"), None);
+        // `attn_qkv` is Phi-3-specific: not in the common set.
+        assert_eq!(gguf_to_hf_name_common("blk.0.attn_qkv.weight"), None);
     }
 
     // ----- Phase 16.1: the split functions, exercised directly -----
@@ -210,30 +202,5 @@ mod tests {
             Some("model.layers.3.post_feedforward_layernorm.weight")
         );
         assert_eq!(gemma2_gguf_extra("blk.3.attn_q.weight"), None);
-    }
-
-    /// The composing entry point must remain byte-identical to the
-    /// pre-16.1 behaviour: common first, then family fallback only
-    /// for the matching arch.
-    #[test]
-    fn composing_fn_is_behaviour_identical() {
-        assert_eq!(
-            gguf_to_hf_name("blk.3.attn_qkv.weight", "phi3").as_deref(),
-            Some("model.layers.3.self_attn.qkv_proj.weight")
-        );
-        // phi3 suffix under llama/gemma2 arch → None (unchanged).
-        assert_eq!(gguf_to_hf_name("blk.3.attn_qkv.weight", "llama"), None);
-        assert_eq!(gguf_to_hf_name("blk.3.attn_qkv.weight", "gemma2"), None);
-        // gemma2 suffix only under gemma2 arch.
-        assert_eq!(
-            gguf_to_hf_name("blk.3.ffn_post_norm.weight", "gemma2").as_deref(),
-            Some("model.layers.3.post_feedforward_layernorm.weight")
-        );
-        assert_eq!(gguf_to_hf_name("blk.3.ffn_post_norm.weight", "phi3"), None);
-        // Common names resolve under any arch.
-        assert_eq!(
-            gguf_to_hf_name("blk.7.ffn_down.weight", "phi3").as_deref(),
-            Some("model.layers.7.mlp.down_proj.weight")
-        );
     }
 }

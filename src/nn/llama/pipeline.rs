@@ -81,7 +81,6 @@ use crate::nn::llama::config::{ConfigError, LlamaConfig};
 use crate::tokenizer::{AteniaTokenizer, ChatMessage, TokenizerError};
 use crate::v17::loader::gguf_config::{architecture_from_gguf, llama_config_from_gguf};
 use crate::v17::loader::gguf_reader::GgufReader;
-use crate::v17::loader::gguf_to_hf_naming::gguf_to_hf_name;
 use crate::v17::loader::loader_errors::LoaderError;
 use crate::v17::loader::safetensors_reader::SafetensorsReader;
 use crate::v17::loader::sharded_reader::ShardedSafetensorsReader;
@@ -308,7 +307,13 @@ fn find_single_gguf(model_dir: &Path) -> Result<Option<PathBuf>, PipelineError> 
 
 fn build_gguf_name_map(
     reader: &GgufReader,
+    adapter: &dyn AteniaModelAdapter,
 ) -> Result<std::collections::HashMap<String, String>, PipelineError> {
+    // **Phase 16.3** — `arch` is kept only for the diagnostic
+    // message (and to validate `general.architecture` is present);
+    // the GGUF→HF name *structure* is now decided by the resolved
+    // adapter (`GgufNameMapper`), not by an `if arch == "..."`
+    // branch in the core.
     let arch = reader.architecture().ok_or_else(|| {
         PipelineError::Loader(LoaderError::InvalidFormat(
             "GGUF file is missing general.architecture metadata".to_string(),
@@ -316,7 +321,7 @@ fn build_gguf_name_map(
     })?;
     let mut map = std::collections::HashMap::with_capacity(reader.tensors.len());
     for descriptor in &reader.tensors {
-        let hf_name = gguf_to_hf_name(&descriptor.name, arch).ok_or_else(|| {
+        let hf_name = adapter.gguf_to_hf_name(&descriptor.name).ok_or_else(|| {
             PipelineError::Loader(LoaderError::InvalidFormat(format!(
                 "GGUF tensor '{}' has no known HuggingFace name mapping for architecture '{}'",
                 descriptor.name, arch
@@ -710,7 +715,7 @@ impl GenerationPipeline {
             };
 
             if let Some(reader) = gguf_reader.as_ref() {
-                let name_map = build_gguf_name_map(reader)?;
+                let name_map = build_gguf_name_map(reader, adapter)?;
                 let metas = gguf_tensor_metas(reader, &name_map, bf16_storage)?;
                 let model_total_bytes = sum_model_bytes(&metas);
                 let m8_bf16_effective = m8_bf16_resolver(model_total_bytes);
@@ -857,7 +862,7 @@ impl GenerationPipeline {
         } else {
             // Legacy load path — unchanged from M5.f.a.
             if let Some(reader) = gguf_reader.as_ref() {
-                let name_map = build_gguf_name_map(reader)?;
+                let name_map = build_gguf_name_map(reader, adapter)?;
                 let report = mapper.load_gguf_into(&mut scratch_graph, reader, &name_map)?;
                 // Allow rope_freqs as skipped tensor (RoPE scaling metadata, not a model weight)
                 let acceptable_skipped: Vec<&str> = vec!["rope_freqs"];
