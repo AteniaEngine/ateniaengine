@@ -36,7 +36,7 @@ locked by regression tests.
   across the M4.9 → M11 series and documented in [CLI.md](./CLI.md).
   `cargo install --path .` produces a working binary on Windows and Linux.
 - **Loaders.** Single-file and sharded HuggingFace safetensors; GGUF
-  (F16 / Q8_0 / Q4_K_M / Q6_K). BF16 parameter storage (50 % RAM saving),
+  (F16 / Q8_0 / Q4_K_M / Q5_K / Q6_K). BF16 parameter storage (50 % RAM saving),
   BF16 KV cache (default on), RAM↔NVMe spill with chunked streaming.
 - **Adapter layer.** Llama / Qwen 2 / Mistral / Phi-3 / Gemma 2 family logic
   lives in `src/model_adapters/`; the execution core is family-agnostic
@@ -87,6 +87,13 @@ locked by regression tests.
   byte-identical (lib 369/369). Enforced by the now-blocking `cpu-only`
   CI job (CPU-5). Not a multi-vendor compute backend — see *Single
   vendor* below.
+- **Phi-3.5 GGUF end-to-end (closed).** `Phi-3.5-mini-instruct`
+  Q4_K_M GGUF loads and generates coherent text end-to-end. Added on
+  the GGUF path: Q5_K block decode, Phi-3 LongRope read from the
+  GGUF `rope_factors_{short,long}` tensors (not just metadata), and
+  the fused-tensor name mapping for both `attn_qkv` -> `qkv_proj` and
+  `ffn_up` -> `gate_up_proj`. The post-consolidation validation
+  warning that surfaced this is closed; no tracked debt remains.
 
 ## Opt-in / experimental (documented profile, not default)
 

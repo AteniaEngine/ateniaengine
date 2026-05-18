@@ -460,6 +460,28 @@ family-agnostic for config **and** weight mapping.
 
 ---
 
+## Phi-3.5 GGUF end-to-end — consolidation validation
+
+The post-Phase-16 consolidation validation battery surfaced a real
+Phi-3.5 GGUF load failure. Closing it served as the first
+end-to-end exercise of the GGUF path on a fused-tensor LongRope
+family: `Phi-3.5-mini-instruct` Q4_K_M now loads and generates
+coherent text. Four isolated, regression-tested fixes landed
+(`a712f28`, `e67f627`, `b423f56`, `345482d`): Phi-3 LongRope read
+from the GGUF `rope_factors_{short,long}` tensors with the factor
+tensors skipped by the weight-name map; a Q5_K block decoder
+mirroring `dequantize_row_q5_K`; the Phi-3 GGUF transform table
+delegated to the single safetensors source of truth; and the fused
+gate/up name mapping (`ffn_up` → `gate_up_proj`, Phi-3 overrides
+ordered before the common Llama-layout table) with the non-weight
+skips accepted by both GGUF completeness gates. GGUF k-quant
+coverage is now Q4_K / Q5_K / Q6_K; the GGUF path is validated for
+LongRope and the fused QKV / gate_up tensor layout. CUDA build
+green (lib 382/382, `tinyllama_config_test` 15/0/3); both blocking
+CI jobs green. No tracked debt remains.
+
+---
+
 ## Beyond v20
 
 The roadmap horizons (v21/M12 production hardening → v22 Intel iGPU → v23 AMD
