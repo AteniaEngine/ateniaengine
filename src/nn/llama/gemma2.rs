@@ -69,6 +69,7 @@
 use crate::amg::builder::GraphBuilder;
 use crate::amg::kv_cache::{KvCacheBuildSpec, KvCacheHandles, KvLayerHandle};
 use crate::amg::weight_store::{SharedParam, WeightStore};
+use crate::model_adapters::tensor_spec::{GEMMA2_SPEC, TransformParams, resolve_transforms};
 use crate::nn::llama::builder::LlamaRuntime;
 use crate::nn::llama::builder_shared::{BuildError, LlamaHandlesShared};
 use crate::nn::llama::config::LlamaConfig;
@@ -724,6 +725,16 @@ pub fn gemma2_weight_mapper(
 /// Per-name Gemma 2 transform list. Pure function — exposed
 /// `pub` so unit tests can verify the dispatch directly without
 /// going through the full `gemma2_weight_mapper` round-trip.
+///
+/// **AT-1c**: declarative via `GEMMA2_SPEC.hf_transforms`
+/// (ADR-006). Same shape as the Llama HF ladder but the norm rule
+/// adds the Gemma 2 `+1` fold and there are no QKV biases. The
+/// K-side Scale uses `1/sqrt(query_pre_attn_scalar)` instead of
+/// `1/sqrt(head_dim)` — the caller still threads this through
+/// `attention_scale`. Behaviour byte-identical to the previous
+/// ladder — pinned by the AT-1a golden
+/// `golden_gemma2_hf_matches_live_gemma2_transforms` and the AT-2
+/// conformance suite.
 pub fn gemma2_transforms_for_name(
     name: &str,
     hidden_size: usize,
@@ -731,64 +742,16 @@ pub fn gemma2_transforms_for_name(
     kv_groups: usize,
     attention_scale: f32,
 ) -> Vec<LoadTransform> {
-    if name == "model.embed_tokens.weight" {
-        return Vec::new();
-    }
-    // Every layer norm gamma in Gemma 2 needs the +1 fold.
-    // The four norms per layer (`input_layernorm`,
-    // `post_attention_layernorm`, `pre_feedforward_layernorm`,
-    // `post_feedforward_layernorm`) plus the final
-    // `model.norm.weight` all share the `.weight` suffix and the
-    // `layernorm` substring (or are exactly `model.norm.weight`).
-    if name == "model.norm.weight" || name.ends_with("layernorm.weight") {
-        return vec![
-            LoadTransform::Reshape {
-                target: vec![1, 1, hidden_size],
-            },
-            LoadTransform::AddScalar { scalar: 1.0 },
-        ];
-    }
-
-    // Attention projections: same shape contract as Llama
-    // (separate q/k/v/o), so the same TileGroupedDim + Transpose
-    // + Scale pipeline applies. The K-side Scale uses
-    // `1/sqrt(query_pre_attn_scalar)` instead of
-    // `1/sqrt(head_dim)` — the caller threads this through
-    // `attention_scale`.
-    if name.contains(".self_attn.k_proj.weight") {
-        return vec![
-            LoadTransform::TileGroupedDim {
-                dim: 0,
-                group_size: head_dim,
-                repeats: kv_groups,
-            },
-            LoadTransform::Transpose2D,
-            LoadTransform::Scale {
-                factor: attention_scale,
-            },
-        ];
-    }
-    if name.contains(".self_attn.v_proj.weight") {
-        return vec![
-            LoadTransform::TileGroupedDim {
-                dim: 0,
-                group_size: head_dim,
-                repeats: kv_groups,
-            },
-            LoadTransform::Transpose2D,
-        ];
-    }
-    if name.contains(".self_attn.q_proj.weight")
-        || name.contains(".self_attn.o_proj.weight")
-        || name.contains(".mlp.gate_proj.weight")
-        || name.contains(".mlp.up_proj.weight")
-        || name.contains(".mlp.down_proj.weight")
-        || name == "lm_head.weight"
-    {
-        return vec![LoadTransform::Transpose2D];
-    }
-
-    Vec::new()
+    resolve_transforms(
+        GEMMA2_SPEC.hf_transforms,
+        name,
+        &TransformParams {
+            hidden_size,
+            head_dim,
+            kv_groups,
+            attention_scale,
+        },
+    )
 }
 
 #[cfg(test)]

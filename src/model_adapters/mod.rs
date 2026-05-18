@@ -16,11 +16,10 @@ mod phi3;
 #[cfg(test)]
 mod conformance;
 
-// **AT-1a** — declarative FamilyTensorSpec data layer (ADR-006).
-// Introduced unused on purpose: AT-1a ships the data + lookups +
-// equivalence oracle only; call-sites are rewired in AT-1b/c, at
-// which point `#[allow(dead_code)]` comes off.
-#[allow(dead_code)]
+// **AT-1a/b/c** — declarative FamilyTensorSpec data layer
+// (ADR-006). AT-1b rewired the GGUF->HF name maps onto it; AT-1c
+// rewired the load transforms. Now fully wired into production, so
+// the staged `#[allow(dead_code)]` is gone.
 pub(crate) mod tensor_spec;
 
 use crate::amg::builder::GraphBuilder;

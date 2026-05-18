@@ -101,6 +101,9 @@ pub(crate) struct NameTable {
 
 /// The declarative bundle for one model family.
 pub(crate) struct FamilyTensorSpec {
+    /// Diagnostic anchor (matches the adapter `id()`); reserved for
+    /// future spec-driven diagnostics, not read on the hot path.
+    #[allow(dead_code)]
     pub id: &'static str,
     /// Family-specific *extra* GGUF->HF block names (Phi-3 fused,
     /// Gemma 2 post-norms). Composed with [`COMMON_NAME_TABLE`] by

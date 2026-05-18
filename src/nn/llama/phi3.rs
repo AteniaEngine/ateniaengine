@@ -165,6 +165,7 @@ pub fn split_fused_gate_up(
 
 use crate::amg::builder::GraphBuilder;
 use crate::amg::nodes::RopeScalingLongRope;
+use crate::model_adapters::tensor_spec::{PHI3_SPEC, TransformParams, resolve_transforms};
 use crate::nn::llama::builder::LlamaRuntime;
 use crate::nn::llama::config::{LlamaConfig, RopeScaling};
 use crate::tensor::Tensor;
@@ -889,26 +890,27 @@ pub fn phi3_weight_mapper(
 
 /// Per-name Phi-3 transform list. Pure function, exposed `pub`
 /// so unit tests can verify dispatch directly.
+///
+/// **AT-1c**: declarative via `PHI3_SPEC.hf_transforms`
+/// (ADR-006). `phi3_gguf_transforms_for_name` still delegates
+/// here, so this is also the Phi-3 GGUF table. Phi-3's recipes
+/// (`ReshapeHidden3D`, `Transpose2D`) never reference
+/// head_dim/kv_groups/attention_scale, so the signature stays
+/// `(name, hidden_size)` and the unused params are zero. Behaviour
+/// is byte-identical to the previous ladder — pinned by the AT-1a
+/// golden `golden_phi3_hf_matches_live_phi3_transforms` and the
+/// AT-2 conformance suite.
 pub fn phi3_transforms_for_name(name: &str, hidden_size: usize) -> Vec<LoadTransform> {
-    if name == "model.embed_tokens.weight" {
-        return Vec::new();
-    }
-    if name == "model.norm.weight" || name.ends_with("layernorm.weight") {
-        return vec![LoadTransform::Reshape {
-            target: vec![1, 1, hidden_size],
-        }];
-    }
-    // Every 2D weight gets a single Transpose2D so the matmul
-    // operand layout matches Atenia's `[in, out]` convention.
-    if name.contains(".self_attn.qkv_proj.weight")
-        || name.contains(".self_attn.o_proj.weight")
-        || name.contains(".mlp.gate_up_proj.weight")
-        || name.contains(".mlp.down_proj.weight")
-        || name == "lm_head.weight"
-    {
-        return vec![LoadTransform::Transpose2D];
-    }
-    Vec::new()
+    resolve_transforms(
+        PHI3_SPEC.hf_transforms,
+        name,
+        &TransformParams {
+            hidden_size,
+            head_dim: 0,
+            kv_groups: 0,
+            attention_scale: 0.0,
+        },
+    )
 }
 
 #[cfg(test)]

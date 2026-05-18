@@ -45,6 +45,7 @@
 //!   `[TileGroupedDim, Reshape([1, hidden])]`. GQA expansion only;
 //!   V never enters the QK product, so no scale.
 
+use crate::model_adapters::tensor_spec::{LLAMA_SPEC, TransformParams, resolve_transforms};
 use crate::nn::llama::LlamaConfig;
 use crate::v17::loader::loader_errors::LoaderError;
 use crate::v17::loader::weight_mapper::{LoadTransform, WeightMapper};
@@ -87,6 +88,16 @@ pub fn llama_weight_mapper(
 /// Compute the transform list for a single HF parameter name.
 /// `pub` so integration tests can verify the per-name dispatch
 /// directly without going through `llama_weight_mapper`.
+///
+/// **AT-1c**: the per-name ladder is now declarative data in
+/// [`crate::model_adapters::tensor_spec`] (`LLAMA_SPEC.hf_transforms`).
+/// Signature and behaviour are unchanged — `resolve_transforms` is
+/// first-match-wins with an identity (`Vec::new()`) default,
+/// exactly reproducing the previous embed / norm / k / v /
+/// {q,o,gate,up,down,lm_head} / k_bias / v_bias / q_bias ladder.
+/// Equivalence is pinned by the AT-1a golden
+/// `golden_llama_hf_matches_live_compute_transforms` and the AT-2
+/// conformance suite.
 pub fn compute_transforms_for_name(
     name: &str,
     hidden_size: usize,
@@ -94,94 +105,14 @@ pub fn compute_transforms_for_name(
     kv_groups: usize,
     attention_scale: f32,
 ) -> Vec<LoadTransform> {
-    // Embedding: no transform — `[vocab, hidden]` HF layout is
-    // consumed directly by IndexSelect.
-    if name == "model.embed_tokens.weight" {
-        return Vec::new();
-    }
-    // RMSNorm gammas: `[hidden]` in safetensors → `[1, 1, hidden]`
-    // in the graph for BroadcastMul rank-alignment with the post-
-    // RMSNorm activation `[batch, seq, hidden]`.
-    if name == "model.norm.weight" || name.ends_with("layernorm.weight") {
-        return vec![LoadTransform::Reshape {
-            target: vec![1, 1, hidden_size],
-        }];
-    }
-
-    // 2D cases — ordered most-specific first.
-    if name.contains(".self_attn.k_proj.weight") {
-        return vec![
-            LoadTransform::TileGroupedDim {
-                dim: 0,
-                group_size: head_dim,
-                repeats: kv_groups,
-            },
-            LoadTransform::Transpose2D,
-            LoadTransform::Scale {
-                factor: attention_scale,
-            },
-        ];
-    }
-    if name.contains(".self_attn.v_proj.weight") {
-        return vec![
-            LoadTransform::TileGroupedDim {
-                dim: 0,
-                group_size: head_dim,
-                repeats: kv_groups,
-            },
-            LoadTransform::Transpose2D,
-        ];
-    }
-    if name.contains(".self_attn.q_proj.weight")
-        || name.contains(".self_attn.o_proj.weight")
-        || name.contains(".mlp.gate_proj.weight")
-        || name.contains(".mlp.up_proj.weight")
-        || name.contains(".mlp.down_proj.weight")
-        || name == "lm_head.weight"
-    {
-        return vec![LoadTransform::Transpose2D];
-    }
-
-    // ---- QKV biases (Qwen 2.5 family) -----------------------------
-    // Order matters: the K bias mirrors the K weight pipeline so
-    // that `Q @ k_atenia^T` reproduces PyTorch's
-    // `Q @ (h W_k + b_k)^T / sqrt(d_k)` exactly.
-    if name.contains(".self_attn.k_proj.bias") {
-        return vec![
-            LoadTransform::TileGroupedDim {
-                dim: 0,
-                group_size: head_dim,
-                repeats: kv_groups,
-            },
-            LoadTransform::Reshape {
-                target: vec![1, hidden_size],
-            },
-            LoadTransform::Scale {
-                factor: attention_scale,
-            },
-        ];
-    }
-    if name.contains(".self_attn.v_proj.bias") {
-        return vec![
-            LoadTransform::TileGroupedDim {
-                dim: 0,
-                group_size: head_dim,
-                repeats: kv_groups,
-            },
-            LoadTransform::Reshape {
-                target: vec![1, hidden_size],
-            },
-        ];
-    }
-    if name.contains(".self_attn.q_proj.bias") {
-        return vec![LoadTransform::Reshape {
-            target: vec![1, hidden_size],
-        }];
-    }
-
-    // Defensive default — unknown name gets identity. The mapper
-    // will still validate the resulting shape against the graph
-    // parameter, so a misnamed tensor cannot silently load with the
-    // wrong layout.
-    Vec::new()
+    resolve_transforms(
+        LLAMA_SPEC.hf_transforms,
+        name,
+        &TransformParams {
+            hidden_size,
+            head_dim,
+            kv_groups,
+            attention_scale,
+        },
+    )
 }

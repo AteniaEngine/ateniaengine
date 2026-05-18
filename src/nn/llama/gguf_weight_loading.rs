@@ -1,3 +1,4 @@
+use crate::model_adapters::tensor_spec::{GEMMA2_SPEC, TransformParams, resolve_transforms};
 use crate::nn::llama::config::LlamaConfig;
 use crate::nn::llama::weight_loading::compute_transforms_for_name;
 use crate::v17::loader::loader_errors::LoaderError;
@@ -109,6 +110,21 @@ pub fn phi3_gguf_transforms_for_name(name: &str, hidden_size: usize) -> Vec<Load
     crate::nn::llama::phi3::phi3_transforms_for_name(name, hidden_size)
 }
 
+/// **KNOWN BUG (GAP-1): pre-`.rev()` table — see ADR-006 / GAP-1.**
+///
+/// **AT-1c**: this bespoke Gemma 2 GGUF transform table is now
+/// declarative data in `GEMMA2_SPEC.gguf_gap1_transforms`
+/// ([`crate::model_adapters::tensor_spec::GEMMA2_SPEC`]),
+/// preserved **verbatim and intentionally NOT corrected**. The
+/// table is internally consistent with a world where the
+/// residency loader does NOT reverse tensor dims (same defect
+/// class as Phi-3 #4); the Gemma 2 GGUF path has never been
+/// validated end-to-end. The correctness fix is the dedicated
+/// post-AT-1 "Gemma 2 GGUF correctness" phase. Behaviour is
+/// byte-identical to the previous hand-written ladder — pinned by
+/// the AT-1a golden `golden_gemma2_gguf_gap1_matches_live_verbatim`
+/// and the AT-2 snapshot
+/// `gemma2_hf_and_gguf_tables_are_frozen_snapshots`.
 pub fn gemma2_gguf_transforms_for_name(
     name: &str,
     hidden_size: usize,
@@ -116,37 +132,18 @@ pub fn gemma2_gguf_transforms_for_name(
     kv_groups: usize,
     attention_scale: f32,
 ) -> Vec<LoadTransform> {
-    if name == "model.embed_tokens.weight" {
-        return vec![LoadTransform::Transpose2D];
-    }
-    if name == "model.norm.weight" || name.ends_with("layernorm.weight") {
-        return vec![
-            LoadTransform::Reshape {
-                target: vec![1, 1, hidden_size],
-            },
-            LoadTransform::AddScalar { scalar: 1.0 },
-        ];
-    }
-    if name.contains(".self_attn.k_proj.weight") {
-        return vec![
-            LoadTransform::TileGroupedDim {
-                dim: 1,
-                group_size: head_dim,
-                repeats: kv_groups,
-            },
-            LoadTransform::Scale {
-                factor: attention_scale,
-            },
-        ];
-    }
-    if name.contains(".self_attn.v_proj.weight") {
-        return vec![LoadTransform::TileGroupedDim {
-            dim: 1,
-            group_size: head_dim,
-            repeats: kv_groups,
-        }];
-    }
-    Vec::new()
+    resolve_transforms(
+        GEMMA2_SPEC
+            .gguf_gap1_transforms
+            .expect("GEMMA2_SPEC carries the GAP-1 verbatim GGUF table"),
+        name,
+        &TransformParams {
+            hidden_size,
+            head_dim,
+            kv_groups,
+            attention_scale,
+        },
+    )
 }
 
 #[cfg(test)]
