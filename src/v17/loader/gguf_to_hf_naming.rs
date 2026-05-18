@@ -1,75 +1,48 @@
-/// Split a `blk.<layer>.<suffix>` GGUF tensor name into the HF
-/// layer prefix (`model.layers.<layer>`) and the raw suffix.
-/// Returns `None` for non-block names or a non-numeric layer.
-fn split_blk(gguf_name: &str) -> Option<(String, &str)> {
-    let rest = gguf_name.strip_prefix("blk.")?;
-    let (layer, suffix) = rest.split_once('.')?;
-    if layer.is_empty() || !layer.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    Some((format!("model.layers.{layer}"), suffix))
-}
+//! **AT-1b** — the GGUF→HF name maps are now driven by the
+//! declarative [`crate::model_adapters::tensor_spec`]
+//! `FamilyTensorSpec` data (ADR-006). The public functions below
+//! keep their exact signatures and behaviour; only their bodies
+//! changed from hand-written `match` arms to a `resolve_name`
+//! lookup over the spec tables. The `split_blk` block parser was
+//! removed: its logic is byte-identically embedded in
+//! `tensor_spec::resolve_name` (proved by the AT-1a golden
+//! `golden_name_maps_match_live_functions`, kept green here too).
 
-/// **Phase 16.1** — architecture-agnostic GGUF → HF name mapping:
-/// the top-level tensors plus the common Llama-layout block
-/// suffixes shared by every supported family. Returns `None` for
-/// family-specific suffixes (handled by the `*_gguf_extra`
-/// functions) and for unknown / malformed names.
+use crate::model_adapters::tensor_spec::{
+    COMMON_NAME_TABLE, GEMMA2_SPEC, NON_WEIGHT_TENSORS, PHI3_SPEC, resolve_name,
+};
+
+/// **Phase 16.1 / AT-1b** — architecture-agnostic GGUF → HF name
+/// mapping: the top-level tensors plus the common Llama-layout
+/// block suffixes shared by every supported family. Returns `None`
+/// for family-specific suffixes (handled by the `*_gguf_extra`
+/// functions) and for unknown / malformed names. Body delegates to
+/// [`resolve_name`] over [`COMMON_NAME_TABLE`].
 pub fn gguf_to_hf_name_common(gguf_name: &str) -> Option<String> {
-    match gguf_name {
-        "token_embd.weight" => return Some("model.embed_tokens.weight".to_string()),
-        "output_norm.weight" => return Some("model.norm.weight".to_string()),
-        "output.weight" => return Some("lm_head.weight".to_string()),
-        "rope_freqs.weight" => return Some("rope_freqs".to_string()),
-        _ => {}
-    }
-
-    let (prefix, suffix) = split_blk(gguf_name)?;
-    match suffix {
-        "attn_norm.weight" => Some(format!("{prefix}.input_layernorm.weight")),
-        "attn_q.weight" => Some(format!("{prefix}.self_attn.q_proj.weight")),
-        "attn_k.weight" => Some(format!("{prefix}.self_attn.k_proj.weight")),
-        "attn_v.weight" => Some(format!("{prefix}.self_attn.v_proj.weight")),
-        "attn_output.weight" => Some(format!("{prefix}.self_attn.o_proj.weight")),
-        "ffn_norm.weight" => Some(format!("{prefix}.post_attention_layernorm.weight")),
-        "ffn_gate.weight" => Some(format!("{prefix}.mlp.gate_proj.weight")),
-        "ffn_up.weight" => Some(format!("{prefix}.mlp.up_proj.weight")),
-        "ffn_down.weight" => Some(format!("{prefix}.mlp.down_proj.weight")),
-        _ => None,
-    }
+    resolve_name(&COMMON_NAME_TABLE, gguf_name)
 }
 
-/// **Phase 16** — Phi-3-specific GGUF suffixes that the common
-/// Llama-layout table maps differently. Phi-3 fuses both the QKV
-/// projection (`attn_qkv` → `qkv_proj`) and the MLP gate/up
-/// projection: llama.cpp stores the latter as a single
+/// **Phase 16 / AT-1b** — Phi-3-specific GGUF suffixes that the
+/// common Llama-layout table maps differently. Phi-3 fuses both
+/// the QKV projection (`attn_qkv` → `qkv_proj`) and the MLP
+/// gate/up projection: llama.cpp stores the latter as a single
 /// `blk.N.ffn_up.weight` of width `2 * intermediate_size`, which
 /// the common table would mis-map to the separate `up_proj` —
-/// Phi-3's graph expects the fused `gate_up_proj`. These
-/// overrides must be tried *before* `gguf_to_hf_name_common`
-/// (the common table also matches `ffn_up.weight`), see
-/// `Phi3Adapter`'s `GgufNameMapper`.
+/// Phi-3's graph expects the fused `gate_up_proj`. These overrides
+/// must be tried *before* `gguf_to_hf_name_common` (the common
+/// table also matches `ffn_up.weight`), see `Phi3Adapter`'s
+/// `GgufNameMapper`. Body delegates to [`resolve_name`] over
+/// `PHI3_SPEC.name_extra`.
 pub fn phi3_gguf_extra(gguf_name: &str) -> Option<String> {
-    let (prefix, suffix) = split_blk(gguf_name)?;
-    match suffix {
-        "attn_qkv.weight" => Some(format!("{prefix}.self_attn.qkv_proj.weight")),
-        "ffn_up.weight" => Some(format!("{prefix}.mlp.gate_up_proj.weight")),
-        _ => None,
-    }
+    resolve_name(&PHI3_SPEC.name_extra, gguf_name)
 }
 
-/// **Phase 16.1** — Gemma 2-specific GGUF suffix(es) not covered by
-/// [`gguf_to_hf_name_common`]: the post-attention / post-FFN norms.
+/// **Phase 16.1 / AT-1b** — Gemma 2-specific GGUF suffix(es) not
+/// covered by [`gguf_to_hf_name_common`]: the post-attention /
+/// post-FFN norms. Body delegates to [`resolve_name`] over
+/// `GEMMA2_SPEC.name_extra`.
 pub fn gemma2_gguf_extra(gguf_name: &str) -> Option<String> {
-    let (prefix, suffix) = split_blk(gguf_name)?;
-    match suffix {
-        "attn_post_norm.weight" => Some(format!("{prefix}.post_attention_layernorm.weight")),
-        "post_attention_norm.weight" => {
-            Some(format!("{prefix}.post_attention_layernorm.weight"))
-        }
-        "ffn_post_norm.weight" => Some(format!("{prefix}.post_feedforward_layernorm.weight")),
-        _ => None,
-    }
+    resolve_name(&GEMMA2_SPEC.name_extra, gguf_name)
 }
 
 // **Phase 16.3** — the arch-branching composing free function
@@ -77,8 +50,9 @@ pub fn gemma2_gguf_extra(gguf_name: &str) -> Option<String> {
 // owns GGUF→HF name structure: `pipeline::build_gguf_name_map`
 // calls `adapter.gguf_to_hf_name(name)` (the `GgufNameMapper`
 // trait), which composes `gguf_to_hf_name_common` with the
-// family extras. Only the pure, arch-agnostic pieces above remain
-// here; the family dispatch lives behind the adapter.
+// family extras. The structure now lives as data in
+// `tensor_spec`; the family dispatch still lives behind the
+// adapter.
 
 /// GGUF tensors that are **config inputs, not graph weights**:
 /// they carry no HuggingFace parameter equivalent (HF keeps the
@@ -91,12 +65,10 @@ pub fn gemma2_gguf_extra(gguf_name: &str) -> Option<String> {
 /// `gguf_tensor_metas`) instead of hard-erroring as "no known HF
 /// name mapping". Name-based (not family-dispatched) because the
 /// convention is fixed across any longrope GGUF; no real graph
-/// parameter is ever named this way.
+/// parameter is ever named this way. **AT-1b**: backed by the
+/// declarative [`NON_WEIGHT_TENSORS`] set.
 pub fn is_gguf_non_weight_tensor(gguf_name: &str) -> bool {
-    matches!(
-        gguf_name,
-        "rope_factors_short.weight" | "rope_factors_long.weight"
-    )
+    NON_WEIGHT_TENSORS.contains(&gguf_name)
 }
 
 #[cfg(test)]
