@@ -8,6 +8,7 @@ use crate::cuda::pool_helpers::with_pooled_device_buffers;
 use crate::cuda::{cuda_device_ptr, cuda_device_ptr_mut};
 use crate::tensor::{DType, Device, Tensor, TensorStorage};
 
+#[cfg(atenia_cuda)]
 #[link(name = "matmul_kernel")]
 unsafe extern "C" {
     fn matmul_f32_launch_device(
@@ -20,22 +21,63 @@ unsafe extern "C" {
     ) -> c_int;
 }
 
+// **CPU-2 C2c** — CUDA-less build: no `matmul_kernel` static lib to
+// link. Identical-signature stub; unreachable because every wrapper
+// that would call it has a `#[cfg(not(atenia_cuda))]` sibling that
+// returns the CPU result / `None` / `unreachable!` first.
+#[cfg(not(atenia_cuda))]
+#[allow(dead_code, unused_variables)]
+unsafe fn matmul_f32_launch_device(
+    a: *const f32,
+    b: *const f32,
+    c: *mut f32,
+    m: c_int,
+    k: c_int,
+    n: c_int,
+) -> c_int {
+    unreachable!(
+        "CUDA symbol matmul_f32_launch_device called in CPU-only build (atenia_cuda not enabled)"
+    )
+}
+
 // Direct cudart FFI for the non-pooled path. Re-declared here (also
 // declared in `cuda/pool_helpers.rs`) so the non-pooled function is
 // self-contained at the source level — the linker resolves both
 // declarations to the same symbol in the cudart shared library.
+#[cfg(atenia_cuda)]
 #[link(name = "cudart")]
 unsafe extern "C" {
     fn cudaMemcpy(dst: *mut c_void, src: *const c_void, count: usize, kind: c_int) -> c_int;
+}
+
+// **CPU-2 C2c** — CUDA-less build stub (see note on the
+// `matmul_kernel` stub above).
+#[cfg(not(atenia_cuda))]
+#[allow(dead_code, unused_variables)]
+unsafe fn cudaMemcpy(dst: *mut c_void, src: *const c_void, count: usize, kind: c_int) -> c_int {
+    unreachable!("CUDA symbol cudaMemcpy called in CPU-only build (atenia_cuda not enabled)")
 }
 
 // Wrappers around `cudaMalloc`/`cudaFree` provided by the project's
 // C side (already linked into the binary via `atenia_kernels`; same
 // symbols `apx4_12::gpu_memory_pool` consumes). Re-declared here so
 // the non-pooled path does not depend on the pool module.
+#[cfg(atenia_cuda)]
 unsafe extern "C" {
     fn cuda_malloc(ptr: *mut *mut c_void, bytes: usize);
     fn cuda_free(ptr: *mut c_void);
+}
+
+#[cfg(not(atenia_cuda))]
+#[allow(dead_code, unused_variables)]
+unsafe fn cuda_malloc(ptr: *mut *mut c_void, bytes: usize) {
+    unreachable!("CUDA symbol cuda_malloc called in CPU-only build (atenia_cuda not enabled)")
+}
+
+#[cfg(not(atenia_cuda))]
+#[allow(dead_code, unused_variables)]
+unsafe fn cuda_free(ptr: *mut c_void) {
+    unreachable!("CUDA symbol cuda_free called in CPU-only build (atenia_cuda not enabled)")
 }
 
 const CUDA_MEMCPY_HOST_TO_DEVICE: c_int = 1;
@@ -66,6 +108,16 @@ fn take_first_warn(flag: &AtomicBool) -> bool {
         .is_ok()
 }
 
+// **CPU-2 C2c** — CUDA-less build: exact CPU fallback. This is the
+// same result the `atenia_cuda` path produces on a probe/roundtrip
+// failure (M12.4 H1), so it is numerically identical, not a panic.
+#[cfg(not(atenia_cuda))]
+#[allow(unused_variables)]
+pub fn cuda_matmul(a: &Tensor, b: &Tensor, m: usize, k: usize, n: usize) -> Tensor {
+    a.matmul(b)
+}
+
+#[cfg(atenia_cuda)]
 pub fn cuda_matmul(a: &Tensor, b: &Tensor, m: usize, k: usize, n: usize) -> Tensor {
     try_cuda_matmul_roundtrip(a, b, m, k, n).unwrap_or_else(|| {
         // **M12.4 H1** — the terminal `None` (both the pooled and the
@@ -93,6 +145,19 @@ pub fn cuda_matmul(a: &Tensor, b: &Tensor, m: usize, k: usize, n: usize) -> Tens
 /// 7B-class certified runs can legitimately leave too few blocks free
 /// after model residency. In that case, retry with exact non-pooled
 /// allocations so a tiny decode matmul is not killed by pool pressure.
+#[cfg(not(atenia_cuda))]
+#[allow(unused_variables)]
+pub fn try_cuda_matmul_roundtrip(
+    a: &Tensor,
+    b: &Tensor,
+    m: usize,
+    k: usize,
+    n: usize,
+) -> Option<Tensor> {
+    None
+}
+
+#[cfg(atenia_cuda)]
 pub fn try_cuda_matmul_roundtrip(
     a: &Tensor,
     b: &Tensor,
@@ -144,6 +209,19 @@ pub fn try_cuda_matmul_roundtrip(
 /// The underlying `matmul_f32_launch_device` returns a cudart status
 /// code. If a resident launch fails, the function materialises CPU
 /// operands and writes a CPU output so the graph can keep going.
+// **CPU-2 C2c** — CUDA-less build. No pure-CPU path: this op is
+// only reached when every operand is `TensorStorage::Cuda`, which
+// is never constructed without CUDA. Unreachable with the identical
+// signature.
+#[cfg(not(atenia_cuda))]
+#[allow(unused_variables)]
+pub fn cuda_matmul_inplace(a: &Tensor, b: &Tensor, out: &mut Tensor, m: usize, k: usize, n: usize) {
+    unreachable!(
+        "cuda_matmul_inplace called in CPU-only build (atenia_cuda not enabled)"
+    )
+}
+
+#[cfg(atenia_cuda)]
 pub fn cuda_matmul_inplace(a: &Tensor, b: &Tensor, out: &mut Tensor, m: usize, k: usize, n: usize) {
     let all_cuda = matches!(
         (&a.storage, &b.storage, &out.storage),
@@ -265,6 +343,19 @@ pub fn is_cuda_available_for(node_type: &NodeType) -> bool {
 /// `a` is expected to be `[m × k]` row-major F32, `b` to be
 /// `[k × n]` row-major F32. No shape validation is performed
 /// here; caller must validate before invocation.
+#[cfg(not(atenia_cuda))]
+#[allow(unused_variables)]
+pub fn cuda_matmul_non_pooled(
+    a: &[f32],
+    b: &[f32],
+    m: usize,
+    k: usize,
+    n: usize,
+) -> Option<Tensor> {
+    None
+}
+
+#[cfg(atenia_cuda)]
 pub fn cuda_matmul_non_pooled(
     a: &[f32],
     b: &[f32],
@@ -490,10 +581,12 @@ pub fn cuda_matmul_non_pooled(
 /// RAII guard that frees every successfully-allocated device buffer
 /// when dropped. Mirrors `pool_helpers::PoolGuard` but routes
 /// allocations through `cuda_malloc`/`cuda_free` (no pool).
+#[cfg(atenia_cuda)]
 struct NonPooledAllocs {
     ptrs: Vec<*mut c_void>,
 }
 
+#[cfg(atenia_cuda)]
 impl NonPooledAllocs {
     fn new() -> Self {
         Self {
@@ -518,6 +611,7 @@ impl NonPooledAllocs {
     }
 }
 
+#[cfg(atenia_cuda)]
 impl Drop for NonPooledAllocs {
     fn drop(&mut self) {
         for p in self.ptrs.drain(..) {
@@ -586,6 +680,7 @@ const CUBLAS_COMPUTE_32F: c_int = 68;
 const CUBLAS_COMPUTE_32F_FAST_TF32: c_int = 77;
 const CUBLAS_GEMM_DEFAULT: c_int = -1;
 
+#[cfg(atenia_cuda)]
 #[link(name = "cublas")]
 unsafe extern "C" {
     fn cublasCreate_v2(handle: *mut cublasHandle_t) -> c_int;
@@ -613,6 +708,51 @@ unsafe extern "C" {
     ) -> c_int;
 }
 
+// **CPU-2 C2c** — CUDA-less build: no cuBLAS to link. Identical
+// signatures; unreachable because `cublas_handle()` returns `None`
+// under `#[cfg(not(atenia_cuda))]`, so no caller proceeds to a
+// cuBLAS call.
+#[cfg(not(atenia_cuda))]
+#[allow(dead_code, unused_variables)]
+unsafe fn cublasCreate_v2(handle: *mut cublasHandle_t) -> c_int {
+    unreachable!("CUDA symbol cublasCreate_v2 called in CPU-only build (atenia_cuda not enabled)")
+}
+
+#[cfg(not(atenia_cuda))]
+#[allow(dead_code, unused_variables)]
+unsafe fn cublasSetStream_v2(handle: cublasHandle_t, stream: *mut c_void) -> c_int {
+    unreachable!(
+        "CUDA symbol cublasSetStream_v2 called in CPU-only build (atenia_cuda not enabled)"
+    )
+}
+
+#[cfg(not(atenia_cuda))]
+#[allow(dead_code, unused_variables)]
+unsafe fn cublasGemmEx(
+    handle: cublasHandle_t,
+    transa: c_int,
+    transb: c_int,
+    m: c_int,
+    n: c_int,
+    k: c_int,
+    alpha: *const c_void,
+    a: *const c_void,
+    a_type: c_int,
+    lda: c_int,
+    b: *const c_void,
+    b_type: c_int,
+    ldb: c_int,
+    beta: *const c_void,
+    c: *mut c_void,
+    c_type: c_int,
+    ldc: c_int,
+    compute_type: c_int,
+    algo: c_int,
+) -> c_int {
+    unreachable!("CUDA symbol cublasGemmEx called in CPU-only build (atenia_cuda not enabled)")
+}
+
+#[cfg(atenia_cuda)]
 #[link(name = "cudart")]
 unsafe extern "C" {
     /// Currently unused — the M8.7.1.r refactor switched the
@@ -648,16 +788,54 @@ unsafe extern "C" {
     fn cudaStreamSynchronize(stream: *mut c_void) -> c_int;
 }
 
+// **CPU-2 C2c** — CUDA-less build stubs for the M8.x async-stream
+// cudart surface. Unreachable: the only callers are the BF16-resident
+// inplace wrappers, which are `unreachable!` under
+// `#[cfg(not(atenia_cuda))]`.
+#[cfg(not(atenia_cuda))]
+#[allow(dead_code, unused_variables)]
+unsafe fn cudaDeviceSynchronize() -> c_int {
+    unreachable!(
+        "CUDA symbol cudaDeviceSynchronize called in CPU-only build (atenia_cuda not enabled)"
+    )
+}
+
+#[cfg(not(atenia_cuda))]
+#[allow(dead_code, unused_variables)]
+unsafe fn cudaMemcpyAsync(
+    dst: *mut c_void,
+    src: *const c_void,
+    count: usize,
+    kind: c_int,
+    stream: *mut c_void,
+) -> c_int {
+    unreachable!(
+        "CUDA symbol cudaMemcpyAsync called in CPU-only build (atenia_cuda not enabled)"
+    )
+}
+
+#[cfg(not(atenia_cuda))]
+#[allow(dead_code, unused_variables)]
+unsafe fn cudaStreamSynchronize(stream: *mut c_void) -> c_int {
+    unreachable!(
+        "CUDA symbol cudaStreamSynchronize called in CPU-only build (atenia_cuda not enabled)"
+    )
+}
+
 /// Wrapper around `cublasHandle_t` so the singleton can be `Send + Sync`.
 /// The cuBLAS handle is process-wide and thread-safe per the NVIDIA docs;
 /// the `*mut c_void` is opaque (a driver-managed cookie), not a host
 /// pointer to Rust-managed memory.
+#[cfg(atenia_cuda)]
 struct CublasHandleHolder {
     handle: cublasHandle_t,
 }
+#[cfg(atenia_cuda)]
 unsafe impl Send for CublasHandleHolder {}
+#[cfg(atenia_cuda)]
 unsafe impl Sync for CublasHandleHolder {}
 
+#[cfg(atenia_cuda)]
 static CUBLAS_HANDLE: OnceLock<CublasHandleHolder> = OnceLock::new();
 
 /// Lazily initialise (or return) the process-wide cuBLAS handle. Returns
@@ -665,6 +843,12 @@ static CUBLAS_HANDLE: OnceLock<CublasHandleHolder> = OnceLock::new();
 /// caller falls back without needing to differentiate the failure mode.
 /// The handle is never destroyed; it lives until process exit, which is
 /// the standard cuBLAS recommendation.
+#[cfg(not(atenia_cuda))]
+fn cublas_handle() -> Option<cublasHandle_t> {
+    None
+}
+
+#[cfg(atenia_cuda)]
 fn cublas_handle() -> Option<cublasHandle_t> {
     if !super::cuda_available() {
         return None;
@@ -765,6 +949,27 @@ pub fn vram_bf16_matmul_count() -> usize {
 /// time is still sub-millisecond on Ada. For 13B end-to-end this
 /// is invisible because the bottleneck is the 29 Disk-tier CPU
 /// matmuls (~30 s/token), not the 11 VRAM matmuls (~30 ms total).
+// **CPU-2 C2c** — CUDA-less build. BF16-resident inplace matmul:
+// only reached when `b` is a `TensorStorage::Cuda` BF16 weight,
+// which is never constructed without CUDA. Unreachable with the
+// identical signature.
+#[cfg(not(atenia_cuda))]
+#[allow(unused_variables)]
+pub fn cuda_matmul_bf16_inplace(
+    a: &Tensor,
+    b: &Tensor,
+    out: &mut Tensor,
+    m: usize,
+    k: usize,
+    n: usize,
+    stream: *mut c_void,
+) -> bool {
+    unreachable!(
+        "cuda_matmul_bf16_inplace called in CPU-only build (atenia_cuda not enabled)"
+    )
+}
+
+#[cfg(atenia_cuda)]
 pub fn cuda_matmul_bf16_inplace(
     a: &Tensor,
     b: &Tensor,
@@ -994,6 +1199,24 @@ pub fn vram_bf16_native_matmul_count() -> usize {
 /// duration of the GEMM and used for both H→D and D→H async
 /// memcpy. With `stream = null` the behaviour is bit-exact with
 /// the default-stream sync semantics.
+// **CPU-2 C2c** — CUDA-less build. See `cuda_matmul_bf16_inplace`.
+#[cfg(not(atenia_cuda))]
+#[allow(unused_variables)]
+pub fn cuda_matmul_bf16_native_inplace(
+    a: &Tensor,
+    b: &Tensor,
+    out: &mut Tensor,
+    m: usize,
+    k: usize,
+    n: usize,
+    stream: *mut c_void,
+) -> bool {
+    unreachable!(
+        "cuda_matmul_bf16_native_inplace called in CPU-only build (atenia_cuda not enabled)"
+    )
+}
+
+#[cfg(atenia_cuda)]
 pub fn cuda_matmul_bf16_native_inplace(
     a: &Tensor,
     b: &Tensor,
@@ -1193,6 +1416,26 @@ pub fn disk_streamed_matmul_count() -> usize {
 /// `ensure_decoded` + AVX2 path. The transient host bytes and
 /// staging VRAM buffer are freed by `Vec::Drop` and `TensorGPU::Drop`
 /// respectively; nothing leaks.
+// **CPU-2 C2c** — CUDA-less build. Disk→GPU streamed BF16 matmul:
+// requires a CUDA device + VRAM staging, never available without
+// CUDA. Unreachable with the identical signature.
+#[cfg(not(atenia_cuda))]
+#[allow(unused_variables)]
+pub fn cuda_matmul_disk_streamed_bf16(
+    a: &Tensor,
+    b: &Tensor,
+    out: &mut Tensor,
+    m: usize,
+    k: usize,
+    n: usize,
+    next_handle: Option<&crate::tensor::disk_tier::DiskTensorHandle>,
+) -> bool {
+    unreachable!(
+        "cuda_matmul_disk_streamed_bf16 called in CPU-only build (atenia_cuda not enabled)"
+    )
+}
+
+#[cfg(atenia_cuda)]
 pub fn cuda_matmul_disk_streamed_bf16(
     a: &Tensor,
     b: &Tensor,
@@ -2051,5 +2294,45 @@ mod m12_4 {
         assert!(take_first_warn(&flag), "first call must warn");
         assert!(!take_first_warn(&flag), "second call must stay silent");
         assert!(!take_first_warn(&flag), "third call must stay silent");
+    }
+}
+
+// ===========================================================================
+// CPU-2 C2c — CUDA-less build contract (compiled only without CUDA;
+// exercised by the non-blocking cpu-only CI job)
+// ===========================================================================
+
+#[cfg(all(test, not(atenia_cuda)))]
+mod cpu_only_c2c {
+    use super::{cublas_handle, cuda_matmul, cuda_matmul_non_pooled, try_cuda_matmul_roundtrip};
+    use crate::tensor::Tensor;
+
+    #[test]
+    fn cuda_matmul_is_exact_cpu_matmul() {
+        let a = Tensor::new_cpu(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let b = Tensor::new_cpu(vec![3, 2], vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0]);
+        let got = cuda_matmul(&a, &b, 2, 3, 2);
+        let want = a.matmul(&b);
+        assert_eq!(
+            got.as_cpu_slice(),
+            want.as_cpu_slice(),
+            "cuda_matmul must equal the exact CPU matmul in a CUDA-less build"
+        );
+    }
+
+    #[test]
+    fn roundtrip_and_non_pooled_are_none() {
+        let a = Tensor::new_cpu(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0]);
+        let b = Tensor::new_cpu(vec![2, 2], vec![5.0, 6.0, 7.0, 8.0]);
+        assert!(try_cuda_matmul_roundtrip(&a, &b, 2, 2, 2).is_none());
+
+        let av = [1.0_f32, 2.0, 3.0, 4.0];
+        let bv = [5.0_f32, 6.0, 7.0, 8.0];
+        assert!(cuda_matmul_non_pooled(&av, &bv, 2, 2, 2).is_none());
+    }
+
+    #[test]
+    fn cublas_handle_is_none() {
+        assert!(cublas_handle().is_none());
     }
 }

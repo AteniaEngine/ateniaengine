@@ -53,6 +53,17 @@ pub unsafe fn vec_add_cuda(a: *const f32, b: *const f32, out: *mut f32, n: c_int
 ///   - Subsequent calls: return the cached value, no spawn.
 ///   - Result is identical to the pre-cache version on a stable
 ///     driver.
+// **CPU-2 C2c** — CUDA-less build: the engine has no CUDA backend
+// linked, so CUDA is unconditionally unavailable regardless of
+// whether `nvidia-smi` happens to exist on the host. This is the
+// belt-and-suspenders that keeps a CPU-only binary running on an
+// NVIDIA box from entering any CUDA path and hitting a stub.
+#[cfg(not(atenia_cuda))]
+pub fn cuda_available() -> bool {
+    false
+}
+
+#[cfg(atenia_cuda)]
 pub fn cuda_available() -> bool {
     static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *CACHED.get_or_init(|| std::process::Command::new("nvidia-smi").output().is_ok())
@@ -80,6 +91,10 @@ mod cuda_available_tests {
     /// test time. If the test host has CUDA, `cuda_available()`
     /// returns true; if not, false. We compare against a direct
     /// spawn so the test is self-validating on either kind of host.
+    /// Only meaningful when the CUDA backend is compiled in — under
+    /// `#[cfg(not(atenia_cuda))]` the function is unconditionally
+    /// `false` by contract (covered by the test below).
+    #[cfg(atenia_cuda)]
     #[test]
     fn cuda_available_matches_direct_probe() {
         let direct = std::process::Command::new("nvidia-smi").output().is_ok();
@@ -89,8 +104,30 @@ mod cuda_available_tests {
             "cuda_available() result must match a fresh nvidia-smi probe"
         );
     }
+
+    /// **CPU-2 C2c** — in a CUDA-less build the probe must report
+    /// unavailable unconditionally, even on an NVIDIA host.
+    #[cfg(not(atenia_cuda))]
+    #[test]
+    fn cuda_available_is_false_without_cuda_backend() {
+        assert!(
+            !cuda_available(),
+            "cuda_available() must be false when built without the CUDA backend"
+        );
+    }
 }
 
+// **CPU-2 C2c** — CUDA-less build: `vec_add` is an exact
+// element-wise sum, so the CPU path is numerically identical to the
+// GPU kernel (no panic, no precision change). Same length contract
+// as the CUDA path.
+#[cfg(not(atenia_cuda))]
+pub fn vec_add_gpu(a: &[f32], b: &[f32]) -> Vec<f32> {
+    assert_eq!(a.len(), b.len());
+    a.iter().zip(b.iter()).map(|(x, y)| x + y).collect()
+}
+
+#[cfg(atenia_cuda)]
 pub fn vec_add_gpu(a: &[f32], b: &[f32]) -> Vec<f32> {
     assert_eq!(a.len(), b.len());
 
@@ -102,6 +139,21 @@ pub fn vec_add_gpu(a: &[f32], b: &[f32]) -> Vec<f32> {
     }
 
     out
+}
+
+/// **CPU-2 C2c** — the CUDA-less `vec_add_gpu` must be the exact
+/// element-wise sum. Compiled only without the CUDA backend;
+/// exercised by the non-blocking cpu-only CI job.
+#[cfg(all(test, not(atenia_cuda)))]
+mod vec_add_cpu_only_tests {
+    use super::vec_add_gpu;
+
+    #[test]
+    fn vec_add_gpu_is_exact_cpu_sum() {
+        let a = [1.0_f32, 2.0, 3.0, -4.0];
+        let b = [5.0_f32, 6.0, 7.0, 4.0];
+        assert_eq!(vec_add_gpu(&a, &b), vec![6.0, 8.0, 10.0, 0.0]);
+    }
 }
 
 /// Returns the raw device pointer (read-only) backing a
