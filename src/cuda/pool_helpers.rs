@@ -31,9 +31,20 @@ use crate::apx4_12::{pool_alloc, pool_free};
 use crate::tensor::StorageTransferError;
 
 // Direct FFI to cudart for host↔device transfers.
+#[cfg(atenia_cuda)]
 #[link(name = "cudart")]
 unsafe extern "C" {
     fn cudaMemcpy(dst: *mut c_void, src: *const c_void, count: usize, kind: c_int) -> c_int;
+}
+
+// **CPU-2 C2b** — CUDA-less build: no cudart to link. Identical
+// signature; unreachable because `with_pooled_device_buffers` has a
+// `#[cfg(not(atenia_cuda))]` sibling that returns
+// `Err(EngineUnavailable)` before any pooled transfer is attempted.
+#[cfg(not(atenia_cuda))]
+#[allow(dead_code, unused_variables)]
+unsafe fn cudaMemcpy(dst: *mut c_void, src: *const c_void, count: usize, kind: c_int) -> c_int {
+    unreachable!("CUDA symbol cudaMemcpy called in CPU-only build (atenia_cuda not enabled)")
 }
 
 const CUDA_MEMCPY_HOST_TO_DEVICE: c_int = 1;
@@ -43,10 +54,12 @@ const CUDA_MEMCPY_DEVICE_TO_HOST: c_int = 2;
 /// it when dropped. Guarantees cleanup across every exit path of
 /// [`with_pooled_device_buffers`] — success, `PoolExhausted` from a
 /// later alloc, memcpy failure, or kernel-launch failure.
+#[cfg(atenia_cuda)]
 struct PoolGuard {
     ptrs: Vec<*mut c_void>,
 }
 
+#[cfg(atenia_cuda)]
 impl PoolGuard {
     fn new(capacity: usize) -> Self {
         Self {
@@ -60,6 +73,7 @@ impl PoolGuard {
     }
 }
 
+#[cfg(atenia_cuda)]
 impl Drop for PoolGuard {
     fn drop(&mut self) {
         for p in self.ptrs.drain(..) {
@@ -107,6 +121,26 @@ impl Drop for PoolGuard {
 ///   its own scope (they are freed immediately after it returns).
 /// - A working CUDA driver is available (the helper does no
 ///   driver-availability probing of its own).
+// **CPU-2 C2b** — CUDA-less build. The pooled device path is
+// entirely VRAM-backed (`pool_alloc` → `cuda_malloc`, `cudaMemcpy`),
+// so there is no CPU-only behaviour to emulate: report the engine
+// as unavailable. Callers (`cuda_*_raw` in linear/batch/fused) are
+// themselves CUDA-gated, so this is reached only if a future caller
+// invokes it directly on a CUDA-less build.
+#[cfg(not(atenia_cuda))]
+#[allow(unused_variables)]
+pub(crate) unsafe fn with_pooled_device_buffers<F>(
+    inputs: &[&[f32]],
+    output: &mut [f32],
+    kernel_call: F,
+) -> Result<(), StorageTransferError>
+where
+    F: FnOnce(&[*const f32], *mut f32) -> i32,
+{
+    Err(StorageTransferError::EngineUnavailable)
+}
+
+#[cfg(atenia_cuda)]
 pub(crate) unsafe fn with_pooled_device_buffers<F>(
     inputs: &[&[f32]],
     output: &mut [f32],

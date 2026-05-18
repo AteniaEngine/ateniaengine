@@ -23,7 +23,9 @@
 //! `cuda_available()` guard. Encapsulating it here keeps every
 //! future caller on the same vetted error-handling chain.
 
-use std::ffi::{CStr, c_void};
+use std::ffi::c_void;
+#[cfg(atenia_cuda)]
+use std::ffi::CStr;
 use std::fmt;
 use std::os::raw::{c_char, c_int};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -73,12 +75,14 @@ pub(crate) static BF16_COUNTER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mute
 // lives in the `bf16_to_f32` static library produced by
 // `build.rs`. `cudaMemcpy` lives in `cudart`. `cuda_malloc` /
 // `cuda_free` live in `atenia_kernels` (already linked elsewhere).
+#[cfg(atenia_cuda)]
 #[link(name = "bf16_to_f32", kind = "static")]
 unsafe extern "C" {
     fn bf16_to_f32_launch_device(d_src_bf16: *const c_void, d_dst_f32: *mut f32, n: c_int)
     -> c_int;
 }
 
+#[cfg(atenia_cuda)]
 #[link(name = "cudart")]
 unsafe extern "C" {
     fn cudaMemcpy(dst: *mut c_void, src: *const c_void, count: usize, kind: c_int) -> c_int;
@@ -86,9 +90,59 @@ unsafe extern "C" {
     fn cudaGetErrorString(error: c_int) -> *const c_char;
 }
 
+#[cfg(atenia_cuda)]
 unsafe extern "C" {
     fn cuda_malloc(ptr: *mut *mut c_void, bytes: usize);
     fn cuda_free(ptr: *mut c_void);
+}
+
+// **CPU-2 C2b** — CUDA-less build: no `bf16_to_f32` static lib /
+// cudart to link. Identical-signature stubs so the (CUDA-gated)
+// internals still type-check; every public wrapper has a
+// `#[cfg(not(atenia_cuda))]` sibling that returns `None`/`Err`
+// before any of these could be reached, so they are unreachable.
+#[cfg(not(atenia_cuda))]
+#[allow(dead_code, unused_variables)]
+unsafe fn bf16_to_f32_launch_device(
+    d_src_bf16: *const c_void,
+    d_dst_f32: *mut f32,
+    n: c_int,
+) -> c_int {
+    unreachable!(
+        "CUDA symbol bf16_to_f32_launch_device called in CPU-only build (atenia_cuda not enabled)"
+    )
+}
+
+#[cfg(not(atenia_cuda))]
+#[allow(dead_code, unused_variables)]
+unsafe fn cudaMemcpy(dst: *mut c_void, src: *const c_void, count: usize, kind: c_int) -> c_int {
+    unreachable!("CUDA symbol cudaMemcpy called in CPU-only build (atenia_cuda not enabled)")
+}
+
+#[cfg(not(atenia_cuda))]
+#[allow(dead_code, unused_variables)]
+unsafe fn cudaMemGetInfo(free: *mut usize, total: *mut usize) -> c_int {
+    unreachable!("CUDA symbol cudaMemGetInfo called in CPU-only build (atenia_cuda not enabled)")
+}
+
+#[cfg(not(atenia_cuda))]
+#[allow(dead_code, unused_variables)]
+unsafe fn cudaGetErrorString(error: c_int) -> *const c_char {
+    unreachable!(
+        "CUDA symbol cudaGetErrorString called in CPU-only build (atenia_cuda not enabled)"
+    )
+}
+
+#[cfg(not(atenia_cuda))]
+#[allow(dead_code, unused_variables)]
+unsafe fn cuda_malloc(ptr: *mut *mut c_void, bytes: usize) {
+    unreachable!("CUDA symbol cuda_malloc called in CPU-only build (atenia_cuda not enabled)")
+}
+
+#[cfg(not(atenia_cuda))]
+#[allow(dead_code, unused_variables)]
+unsafe fn cuda_free(ptr: *mut c_void) {
+    unreachable!("CUDA symbol cuda_free called in CPU-only build (atenia_cuda not enabled)")
 }
 
 const CUDA_MEMCPY_HOST_TO_DEVICE: c_int = 1;
@@ -156,6 +210,12 @@ fn bytes_to_mib(bytes: usize) -> usize {
     bytes / (1024 * 1024)
 }
 
+#[cfg(not(atenia_cuda))]
+fn cuda_mem_info() -> Option<(usize, usize)> {
+    None
+}
+
+#[cfg(atenia_cuda)]
 fn cuda_mem_info() -> Option<(usize, usize)> {
     if !super::cuda_available() {
         return None;
@@ -166,6 +226,12 @@ fn cuda_mem_info() -> Option<(usize, usize)> {
     (rc == 0).then_some((free, total))
 }
 
+#[cfg(not(atenia_cuda))]
+pub(crate) fn cudart_error(rc: c_int) -> String {
+    format!("cuda unavailable (rc={rc})")
+}
+
+#[cfg(atenia_cuda)]
 pub(crate) fn cudart_error(rc: c_int) -> String {
     let ptr = unsafe { cudaGetErrorString(rc) };
     if ptr.is_null() {
@@ -180,10 +246,12 @@ pub(crate) fn cudart_error(rc: c_int) -> String {
 /// `cuda::matmul::cuda_matmul_non_pooled`: every successfully
 /// allocated device buffer is freed on drop, so all `?` /
 /// early-return branches release VRAM before propagating `None`.
+#[cfg(atenia_cuda)]
 struct DeviceAllocs {
     ptrs: Vec<*mut c_void>,
 }
 
+#[cfg(atenia_cuda)]
 impl DeviceAllocs {
     fn new() -> Self {
         Self {
@@ -204,6 +272,7 @@ impl DeviceAllocs {
     }
 }
 
+#[cfg(atenia_cuda)]
 impl Drop for DeviceAllocs {
     fn drop(&mut self) {
         for p in self.ptrs.drain(..) {
@@ -242,6 +311,13 @@ impl Drop for DeviceAllocs {
 /// implements the same bit-shift on Ampere+ silicon (RTX 4070 is
 /// Ada). Bit-exactness was validated end to end against a 70.7M-
 /// element FFN-down weight in `examples/test_bf16_upload.rs`.
+#[cfg(not(atenia_cuda))]
+#[allow(unused_variables)]
+pub fn bf16_to_f32_on_device(src: &[u16], dst_len: usize) -> Option<Vec<f32>> {
+    None
+}
+
+#[cfg(atenia_cuda)]
 pub fn bf16_to_f32_on_device(src: &[u16], dst_len: usize) -> Option<Vec<f32>> {
     debug_assert_eq!(
         src.len(),
@@ -338,6 +414,22 @@ pub fn bf16_to_f32_resident_in_vram(src: &[u16], shape: &[usize]) -> Option<Tens
     bf16_to_f32_resident_in_vram_detailed(src, shape).ok()
 }
 
+#[cfg(not(atenia_cuda))]
+#[allow(unused_variables)]
+pub fn bf16_to_f32_resident_in_vram_detailed(
+    src: &[u16],
+    shape: &[usize],
+) -> Result<TensorGPU, Bf16UploadError> {
+    let numel: usize = shape.iter().product();
+    Err(Bf16UploadError::new(
+        "cpu_only_build",
+        "CUDA unavailable: built without CUDA (atenia_cuda not enabled)",
+        shape,
+        numel,
+    ))
+}
+
+#[cfg(atenia_cuda)]
 pub fn bf16_to_f32_resident_in_vram_detailed(
     src: &[u16],
     shape: &[usize],
@@ -469,6 +561,22 @@ pub fn bf16_to_f32_resident_in_vram_from_raw_bytes(
     bf16_to_f32_resident_in_vram_from_raw_bytes_detailed(raw_bytes, numel, shape).ok()
 }
 
+#[cfg(not(atenia_cuda))]
+#[allow(unused_variables)]
+pub fn bf16_to_f32_resident_in_vram_from_raw_bytes_detailed(
+    raw_bytes: &[u8],
+    numel: usize,
+    shape: &[usize],
+) -> Result<TensorGPU, Bf16UploadError> {
+    Err(Bf16UploadError::new(
+        "cpu_only_build",
+        "CUDA unavailable: built without CUDA (atenia_cuda not enabled)",
+        shape,
+        numel,
+    ))
+}
+
+#[cfg(atenia_cuda)]
 pub fn bf16_to_f32_resident_in_vram_from_raw_bytes_detailed(
     raw_bytes: &[u8],
     numel: usize,
@@ -615,6 +723,22 @@ pub fn bf16_to_vram_no_upcast(src: &[u16], shape: &[usize]) -> Option<TensorGPU>
 /// live VRAM free/total so the operator sees the root cause
 /// instead of an opaque `None`. The legacy `Option` wrapper above
 /// preserves every existing caller and test.
+#[cfg(not(atenia_cuda))]
+#[allow(unused_variables)]
+pub fn bf16_to_vram_no_upcast_detailed(
+    src: &[u16],
+    shape: &[usize],
+) -> Result<TensorGPU, Bf16UploadError> {
+    let numel: usize = shape.iter().product();
+    Err(Bf16UploadError::new(
+        "cpu_only_build",
+        "CUDA unavailable: built without CUDA (atenia_cuda not enabled)",
+        shape,
+        numel,
+    ))
+}
+
+#[cfg(atenia_cuda)]
 pub fn bf16_to_vram_no_upcast_detailed(
     src: &[u16],
     shape: &[usize],
@@ -687,6 +811,22 @@ pub fn bf16_to_vram_no_upcast_from_raw_bytes(
 /// bit-identical; failures carry the root cause via
 /// [`Bf16UploadError`]. The legacy `Option` wrapper above
 /// preserves all existing callers/tests.
+#[cfg(not(atenia_cuda))]
+#[allow(unused_variables)]
+pub fn bf16_to_vram_no_upcast_from_raw_bytes_detailed(
+    raw_bytes: &[u8],
+    numel: usize,
+    shape: &[usize],
+) -> Result<TensorGPU, Bf16UploadError> {
+    Err(Bf16UploadError::new(
+        "cpu_only_build",
+        "CUDA unavailable: built without CUDA (atenia_cuda not enabled)",
+        shape,
+        numel,
+    ))
+}
+
+#[cfg(atenia_cuda)]
 pub fn bf16_to_vram_no_upcast_from_raw_bytes_detailed(
     raw_bytes: &[u8],
     numel: usize,
@@ -809,6 +949,13 @@ pub fn bf16_to_vram_no_upcast_from_raw_bytes_detailed(
 /// elements at M6 commit `66910d5`). The transient F32 buffer
 /// holds the **lossless** F32 representation of the BF16
 /// pattern — no further rounding occurs in this primitive.
+#[cfg(not(atenia_cuda))]
+#[allow(unused_variables)]
+pub fn bf16_to_f32_transient_in_vram(bf16_gpu: &TensorGPU) -> Option<TensorGPU> {
+    None
+}
+
+#[cfg(atenia_cuda)]
 pub fn bf16_to_f32_transient_in_vram(bf16_gpu: &TensorGPU) -> Option<TensorGPU> {
     if !super::cuda_available() {
         return None;
