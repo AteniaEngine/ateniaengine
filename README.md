@@ -316,7 +316,7 @@ contract. Indexed from [docs/MILESTONES.md](./docs/MILESTONES.md).
 
 ## Reproducing the numbers
 
-The repository ships ~369 `cargo test` functions covering tensor operations,
+The repository ships ~376 `cargo test` functions covering tensor operations,
 graph construction, adapter dispatch, weight loading, numeric drift, and
 generation contracts:
 

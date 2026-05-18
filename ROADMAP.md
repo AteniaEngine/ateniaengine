@@ -1,6 +1,6 @@
 # Atenia Engine — Roadmap
 
-This document describes the priorities guiding Atenia Engine's development. It is organized by upcoming APX version, from in-progress work to broader horizons.
+This document describes the priorities guiding Atenia Engine's development. APX v20 and the post-v20 consolidation (M12 / vendor-agnostic build / Phase 16) are closed; this roadmap now covers the closed v20 ledger (history) and the forward work. See [docs/STATUS.md](./docs/STATUS.md) for the honest current-state snapshot.
 
 This roadmap communicates scope and priority, not calendar commitments. Versions are released when ready.
 
@@ -43,9 +43,9 @@ Every roadmap item below is checked against these vectors. A milestone that impr
 
 ## Status overview
 
-Atenia Engine is currently working through APX v20 (Real Model Runtime Integration). Earlier versions (v12 through v19) are complete. The most recently closed sub-milestone is **M9: INT8 W8A16 weight quantisation, shipped as opt-in / experimental — net production speedup confirmed after post-close fixes**. The full INT8 infrastructure is in place (quantizer, CUDA per-group dequant kernel, `TensorStorage::CpuInt8`, loader integration, tier-planner cost model). The first close (`74da82b`) was honest about ADR-004 fail but also exposed two surrounding-infrastructure defects: a lying VRAM cost model and an over-conservative M7.2 RAM headroom rule. Three post-close commits fixed them: `997fd8c` (honest cost `numel × 2`), `d6e084c` (`ATENIA_RAM_HEADROOM_OVERRIDE_GIB` opt-in), and `0d0b4a5` (two-pass `plan_inner` with `ram_pressure = model_total - vram_assigned_in_source_dtype`). End-to-end smoke on Llama 2 13B / dev-box: **M9 default 18.8 s/tok vs M8.7 baseline 20.7 s/tok (−9%); with `ATENIA_RAM_HEADROOM_OVERRIDE_GIB=8`, 17.7 s/tok (−14%)**. The numerical contract was NOT met: simple absmax INT8 (per-channel and per-group {32, 128}) misses ADR-004's `< 0.5` drift gate on 4 of 4 models in the F64 fixture (best result Llama 3.2 1B at 0.516 under g=128). M9 stays opt-in **for the drift reason**, not for the performance reason; operators who accept the drift profile now get a measurable speedup; ADR-004-strict INT8 is deferred to M9.5+ (FFN-only mixed precision) or M10 (LLM.int8 / GPTQ outlier decomposition). The previous closure was **M8.6: BF16 KV cache (D62 resolved; default flipped on after the TinyLlama 1.1B-Chat 8-token determinism fixture came back bit-identical; 1.6 GiB RAM savings at seq=2048 on Llama 2 13B; legacy F32 path preserved behind `ATENIA_LEGACY_F32_KV_CACHE=1`)**. The full M4.7 → M4.8 → M4.9 → M5 → M6 → M7 → M8 → M8.7 → M8.6 trajectory is closed: Llama 2 13B Chat runs end-to-end on dev-class commodity hardware (RTX 4070 Laptop, 8 GB VRAM, 32 GB RAM, NVMe spill cache); as of M6 the tier-aware loader doubled the speed of the 7B Chat over the CPU baseline; as of M7 the 13B Chat ran the first time on the box without BSOD via automatic Disk overflow; as of M8 the BF16-resident VRAM kernels gave 1.36× over M7.3; and as of M8.7 **`ATENIA_M8_BF16_KERNEL=1 ATENIA_M8_7_ENABLED=1 atenia generate --model models/llama-2-13b-chat` streams 154 disk-tier weights per forward through the BF16 GPU dispatch with a 98.7 % CPU prefetch hit rate, dropping the 13B per-token cost from 27.0 s/tok (M8) to 20.7 s/tok — 1.30× faster than the M8 baseline, argmax bit-exact with M8**.
+APX v20 (Real Model Runtime Integration) is closed end-to-end (M1 → M11); earlier versions (v12 through v19) are complete. The post-v20 hardening series (M12, the CPU-1 → CPU-5 vendor-agnostic build, and Phase 16) is also closed — see *Post-v20 consolidation* below. The v20 sub-milestone records in this document are kept as history; full per-milestone detail and commits live in [MILESTONES.md](./docs/MILESTONES.md). For context, the final v20 quantisation milestone was **M9: INT8 W8A16, shipped opt-in / experimental — net production speedup confirmed after post-close fixes**. The full INT8 infrastructure is in place (quantizer, CUDA per-group dequant kernel, `TensorStorage::CpuInt8`, loader integration, tier-planner cost model). The first close (`74da82b`) was honest about ADR-004 fail but also exposed two surrounding-infrastructure defects: a lying VRAM cost model and an over-conservative M7.2 RAM headroom rule. Three post-close commits fixed them: `997fd8c` (honest cost `numel × 2`), `d6e084c` (`ATENIA_RAM_HEADROOM_OVERRIDE_GIB` opt-in), and `0d0b4a5` (two-pass `plan_inner` with `ram_pressure = model_total - vram_assigned_in_source_dtype`). End-to-end smoke on Llama 2 13B / dev-box: **M9 default 18.8 s/tok vs M8.7 baseline 20.7 s/tok (−9%); with `ATENIA_RAM_HEADROOM_OVERRIDE_GIB=8`, 17.7 s/tok (−14%)**. The numerical contract was NOT met: simple absmax INT8 (per-channel and per-group {32, 128}) misses ADR-004's `< 0.5` drift gate on 4 of 4 models in the F64 fixture (best result Llama 3.2 1B at 0.516 under g=128). M9 stays opt-in **for the drift reason**, not for the performance reason; operators who accept the drift profile now get a measurable speedup; ADR-004-strict INT8 is deferred to M9.5+ (FFN-only mixed precision) or M10 (LLM.int8 / GPTQ outlier decomposition). The previous closure was **M8.6: BF16 KV cache (D62 resolved; default flipped on after the TinyLlama 1.1B-Chat 8-token determinism fixture came back bit-identical; 1.6 GiB RAM savings at seq=2048 on Llama 2 13B; legacy F32 path preserved behind `ATENIA_LEGACY_F32_KV_CACHE=1`)**. The full M4.7 → M4.8 → M4.9 → M5 → M6 → M7 → M8 → M8.7 → M8.6 trajectory is closed: Llama 2 13B Chat runs end-to-end on dev-class commodity hardware (RTX 4070 Laptop, 8 GB VRAM, 32 GB RAM, NVMe spill cache); as of M6 the tier-aware loader doubled the speed of the 7B Chat over the CPU baseline; as of M7 the 13B Chat ran the first time on the box without BSOD via automatic Disk overflow; as of M8 the BF16-resident VRAM kernels gave 1.36× over M7.3; and as of M8.7 **`ATENIA_M8_BF16_KERNEL=1 ATENIA_M8_7_ENABLED=1 atenia generate --model models/llama-2-13b-chat` streams 154 disk-tier weights per forward through the BF16 GPU dispatch with a 98.7 % CPU prefetch hit rate, dropping the 13B per-token cost from 27.0 s/tok (M8) to 20.7 s/tok — 1.30× faster than the M8 baseline, argmax bit-exact with M8**.
 
-**Active plan for the rest of v20 (M10 ✅ → M11 → M12):** the strategic frame has been re-anchored against the product vision. INT8-strict (ADR-004) is no longer the gating goal; **velocity at usable scales** is. The remaining v20 sub-milestones:
+**Velocity was the v20 close criterion, not INT8-strict.** INT8-strict (ADR-004) was deliberately not the gating goal; usable velocity at reference scales was. The v20 velocity record (closed), still the current measured state on the dev hardware:
 
 - **M10 — Real velocity ✅ closed.** Drive the engine to usable speeds across the four reference brackets in the velocity matrix below. The matrix reflects what the engine measurably delivers today on the dev hardware (RTX 4070 Laptop, 8 GB VRAM, 32 GB RAM DDR5-5600, NVMe SN770) post-M10.3.1.1:
 
@@ -72,9 +72,9 @@ Atenia Engine is currently working through APX v20 (Real Model Runtime Integrati
 
   M10's structural deliverable: **Atenia ships two execution modes (certified / fast) plus a per-tensor dispatch infrastructure driven by per-checkpoint numeric certificates that no other inference engine in the ecosystem publishes.** The remaining velocity gap on 7B / 13B is hardware-bound on 8 GB VRAM and closes through track β (LLM.int8 outlier decomposition), not through more kernel work on M10's surface.
 
-**Next active milestone: M11.** Top-10 model certification + GGUF support. The M10.3.1.1 schema (v2.0.0) is the durable contract M11 consumes — every certified checkpoint ships a `model.numcert.json` with calibrated `per_tensor_policy`, the loader stamps each tensor at load, the dispatcher routes per-matmul. M11 adds checkpoints; the dispatch infrastructure is done.
+**M11 (closed).** Top-10 model certification + GGUF support. The M10.3.1.1 schema (v2.0.0) is the durable contract M11 consumed — every certified checkpoint ships a `model.numcert.json` with calibrated `per_tensor_policy`, the loader stamps each tensor at load, the dispatcher routes per-matmul. M11 added checkpoints on top of the done dispatch infrastructure; it was the last v20 sub-milestone.
 
-**Post-M11 / post-M12 optimisation menu** (the four candidate tracks from [HANDOFF M9 §10](./docs/HANDOFF_APX_V20_M9.md#10-open-issues--how-to-resume) reframed by the M10 evidence):
+**Optimisation tracks (forward)** — the four candidate tracks from [HANDOFF M9 §10](./docs/HANDOFF_APX_V20_M9.md#10-open-issues--how-to-resume) reframed by the M10 evidence; consolidated under *Forward roadmap → Runtime and performance* below:
 
 - **Track β (LLM.int8 outlier decomposition).** Recovers ADR-004-class accuracy per the literature while halving the per-tensor weight cost again. Direct path to closing the residual gap on Llama 2 13B and Mistral 7B after M10.2.1 lands the BF16-TC baseline.
 - **Track γ (GPTQ / AWQ with calibration).** State-of-the-art INT8/INT4 quality. Larger scope than β; revisit if β under-delivers on drift.
@@ -160,9 +160,9 @@ The four small models (TinyLlama, SmolLM2, Qwen 2.5 1.5B, Llama 3.2 1B) form the
 
 ---
 
-## Current focus: APX v20 — Real Model Runtime Integration
+## v20 milestone ledger (closed — history)
 
-APX v20 connects the completed telemetry and decision infrastructure to real external model execution. The first target was HuggingFace `safetensors` checkpoints. The milestone is structured into sub-phases:
+APX v20 connected the completed telemetry and decision infrastructure to real external model execution; the first target was HuggingFace `safetensors` checkpoints. **The whole v20 series (M1 → M11) is closed.** The sub-phase records below are kept for context; the authoritative per-milestone narrative + commits is in [MILESTONES.md](./docs/MILESTONES.md), current readiness in [docs/STATUS.md](./docs/STATUS.md).
 
 ### Completed sub-phases
 
@@ -180,7 +180,9 @@ APX v20 connects the completed telemetry and decision infrastructure to real ext
 
 - **M4.6.1** — Retroactive F64 validation for TinyLlama. The original M4.5-d.1 test (PyTorch BF16 reference) is preserved untouched as historical record of the pre-ADR-004 methodology. A new `tinyllama_f64_validation_test.rs` adds the F64-gated equivalent: Atenia max drift 1.41×10⁻⁴, ratio 5198× vs BF16. Resolves the implicit "PyTorch as ground truth" framing left by M4.5-d.1 — the BF16-argmax disagreement reported there was a near-tie quantisation artefact, not an Atenia bug. See [ADR-004](./docs/decisions/ADR-004-f64-reference-as-default.md).
 
-### Pending sub-phases
+### Sub-phases — M4.6.2 (superseded), M4.7 (closed)
+
+> **M4.6.2 is superseded.** Phi-3.5 mini is a certified model today via the dedicated Phi3 adapter (LongRope + fused QKV / gate_up), see the README certified-models table. The original note is kept verbatim below as the historical architectural diff that informed the adapter.
 
 - **M4.6.2** (immediate post-momento-guau candidate) — Phi 3.5 mini Instruct (3.8B). The architectural deltas vs the Llama family are identified and tractable: a `RopeScaling::Longrope` variant with per-dim `short_factor` / `long_factor` vectors and the `attention_factor` post-multiply on cos/sin (a step llama3 does not need); a fused `qkv_proj` and a fused `gate_up_proj` that need to be split at load time; everything else (RmsNorm, SwiGLU, MHA, half-split RoPE) reuses existing primitives. Estimated ~9 calibrated hours of work — slightly above Phase C. Technically viable on the dev hardware (32 GB RAM accommodates the ~15 GB F32 weights + safetensors buffer + activations). The momento guau is closed (M4.7.6.e); M4.6.2 is now unblocked and is the natural next "fifth Llama-family checkpoint" before M5 if Phi 3.5 mini is a target deployment. Otherwise M5 (inference UX) is strictly higher leverage. See the M4.6.2 investigation notes for the full architectural diff.
 
@@ -270,9 +272,9 @@ APX v20 connects the completed telemetry and decision infrastructure to real ext
       Out of scope and explicitly deferred to M5+: non-pooled `cuda_matmul` for tensors > 64 MB; `apx4::gpu_context::gpu_available()` reactivation; activation-arm `ensure_cpu` coverage under continuous spill pressure. Out of scope and explicitly deferred to v21: adaptive memory-pressure threshold below the OS pagefile trigger on RAM-loaded boxes (Mode A pagefile saturation on the dev box was the empirical falsifier — threshold 0.85 sits above the dev box's pagefile trigger because the 13 B model dominates RAM and the OS pages first).
   - **M4.7 cumulative status**: M4.7.1 through M4.7.6 are all **closed under their respective budgets**. The killer demo target (Llama 2 13B Chat) is validated end-to-end with the transparency contract `argmax(Mode A) == argmax(Mode C)` holding bit-exactly at 13 B parameter scale. The M4.7 milestone is closed. See [HANDOFF M4.7](./docs/HANDOFF_APX_V20_M4.7.md) for the full architectural-decisions ledger and the M5 resume guide.
 
-### Pending sub-phases (post-M4.7, pre-M5)
+### Sub-phases M4.8 / M4.9 (closed)
 
-The momento guau is closed but the demo's wall-clock is impractical for a public reproduction (Mode A 18.7 min on CPU, Mode C ~24 min). Two sub-milestones land before M5 to make the result both fast and reproducible:
+The momento guau closed but its wall-clock was impractical for public reproduction (Mode A 18.7 min on CPU, Mode C ~24 min). Two sub-milestones landed before M5 to make the result both fast and reproducible (both closed):
 
 - **M4.8 ✅ — Performance optimization**. Closed across six sub-steps:
   - `8f542af` (a — `examples/bench_matmul.rs` baseline harness measuring every reachable CPU MatMul kernel against the canonical Llama shapes plus BF16 decode + clone costs. Confirmed empirically: at default `cargo build --release` the production path was the scalar triple-loop registered as `scalar_matmul`, with `matmul_dispatch` measured at 0.30–0.44 GFLOPS — ~600× below the dev box's ~1.5 TFLOPS theoretical FP32 peak. Three structural defects identified: default `apx_mode = "4.19"` < `"6.3"` lexicographically, `avx2_matmul` registration compile-time gated, and `run_plan` purely serial.).
@@ -473,44 +475,52 @@ See [HANDOFF M8.6](./docs/HANDOFF_APX_V20_M8.6.md) for the full closing notes.
 
 ---
 
-## v21 — M12: Production hardening (formerly "production-ready execution guards")
+## Post-v20 consolidation (M10 → Phase 16)
 
-**Renamed and rescoped under the new product framing.** This is the work that turns the engine into something a non-developer can install and use: it is the **M12** sub-milestone of the v20 close in narrative terms, retained under the "v21" version label for backwards-compatible reference. The Guards layer (v16) and Policies layer (v15) currently operate on a model that was satisfactory for scaffolding but will need hardening to consume SignalBus output reliably under production conditions. v21 / M12 focuses on:
+APX v20 closed end-to-end (M1 → M11): real Llama-family inference on commodity hardware with per-checkpoint numeric certificates. After v20, three tightly-scoped series hardened the engine without changing its numeric contract:
 
-- Guard verdict stability under noisy signals (already partly addressed at the Policy layer; extending the same hysteresis-aware behavior to Guards)
-- Recovery and rollback paths exercised against real model workloads (the M4.7 and M5 outputs are where this work is exercised non-synthetically)
-- Operational tooling: structured logging, metrics, replay harnesses for debug
-- **Adaptive memory-pressure threshold (known issue carried over from M4.7)**. The M4.7.6.d Mode A run on the dev box (32 GB RAM, 26 GB BF16 model loaded) saturated the OS pagefile before the reaction loop's threshold (`0.85`) saw "pressure", because the OS pages first when the model dominates RAM. v21's adaptive threshold should land below the OS pagefile trigger on RAM-loaded boxes (~ 0.78 measured on the dev box) with hysteresis to avoid thrash. Empirical baseline preserved in HANDOFF M4.7 (sprint observations).
+- **M12** — the engine surfaces *why* it fails (CUDA root cause, clean CLI errors with exit codes, env/hardware diagnostics, visible fallbacks) instead of swallowing it.
+- **Vendor-agnostic build (CPU-1 → CPU-5)** — the CUDA FFI is fully `#[cfg]`-gated; a CUDA-less `cargo build --lib` links and is CI-enforced. A *build* boundary, not a non-NVIDIA compute backend.
+- **Phase 16** — the GGUF→HF weight-name mapping moved behind the adapter; the execution core is now fully family-agnostic for config **and** weight mapping.
 
----
-
-## v22 — Multi-vendor backend foundation
-
-Today the engine has a CPU baseline (always available) and an NVIDIA GPU path (CUDA). v22 expands the GPU path to a vendor-neutral abstraction that supports a second vendor in the same release: Intel iGPU (which is already common on the project's primary development hardware).
-
-Out of scope for v22: AMD ROCm and Apple Metal, which are substantial enough to merit dedicated milestones.
+No tracked debt remains, CI is dual-blocking (CUDA + no-CUDA), and the core no longer depends on model identity. Per-milestone history and commits live in [MILESTONES.md](./docs/MILESTONES.md); current readiness in [docs/STATUS.md](./docs/STATUS.md).
 
 ---
 
-## v23 — AMD ROCm support
+## Forward roadmap
 
-ROCm path for AMD GPUs. Substantial work due to the differences between CUDA and ROCm in driver model, memory management, and synchronization primitives. Treated as its own milestone rather than bundled with v22.
+The forward work is organised along four axes. Versions are released when ready; nothing below is shipped until it appears in [docs/STATUS.md](./docs/STATUS.md) as cabled to production signals.
 
----
+### Expansion — multi-vendor backends
 
-## v24 — Apple Metal support
+The vendor-agnostic *build* boundary is closed and CI-enforced (CPU-1 → CPU-5): every CUDA FFI symbol is `#[cfg(atenia_cuda)]`-gated, so the core compiles and links with no CUDA toolkit present. This is the foundation a second backend stands on — it is **not** itself a non-NVIDIA compute path. NVIDIA CUDA remains the only GPU backend today.
 
-Metal Performance Shaders integration for Apple Silicon. The largest backend port due to:
+- **v22 — Intel iGPU.** First non-NVIDIA compute backend (common on the project's primary development hardware). Vendor-neutral GPU abstraction with a second vendor in the same release.
+- **v23 — AMD ROCm.** Dedicated milestone: driver model, memory management and synchronisation differ enough from CUDA that it is not a v22 add-on.
+- **v24 — Apple Metal.** Largest port (unified memory, Metal Shading Language, Xcode toolchain). Scoped as a major milestone.
 
-- Different memory model (unified memory vs discrete VRAM)
-- Different programming model (Metal Shading Language vs CUDA / ROCm)
-- Different toolchain (Xcode-centric)
+AMD / Intel / Metal are roadmap, not shipped. The codebase is structured to make them possible, not to claim them.
 
-Scoped explicitly as a major milestone, not a quick adapter on top of v22.
+### Extensibility — adapters and weight mapping
 
----
+The adapter boundary is fully closed: config (Phases 13–15) and weight mapping (Phase 16) are adapter-owned via `ConfigPolicy` / `HfWeightMapper` / `GgufWeightMapper` / `GgufNameMapper`; the execution core is family-agnostic. Adding a new family is a contained change inside the adapter layer. Future direction: keep the adapter trait internal (not a public SDK) while exploring a more declarative config/mapping description so a new family is closer to data than code.
 
-## v25 — Distributed execution
+### Runtime and performance
+
+The two-mode (certified / fast) + per-tensor-certificate dispatch is the durable contract. The residual velocity gap is on 7B / 13B at 8 GB VRAM and is hardware-bound, not kernel-bound:
+
+- **Track β — LLM.int8 outlier decomposition.** Halves the per-tensor weight byte cost while recovering ADR-004-class accuracy per the literature; the direct path to closing the 7B / 13B gap. The velocity matrix in *Status overview* is the target contract.
+- **Track ε — long-context governor (experimental).** Future opt-in, non-certified layer (paged KV cache, content-aware KV residency, optionally selective attention behind an explicit flag). The certified core stays full-attention and deterministic.
+
+### Product and demo
+
+The M12 series closed the diagnostics / error-surface slice. The remaining production-hardening work (the v21 label) is **not** done:
+
+- Installer / first-run UX so a non-developer can install and run.
+- Structured logging, metrics, replay harnesses for debugging.
+- **Adaptive memory-pressure threshold (the one open known issue).** The `0.85` threshold sits above the OS pagefile trigger on RAM-dominated boxes (the OS pages before the reaction loop reacts); it should land below that trigger (~0.78 measured on the dev box) with hysteresis. Empirical baseline in HANDOFF M4.7.
+
+### v25 — Distributed execution
 
 Multi-host execution. Out of scope until single-host execution is mature across vendors.
 
