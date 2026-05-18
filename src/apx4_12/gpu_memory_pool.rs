@@ -61,10 +61,32 @@ impl GpuMemoryPool {
     }
 }
 
+#[cfg(atenia_cuda)]
 #[allow(dead_code)]
 unsafe extern "C" {
     fn cuda_malloc(ptr: *mut *mut std::ffi::c_void, bytes: usize);
     fn cuda_free(ptr: *mut std::ffi::c_void);
+}
+
+// **CPU-2 C2a** — CUDA-less build. The GPU memory pool is only
+// constructed lazily via `apx4_12::get_pool()` on the GPU path, so
+// these are unreachable in a CPU-only build; the identical-signature
+// stubs exist purely so `GpuMemoryPool`'s methods still type-check
+// without a CUDA symbol to link.
+#[cfg(not(atenia_cuda))]
+#[allow(dead_code, unused_variables)]
+unsafe fn cuda_malloc(ptr: *mut *mut std::ffi::c_void, bytes: usize) {
+    unreachable!(
+        "CUDA symbol cuda_malloc called in CPU-only build (atenia_cuda not enabled)"
+    )
+}
+
+#[cfg(not(atenia_cuda))]
+#[allow(dead_code, unused_variables)]
+unsafe fn cuda_free(ptr: *mut std::ffi::c_void) {
+    unreachable!(
+        "CUDA symbol cuda_free called in CPU-only build (atenia_cuda not enabled)"
+    )
 }
 
 // Safety: GpuMemoryPool only stores opaque device pointers and is always

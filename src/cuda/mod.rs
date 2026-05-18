@@ -9,9 +9,23 @@ pub mod linear;
 pub mod matmul;
 pub(crate) mod pool_helpers;
 
+#[cfg(atenia_cuda)]
 #[link(name = "atenia_kernels", kind = "static")]
 unsafe extern "C" {
     pub fn vec_add_cuda(a: *const f32, b: *const f32, out: *mut f32, n: c_int);
+}
+
+// **CPU-2 C2a** — CUDA-less build: there is no `atenia_kernels`
+// static library to link. Identical-signature stub so call sites
+// still type-check; unreachable because `vec_add_gpu` is only
+// invoked on the GPU path. (`vec_add_gpu` itself is left for C2c
+// per the CPU-2 plan.)
+#[cfg(not(atenia_cuda))]
+#[allow(unused_variables)]
+pub unsafe fn vec_add_cuda(a: *const f32, b: *const f32, out: *mut f32, n: c_int) {
+    unreachable!(
+        "CUDA symbol vec_add_cuda called in CPU-only build (atenia_cuda not enabled)"
+    )
 }
 
 /// **M6 step 1** — cached CUDA-driver probe.
