@@ -10,6 +10,12 @@ mod gemma2;
 mod llama_family;
 mod phi3;
 
+// **AT-2** — conformance harness. Test-only: an executable freeze
+// of current adapter behaviour, the oracle for the AT-1 refactor
+// (ADR-006). No production logic.
+#[cfg(test)]
+mod conformance;
+
 use crate::amg::builder::GraphBuilder;
 use crate::amg::kv_cache::KvCacheBuildSpec;
 use crate::amg::weight_store::WeightStore;
