@@ -48,15 +48,17 @@ locked by regression tests.
   structural / format parsers only.
 - **Determinism.** Greedy generation is reproducible bit-exact (D67 fixture);
   the lib test suite (369 tests) is green.
-- **CI.** A minimal GitHub Actions workflow runs on push / PR to `main`:
-  a **blocking** `cuda-toolkit` job (mirrors the locally-validated
-  environment; no GPU, device tests auto-skip) running
+- **CI.** A minimal GitHub Actions workflow runs on push / PR to `main`
+  with **two blocking jobs**: a `cuda-toolkit` job (mirrors the
+  locally-validated environment; no GPU, device tests auto-skip) running
   `cargo test --lib -- --test-threads=1` + `cargo test --test
-  tinyllama_config_test`, and a **non-blocking, visible** `cpu-only` job
-  that guards the declared vendor-agnostic invariant (ROADMAP: "the
-  engine's core never assumes NVIDIA-specific behaviour"; ADR-003 "GPU as
-  inference baseline"). Heavy on-disk GGUF / F64 drift tests stay
-  operator-run (`#[ignore]`).
+  tinyllama_config_test`, and a `cpu-only` job that **enforces** the
+  declared vendor-agnostic invariant (ROADMAP: "the engine's core never
+  assumes NVIDIA-specific behaviour"; ADR-003 "GPU as inference
+  baseline") — the CUDA-less build links and the non-GPU test subset
+  passes (CPU-1 + CPU-2; promoted from non-blocking to blocking in
+  CPU-5). Heavy on-disk GGUF / F64 drift tests stay operator-run
+  (`#[ignore]`).
 - **Operability hardening (M12, complete & CI-green).** The engine now
   explains failures instead of hiding them. The M12.1–M12.5 series closed
   the diagnostics/error-surface gaps: CUDA root-cause & VRAM-probe failures
@@ -69,6 +71,17 @@ locked by regression tests.
   `cuInit` CUresult is checked and a JSON-render serialise failure exits
   ≠ 0 (M12.5). No control-flow / numeric / tiering changes; success path
   unchanged.
+- **Vendor-agnostic CPU-only build (closed).** `cargo build --lib` links
+  with no CUDA toolkit installed and the non-GPU test subset passes.
+  Previously a tracked link-time debt (the Rust FFI declared the CUDA
+  kernel static libs unconditionally), now resolved: CPU-1 (build.rs
+  emits an auto-detected `atenia_cuda` cfg) + CPU-2 (every CUDA `extern`
+  / `#[link]` block gated `#[cfg(atenia_cuda)]` with
+  identical-signature `#[cfg(not(atenia_cuda))]` stubs;
+  `cuda_available()` is `false` without the backend). The CUDA build is
+  byte-identical (lib 369/369). Enforced by the now-blocking `cpu-only`
+  CI job (CPU-5). Not a multi-vendor compute backend — see *Single
+  vendor* below.
 
 ## Opt-in / experimental (documented profile, not default)
 
@@ -118,27 +131,10 @@ but they bound what you should rely on.
   training. No training loops, no optimisers in the runtime. Training is v25+.
 - **Single vendor.** NVIDIA CUDA only (sm_70+, Linux + Windows). Intel iGPU
   (v22), AMD ROCm (v23), Apple Metal (v24) are roadmap, not shipped. The core
-  never assumes NVIDIA-specific behaviour, but multi-vendor is not built. The
-  non-blocking `cpu-only` CI job exposed a real build-system drift against
-  this invariant on its first run — see *Vendor-agnostic CPU-only build
-  drift* below.
-- **Vendor-agnostic CPU-only build drift (tracked, prioritised debt).** The
-  non-blocking `cpu-only` CI job (no CUDA installed) fails at **link**, not
-  compile: *"could not find native static library `batch_matmul`, perhaps an
-  -L flag is missing?"* (`cargo build --lib`, exit 101). Cause: `build.rs`
-  early-returns on a CUDA-less host (its "CPU-only build" path) and emits no
-  `rustc-link-lib` / `-L` directives, yet the Rust FFI side still declares the
-  CUDA kernel static libraries (`batch_matmul`, `atenia_kernels`,
-  `matmul_kernel`, `linear_cuda`, `fused_linear_silu`, `bf16_to_f32`)
-  unconditionally, so `rustc` cannot link the lib. This is a **build-system /
-  FFI drift against the declared vendor-agnostic invariant** (ROADMAP: "the
-  engine's core never assumes NVIDIA-specific behaviour"; ADR-003 "GPU as
-  inference baseline") — **not** a conceptual failure of the engine: the CUDA
-  path (the blocking `cuda-toolkit` job) is unaffected, and the `cpu-only`
-  job is non-blocking by design precisely to surface this. Remediation is a
-  dedicated future task (cfg-gate / stub / feature-split the CUDA FFI so a
-  genuine CPU-only build links); it is **not** the Phase 16 weight-mapping
-  item below, and it did not block M12.
+  never assumes NVIDIA-specific behaviour, and the CUDA-less build is now
+  enforced in CI — but multi-vendor execution itself is still not built (a
+  CUDA-less binary links and runs the non-GPU surface; it does not provide
+  an alternative compute backend).
 - **Weight-mapping family boundary still open.** The *config* boundary is
   closed (Phases 13–15), but `src/v17/loader/gguf_to_hf_naming.rs` and
   `src/nn/llama/gguf_weight_loading.rs` still carry

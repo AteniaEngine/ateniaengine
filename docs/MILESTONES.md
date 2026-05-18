@@ -382,11 +382,48 @@ A/B/C callers map a JSON serialise failure to a non-zero exit instead of
 exiting `0` with empty stdout.
 
 **Series close.** `cargo test --lib` 369/369, `tinyllama_config_test`
-15/0/3, blocking `cuda-toolkit` CI green per sub-phase. Carried debts
-unchanged and still tracked in [STATUS.md](./STATUS.md): the
-vendor-agnostic CPU-only link drift (non-blocking `cpu-only` job) and the
-Phase 16 weight-mapping boundary. This marks the transition from "engine
-that runs" to "engine that explains itself".
+15/0/3, blocking `cuda-toolkit` CI green per sub-phase. The
+vendor-agnostic CPU-only link drift that M12 carried has since been
+closed by the CPU-1 → CPU-5 series (below); the only remaining tracked
+debt in [STATUS.md](./STATUS.md) is the Phase 16 weight-mapping
+boundary. This marks the transition from "engine that runs" to "engine
+that explains itself".
+
+---
+
+## CPU-only vendor-agnostic build (CPU-1 → CPU-5)
+
+Closes the long-standing build-system debt where a CUDA-less
+`cargo build --lib` failed at **link** (*"could not find native static
+library `batch_matmul`"*): `build.rs` early-returned on a CUDA-less
+host without emitting link directives, yet the Rust FFI declared the
+CUDA kernel static libraries unconditionally. The ROADMAP /
+ADR-003 ("GPU as inference baseline") vendor-agnostic invariant ("the
+core never assumes NVIDIA-specific behaviour") is now **enforced in
+CI**, not merely asserted.
+
+- **CPU-1** — `build.rs` declares `cargo::rustc-check-cfg=cfg(atenia_cuda)`
+  on every path and *sets* `cargo::rustc-cfg=atenia_cuda` only after the
+  CUDA kernels actually compiled and linked. Auto-detected; zero flags
+  on a CUDA box. No source read it yet — pure foundation.
+- **CPU-2** — every CUDA `extern` / `#[link]` block across `src/cuda/*`
+  and `apx4_12/gpu_memory_pool.rs` gated `#[cfg(atenia_cuda)]`, each with
+  an identical-signature `#[cfg(not(atenia_cuda))]` stub. Landed in three
+  sub-commits: **C2a** (gpu_memory_pool, mod, linear, batch_matmul,
+  fused_linear_silu), **C2b** (bf16_to_f32, int8_to_bf16, pool_helpers),
+  **C2c** (matmul.rs + `cuda_available()` hardened to `false` without
+  the backend + `vec_add_gpu` exact CPU sum). CUDA-less wrappers return
+  `None` / `Err` / the exact CPU result; VRAM-only paths are
+  `unreachable!`. The CUDA build stays byte-identical (lib 369/369,
+  `tinyllama_config_test` 15/0/3) at every sub-commit.
+- **CPU-5** — once the first `cpu-only` CI run went green, the job was
+  promoted from non-blocking (`continue-on-error`) to **blocking**, so a
+  future vendor-agnostic regression fails the run. CI is now a two-blocking-
+  job matrix: `cuda-toolkit` + `cpu-only / no-CUDA`.
+
+This is a build-system / FFI boundary fix only — it does **not** add a
+non-NVIDIA compute backend (Intel iGPU / AMD ROCm / Apple Metal remain
+roadmap v22–v24). The CUDA success path is unchanged throughout.
 
 ---
 

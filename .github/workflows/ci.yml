@@ -25,7 +25,7 @@ jobs:
   # Mirrors the locally-validated environment: CUDA toolkit present,
   # no GPU on the runner (device-touching tests auto-skip at runtime
   # per HANDOFF M11.D.5). This is the contract that exists today and
-  # the only environment under which the 346/346 green was measured.
+  # the only environment under which the 369/369 green was measured.
   cuda:
     name: cuda-toolkit (blocking)
     runs-on: ubuntu-latest
@@ -58,20 +58,22 @@ jobs:
       - name: Test (config integration)
         run: cargo test --test tinyllama_config_test
 
-  # ── NON-BLOCKING (initially) ────────────────────────────────────
-  # Protects the declared vendor-agnostic invariant: the core must
+  # ── BLOCKING ────────────────────────────────────────────────────
+  # Enforces the declared vendor-agnostic invariant: the core must
   # not require CUDA (ROADMAP "the engine's core never assumes
   # NVIDIA-specific behaviour"; ADR-003 "GPU as inference baseline").
   # No CUDA is installed → build.rs takes its early-return
-  # "CPU-only build" path. `cargo build --lib` IS the experiment:
-  # does the crate link without cudart/cublas? continue-on-error
-  # keeps the result VISIBLE (red check) without blocking merges
-  # until we have evidence from the first runs.
+  # "CPU-only build" path and emits no `atenia_cuda` cfg, so the
+  # `#[cfg(not(atenia_cuda))]` FFI stubs (CPU-1 + CPU-2) are
+  # compiled. The CUDA-less `cargo build --lib` links and the
+  # non-GPU test subset runs (GPU tests auto-skip via
+  # `cuda_available() == false`). Promoted from non-blocking to
+  # blocking in CPU-5 once the first green confirmed the invariant
+  # holds; a vendor-agnostic regression now fails the run.
   cpu-only:
-    name: cpu-only / no-CUDA (experimental, non-blocking)
+    name: cpu-only / no-CUDA (blocking)
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - name: Rust toolchain (stable; edition 2024 needs >= 1.85)
