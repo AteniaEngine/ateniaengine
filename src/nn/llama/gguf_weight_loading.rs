@@ -88,16 +88,25 @@ pub fn llama_gguf_transforms_for_name(
     transforms
 }
 
+/// Phi-3 GGUF per-name transforms.
+///
+/// The GGUF residency loader reverses the descriptor dimensions
+/// (`weight_mapper::load_gguf_with_residency_plan`,
+/// `descriptor.dimensions.iter().rev()`) before applying
+/// transforms. After that reversal a Phi-3 GGUF tensor has the
+/// **same logical orientation as its HF safetensors counterpart**
+/// (Linear `[out, in]`, embed `[vocab, hidden]`, norms 1-D).
+/// Therefore the correct GGUF transform set is identical to the
+/// safetensors one, so this delegates to
+/// [`crate::nn::llama::phi3::phi3_transforms_for_name`] — a single
+/// source of truth. The previous bespoke table predated/ignored
+/// the loader `.rev()` and was inverted (it transposed `embed`,
+/// which must not be transposed, and skipped the Linear weights,
+/// which must be — surfacing as the
+/// `model.embed_tokens.weight: expected [32064,3072], got
+/// [3072,32064]` shape mismatch).
 pub fn phi3_gguf_transforms_for_name(name: &str, hidden_size: usize) -> Vec<LoadTransform> {
-    if name == "model.embed_tokens.weight" {
-        return vec![LoadTransform::Transpose2D];
-    }
-    if name == "model.norm.weight" || name.ends_with("layernorm.weight") {
-        return vec![LoadTransform::Reshape {
-            target: vec![1, 1, hidden_size],
-        }];
-    }
-    Vec::new()
+    crate::nn::llama::phi3::phi3_transforms_for_name(name, hidden_size)
 }
 
 pub fn gemma2_gguf_transforms_for_name(
@@ -222,6 +231,60 @@ mod tests {
                 },
                 LoadTransform::AddScalar { scalar: 1.0 },
             ]
+        );
+    }
+
+    /// Phi-3 GGUF transforms must equal the safetensors table
+    /// (single source of truth) and be correct per tensor class:
+    /// embed → none; fused qkv / o / fused gate_up / down /
+    /// lm_head → Transpose2D; norms → Reshape[1,1,hidden].
+    #[test]
+    fn phi3_gguf_transforms_match_safetensors_table() {
+        use crate::nn::llama::phi3::phi3_transforms_for_name;
+        let h = 3072;
+        let names = [
+            "model.embed_tokens.weight",
+            "model.layers.0.self_attn.qkv_proj.weight",
+            "model.layers.0.self_attn.o_proj.weight",
+            "model.layers.0.mlp.gate_up_proj.weight",
+            "model.layers.0.mlp.down_proj.weight",
+            "lm_head.weight",
+            "model.layers.0.input_layernorm.weight",
+            "model.layers.0.post_attention_layernorm.weight",
+            "model.norm.weight",
+        ];
+        for n in names {
+            assert_eq!(
+                phi3_gguf_transforms_for_name(n, h),
+                phi3_transforms_for_name(n, h),
+                "GGUF vs safetensors transform divergence for '{n}'"
+            );
+        }
+        // Explicit per-class expectations (catches a regression in
+        // the shared table too).
+        assert_eq!(
+            phi3_gguf_transforms_for_name("model.embed_tokens.weight", h),
+            Vec::<LoadTransform>::new(),
+            "embed must NOT be transposed (loader .rev already orients it)"
+        );
+        for n in [
+            "model.layers.0.self_attn.qkv_proj.weight",
+            "model.layers.0.self_attn.o_proj.weight",
+            "model.layers.0.mlp.gate_up_proj.weight",
+            "model.layers.0.mlp.down_proj.weight",
+            "lm_head.weight",
+        ] {
+            assert_eq!(
+                phi3_gguf_transforms_for_name(n, h),
+                vec![LoadTransform::Transpose2D],
+                "Linear weight '{n}' must be Transpose2D"
+            );
+        }
+        assert_eq!(
+            phi3_gguf_transforms_for_name("model.layers.0.input_layernorm.weight", h),
+            vec![LoadTransform::Reshape {
+                target: vec![1, 1, h],
+            }],
         );
     }
 }
