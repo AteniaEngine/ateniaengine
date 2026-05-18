@@ -16,6 +16,13 @@ mod phi3;
 #[cfg(test)]
 mod conformance;
 
+// **AT-1a** — declarative FamilyTensorSpec data layer (ADR-006).
+// Introduced unused on purpose: AT-1a ships the data + lookups +
+// equivalence oracle only; call-sites are rewired in AT-1b/c, at
+// which point `#[allow(dead_code)]` comes off.
+#[allow(dead_code)]
+pub(crate) mod tensor_spec;
+
 use crate::amg::builder::GraphBuilder;
 use crate::amg::kv_cache::KvCacheBuildSpec;
 use crate::amg::weight_store::WeightStore;
