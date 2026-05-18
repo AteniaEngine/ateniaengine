@@ -317,12 +317,13 @@ becomes a contained change; the execution core stays family-agnostic.
 
 **Boundary status.** The **config** boundary is closed (Phases 13–15):
 `LlamaConfig` and `gguf_config.rs` carry no family semantics. The
-symmetric **weight-mapping** boundary (`gguf_to_hf_naming.rs` /
-`gguf_weight_loading.rs` `if arch ==` branches) is still open — the
-**Phase 16** candidate. A 2-tier CI (blocking `cuda-toolkit` + visible
-non-blocking `cpu-only`, the latter guarding the vendor-agnostic
-invariant) plus this doc refresh is the consolidation pass taken before
-M12. The M12 series that followed is below. See [STATUS.md](./STATUS.md).
+symmetric **weight-mapping** boundary (the `gguf_to_hf_naming.rs` /
+`build_gguf_name_map` `if arch ==` branch) was the **Phase 16**
+candidate, since closed (see the Phase 16 section below). A 2-tier CI
+(blocking `cuda-toolkit` + visible non-blocking `cpu-only`, the latter
+guarding the vendor-agnostic invariant) plus this doc refresh is the
+consolidation pass taken before M12. The M12 series that followed is
+below. See [STATUS.md](./STATUS.md).
 
 ---
 
@@ -384,9 +385,10 @@ exiting `0` with empty stdout.
 **Series close.** `cargo test --lib` 369/369, `tinyllama_config_test`
 15/0/3, blocking `cuda-toolkit` CI green per sub-phase. The
 vendor-agnostic CPU-only link drift that M12 carried has since been
-closed by the CPU-1 → CPU-5 series (below); the only remaining tracked
-debt in [STATUS.md](./STATUS.md) is the Phase 16 weight-mapping
-boundary. This marks the transition from "engine that runs" to "engine
+closed by the CPU-1 → CPU-5 series (below); the Phase 16
+weight-mapping boundary that [STATUS.md](./STATUS.md) still listed has
+since been closed by the Phase 16 series (below). No tracked debt
+remains. This marks the transition from "engine that runs" to "engine
 that explains itself".
 
 ---
@@ -424,6 +426,37 @@ CI**, not merely asserted.
 This is a build-system / FFI boundary fix only — it does **not** add a
 non-NVIDIA compute backend (Intel iGPU / AMD ROCm / Apple Metal remain
 roadmap v22–v24). The CUDA success path is unchanged throughout.
+
+---
+
+## Phase 16 — weight-mapping boundary closed
+
+Closes the last `core depends on arch` weight-mapping break. The
+*config* boundary closed in Phases 13–15; the symmetric GGUF→HF
+tensor-name mapping still ran through an arch-string free function
+(`gguf_to_hf_name(name, arch)` with `if arch == "phi3" / "gemma2"`)
+called by `pipeline::build_gguf_name_map`.
+
+- **16.1** (`85010b6`) — pure refactor: `gguf_to_hf_name` decomposed
+  into `split_blk` + the arch-agnostic `gguf_to_hf_name_common` + the
+  family extras `phi3_gguf_extra` / `gemma2_gguf_extra`; the composing
+  fn kept transitionally. Behaviour-identical.
+- **16.2** (`3340cda`) — new adapter-owned `GgufNameMapper` trait
+  (default = common; Phi-3 / Gemma 2 override), added to the
+  `AteniaModelAdapter` supertrait. Behaviour-inert until wired.
+- **16.3** (`b19f726`) — `build_gguf_name_map` takes the resolved
+  adapter and calls `adapter.gguf_to_hf_name(...)`; the arch-branching
+  free fn is removed; `arch` survives only for the missing-metadata
+  guard and the diagnostic message.
+
+Scope discipline: `model_type_for_arch` (the documented
+arch→model_type label bridge) and `gguf_weight_loading.rs` (family
+transform fns already invoked only via the adapters) were
+intentionally left untouched — they are not `core depends on arch`
+breaks. CUDA build byte-identical (lib 376/376,
+`tinyllama_config_test` 15/0/3, zero numeric / behaviour change);
+both blocking CI jobs green. The execution core is now fully
+family-agnostic for config **and** weight mapping.
 
 ---
 

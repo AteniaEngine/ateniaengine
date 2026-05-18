@@ -45,9 +45,14 @@ locked by regression tests.
   the GGUF path) — are adapter-owned via `ConfigPolicy`
   (`default_*` / `validate_config` / `parse_rope_scaling` /
   `apply_config_defaults`). `LlamaConfig` and `gguf_config.rs` are now
-  structural / format parsers only.
+  structural / format parsers only. Phase 16 closed the symmetric
+  **weight-mapping** boundary: the GGUF→HF tensor-name mapping is
+  adapter-owned via `GgufNameMapper` (default = arch-agnostic common
+  rules; Phi-3 / Gemma 2 override), so `pipeline::build_gguf_name_map`
+  no longer branches on `arch`. The execution core is fully
+  family-agnostic for both config and weight mapping.
 - **Determinism.** Greedy generation is reproducible bit-exact (D67 fixture);
-  the lib test suite (369 tests) is green.
+  the lib test suite (376 tests) is green.
 - **CI.** A minimal GitHub Actions workflow runs on push / PR to `main`
   with **two blocking jobs**: a `cuda-toolkit` job (mirrors the
   locally-validated environment; no GPU, device tests auto-skip) running
@@ -135,13 +140,6 @@ but they bound what you should rely on.
   enforced in CI — but multi-vendor execution itself is still not built (a
   CUDA-less binary links and runs the non-GPU surface; it does not provide
   an alternative compute backend).
-- **Weight-mapping family boundary still open.** The *config* boundary is
-  closed (Phases 13–15), but `src/v17/loader/gguf_to_hf_naming.rs` and
-  `src/nn/llama/gguf_weight_loading.rs` still carry
-  `if arch == "phi3" / "gemma2"` branches for GGUF→HF weight-name mapping.
-  This is the symmetric counterpart not yet relocated behind the adapters'
-  `GgufWeightMapper` / `HfWeightMapper` traits — the natural **Phase 16**
-  candidate. It did not block M12.
 - **Production hardening — diagnostics slice done (M12), UX/logging pending
   (v21).** The M12.1–M12.5 series closed the observability/error-surface
   slice (see *Operability hardening* above): failures now propagate with a
