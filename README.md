@@ -36,6 +36,11 @@ readiness snapshot.
   reaches up into adapters, the tier planner is a pure function.
 - Rust 2024, no GC, explicit memory ownership, zero PyTorch / ONNX /
   llama.cpp in the dependency tree.
+- Vendor boundary is structural, not aspirational: every CUDA FFI symbol
+  is `#[cfg]`-gated, so the core compiles and links with **no CUDA
+  toolkit installed**. A blocking no-CUDA CI job enforces this alongside
+  the CUDA-toolkit job — it is a *build* boundary, not a non-NVIDIA
+  compute backend.
 
 **For AI infra engineers**
 - Placement is a decision, not a default: a pure planner maps every tensor to
@@ -261,9 +266,14 @@ documented intrinsic quantisation drift), not ADR-004 strict — see
   residency.
 - **Not a model zoo with weights bundled.** Bring your own HuggingFace or GGUF
   checkpoint; the certified-models table lists the architectures that work.
-- **Not multi-vendor today.** NVIDIA CUDA only (sm_70+). AMD ROCm (v23),
-  Apple Metal (v24), Intel iGPU (v22) are roadmap; the codebase is structured
-  to make them possible, not to claim them as shipped.
+- **Not multi-vendor today.** NVIDIA CUDA is the only GPU backend (sm_70+,
+  Linux and Windows). The CUDA FFI is fully `#[cfg]`-gated, so the core
+  compiles and links with no CUDA toolkit present — a structural vendor
+  boundary enforced by a **blocking** no-CUDA CI job, not just an aspiration.
+  That is a *build* boundary: it does **not** add a non-NVIDIA compute
+  backend. AMD ROCm (v23), Apple Metal (v24), Intel iGPU (v22) remain
+  roadmap; the codebase is structured to make them possible, not to claim
+  them as shipped.
 - **Not an SDK.** The adapter trait is internal; extending Atenia to a new
   family means working inside the repository.
 - **Not production-ready for unsupervised deployment.** Early research, active
@@ -306,12 +316,12 @@ contract. Indexed from [docs/MILESTONES.md](./docs/MILESTONES.md).
 
 ## Reproducing the numbers
 
-The repository ships ~340 `cargo test` functions covering tensor operations,
+The repository ships ~369 `cargo test` functions covering tensor operations,
 graph construction, adapter dispatch, weight loading, numeric drift, and
 generation contracts:
 
 ```bash
-cargo test --lib --test-threads=1
+cargo test --lib -- --test-threads=1
 ```
 
 The M4.6 four-model F64 fixture (TinyLlama, SmolLM2, Qwen 2.5, Llama 3.2 1B)
