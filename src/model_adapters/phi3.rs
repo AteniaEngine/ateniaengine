@@ -5,12 +5,14 @@ use crate::nn::llama::builder::LlamaRuntime;
 use crate::nn::llama::builder_shared::{BuildError, LlamaHandlesShared};
 use crate::nn::llama::config::LlamaConfig;
 use crate::nn::llama::gguf_weight_loading::phi3_gguf_weight_mapper;
+use crate::v17::loader::gguf_to_hf_naming::{gguf_to_hf_name_common, phi3_gguf_extra};
 use crate::v17::loader::loader_errors::LoaderError;
 use crate::v17::loader::weight_mapper::WeightMapper;
 
 use super::{
-    AdapterCapabilities, ConfigPolicy, GgufWeightMapper, HfWeightMapper, ModelAdapter,
-    ModelFamily, ModelMetadata, ResidencyHints, ScratchGraphBuild, StoreBackedGraphBuilder,
+    AdapterCapabilities, ConfigPolicy, GgufNameMapper, GgufWeightMapper, HfWeightMapper,
+    ModelAdapter, ModelFamily, ModelMetadata, ResidencyHints, ScratchGraphBuild,
+    StoreBackedGraphBuilder,
 };
 
 pub(super) struct Phi3Adapter;
@@ -86,6 +88,14 @@ impl GgufWeightMapper for Phi3Adapter {
         param_ids: &[usize],
     ) -> Result<WeightMapper, LoaderError> {
         phi3_gguf_weight_mapper(config, param_names, param_ids)
+    }
+}
+
+// **Phase 16.2** — Phi-3 adds the fused QKV tensor on top of the
+// common Llama-layout names.
+impl GgufNameMapper for Phi3Adapter {
+    fn gguf_to_hf_name(&self, gguf_name: &str) -> Option<String> {
+        gguf_to_hf_name_common(gguf_name).or_else(|| phi3_gguf_extra(gguf_name))
     }
 }
 

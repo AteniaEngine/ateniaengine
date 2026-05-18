@@ -167,6 +167,19 @@ pub trait GgufWeightMapper {
     ) -> Result<WeightMapper, LoaderError>;
 }
 
+/// **Phase 16.2** — adapter-owned GGUF → HF tensor-name mapping.
+/// The default is the architecture-agnostic common rule set; family
+/// adapters override to add their fused / extra tensors (Phi-3's
+/// fused QKV, Gemma 2's post-norms). This moves the last
+/// `if arch == "..."` weight-mapping branch out of the core: 16.3
+/// rewires `build_gguf_name_map` to call this instead of the
+/// arch-string free function.
+pub trait GgufNameMapper {
+    fn gguf_to_hf_name(&self, gguf_name: &str) -> Option<String> {
+        crate::v17::loader::gguf_to_hf_naming::gguf_to_hf_name_common(gguf_name)
+    }
+}
+
 pub trait StoreBackedGraphBuilder {
     fn build_store_graph(
         &self,
@@ -314,6 +327,7 @@ pub trait AteniaModelAdapter:
     ModelAdapter
     + HfWeightMapper
     + GgufWeightMapper
+    + GgufNameMapper
     + StoreBackedGraphBuilder
     + ResidencyHints
     + ConfigPolicy
@@ -324,6 +338,7 @@ impl<T> AteniaModelAdapter for T where
     T: ModelAdapter
         + HfWeightMapper
         + GgufWeightMapper
+        + GgufNameMapper
         + StoreBackedGraphBuilder
         + ResidencyHints
         + ConfigPolicy
@@ -732,5 +747,62 @@ mod tests {
         assert_eq!(metadata.architecture, "Gemma2ForCausalLM");
         assert_eq!(metadata.model_type, Some("gemma2"));
         assert_eq!(metadata.format, ModelFormat::HfSafetensors);
+    }
+
+    // ----- Phase 16.2: adapter-owned GGUF name mapping -----
+
+    #[test]
+    fn phi3_adapter_maps_fused_qkv() {
+        assert_eq!(
+            PHI3_ADAPTER
+                .gguf_to_hf_name("blk.3.attn_qkv.weight")
+                .as_deref(),
+            Some("model.layers.3.self_attn.qkv_proj.weight")
+        );
+    }
+
+    #[test]
+    fn llama_family_default_does_not_map_fused_qkv() {
+        assert_eq!(LLAMA_FAMILY_ADAPTER.gguf_to_hf_name("blk.3.attn_qkv.weight"), None);
+        // Qwen2 / Mistral inherit the same default.
+        assert_eq!(QWEN2_ADAPTER.gguf_to_hf_name("blk.3.attn_qkv.weight"), None);
+        assert_eq!(MISTRAL_ADAPTER.gguf_to_hf_name("blk.3.attn_qkv.weight"), None);
+    }
+
+    #[test]
+    fn gemma2_adapter_maps_post_norms() {
+        assert_eq!(
+            GEMMA2_ADAPTER
+                .gguf_to_hf_name("blk.3.attn_post_norm.weight")
+                .as_deref(),
+            Some("model.layers.3.post_attention_layernorm.weight")
+        );
+        assert_eq!(
+            GEMMA2_ADAPTER
+                .gguf_to_hf_name("blk.3.ffn_post_norm.weight")
+                .as_deref(),
+            Some("model.layers.3.post_feedforward_layernorm.weight")
+        );
+        // A gemma2-only suffix must NOT resolve on the default adapter.
+        assert_eq!(
+            LLAMA_FAMILY_ADAPTER.gguf_to_hf_name("blk.3.ffn_post_norm.weight"),
+            None
+        );
+    }
+
+    #[test]
+    fn common_names_resolve_on_every_adapter() {
+        for adapter in ADAPTERS.iter() {
+            assert_eq!(
+                adapter.gguf_to_hf_name("token_embd.weight").as_deref(),
+                Some("model.embed_tokens.weight")
+            );
+            assert_eq!(
+                adapter
+                    .gguf_to_hf_name("blk.7.ffn_down.weight")
+                    .as_deref(),
+                Some("model.layers.7.mlp.down_proj.weight")
+            );
+        }
     }
 }

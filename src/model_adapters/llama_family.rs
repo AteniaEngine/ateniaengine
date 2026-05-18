@@ -14,9 +14,9 @@ use super::common::{
     validate_llama_family_config,
 };
 use super::{
-    AdapterCapabilities, ConfigPolicy, GgufWeightMapper, HfWeightMapper, ModelAdapter,
-    ModelFamily, ModelMetadata, ResidencyHints, ResidencyPolicyHints, ScratchGraphBuild,
-    StoreBackedGraphBuilder, llama_like_residency_hints,
+    AdapterCapabilities, ConfigPolicy, GgufNameMapper, GgufWeightMapper, HfWeightMapper,
+    ModelAdapter, ModelFamily, ModelMetadata, ResidencyHints, ResidencyPolicyHints,
+    ScratchGraphBuild, StoreBackedGraphBuilder, llama_like_residency_hints,
 };
 
 pub(super) struct LlamaFamilyAdapter;
@@ -80,6 +80,10 @@ impl GgufWeightMapper for LlamaFamilyAdapter {
         llama_gguf_weight_mapper(config, param_names, param_ids)
     }
 }
+
+// **Phase 16.2** — Llama family has no GGUF-specific fused/extra
+// tensors beyond the common set; inherit the default mapping.
+impl GgufNameMapper for LlamaFamilyAdapter {}
 
 impl StoreBackedGraphBuilder for LlamaFamilyAdapter {
     fn build_store_graph(
@@ -177,6 +181,10 @@ impl GgufWeightMapper for Qwen2Adapter {
         llama_gguf_weight_mapper(config, param_names, param_ids)
     }
 }
+
+// **Phase 16.2** — Qwen 2 reuses the Llama GGUF layout; default
+// common name mapping.
+impl GgufNameMapper for Qwen2Adapter {}
 
 impl StoreBackedGraphBuilder for Qwen2Adapter {
     fn build_store_graph(
@@ -283,6 +291,10 @@ impl GgufWeightMapper for MistralAdapter {
         llama_gguf_weight_mapper(config, param_names, param_ids)
     }
 }
+
+// **Phase 16.2** — Mistral reuses the Llama GGUF layout; default
+// common name mapping.
+impl GgufNameMapper for MistralAdapter {}
 
 impl StoreBackedGraphBuilder for MistralAdapter {
     fn build_store_graph(
