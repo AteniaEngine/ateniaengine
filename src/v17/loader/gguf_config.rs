@@ -178,35 +178,74 @@ fn f32_array(reader: &GgufReader, key: &str) -> Result<Option<Vec<f32>>, GgufErr
     Ok(Some(out))
 }
 
-/// **Phase 15** — translate GGUF `{prefix}.rope.scaling.*`
-/// metadata into the HF-shaped `serde_json::Value` that
+/// Resolve one LongRope factor vector. Phi-3 GGUFs use one of
+/// two interchangeable encodings:
+///
+/// 1. **metadata-array** — `{prefix}.rope.scaling.{short,long}_factor`
+///    as f32 metadata arrays (the form Phase 15 originally
+///    handled);
+/// 2. **tensor** — top-level `rope_factors_{short,long}.weight`
+///    F32 tensors (the canonical modern llama.cpp Phi-3 layout,
+///    e.g. `phi-3.5-mini-instruct-q4_k_m.gguf`).
+///
+/// The metadata form is tried first (cheap, no file I/O); on
+/// absence it falls back to decoding the tensor form via the
+/// existing [`crate::v17::loader::gguf_decode::decode_tensor`].
+/// `None` means *neither* form is present — a non-LongRope GGUF
+/// (Llama / Gemma 2), preserved exactly as before.
+fn longrope_factor(
+    reader: &GgufReader,
+    meta_key: &str,
+    tensor_name: &str,
+) -> Result<Option<Vec<f32>>, GgufError> {
+    if let Some(v) = f32_array(reader, meta_key)? {
+        return Ok(Some(v));
+    }
+    let Some(descriptor) = reader.tensor_by_name(tensor_name) else {
+        return Ok(None);
+    };
+    let v = crate::v17::loader::gguf_decode::decode_tensor(reader, descriptor)?;
+    Ok(Some(v))
+}
+
+/// **Phase 15** — translate GGUF rope-scaling into the HF-shaped
+/// `serde_json::Value` that
 /// [`crate::model_adapters::ConfigPolicy::parse_rope_scaling`]
 /// consumes. Pure format translation: GGUF encodes LongRope by
-/// the presence of `short_factor`/`long_factor` arrays; HF
-/// encodes it via an explicit `rope_scaling.type = "longrope"`
-/// discriminator plus top-level position-embedding fields. The
-/// *semantics* (which family owns longrope, building
-/// `RopeScaling::LongRope`, factor-length validation) stay in
-/// `Phi3Adapter::parse_rope_scaling`. Returns `None` when the
-/// GGUF carries no rope-scaling arrays — the common case for
-/// Llama / Gemma 2 GGUF, exactly as the pre-Phase-15
-/// `if arch == "phi3"` gate behaved by never invoking this for
-/// other families.
+/// the presence of short/long factors (metadata-array *or* the
+/// `rope_factors_{short,long}.weight` tensor form — see
+/// [`longrope_factor`]); HF encodes it via an explicit
+/// `rope_scaling.type = "longrope"` discriminator plus top-level
+/// position-embedding fields. The *semantics* (which family owns
+/// longrope, building `RopeScaling::LongRope`, factor-length
+/// validation) stay in `Phi3Adapter::parse_rope_scaling`. Returns
+/// `None` when the GGUF carries no rope-scaling factors in either
+/// form — the common case for Llama / Gemma 2 GGUF, exactly as
+/// the pre-Phase-15 `if arch == "phi3"` gate behaved by never
+/// invoking this for other families.
 fn gguf_rope_scaling_json(
     reader: &GgufReader,
     prefix: &str,
     max_position_embeddings: usize,
 ) -> Result<Option<serde_json::Value>, GgufError> {
-    let Some(short_factor) = f32_array(reader, &format!("{prefix}.rope.scaling.short_factor"))?
+    let Some(short_factor) = longrope_factor(
+        reader,
+        &format!("{prefix}.rope.scaling.short_factor"),
+        "rope_factors_short.weight",
+    )?
     else {
         return Ok(None);
     };
-    let long_factor = f32_array(reader, &format!("{prefix}.rope.scaling.long_factor"))?
-        .ok_or_else(|| {
-            GgufError::InvalidFormat(
-                "GGUF config: LongRope short_factor present but long_factor missing".to_string(),
-            )
-        })?;
+    let long_factor = longrope_factor(
+        reader,
+        &format!("{prefix}.rope.scaling.long_factor"),
+        "rope_factors_long.weight",
+    )?
+    .ok_or_else(|| {
+        GgufError::InvalidFormat(
+            "GGUF config: LongRope short_factor present but long_factor missing".to_string(),
+        )
+    })?;
     let original_max_position_embeddings = optional_u32(
         reader,
         &format!("{prefix}.rope.scaling.original_context_length"),
@@ -443,6 +482,84 @@ mod tests {
         // Phi3Adapter::apply_config_defaults makes head_dim
         // explicit (= effective_head_dim = 64 / 4).
         assert_eq!(cfg.head_dim, Some(16));
+    }
+
+    /// **Phi-3 GGUF LongRope, tensor encoding.** The canonical
+    /// modern llama.cpp Phi-3 GGUF (e.g.
+    /// `phi-3.5-mini-instruct-q4_k_m.gguf`) stores the LongRope
+    /// factors as top-level `rope_factors_{short,long}.weight`
+    /// F32 tensors, *not* as `phi3.rope.scaling.{short,long}_factor`
+    /// metadata arrays. `gguf_rope_scaling_json` must fall back to
+    /// decoding those tensors. Uses a minimal on-disk fixture
+    /// because `decode_tensor` reopens `reader.file_path`.
+    #[test]
+    fn phi3_gguf_longrope_via_tensor_encoding() {
+        use crate::nn::llama::config::RopeScaling;
+
+        let short: Vec<f32> = (0..8).map(|i| 1.0 + i as f32 * 0.01).collect();
+        let long: Vec<f32> = (0..8).map(|i| 2.0 + i as f32 * 0.05).collect();
+
+        // Fixture file = [short f32 LE][long f32 LE], contiguous.
+        let mut bytes = Vec::with_capacity(64);
+        for v in &short {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in &long {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        let path = std::env::temp_dir().join(format!(
+            "atenia_phi3_longrope_tensor_{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).expect("write longrope tensor fixture");
+
+        let mut reader = small_family_reader("phi3");
+        // Tensor form only — NO metadata short/long_factor arrays.
+        reader.metadata.insert(
+            "phi3.rope.scaling.original_context_length".to_string(),
+            MetadataValue::UInt32(4096),
+        );
+        reader.data_section_offset = 0;
+        reader.file_path = path.clone();
+        reader.tensors.push(TensorDescriptor {
+            name: "rope_factors_short.weight".to_string(),
+            dimensions: vec![8],
+            tensor_type: GgufTensorType::F32,
+            offset: 0,
+        });
+        reader.tensors.push(TensorDescriptor {
+            name: "rope_factors_long.weight".to_string(),
+            dimensions: vec![8],
+            tensor_type: GgufTensorType::F32,
+            offset: (short.len() * 4) as u64,
+        });
+
+        let parsed = llama_config_from_gguf(&reader);
+        // decode_tensor already read the bytes during parse;
+        // remove the fixture before asserting so a failed assert
+        // does not leak the temp file.
+        let _ = std::fs::remove_file(&path);
+        let cfg = parsed.expect("phi3 GGUF tensor-encoded LongRope must parse");
+
+        assert_eq!(cfg.model_type.as_deref(), Some("phi3"));
+        match cfg.rope_scaling {
+            Some(RopeScaling::LongRope {
+                ref short_factor,
+                ref long_factor,
+                original_max_position_embeddings,
+                max_position_embeddings,
+            }) => {
+                assert_eq!(short_factor.len(), 8);
+                assert_eq!(long_factor.len(), 8);
+                assert!((short_factor[0] - 1.0).abs() < 1e-6);
+                assert!((short_factor[7] - 1.07).abs() < 1e-5);
+                assert!((long_factor[0] - 2.0).abs() < 1e-6);
+                assert!((long_factor[7] - 2.35).abs() < 1e-5);
+                assert_eq!(original_max_position_embeddings, 4096);
+                assert_eq!(max_position_embeddings, 4096);
+            }
+            other => panic!("expected RopeScaling::LongRope, got {other:?}"),
+        }
     }
 
     /// **Phase 15** — Gemma 2 GGUF defaults: with no softcap /

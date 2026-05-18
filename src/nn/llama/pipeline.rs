@@ -81,6 +81,7 @@ use crate::nn::llama::config::{ConfigError, LlamaConfig};
 use crate::tokenizer::{AteniaTokenizer, ChatMessage, TokenizerError};
 use crate::v17::loader::gguf_config::{architecture_from_gguf, llama_config_from_gguf};
 use crate::v17::loader::gguf_reader::GgufReader;
+use crate::v17::loader::gguf_to_hf_naming::is_gguf_non_weight_tensor;
 use crate::v17::loader::loader_errors::LoaderError;
 use crate::v17::loader::safetensors_reader::SafetensorsReader;
 use crate::v17::loader::sharded_reader::ShardedSafetensorsReader;
@@ -321,6 +322,15 @@ fn build_gguf_name_map(
     })?;
     let mut map = std::collections::HashMap::with_capacity(reader.tensors.len());
     for descriptor in &reader.tensors {
+        // GGUF config-input tensors (e.g. Phi-3 LongRope
+        // `rope_factors_{short,long}.weight`) have no HF graph
+        // parameter — they are consumed at config-parse time by
+        // `gguf_config::gguf_rope_scaling_json`. Skip them here
+        // instead of hard-erroring as "no known HF name mapping";
+        // absent from the map, the downstream loader skips them.
+        if is_gguf_non_weight_tensor(&descriptor.name) {
+            continue;
+        }
         let hf_name = adapter.gguf_to_hf_name(&descriptor.name).ok_or_else(|| {
             PipelineError::Loader(LoaderError::InvalidFormat(format!(
                 "GGUF tensor '{}' has no known HuggingFace name mapping for architecture '{}'",
@@ -347,6 +357,14 @@ fn gguf_tensor_metas(
 ) -> Result<Vec<crate::gpu::tier_plan::TensorMeta>, PipelineError> {
     let mut metas = Vec::with_capacity(reader.tensors.len());
     for descriptor in &reader.tensors {
+        // Mirror the `build_gguf_name_map` skip: config-input
+        // tensors are not graph weights and are intentionally
+        // absent from `name_map` — exclude them from the
+        // tier-planner metas rather than erroring "missing from
+        // name map".
+        if is_gguf_non_weight_tensor(&descriptor.name) {
+            continue;
+        }
         let hf_name = name_map.get(&descriptor.name).ok_or_else(|| {
             PipelineError::Loader(LoaderError::InvalidFormat(format!(
                 "GGUF tensor '{}' missing from name map",

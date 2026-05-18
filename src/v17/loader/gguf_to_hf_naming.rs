@@ -71,6 +71,25 @@ pub fn gemma2_gguf_extra(gguf_name: &str) -> Option<String> {
 // family extras. Only the pure, arch-agnostic pieces above remain
 // here; the family dispatch lives behind the adapter.
 
+/// GGUF tensors that are **config inputs, not graph weights**:
+/// they carry no HuggingFace parameter equivalent (HF keeps the
+/// same data in `config.json`). The canonical llama.cpp Phi-3
+/// LongRope GGUF stores its scaling factors as the top-level
+/// tensors `rope_factors_{short,long}.weight`; these are consumed
+/// at config-parse time by
+/// `gguf_config::gguf_rope_scaling_json` and must be **skipped**
+/// by the weight-name mapping (`build_gguf_name_map` /
+/// `gguf_tensor_metas`) instead of hard-erroring as "no known HF
+/// name mapping". Name-based (not family-dispatched) because the
+/// convention is fixed across any longrope GGUF; no real graph
+/// parameter is ever named this way.
+pub fn is_gguf_non_weight_tensor(gguf_name: &str) -> bool {
+    matches!(
+        gguf_name,
+        "rope_factors_short.weight" | "rope_factors_long.weight"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,5 +221,16 @@ mod tests {
             Some("model.layers.3.post_feedforward_layernorm.weight")
         );
         assert_eq!(gemma2_gguf_extra("blk.3.attn_q.weight"), None);
+    }
+
+    #[test]
+    fn non_weight_tensors_are_the_longrope_factors_only() {
+        assert!(is_gguf_non_weight_tensor("rope_factors_short.weight"));
+        assert!(is_gguf_non_weight_tensor("rope_factors_long.weight"));
+        // Real graph weights / unknowns must NOT be treated as skippable.
+        assert!(!is_gguf_non_weight_tensor("token_embd.weight"));
+        assert!(!is_gguf_non_weight_tensor("blk.0.attn_q.weight"));
+        assert!(!is_gguf_non_weight_tensor("blk.3.attn_qkv.weight"));
+        assert!(!is_gguf_non_weight_tensor("output.weight"));
     }
 }
