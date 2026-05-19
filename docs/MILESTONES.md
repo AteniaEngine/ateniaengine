@@ -521,6 +521,24 @@ Phi-3.5 GGUF regressions unaffected. Lib 406/0/0,
 AT-1a golden that pinned the buggy table were updated as an
 intentional, checkpoint-validated change. No tracked debt remains.
 
+**v1 closure** (`8a18cbf`, `30314b1`, `<docs>`). AT-3 landed:
+the two hand-copied GGUF load-completeness gates in `pipeline.rs`
+collapsed into a single `is_unexpected_gguf_skip` helper (AT-3a);
+`FamilyTensorSpec` gained a `required_gguf_dtypes` field per
+family with a conformance test that asserts every declared dtype
+is decodable — converting a future `UnsupportedDType` (e.g. a
+new family declaring Q2_K) from a runtime failure into a
+test-time failure (AT-3b). With AT-3 the ADR-006 microplan is
+fully delivered, validated end-to-end against two real families
+(Phi-3.5 + Gemma 2 GGUF, both identical to HF) without using the
+imperative escape hatch. AT-4 (YAML / JSON templates, scaffolding
+generator, public Adapter SDK) remains explicitly deferred — no
+serialized contract is frozen and no automatic / magic model
+support is promised; a new family still requires a graph
+builder, numeric validation and explicit review. Lib 409/0/0;
+`tinyllama_config_test` 15/0/3; CI dual-blocking green; no
+tracked debt remains.
+
 ---
 
 ## Beyond v20

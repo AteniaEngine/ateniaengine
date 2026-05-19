@@ -6,7 +6,9 @@ Accepted (AT-0). Implementation phased; this ADR governs the boundary, not a
 shipped feature. AT-2 and AT-1 (below) are gated on this decision and on the
 per-phase audit -> approve -> commit contract. AT-0/AT-2/AT-1 landed;
 GAP-1/N1/N2/C1/C2/T1 closed (Gemma 2 GGUF correctness, post-AT-1 — see the
-closure addendum at the end of this ADR).
+closure addendum at the end of this ADR). **AT-3 landed; Adapter Toolkit v1
+closed; AT-4 remains explicitly deferred — see the v1 closure section at the
+end of this ADR.**
 
 ## Context
 
@@ -242,3 +244,55 @@ reference. The AT-2 conformance snapshot and the AT-1a golden that pinned the
 buggy table were updated (intentional, checkpoint-validated, documented in
 the commit), not adapted to hide a regression. TinyLlama / Phi-3.5 GGUF
 regressions are unaffected.
+
+## v1 closure
+
+AT-3 landed; the Adapter Toolkit v1 is closed. The full ADR-006 microplan
+is delivered:
+
+- AT-0 (`20bc651`) — this ADR.
+- AT-2 (`d9634a6`) — adapter conformance harness, the executable freeze
+  oracle for AT-1.
+- AT-1a/b/c (`536a506`, `914ae2a`, `60311ea`) — `FamilyTensorSpec` data
+  plus golden A/B oracle, then the GGUF->HF name maps and the load
+  transforms rewired onto the spec, behaviour-preserving.
+- AT-3a (`8a18cbf`) — the two hand-copied GGUF load-completeness gates in
+  `pipeline.rs` collapsed into a single `is_unexpected_gguf_skip` helper
+  (the duplication this ADR explicitly named).
+- AT-3b (`30314b1`) — `FamilyTensorSpec::required_gguf_dtypes` plus the
+  `every_adapter_required_dtypes_are_decodable` conformance test. A future
+  adapter that declares an undecodable dtype (e.g. Q2_K, BF16) fails at
+  test time, not at runtime as `UnsupportedDType` — the prevention loop
+  for the Phi-3.5 Q5_K class of bug.
+
+Empirical validation against two real model families is complete: Phi-3.5
+GGUF and Gemma 2 GGUF both generate text identical to the HF reference,
+and the imperative escape hatch (Decision 5) was **not** used for either —
+the spec expressed both corrections. TinyLlama GGUF and Phi-3.5 GGUF
+regressions remain green; lib 409/0/0; CI dual-blocking green.
+
+What v1 deliberately does NOT include, consistent with this ADR:
+
+- Graph builders (`build_llama` / `build_phi3` / `build_gemma2`) — Decision
+  2; topology, not tables.
+- GGUF dtype decoders themselves — toolkit *declares* required coverage,
+  does not generate decoders.
+- Adapter selection, `ConfigPolicy` semantics, tokenizer — out of toolkit
+  scope by prior phases.
+
+What stays explicitly deferred (AT-4 territory, no commitment in v1):
+
+- A YAML / JSON external template format (Decision 1 + "Why Rust data,
+  not YAML/JSON (now)"): no serialized contract is frozen.
+- A scaffolding generator.
+- A public Adapter SDK: the module is still "deliberately not a public
+  SDK yet". The non-goal — **no automatic or magic support for new
+  models** — holds in v1 and is restated here. A new family still
+  requires a graph builder, numeric validation, and explicit review.
+
+Triggers for revisiting (unchanged from the original "Trigger to revisit"
+section): a new family that needs the imperative escape hatch (record it,
+do not speculatively generalize); promotion of the adapter layer to a
+public SDK (reconsider the Rust-data vs serialized-template decision);
+new GGUF dtype in `decode_tensor` (the per-adapter declaration is the
+single place adapters opt in).

@@ -107,6 +107,23 @@ locked by regression tests.
   the HF table minus the norm `+1` fold (GAP-T1). No RopeUnpermute
   needed. TinyLlama / Phi-3.5 GGUF regressions unaffected; no
   tracked debt remains.
+- **Adapter Toolkit v1 (closed).** ADR-006's microplan is fully
+  delivered: AT-0 (the ADR), AT-2 (conformance harness, the
+  executable freeze oracle), AT-1a/b/c (the declarative
+  `FamilyTensorSpec` data plus golden A/B oracle, then the GGUF
+  name maps and load transforms rewired onto it, behaviour-
+  preserving), AT-3a (the two hand-copied GGUF completeness gates
+  in `pipeline.rs` collapsed into one helper), and AT-3b (each
+  adapter declares its required GGUF dtype coverage and a
+  conformance test asserts decoder support — preventing the
+  Phi-3.5 Q5_K class of runtime `UnsupportedDType` bug). Validated
+  end-to-end against two real families (Phi-3.5 + Gemma 2 GGUF
+  both identical to HF) without using the imperative escape
+  hatch. AT-4 (YAML / JSON templates, scaffolding generator,
+  public Adapter SDK) remains explicitly deferred — no
+  serialized contract is frozen and no automatic / magic model
+  support is promised. A new family still requires a graph
+  builder, numeric validation and explicit review.
 
 ## Opt-in / experimental (documented profile, not default)
 
