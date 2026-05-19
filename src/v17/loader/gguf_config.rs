@@ -17,10 +17,23 @@ pub fn architecture_from_gguf(reader: &GgufReader) -> Result<String, GgufError> 
 pub fn llama_config_from_gguf(reader: &GgufReader) -> Result<LlamaConfig, GgufError> {
     let arch = required_string(reader, "general.architecture")?;
     let prefix = arch_prefix(arch)?;
-    let head_dim = optional_usize(reader, &format!("{prefix}.attention.head_count_kv"));
+    // NOTE: this holds num_key_value_heads (the GGUF
+    // `attention.head_count_kv`), NOT a head *dimension*. Renamed
+    // in G-1b so it is not confused with the real head_dim fix
+    // immediately below (it was previously named `head_dim`).
+    let num_kv_heads = optional_usize(reader, &format!("{prefix}.attention.head_count_kv"));
     let hidden_size = required_usize(reader, &format!("{prefix}.embedding_length"))?;
     let num_attention_heads = required_usize(reader, &format!("{prefix}.attention.head_count"))?;
-    let explicit_head_dim = optional_usize(reader, &format!("{prefix}.attention.head_size"));
+    // **G-1b / GAP-C1** — the explicit head dimension is the
+    // llama.cpp-standard `attention.key_length` (Gemma 2 sets it
+    // to 256 while hidden/heads = 288). The old `attention.head_size`
+    // key is not a llama.cpp convention and was never present, so
+    // head_dim silently fell back to the (wrong) inferred value for
+    // any model where head_dim != hidden/heads. Behaviour-preserving
+    // for every previously-validated GGUF (TinyLlama / SmolLM2 /
+    // Llama-3.2 / Phi-3.5 all have key_length == hidden/heads, so
+    // the `!= inferred` filter below still yields None there).
+    let explicit_head_dim = optional_usize(reader, &format!("{prefix}.attention.key_length"));
     let inferred_head_dim = hidden_size / num_attention_heads;
     let rope_theta = optional_f32(reader, &format!("{prefix}.rope.freq_base"))
         .map(|v| v as u32)
@@ -32,7 +45,7 @@ pub fn llama_config_from_gguf(reader: &GgufReader) -> Result<LlamaConfig, GgufEr
         hidden_size,
         num_hidden_layers: required_usize(reader, &format!("{prefix}.block_count"))?,
         num_attention_heads,
-        num_key_value_heads: head_dim.unwrap_or(num_attention_heads),
+        num_key_value_heads: num_kv_heads.unwrap_or(num_attention_heads),
         intermediate_size: required_usize(reader, &format!("{prefix}.feed_forward_length"))?,
         max_position_embeddings: required_usize(reader, &format!("{prefix}.context_length"))?,
         rope_theta,
@@ -48,8 +61,21 @@ pub fn llama_config_from_gguf(reader: &GgufReader) -> Result<LlamaConfig, GgufEr
         pad_token_id: optional_u32(reader, "tokenizer.ggml.padding_token_id"),
         head_dim: explicit_head_dim.filter(|d| *d != inferred_head_dim),
         rope_scaling: None,
-        attn_logit_softcapping: optional_f32(reader, &format!("{prefix}.attention.logit_softcap")),
-        final_logit_softcapping: optional_f32(reader, &format!("{prefix}.final_logit_softcap")),
+        // **G-1b / GAP-C2** — read the real llama.cpp softcap keys
+        // (`{arch}.attn_logit_softcapping` / `final_logit_softcapping`
+        // = 50 / 30 for Gemma 2). The old `attention.logit_softcap`
+        // / `final_logit_softcap` keys never matched a real
+        // checkpoint, so the values only ever came from the
+        // Gemma2Adapter 50/30 fallback. With the correct keys the
+        // adapter default applies only when the GGUF omits them.
+        attn_logit_softcapping: optional_f32(
+            reader,
+            &format!("{prefix}.attn_logit_softcapping"),
+        ),
+        final_logit_softcapping: optional_f32(
+            reader,
+            &format!("{prefix}.final_logit_softcapping"),
+        ),
         sliding_window: optional_u32(reader, &format!("{prefix}.attention.sliding_window")),
         query_pre_attn_scalar: optional_f32(
             reader,
@@ -577,5 +603,83 @@ mod tests {
         assert_eq!(cfg.final_logit_softcapping, Some(30.0));
         assert_eq!(cfg.query_pre_attn_scalar, Some(16.0));
         assert!(cfg.rope_scaling.is_none());
+    }
+
+    /// **G-1b / GAP-C1 + GAP-C2** — with the *real* llama.cpp
+    /// Gemma 2 metadata keys present (bartowski/gemma-2-2b-it
+    /// Q4_K_M shape), head_dim / query_pre_attn_scalar / softcaps
+    /// must be sourced from the GGUF, not from the adapter's
+    /// 50/30/effective-head_dim fallback. head_dim = 256 is the
+    /// proof for GAP-C1: it differs from hidden/heads = 2304/8 =
+    /// 288, so it can only have come from `attention.key_length`.
+    #[test]
+    fn gemma2_gguf_config_reads_real_metadata_keys() {
+        let mut reader = small_family_reader("gemma2");
+        reader.metadata.insert(
+            "gemma2.embedding_length".to_string(),
+            MetadataValue::UInt32(2304),
+        );
+        reader.metadata.insert(
+            "gemma2.attention.head_count".to_string(),
+            MetadataValue::UInt32(8),
+        );
+        reader.metadata.insert(
+            "gemma2.attention.head_count_kv".to_string(),
+            MetadataValue::UInt32(4),
+        );
+        reader.metadata.insert(
+            "gemma2.attention.key_length".to_string(),
+            MetadataValue::UInt32(256),
+        );
+        reader.metadata.insert(
+            "gemma2.attention.value_length".to_string(),
+            MetadataValue::UInt32(256),
+        );
+        reader.metadata.insert(
+            "gemma2.attn_logit_softcapping".to_string(),
+            MetadataValue::Float32(50.0),
+        );
+        reader.metadata.insert(
+            "gemma2.final_logit_softcapping".to_string(),
+            MetadataValue::Float32(30.0),
+        );
+
+        let cfg =
+            llama_config_from_gguf(&reader).expect("gemma2 real-keys GGUF config must parse");
+        assert_eq!(cfg.hidden_size, 2304);
+        assert_eq!(cfg.num_attention_heads, 8);
+        assert_eq!(cfg.num_key_value_heads, 4);
+        // GAP-C1: from attention.key_length (256), NOT hidden/heads
+        // (288) and NOT the adapter default.
+        assert_eq!(cfg.head_dim, Some(256));
+        // qpas chains off the (now correct) head_dim.
+        assert_eq!(cfg.query_pre_attn_scalar, Some(256.0));
+        // GAP-C2: from the real GGUF softcap keys.
+        assert_eq!(cfg.attn_logit_softcapping, Some(50.0));
+        assert_eq!(cfg.final_logit_softcapping, Some(30.0));
+
+        // Prove the softcaps are GGUF-sourced, not the adapter's
+        // hard 50/30: non-default values must pass through (the
+        // adapter fallback could only ever produce 50/30).
+        let mut r2 = small_family_reader("gemma2");
+        r2.metadata.insert(
+            "gemma2.attention.key_length".to_string(),
+            MetadataValue::UInt32(256),
+        );
+        r2.metadata.insert(
+            "gemma2.attn_logit_softcapping".to_string(),
+            MetadataValue::Float32(99.0),
+        );
+        r2.metadata.insert(
+            "gemma2.final_logit_softcapping".to_string(),
+            MetadataValue::Float32(88.0),
+        );
+        let cfg2 = llama_config_from_gguf(&r2).expect("config");
+        assert_eq!(
+            cfg2.attn_logit_softcapping,
+            Some(99.0),
+            "softcap must come from the GGUF key, not the adapter 50/30 default"
+        );
+        assert_eq!(cfg2.final_logit_softcapping, Some(88.0));
     }
 }
