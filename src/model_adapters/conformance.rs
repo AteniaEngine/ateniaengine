@@ -74,6 +74,25 @@ fn every_adapter_resolves_common_names() {
     ];
     for adapter in ADAPTERS.iter() {
         for (gguf, hf) in common {
+            // **G-1b2 / GAP-N2 (intentional behaviour change)** —
+            // `ffn_norm.weight` is the one "common" name that
+            // diverges by family. Gemma 2 has a 4-norm layout
+            // where llama.cpp `ffn_norm` is the *pre-FFN* norm
+            // (`pre_feedforward_layernorm`), NOT the 2-norm-Llama
+            // `post_attention_layernorm`. This was validated
+            // against a real Gemma 2 GGUF checkpoint (the load
+            // hard-errored on a missing `pre_feedforward_layernorm`
+            // before the fix). The conformance set is updated here
+            // to assert the family-correct value for gemma2 rather
+            // than freeze the wrong shared one.
+            if *gguf == "blk.5.ffn_norm.weight" && adapter.id() == "gemma2" {
+                assert_eq!(
+                    adapter.gguf_to_hf_name(gguf).as_deref(),
+                    Some("model.layers.5.pre_feedforward_layernorm.weight"),
+                    "gemma2 maps ffn_norm -> pre_feedforward_layernorm (4-norm layout)"
+                );
+                continue;
+            }
             assert_eq!(
                 adapter.gguf_to_hf_name(gguf).as_deref(),
                 Some(*hf),
@@ -172,6 +191,60 @@ fn gemma2_family_override_adds_post_norms() {
         LLAMA_FAMILY_ADAPTER.gguf_to_hf_name("blk.3.ffn_post_norm.weight"),
         None,
         "post-FFN norm is gemma2-only; llama default must not resolve it"
+    );
+}
+
+/// **G-1b2 / GAP-N2** — the four real llama.cpp Gemma 2 per-layer
+/// norm tensors (verified on bartowski/gemma-2-2b-it Q4_K_M) must
+/// each resolve to the matching HF norm through `Gemma2Adapter`
+/// (extra-first composition). The decisive case is `ffn_norm`,
+/// which the common Llama-layout table maps to
+/// `post_attention_layernorm` (correct only for the 2-norm Llama
+/// layout); Gemma 2's 4-norm layout requires
+/// `pre_feedforward_layernorm`, and the family override must win.
+/// Before this fix the Gemma 2 GGUF load hard-errored with 26
+/// missing `pre_feedforward_layernorm.weight`.
+#[test]
+fn gemma2_four_per_layer_norms_resolve() {
+    let cases: &[(&str, &str)] = &[
+        ("blk.4.attn_norm.weight", "model.layers.4.input_layernorm.weight"),
+        (
+            "blk.4.ffn_norm.weight",
+            "model.layers.4.pre_feedforward_layernorm.weight",
+        ),
+        (
+            "blk.4.post_attention_norm.weight",
+            "model.layers.4.post_attention_layernorm.weight",
+        ),
+        (
+            "blk.4.post_ffw_norm.weight",
+            "model.layers.4.post_feedforward_layernorm.weight",
+        ),
+    ];
+    for (gguf, hf) in cases {
+        assert_eq!(
+            GEMMA2_ADAPTER.gguf_to_hf_name(gguf).as_deref(),
+            Some(*hf),
+            "Gemma 2 norm '{gguf}' must map to '{hf}'"
+        );
+    }
+    // The same four HF norm names are exactly what build_gemma2
+    // registers per layer — no Gemma 2 GGUF norm tensor is left
+    // unmapped (the GAP-N2 completeness failure).
+    let resolved: std::collections::HashSet<_> = cases
+        .iter()
+        .map(|(g, _)| GEMMA2_ADAPTER.gguf_to_hf_name(g).unwrap())
+        .collect();
+    assert_eq!(resolved.len(), 4, "the four Gemma 2 norms must map 1:1");
+
+    // Regression: the llama-family default must NOT divert
+    // `ffn_norm` (it stays the 2-norm post_attention mapping).
+    assert_eq!(
+        LLAMA_FAMILY_ADAPTER
+            .gguf_to_hf_name("blk.4.ffn_norm.weight")
+            .as_deref(),
+        Some("model.layers.4.post_attention_layernorm.weight"),
+        "llama ffn_norm stays post_attention_layernorm (2-norm layout)"
     );
 }
 

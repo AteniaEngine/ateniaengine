@@ -91,11 +91,18 @@ impl GgufWeightMapper for Gemma2Adapter {
     }
 }
 
-// **Phase 16.2** — Gemma 2 adds the post-attention / post-FFN
-// norm tensors on top of the common Llama-layout names.
+// **Phase 16.2 / G-1b2 (GAP-N2)** — Gemma 2 has four per-layer
+// norms. The Gemma 2 extras are tried **first**: the common
+// Llama-layout table also matches `ffn_norm.weight` (→ the 2-norm
+// `post_attention_layernorm`), which would shadow Gemma 2's
+// `ffn_norm` → `pre_feedforward_layernorm` override (and leave
+// `pre_feedforward_layernorm` with no source). Extra-first mirrors
+// `Phi3Adapter` (the same composition-order class as Phi-3 #5a).
+// Names with no Gemma 2 override fall through to
+// `gguf_to_hf_name_common` unchanged.
 impl GgufNameMapper for Gemma2Adapter {
     fn gguf_to_hf_name(&self, gguf_name: &str) -> Option<String> {
-        gguf_to_hf_name_common(gguf_name).or_else(|| gemma2_gguf_extra(gguf_name))
+        gemma2_gguf_extra(gguf_name).or_else(|| gguf_to_hf_name_common(gguf_name))
     }
 }
 

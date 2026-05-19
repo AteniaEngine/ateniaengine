@@ -434,6 +434,16 @@ pub(crate) static GEMMA2_SPEC: FamilyTensorSpec = FamilyTensorSpec {
             // they are kept for now (conformance-pinned) and this
             // additive entry unblocks the Gemma 2 GGUF load.
             ("post_ffw_norm.weight", "post_feedforward_layernorm.weight"),
+            // **G-1b2 / GAP-N2** — Gemma 2 has FOUR per-layer
+            // norms. In llama.cpp `ffn_norm` is the *pre-FFN* norm
+            // = HF `pre_feedforward_layernorm` (the common
+            // Llama-layout table maps `ffn_norm.weight` to
+            // `post_attention_layernorm.weight`, correct only for
+            // the 2-norm Llama layout). This family override must
+            // win over the common table, which requires the
+            // `Gemma2Adapter` GgufNameMapper to compose extra-first
+            // (mirrors `Phi3Adapter`; see model_adapters/gemma2.rs).
+            ("ffn_norm.weight", "pre_feedforward_layernorm.weight"),
         ],
     },
     hf_transforms: GEMMA2_HF_TRANSFORMS,
