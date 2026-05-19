@@ -306,6 +306,20 @@ fn find_single_gguf(model_dir: &Path) -> Result<Option<PathBuf>, PipelineError> 
     }
 }
 
+/// **AT-3a** — shared GGUF load-completeness predicate. A GGUF
+/// tensor name that the weight-mapper skipped is **unexpected**
+/// (a real load failure) unless it is a recognised non-weight
+/// tensor: the legacy `rope_freqs` RoPE-metadata family or any
+/// tensor classified by the Phase-16 predicate
+/// [`is_gguf_non_weight_tensor`] (Phi-3 LongRope
+/// `rope_factors_{short,long}.weight`, consumed at config-parse
+/// time). Single source of truth — both GGUF completeness gates
+/// below call this; ADR-006 / AT-3 collapses the two previously
+/// hand-copied predicates.
+fn is_unexpected_gguf_skip(skipped_name: &str) -> bool {
+    !skipped_name.contains("rope_freqs") && !is_gguf_non_weight_tensor(skipped_name)
+}
+
 fn build_gguf_name_map(
     reader: &GgufReader,
     adapter: &dyn AteniaModelAdapter,
@@ -769,17 +783,11 @@ impl GenerationPipeline {
                     &param_ids,
                     &param_names,
                 )?;
-                // A skipped GGUF tensor is acceptable when it is not
-                // a model weight: legacy `rope_freqs` (RoPE metadata)
-                // or any tensor classified by the Phase-16 predicate
-                // `is_gguf_non_weight_tensor` (e.g. Phi-3 LongRope
-                // `rope_factors_{short,long}.weight`, consumed at
-                // config-parse time). Single source of truth — no
-                // hard-coded list duplicated here.
+                // AT-3a: single source of truth via `is_unexpected_gguf_skip`.
                 let unexpected_skipped: Vec<_> = report
                     .skipped
                     .iter()
-                    .filter(|s| !s.contains("rope_freqs") && !is_gguf_non_weight_tensor(s))
+                    .filter(|s| is_unexpected_gguf_skip(s))
                     .cloned()
                     .collect();
                 if !unexpected_skipped.is_empty() || !report.missing.is_empty() {
@@ -888,17 +896,11 @@ impl GenerationPipeline {
             if let Some(reader) = gguf_reader.as_ref() {
                 let name_map = build_gguf_name_map(reader, adapter)?;
                 let report = mapper.load_gguf_into(&mut scratch_graph, reader, &name_map)?;
-                // A skipped GGUF tensor is acceptable when it is not
-                // a model weight: legacy `rope_freqs` (RoPE metadata)
-                // or any tensor classified by the Phase-16 predicate
-                // `is_gguf_non_weight_tensor` (e.g. Phi-3 LongRope
-                // `rope_factors_{short,long}.weight`, consumed at
-                // config-parse time). Single source of truth — no
-                // hard-coded list duplicated here.
+                // AT-3a: single source of truth via `is_unexpected_gguf_skip`.
                 let unexpected_skipped: Vec<_> = report
                     .skipped
                     .iter()
-                    .filter(|s| !s.contains("rope_freqs") && !is_gguf_non_weight_tensor(s))
+                    .filter(|s| is_unexpected_gguf_skip(s))
                     .cloned()
                     .collect();
                 if !unexpected_skipped.is_empty() || !report.missing.is_empty() {
@@ -1373,6 +1375,42 @@ impl<'a, S: TokenSink + ?Sized> TokenSink for TextRecordingSink<'a, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **AT-3a** — pins the shared `is_unexpected_gguf_skip`
+    /// predicate. Acceptable skips (predicate returns `false`):
+    /// the legacy `rope_freqs` family, plus everything in
+    /// `is_gguf_non_weight_tensor`. Anything else is unexpected
+    /// (predicate returns `true`) — a real load failure. Both
+    /// `pipeline.rs` completeness gates call this; drift between
+    /// them is the bug class this collapse removes.
+    #[test]
+    fn is_unexpected_gguf_skip_pins_acceptable_and_unexpected() {
+        // Acceptable (NOT flagged as unexpected).
+        for ok in [
+            "rope_freqs.weight",
+            "blk.0.rope_freqs.weight",
+            "rope_factors_short.weight",
+            "rope_factors_long.weight",
+        ] {
+            assert!(
+                !is_unexpected_gguf_skip(ok),
+                "'{ok}' must be an acceptable skip"
+            );
+        }
+        // Unexpected (real load failure).
+        for bad in [
+            "token_embd.weight",
+            "blk.0.attn_q.weight",
+            "model.layers.0.self_attn.q_proj.weight",
+            "lm_head.weight",
+            "totally.unknown.tensor",
+        ] {
+            assert!(
+                is_unexpected_gguf_skip(bad),
+                "'{bad}' must be flagged as unexpected"
+            );
+        }
+    }
 
     #[test]
     fn loads_tinyllama_q8_0_gguf_pipeline_without_generation() {
