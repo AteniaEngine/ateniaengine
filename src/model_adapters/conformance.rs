@@ -29,6 +29,7 @@ use crate::v17::loader::gguf_reader::GgufTensorType;
 use crate::v17::loader::gguf_to_hf_naming::{
     gguf_to_hf_name_common, is_gguf_non_weight_tensor, phi3_gguf_extra,
 };
+use crate::model_adapters::tensor_spec::{FamilyTensorSpec, GEMMA2_SPEC, LLAMA_SPEC, PHI3_SPEC};
 use crate::v17::loader::weight_mapper::LoadTransform;
 
 // ============================================================
@@ -673,4 +674,77 @@ fn completeness_gate_has_no_false_negatives() {
             "'{real_weight}' is a real weight; skipping it MUST be flagged"
         );
     }
+}
+
+// ============================================================
+// 7) Adapter-declared GGUF dtype coverage (AT-3b)
+// ============================================================
+
+/// Maps an adapter family to the `FamilyTensorSpec` that owns its
+/// declarative data. The conformance test below uses this to look
+/// up each adapter's `required_gguf_dtypes` from the registry.
+fn family_spec(adapter: &dyn AteniaModelAdapter) -> &'static FamilyTensorSpec {
+    match adapter.family() {
+        ModelFamily::Llama | ModelFamily::Qwen2 | ModelFamily::Mistral => &LLAMA_SPEC,
+        ModelFamily::Phi3 => &PHI3_SPEC,
+        ModelFamily::Gemma2 => &GEMMA2_SPEC,
+    }
+}
+
+/// **AT-3b** — every dtype an adapter declares as required by its
+/// certified GGUF checkpoints must be decodable by
+/// `gguf_decode::decode_tensor`. A future adapter that declares
+/// an unsupported variant (e.g. Q2_K, BF16) fails THIS test
+/// rather than at runtime with `UnsupportedDType` — the prevention
+/// loop ADR-006 wanted for the Phi-3.5 Q5_K class of bug.
+///
+/// `SUPPORTED` mirrors the match arms in
+/// `v17/loader/gguf_decode.rs::decode_tensor` (kept literal here
+/// because no public predicate exists and adding one would expand
+/// the decoder surface beyond AT-3b's declarative-only scope; if
+/// it drifts, real model bring-up surfaces the gap immediately,
+/// the same backstop the existing `gguf_dtype_id_table_is_frozen`
+/// test uses for the enum ID table).
+#[test]
+fn every_adapter_required_dtypes_are_decodable() {
+    const SUPPORTED: &[GgufTensorType] = &[
+        GgufTensorType::F32,
+        GgufTensorType::F16,
+        GgufTensorType::Q8_0,
+        GgufTensorType::Q4_K,
+        GgufTensorType::Q5_K,
+        GgufTensorType::Q6_K,
+    ];
+    for adapter in ADAPTERS.iter() {
+        let spec = family_spec(*adapter);
+        assert!(
+            !spec.required_gguf_dtypes.is_empty(),
+            "adapter '{}' declared an EMPTY required_gguf_dtypes; \
+             a certified GGUF path must require at least F32",
+            adapter.id()
+        );
+        for dt in spec.required_gguf_dtypes {
+            assert!(
+                SUPPORTED.contains(dt),
+                "adapter '{}' requires GGUF dtype {:?} but decode_tensor \
+                 does not support it; either add a decoder or remove the \
+                 declaration",
+                adapter.id(),
+                dt
+            );
+        }
+    }
+}
+
+/// **AT-3b** — sanity for the family -> spec mapping itself: the
+/// three Llama-family adapters share `LLAMA_SPEC`, and the two
+/// non-Llama families resolve to their own specs. Catches a
+/// typo'd `match` arm in `family_spec`.
+#[test]
+fn family_spec_routing_is_stable() {
+    assert_eq!(family_spec(&LLAMA_FAMILY_ADAPTER).id, "llama");
+    assert_eq!(family_spec(&QWEN2_ADAPTER).id, "llama");
+    assert_eq!(family_spec(&MISTRAL_ADAPTER).id, "llama");
+    assert_eq!(family_spec(&PHI3_ADAPTER).id, "phi3");
+    assert_eq!(family_spec(&GEMMA2_ADAPTER).id, "gemma2");
 }

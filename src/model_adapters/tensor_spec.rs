@@ -24,6 +24,7 @@
 //! safetensors). The old buggy pre-`.rev()` `GEMMA2_GGUF_GAP1`
 //! table and the `TileKvDim1` recipe were removed here.
 
+use crate::v17::loader::gguf_reader::GgufTensorType;
 use crate::v17::loader::weight_mapper::LoadTransform;
 
 // ============================================================
@@ -118,6 +119,18 @@ pub(crate) struct FamilyTensorSpec {
     /// `+1` fold (llama.cpp pre-folds `1+γ` into the Gemma 2 GGUF
     /// norm weights; G-1c / GAP-T1).
     pub gguf_transforms: Option<&'static [TransformRule]>,
+    /// **AT-3b** — the union of GGUF tensor dtypes any of this
+    /// family's certified GGUF checkpoints actually contains. The
+    /// conformance test
+    /// `every_adapter_required_dtypes_are_decodable` asserts every
+    /// entry is in `decode_tensor`'s supported set, so a future
+    /// family declaring an undecodable dtype (e.g. Q2_K) fails at
+    /// test time rather than at runtime as `UnsupportedDType` —
+    /// the prevention loop ADR-006 wanted for the Phi-3.5 Q5_K
+    /// class of bug. Declarative-only: never read on the hot
+    /// path; same staging pattern as `FamilyTensorSpec::id`.
+    #[allow(dead_code)]
+    pub required_gguf_dtypes: &'static [GgufTensorType],
 }
 
 // ============================================================
@@ -402,6 +415,16 @@ pub(crate) static LLAMA_SPEC: FamilyTensorSpec = FamilyTensorSpec {
     },
     hf_transforms: LLAMA_HF_TRANSFORMS,
     gguf_transforms: None,
+    // TinyLlama Q4_K_M / Q8_0, SmolLM2 1.7B Q4_K_M,
+    // Llama-3.2-1B Q4_K_M: F32 norms, F16 / Q8_0 / Q4_K / Q6_K
+    // weight quants.
+    required_gguf_dtypes: &[
+        GgufTensorType::F32,
+        GgufTensorType::F16,
+        GgufTensorType::Q4_K,
+        GgufTensorType::Q6_K,
+        GgufTensorType::Q8_0,
+    ],
 };
 
 /// Phi-3: fused QKV + fused gate_up name extras.
@@ -416,6 +439,14 @@ pub(crate) static PHI3_SPEC: FamilyTensorSpec = FamilyTensorSpec {
     },
     hf_transforms: PHI3_HF_TRANSFORMS,
     gguf_transforms: None,
+    // Phi-3.5-mini Q4_K_M: F32 norms + Q4_K / Q5_K / Q6_K (Q5_K
+    // was the dtype the Phi-3.5 phase added to decode_tensor).
+    required_gguf_dtypes: &[
+        GgufTensorType::F32,
+        GgufTensorType::Q4_K,
+        GgufTensorType::Q5_K,
+        GgufTensorType::Q6_K,
+    ],
 };
 
 /// Gemma 2: post/pre norm name extras, plus the GGUF-specific
@@ -452,6 +483,13 @@ pub(crate) static GEMMA2_SPEC: FamilyTensorSpec = FamilyTensorSpec {
     },
     hf_transforms: GEMMA2_HF_TRANSFORMS,
     gguf_transforms: Some(GEMMA2_GGUF_TRANSFORMS),
+    // gemma-2-2b-it Q4_K_M (inspector: F32 norms + Q4_K weights +
+    // Q6_K embed / v_proj / down_proj).
+    required_gguf_dtypes: &[
+        GgufTensorType::F32,
+        GgufTensorType::Q4_K,
+        GgufTensorType::Q6_K,
+    ],
 };
 
 // ============================================================
