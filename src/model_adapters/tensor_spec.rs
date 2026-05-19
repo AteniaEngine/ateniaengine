@@ -16,9 +16,13 @@
 //! below prove the lookups reproduce the *current* functions
 //! byte-for-byte before any rewire happens.
 //!
-//! GAP-1 (Gemma 2 GGUF `pre-.rev()` table) is encoded here
-//! **verbatim and intentionally NOT corrected** — see
-//! [`GEMMA2_GGUF_GAP1`] and ADR-006 / GAP-1.
+//! **G-1c / GAP-T1** — Gemma 2 GGUF has a *correct*
+//! family-specific transform table [`GEMMA2_GGUF_TRANSFORMS`]: it
+//! equals the HF table except the RMSNorm rule drops the `+1`
+//! fold, because llama.cpp pre-folds `1+γ` into the Gemma 2 GGUF
+//! norm weights (measured exactly +1.0 element-wise vs the HF
+//! safetensors). The old buggy pre-`.rev()` `GEMMA2_GGUF_GAP1`
+//! table and the `TileKvDim1` recipe were removed here.
 
 use crate::v17::loader::weight_mapper::LoadTransform;
 
@@ -54,12 +58,6 @@ pub(crate) enum TransformRecipe {
     ScaleAttn,
     /// `LoadTransform::TileGroupedDim { dim: 0, group_size: head_dim, repeats: kv_groups }`
     TileKvDim0,
-    /// `LoadTransform::TileGroupedDim { dim: 1, group_size: head_dim, repeats: kv_groups }`
-    ///
-    /// **GAP-1 ONLY.** Used solely by [`GEMMA2_GGUF_GAP1`] to
-    /// reproduce the known-buggy Gemma 2 GGUF table verbatim. No
-    /// non-buggy table uses dim:1.
-    TileKvDim1,
 }
 
 /// A single name predicate. The current code uses exactly these
@@ -112,13 +110,14 @@ pub(crate) struct FamilyTensorSpec {
     pub name_extra: NameTable,
     /// HF (safetensors) per-name transform rules.
     pub hf_transforms: &'static [TransformRule],
-    /// `Some` only for Gemma 2: its bespoke GGUF transform table.
-    ///
-    /// **KNOWN BUG (GAP-1): pre-`.rev()` table — see ADR-006 /
-    /// GAP-1.** Preserved verbatim and intentionally NOT corrected
-    /// in AT-1. The fix is the dedicated post-AT-1 "Gemma 2 GGUF
-    /// correctness" phase.
-    pub gguf_gap1_transforms: Option<&'static [TransformRule]>,
+    /// `Some` when the family needs a GGUF-specific transform
+    /// table distinct from `hf_transforms`; `None` when the GGUF
+    /// transforms equal the HF table (Llama / Phi-3, handled by
+    /// their thin GGUF wrappers). Gemma 2 sets this to
+    /// [`GEMMA2_GGUF_TRANSFORMS`] — the HF table minus the RMSNorm
+    /// `+1` fold (llama.cpp pre-folds `1+γ` into the Gemma 2 GGUF
+    /// norm weights; G-1c / GAP-T1).
+    pub gguf_transforms: Option<&'static [TransformRule]>,
 }
 
 // ============================================================
@@ -143,11 +142,6 @@ fn materialize(r: TransformRecipe, p: &TransformParams) -> LoadTransform {
         },
         TransformRecipe::TileKvDim0 => LoadTransform::TileGroupedDim {
             dim: 0,
-            group_size: p.head_dim,
-            repeats: p.kv_groups,
-        },
-        TransformRecipe::TileKvDim1 => LoadTransform::TileGroupedDim {
-            dim: 1,
             group_size: p.head_dim,
             repeats: p.kv_groups,
         },
@@ -345,42 +339,51 @@ static GEMMA2_HF_TRANSFORMS: &[TransformRule] = &[
     },
 ];
 
-/// **KNOWN BUG (GAP-1): pre-`.rev()` table — see ADR-006 / GAP-1.**
+/// **G-1c / GAP-T1 — the correct Gemma 2 GGUF transform table.**
 ///
-/// Reproduces `gguf_weight_loading::gemma2_gguf_transforms_for_name`
-/// **verbatim**. This table is internally consistent with a world
-/// where the residency loader does NOT reverse tensor dims — i.e.
-/// it is the same class of defect as Phi-3 #4 (`b423f56`), never
-/// corrected, and the Gemma 2 GGUF path has never been validated
-/// end-to-end (no Gemma 2 GGUF certificate). It is encoded here
-/// **as-is and intentionally NOT fixed** in AT-1; the correctness
-/// fix is the dedicated post-AT-1 "Gemma 2 GGUF correctness" phase.
-/// The AT-2 conformance snapshot
-/// `gemma2_hf_and_gguf_tables_are_frozen_snapshots` pins it.
-static GEMMA2_GGUF_GAP1: &[TransformRule] = &[
-    // GAP-1: embed IS transposed (it must not be under post-.rev()).
-    TransformRule {
-        any_of: &[NameMatch::Exact("model.embed_tokens.weight")],
-        recipes: &[TransformRecipe::Transpose2D],
-    },
+/// Identical to [`GEMMA2_HF_TRANSFORMS`] **except the RMSNorm rule
+/// drops the `AddScalarOne` (`+1`) fold**. llama.cpp pre-folds
+/// `1 + γ` into the Gemma 2 GGUF norm weights — measured exactly
+/// `+1.0` element-wise vs the HF safetensors of the same model
+/// across every norm class (`attn_norm`, `ffn_norm`,
+/// `post_attention_norm`, `output_norm`). Applying the HF table's
+/// `+1` on top of an already-folded GGUF tensor double-folds to
+/// `(2+γ)` on every norm → total garbage (this was the real root
+/// cause; it masked the RopeUnpermute question, which is decided
+/// empirically by the G-1c smoke — primary path = no
+/// RopeUnpermute). embed and the Linear/k/v classes are byte
+/// identical to the HF table (post-`.rev()` orientation == HF).
+static GEMMA2_GGUF_TRANSFORMS: &[TransformRule] = &[
+    // RMSNorm: reshape only — NO `+1` (llama.cpp pre-folded it).
     TransformRule {
         any_of: &[
             NameMatch::Exact("model.norm.weight"),
             NameMatch::EndsWith("layernorm.weight"),
         ],
-        recipes: &[
-            TransformRecipe::ReshapeHidden3D,
-            TransformRecipe::AddScalarOne,
-        ],
+        recipes: &[TransformRecipe::ReshapeHidden3D],
     },
-    // GAP-1: dim:1 tile, no Transpose2D.
     TransformRule {
         any_of: &[NameMatch::Contains(".self_attn.k_proj.weight")],
-        recipes: &[TransformRecipe::TileKvDim1, TransformRecipe::ScaleAttn],
+        recipes: &[
+            TransformRecipe::TileKvDim0,
+            TransformRecipe::Transpose2D,
+            TransformRecipe::ScaleAttn,
+        ],
     },
     TransformRule {
         any_of: &[NameMatch::Contains(".self_attn.v_proj.weight")],
-        recipes: &[TransformRecipe::TileKvDim1],
+        recipes: &[TransformRecipe::TileKvDim0, TransformRecipe::Transpose2D],
+    },
+    TransformRule {
+        any_of: &[
+            NameMatch::Contains(".self_attn.q_proj.weight"),
+            NameMatch::Contains(".self_attn.o_proj.weight"),
+            NameMatch::Contains(".mlp.gate_proj.weight"),
+            NameMatch::Contains(".mlp.up_proj.weight"),
+            NameMatch::Contains(".mlp.down_proj.weight"),
+            NameMatch::Exact("lm_head.weight"),
+        ],
+        recipes: &[TransformRecipe::Transpose2D],
     },
 ];
 
@@ -398,7 +401,7 @@ pub(crate) static LLAMA_SPEC: FamilyTensorSpec = FamilyTensorSpec {
         block_suffix: &[],
     },
     hf_transforms: LLAMA_HF_TRANSFORMS,
-    gguf_gap1_transforms: None,
+    gguf_transforms: None,
 };
 
 /// Phi-3: fused QKV + fused gate_up name extras.
@@ -412,11 +415,12 @@ pub(crate) static PHI3_SPEC: FamilyTensorSpec = FamilyTensorSpec {
         ],
     },
     hf_transforms: PHI3_HF_TRANSFORMS,
-    gguf_gap1_transforms: None,
+    gguf_transforms: None,
 };
 
-/// Gemma 2: post-attention / post-FFN norm name extras, plus the
-/// GAP-1 verbatim GGUF transform table.
+/// Gemma 2: post/pre norm name extras, plus the GGUF-specific
+/// transform table (HF table minus the RMSNorm `+1` fold —
+/// llama.cpp pre-folds it; G-1c / GAP-T1).
 pub(crate) static GEMMA2_SPEC: FamilyTensorSpec = FamilyTensorSpec {
     id: "gemma2",
     name_extra: NameTable {
@@ -447,7 +451,7 @@ pub(crate) static GEMMA2_SPEC: FamilyTensorSpec = FamilyTensorSpec {
         ],
     },
     hf_transforms: GEMMA2_HF_TRANSFORMS,
-    gguf_gap1_transforms: Some(GEMMA2_GGUF_GAP1),
+    gguf_transforms: Some(GEMMA2_GGUF_TRANSFORMS),
 };
 
 // ============================================================
@@ -505,14 +509,6 @@ mod tests {
             materialize(TransformRecipe::TileKvDim0, &p),
             LoadTransform::TileGroupedDim {
                 dim: 0,
-                group_size: 4,
-                repeats: 3
-            }
-        );
-        assert_eq!(
-            materialize(TransformRecipe::TileKvDim1, &p),
-            LoadTransform::TileGroupedDim {
-                dim: 1,
                 group_size: 4,
                 repeats: 3
             }
@@ -666,8 +662,17 @@ mod tests {
         }
     }
 
+    /// **G-1c / GAP-T1** — the corrected Gemma 2 GGUF table. The
+    /// live `gemma2_gguf_transforms_for_name` delegates to
+    /// `GEMMA2_GGUF_TRANSFORMS` (primary path, no RopeUnpermute).
+    /// The defining property: the GGUF norm rule is
+    /// `[ReshapeHidden3D]` ONLY (llama.cpp pre-folds the Gemma 2
+    /// `+1` into the GGUF norm weights — measured exactly +1.0
+    /// element-wise vs HF), whereas the HF table keeps
+    /// `[ReshapeHidden3D, AddScalarOne]`. Every non-norm class is
+    /// identical between the GGUF and HF tables.
     #[test]
-    fn golden_gemma2_gguf_gap1_matches_live_verbatim() {
+    fn golden_gemma2_gguf_norm_fold() {
         let (h, hd, kvg, s) = (2304usize, 256usize, 2usize, 1.0f32 / 16.0f32);
         let tp = TransformParams {
             hidden_size: h,
@@ -677,10 +682,42 @@ mod tests {
         };
         for n in CORPUS {
             assert_eq!(
-                resolve_transforms(GEMMA2_GGUF_GAP1, n, &tp),
+                resolve_transforms(GEMMA2_GGUF_TRANSFORMS, n, &tp),
                 gemma2_gguf_transforms_for_name(n, h, hd, kvg, s),
-                "GAP-1 gemma2 GGUF spec/live divergence for '{n}' \
-                 (this table is frozen verbatim, NOT corrected)"
+                "gemma2 GGUF spec/live divergence for '{n}'"
+            );
+        }
+        let norm = "model.layers.0.post_feedforward_layernorm.weight";
+        assert_eq!(
+            resolve_transforms(GEMMA2_GGUF_TRANSFORMS, norm, &tp),
+            vec![LoadTransform::Reshape {
+                target: vec![1, 1, h]
+            }],
+            "gemma2 GGUF norm = Reshape only (llama.cpp pre-folded the +1)"
+        );
+        assert_eq!(
+            resolve_transforms(GEMMA2_HF_TRANSFORMS, norm, &tp),
+            vec![
+                LoadTransform::Reshape {
+                    target: vec![1, 1, h]
+                },
+                LoadTransform::AddScalar { scalar: 1.0 },
+            ],
+            "gemma2 HF norm keeps the +1 (raw gamma in safetensors)"
+        );
+        for n in [
+            "model.embed_tokens.weight",
+            "model.layers.0.self_attn.q_proj.weight",
+            "model.layers.0.self_attn.k_proj.weight",
+            "model.layers.0.self_attn.v_proj.weight",
+            "model.layers.0.self_attn.o_proj.weight",
+            "model.layers.0.mlp.down_proj.weight",
+            "lm_head.weight",
+        ] {
+            assert_eq!(
+                resolve_transforms(GEMMA2_GGUF_TRANSFORMS, n, &tp),
+                resolve_transforms(GEMMA2_HF_TRANSFORMS, n, &tp),
+                "gemma2 GGUF/HF must be identical for non-norm '{n}'"
             );
         }
     }

@@ -110,21 +110,18 @@ pub fn phi3_gguf_transforms_for_name(name: &str, hidden_size: usize) -> Vec<Load
     crate::nn::llama::phi3::phi3_transforms_for_name(name, hidden_size)
 }
 
-/// **KNOWN BUG (GAP-1): pre-`.rev()` table — see ADR-006 / GAP-1.**
-///
-/// **AT-1c**: this bespoke Gemma 2 GGUF transform table is now
-/// declarative data in `GEMMA2_SPEC.gguf_gap1_transforms`
-/// ([`crate::model_adapters::tensor_spec::GEMMA2_SPEC`]),
-/// preserved **verbatim and intentionally NOT corrected**. The
-/// table is internally consistent with a world where the
-/// residency loader does NOT reverse tensor dims (same defect
-/// class as Phi-3 #4); the Gemma 2 GGUF path has never been
-/// validated end-to-end. The correctness fix is the dedicated
-/// post-AT-1 "Gemma 2 GGUF correctness" phase. Behaviour is
-/// byte-identical to the previous hand-written ladder — pinned by
-/// the AT-1a golden `golden_gemma2_gguf_gap1_matches_live_verbatim`
-/// and the AT-2 snapshot
-/// `gemma2_hf_and_gguf_tables_are_frozen_snapshots`.
+/// **G-1c / GAP-T1 — corrected Gemma 2 GGUF transforms.**
+/// Delegates to the family GGUF-specific table
+/// `GEMMA2_SPEC.gguf_transforms` (= the HF table minus the RMSNorm
+/// `+1` fold). Root cause: llama.cpp pre-folds `1+γ` into the
+/// Gemma 2 GGUF norm weights — measured exactly +1.0 element-wise
+/// vs the HF safetensors across every norm class — so applying
+/// the HF `AddScalar{1.0}` again double-folded every RMSNorm to
+/// `(2+γ)` and produced total garbage (this masked the
+/// RopeUnpermute question; both rope brackets failed because the
+/// norms were corrupt regardless). Primary path: **no
+/// `LlamaRopeUnpermuteRows`** — resolved empirically by the G-1c
+/// smoke vs the HF reference on the now-clean norm baseline.
 pub fn gemma2_gguf_transforms_for_name(
     name: &str,
     hidden_size: usize,
@@ -134,8 +131,8 @@ pub fn gemma2_gguf_transforms_for_name(
 ) -> Vec<LoadTransform> {
     resolve_transforms(
         GEMMA2_SPEC
-            .gguf_gap1_transforms
-            .expect("GEMMA2_SPEC carries the GAP-1 verbatim GGUF table"),
+            .gguf_transforms
+            .expect("GEMMA2_SPEC carries a GGUF-specific transform table"),
         name,
         &TransformParams {
             hidden_size,
@@ -211,8 +208,18 @@ mod tests {
         );
     }
 
+    /// **G-1c / GAP-T1 (updated, intentional behaviour change).**
+    /// Gemma 2 GGUF norms must be `Reshape` ONLY — NO `AddScalar`.
+    /// llama.cpp pre-folds `1+γ` into the Gemma 2 GGUF norm
+    /// weights (measured exactly +1.0 element-wise vs the HF
+    /// safetensors of the same model across every norm class), so
+    /// re-applying the HF `+1` double-folded every RMSNorm to
+    /// `(2+γ)` and produced total garbage. This test previously
+    /// pinned that buggy `+1`; it is updated (not adapted to hide
+    /// a regression) and validated end-to-end against the real
+    /// gemma-2-2b-it Q4_K_M checkpoint.
     #[test]
-    fn gemma2_gguf_keeps_add_scalar_on_norms() {
+    fn gemma2_gguf_drops_add_scalar_on_norms() {
         let t = gemma2_gguf_transforms_for_name(
             "model.layers.0.post_feedforward_layernorm.weight",
             2304,
@@ -222,12 +229,10 @@ mod tests {
         );
         assert_eq!(
             t,
-            vec![
-                LoadTransform::Reshape {
-                    target: vec![1, 1, 2304],
-                },
-                LoadTransform::AddScalar { scalar: 1.0 },
-            ]
+            vec![LoadTransform::Reshape {
+                target: vec![1, 1, 2304],
+            }],
+            "GGUF norm = Reshape only; the +1 is already in the GGUF weight"
         );
     }
 

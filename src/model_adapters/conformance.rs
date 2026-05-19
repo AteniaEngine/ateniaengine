@@ -347,14 +347,17 @@ fn llama_gguf_is_rope_unpermute_prefix_over_hf_table() {
     }
 }
 
-/// Gemma 2 HF and GGUF transform tables are **independent and
-/// intentionally asymmetric** today (the GGUF path relies on the
-/// residency loader `.rev()` differently than the bespoke
-/// pre-Phase-16 Gemma 2 GGUF table). This test does **not** assert
-/// parity — it snapshots the *current* output of each table per
-/// class so AT-1 cannot silently change either. Any mismatch is a
-/// reported gap, not a test to adapt. (The asymmetry itself is
-/// flagged in the AT-2 deliverable as an observed gap.)
+/// **G-1c / GAP-T1 (updated, intentional behaviour change).**
+/// The Gemma 2 GGUF table is now the **corrected** one: identical
+/// to the HF table **except the RMSNorm rule drops the `+1`
+/// fold**, because llama.cpp pre-folds `1+γ` into the Gemma 2
+/// GGUF norm weights (measured exactly +1.0 element-wise vs the
+/// HF safetensors of the same model). This replaces the old
+/// pre-`.rev()` buggy snapshot (embed transposed, dim:1 tiles,
+/// identity Linears) that the AT-2 version froze verbatim. The
+/// change was validated end-to-end against the real
+/// bartowski/gemma-2-2b-it Q4_K_M checkpoint — not adapted to
+/// hide a regression.
 #[test]
 fn gemma2_hf_and_gguf_tables_are_frozen_snapshots() {
     let (h, head_dim, kv_groups, scale) = (2304usize, 256usize, 2usize, 1.0f32 / 16.0f32);
@@ -413,9 +416,9 @@ fn gemma2_hf_and_gguf_tables_are_frozen_snapshots() {
     );
 
     // --- GGUF table (gguf_weight_loading::gemma2_gguf_transforms_for_name) ---
-    // Intentionally different from HF: embed IS transposed here,
-    // k/v use dim:1 with NO Transpose2D, and the Linear class
-    // returns identity (loader `.rev()` orients it).
+    // **Corrected (GAP-T1)**: identical to the HF table EXCEPT the
+    // RMSNorm rule has NO `+1` (llama.cpp pre-folds it into the
+    // GGUF weights). embed / k / Linear now match HF exactly.
     assert_eq!(
         gemma2_gguf_transforms_for_name(
             "model.embed_tokens.weight",
@@ -424,8 +427,8 @@ fn gemma2_hf_and_gguf_tables_are_frozen_snapshots() {
             kv_groups,
             scale
         ),
-        vec![LoadTransform::Transpose2D],
-        "gemma2 GGUF embed = Transpose2D (asymmetric vs HF — frozen current behaviour)"
+        Vec::<LoadTransform>::new(),
+        "gemma2 GGUF embed = identity (post-.rev() == HF; the old +Transpose2D was the bug)"
     );
     assert_eq!(
         gemma2_gguf_transforms_for_name(
@@ -435,13 +438,10 @@ fn gemma2_hf_and_gguf_tables_are_frozen_snapshots() {
             kv_groups,
             scale
         ),
-        vec![
-            LoadTransform::Reshape {
-                target: vec![1, 1, h],
-            },
-            LoadTransform::AddScalar { scalar: 1.0 },
-        ],
-        "gemma2 GGUF norm = Reshape + AddScalar(1.0)"
+        vec![LoadTransform::Reshape {
+            target: vec![1, 1, h],
+        }],
+        "gemma2 GGUF norm = Reshape ONLY (no +1; llama.cpp pre-folded 1+gamma)"
     );
     assert_eq!(
         gemma2_gguf_transforms_for_name(
@@ -453,13 +453,14 @@ fn gemma2_hf_and_gguf_tables_are_frozen_snapshots() {
         ),
         vec![
             LoadTransform::TileGroupedDim {
-                dim: 1,
+                dim: 0,
                 group_size: head_dim,
                 repeats: kv_groups,
             },
+            LoadTransform::Transpose2D,
             LoadTransform::Scale { factor: scale },
         ],
-        "gemma2 GGUF k_proj snapshot (dim:1, no Transpose2D)"
+        "gemma2 GGUF k_proj = HF (dim:0 tile + Transpose2D + Scale)"
     );
     assert_eq!(
         gemma2_gguf_transforms_for_name(
@@ -469,8 +470,8 @@ fn gemma2_hf_and_gguf_tables_are_frozen_snapshots() {
             kv_groups,
             scale
         ),
-        Vec::<LoadTransform>::new(),
-        "gemma2 GGUF Linear (o_proj) = identity (asymmetric vs HF — frozen current behaviour)"
+        vec![LoadTransform::Transpose2D],
+        "gemma2 GGUF Linear (o_proj) = Transpose2D (== HF)"
     );
 }
 
