@@ -425,6 +425,15 @@ pub(crate) static GEMMA2_SPEC: FamilyTensorSpec = FamilyTensorSpec {
             ("attn_post_norm.weight", "post_attention_layernorm.weight"),
             ("post_attention_norm.weight", "post_attention_layernorm.weight"),
             ("ffn_post_norm.weight", "post_feedforward_layernorm.weight"),
+            // **G-1a / GAP-N1** — the real llama.cpp Gemma 2 GGUF
+            // post-FFN norm tensor is `post_ffw_norm.weight`
+            // (verified on bartowski/gemma-2-2b-it Q4_K_M). The
+            // pre-existing `attn_post_norm.weight` /
+            // `ffn_post_norm.weight` entries were authored from
+            // guessed names and never matched a real checkpoint;
+            // they are kept for now (conformance-pinned) and this
+            // additive entry unblocks the Gemma 2 GGUF load.
+            ("post_ffw_norm.weight", "post_feedforward_layernorm.weight"),
         ],
     },
     hf_transforms: GEMMA2_HF_TRANSFORMS,
@@ -727,5 +736,39 @@ mod tests {
                 "non-weight set spec/live divergence for '{n}'"
             );
         }
+    }
+
+    /// **G-1a / GAP-N1** — the real llama.cpp Gemma 2 GGUF
+    /// post-norm tensor names (verified on bartowski/gemma-2-2b-it
+    /// Q4_K_M: `post_attention_norm.weight` + `post_ffw_norm.weight`)
+    /// must resolve through the production `gemma2_gguf_extra`. The
+    /// `post_ffw_norm.weight` mapping is the additive G-1a fix that
+    /// unblocks the Gemma 2 GGUF load; `post_attention_norm.weight`
+    /// was already covered. The phantom entries kept for now must
+    /// still map (regression — they are conformance-pinned).
+    #[test]
+    fn gemma2_real_gguf_post_norm_names_resolve() {
+        // Real checkpoint tensor names.
+        assert_eq!(
+            gemma2_gguf_extra("blk.7.post_attention_norm.weight").as_deref(),
+            Some("model.layers.7.post_attention_layernorm.weight")
+        );
+        assert_eq!(
+            gemma2_gguf_extra("blk.7.post_ffw_norm.weight").as_deref(),
+            Some("model.layers.7.post_feedforward_layernorm.weight"),
+            "G-1a: real Gemma 2 GGUF post-FFN norm must map (was the GAP-N1 load blocker)"
+        );
+        // Phantom entries (kept for now, conformance-pinned) still map.
+        assert_eq!(
+            gemma2_gguf_extra("blk.7.attn_post_norm.weight").as_deref(),
+            Some("model.layers.7.post_attention_layernorm.weight")
+        );
+        assert_eq!(
+            gemma2_gguf_extra("blk.7.ffn_post_norm.weight").as_deref(),
+            Some("model.layers.7.post_feedforward_layernorm.weight")
+        );
+        // Unrelated / unknown still None.
+        assert_eq!(gemma2_gguf_extra("blk.7.attn_q.weight"), None);
+        assert_eq!(gemma2_gguf_extra("post_ffw_norm.weight"), None);
     }
 }
