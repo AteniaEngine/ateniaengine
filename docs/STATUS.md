@@ -94,6 +94,19 @@ locked by regression tests.
   the fused-tensor name mapping for both `attn_qkv` -> `qkv_proj` and
   `ffn_up` -> `gate_up_proj`. The post-consolidation validation
   warning that surfaced this is closed; no tracked debt remains.
+- **Gemma 2 GGUF end-to-end (closed).** `gemma-2-2b-it` Q4_K_M
+  GGUF loads and generates text identical to the HF safetensors
+  reference. Six never-validated Gemma 2 GGUF-path defects were
+  fixed in isolated, regression-tested layers: a mis-named
+  post-FFN norm tensor (GAP-N1), wrong GGUF config keys for
+  head_dim / softcaps (GAP-C1/C2), the 4-norm `ffn_norm` ->
+  `pre_feedforward_layernorm` mapping with extra-first adapter
+  composition (GAP-N2), and the root cause — llama.cpp pre-folds
+  the RMSNorm `+1` into the Gemma 2 GGUF weights (measured exactly
+  +1.0 element-wise vs HF), so the Gemma 2 GGUF transform table is
+  the HF table minus the norm `+1` fold (GAP-T1). No RopeUnpermute
+  needed. TinyLlama / Phi-3.5 GGUF regressions unaffected; no
+  tracked debt remains.
 
 ## Opt-in / experimental (documented profile, not default)
 

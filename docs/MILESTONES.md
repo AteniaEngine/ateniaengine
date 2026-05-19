@@ -482,6 +482,47 @@ CI jobs green. No tracked debt remains.
 
 ---
 
+## Adapter Toolkit + Gemma 2 GGUF correctness
+
+The Phi-3.5 GGUF bring-up motivated ADR-006 (the Adapter Toolkit):
+the per-family GGUF->HF name maps and load-transform tables, until
+then imperative `if name.contains(...)` ladders duplicated across
+five files, became declarative Rust data. Landed in order: **AT-0**
+(`20bc651`, ADR-006); **AT-2** (`d9634a6`, a conformance harness
+that froze current adapter behaviour as an executable oracle —
+written before the refactor); **AT-1a/b/c** (`536a506`, `914ae2a`,
+`60311ea`) — `FamilyTensorSpec` data plus golden A/B tests, then
+the GGUF->HF name maps and the load transforms rewired onto it,
+behaviour-preserving (lib + conformance + TinyLlama end-to-end
+green on both the HF and GGUF paths). AT-2 flagged GAP-1: the
+Gemma 2 GGUF transform table was a never-validated pre-`.rev()`
+table; AT-1 froze it verbatim with a `KNOWN BUG` marker and
+deferred the fix.
+
+The dedicated **Gemma 2 GGUF correctness** phase then closed it
+against a real checkpoint (bartowski/gemma-2-2b-it Q4_K_M), in six
+isolated regression-tested layers: `post_ffw_norm.weight`
+unmapped (GAP-N1, `907f1ca`); wrong GGUF config keys for head_dim
+/ softcaps — `attention.key_length` and `attn_logit_softcapping`,
+not `head_size` / `logit_softcap` (GAP-C1/C2, `455983c`); the
+4-norm `ffn_norm` -> `pre_feedforward_layernorm` mapping with
+extra-first adapter composition (GAP-N2, `a33d44f`); and the root
+cause — llama.cpp pre-folds the RMSNorm `1+gamma` into the Gemma 2
+GGUF weights (measured exactly +1.0 element-wise vs the HF
+safetensors across every norm class), so the corrected Gemma 2
+GGUF transform table is the HF table minus the norm `+1` fold
+(GAP-T1, `36bbfe0`). The buggy `GEMMA2_GGUF_GAP1` table and the
+GAP-1-only `TileKvDim1` recipe were removed; `gguf_gap1_transforms`
+was renamed `gguf_transforms`. No `RopeUnpermute` is required
+(Phi-3 bracket). Gemma 2 GGUF now generates text identical to the
+HF reference ("The capital of France is Paris."); TinyLlama and
+Phi-3.5 GGUF regressions unaffected. Lib 406/0/0,
+`tinyllama_config_test` 15/0/3, build clean; the AT-2 snapshot and
+AT-1a golden that pinned the buggy table were updated as an
+intentional, checkpoint-validated change. No tracked debt remains.
+
+---
+
 ## Beyond v20
 
 The roadmap horizons (v21/M12 production hardening → v22 Intel iGPU → v23 AMD

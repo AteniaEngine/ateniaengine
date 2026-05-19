@@ -4,7 +4,9 @@
 
 Accepted (AT-0). Implementation phased; this ADR governs the boundary, not a
 shipped feature. AT-2 and AT-1 (below) are gated on this decision and on the
-per-phase audit -> approve -> commit contract.
+per-phase audit -> approve -> commit contract. AT-0/AT-2/AT-1 landed;
+GAP-1/N1/N2/C1/C2/T1 closed (Gemma 2 GGUF correctness, post-AT-1 — see the
+closure addendum at the end of this ADR).
 
 ## Context
 
@@ -201,3 +203,42 @@ toolkit closes:
 - The toolkit is internal Rust data; no serialized contract is frozen and no
   automatic model support is promised. AT-2 and AT-1 do not begin without the
   per-phase audit and explicit approval.
+
+## Update — Gemma 2 GGUF correctness (post-AT-1)
+
+The ADR-006 "Trigger to revisit" (a real model exercising the spec) fired:
+bringing up Gemma 2 GGUF (bartowski/gemma-2-2b-it Q4_K_M) validated the
+FamilyTensorSpec against a non-Llama-layout family and surfaced six
+pre-existing, never-validated defects in the Gemma 2 GGUF path, fixed in
+isolated regression-tested layers:
+
+- GAP-N1 (`907f1ca`): the real llama.cpp tensor `post_ffw_norm.weight` was
+  unmapped (the name-extra table held guessed names that never matched a real
+  checkpoint).
+- GAP-C1/C2 (`455983c`): the GGUF config read the wrong metadata keys —
+  head_dim from `attention.head_size` (never present) instead of
+  `attention.key_length`; softcaps from `attention.logit_softcap` instead of
+  `attn_logit_softcapping`. Behaviour-preserving for every prior GGUF
+  (key_length == hidden/heads there, so the `!= inferred` filter still
+  yielded None).
+- GAP-N2 (`a33d44f`): Gemma 2's 4-norm layout maps `ffn_norm` to
+  `pre_feedforward_layernorm`; the common Llama-layout table mapped it to
+  `post_attention_layernorm`. Resolved by composing the Gemma 2
+  GgufNameMapper extra-first (mirrors Phi3Adapter; the same composition-order
+  class as Phi-3 #5a).
+- GAP-T1 (`36bbfe0`, root cause): llama.cpp pre-folds `1 + gamma` into the
+  Gemma 2 GGUF norm weights (measured exactly +1.0 element-wise vs the HF
+  safetensors of the same model, across every norm class); re-applying the
+  HF `+1` double-folded every RMSNorm to `(2 + gamma)`. Fixed with a
+  GGUF-specific transform table (the HF table minus the norm `+1` fold).
+
+The buggy verbatim `GEMMA2_GGUF_GAP1` table and the GAP-1-only `TileKvDim1`
+recipe were removed; the spec field `gguf_gap1_transforms` was renamed
+`gguf_transforms` (`Some` = a family GGUF table distinct from HF; `None` =
+Llama / Phi-3). The imperative escape hatch (Decision 5) was **not** needed —
+the spec expressed the corrected table. No `RopeUnpermute` is required
+(Phi-3 bracket); Gemma 2 GGUF now generates text identical to the HF
+reference. The AT-2 conformance snapshot and the AT-1a golden that pinned the
+buggy table were updated (intentional, checkpoint-validated, documented in
+the commit), not adapted to hide a regression. TinyLlama / Phi-3.5 GGUF
+regressions are unaffected.
