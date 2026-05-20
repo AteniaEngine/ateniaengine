@@ -59,6 +59,13 @@ pub(crate) enum TransformRecipe {
     ScaleAttn,
     /// `LoadTransform::TileGroupedDim { dim: 0, group_size: head_dim, repeats: kv_groups }`
     TileKvDim0,
+    /// `LoadTransform::Reshape { target: [1, 1, 1, head_dim] }`
+    ///
+    /// Per-head broadcast for QK-Norm γ (Qwen3 family). Reshapes
+    /// a flat `[head_dim]` γ tensor to a rank-4 shape that
+    /// broadcasts naturally against `[batch, seq, n_heads,
+    /// head_dim]`.
+    ReshapeHeadDim4D,
 }
 
 /// A single name predicate. The current code uses exactly these
@@ -157,6 +164,9 @@ fn materialize(r: TransformRecipe, p: &TransformParams) -> LoadTransform {
             dim: 0,
             group_size: p.head_dim,
             repeats: p.kv_groups,
+        },
+        TransformRecipe::ReshapeHeadDim4D => LoadTransform::Reshape {
+            target: vec![1, 1, 1, p.head_dim],
         },
     }
 }
@@ -400,6 +410,62 @@ static GEMMA2_GGUF_TRANSFORMS: &[TransformRule] = &[
     },
 ];
 
+/// **Phase Q (Qwen3 family support).** Same shape as Llama but
+/// with **per-head QK-Norm γ rules** for `*.self_attn.q_norm.weight`
+/// / `*.self_attn.k_norm.weight` (reshape `[head_dim]` -> `[1, 1, 1,
+/// head_dim]` so it broadcasts against `[batch, seq, n_heads,
+/// head_dim]`), and the `1/√head_dim` attention scale **moved from
+/// k_proj to k_norm γ** (it would be stripped by the K-Norm RMSNorm
+/// if left on k_proj; absorbed into the post-norm γ where it
+/// survives). The Linear class loses ScaleAttn on k_proj.weight.
+/// No QKV biases. Rule order: QK-Norm specifics first
+/// (`q_norm.weight` / `k_norm.weight`) so the generic norm rule
+/// below them doesn't accidentally match (it won't — neither name
+/// ends with "layernorm.weight" — but the ordering documents
+/// intent and is safe against future rule additions).
+static QWEN3_HF_TRANSFORMS: &[TransformRule] = &[
+    TransformRule {
+        any_of: &[NameMatch::Contains(".self_attn.q_norm.weight")],
+        recipes: &[TransformRecipe::ReshapeHeadDim4D],
+    },
+    TransformRule {
+        any_of: &[NameMatch::Contains(".self_attn.k_norm.weight")],
+        recipes: &[
+            TransformRecipe::ReshapeHeadDim4D,
+            TransformRecipe::ScaleAttn,
+        ],
+    },
+    TransformRule {
+        any_of: &[
+            NameMatch::Exact("model.norm.weight"),
+            NameMatch::EndsWith("layernorm.weight"),
+        ],
+        recipes: &[TransformRecipe::ReshapeHidden3D],
+    },
+    TransformRule {
+        any_of: &[NameMatch::Contains(".self_attn.k_proj.weight")],
+        // **NO ScaleAttn here** (the K-Norm RMSNorm would strip a
+        // pre-normalize multiplicative scale; the 1/√d attention
+        // scale lives in k_norm γ for Qwen3).
+        recipes: &[TransformRecipe::TileKvDim0, TransformRecipe::Transpose2D],
+    },
+    TransformRule {
+        any_of: &[NameMatch::Contains(".self_attn.v_proj.weight")],
+        recipes: &[TransformRecipe::TileKvDim0, TransformRecipe::Transpose2D],
+    },
+    TransformRule {
+        any_of: &[
+            NameMatch::Contains(".self_attn.q_proj.weight"),
+            NameMatch::Contains(".self_attn.o_proj.weight"),
+            NameMatch::Contains(".mlp.gate_proj.weight"),
+            NameMatch::Contains(".mlp.up_proj.weight"),
+            NameMatch::Contains(".mlp.down_proj.weight"),
+            NameMatch::Exact("lm_head.weight"),
+        ],
+        recipes: &[TransformRecipe::Transpose2D],
+    },
+];
+
 // ============================================================
 // Per-family specs
 // ============================================================
@@ -425,6 +491,23 @@ pub(crate) static LLAMA_SPEC: FamilyTensorSpec = FamilyTensorSpec {
         GgufTensorType::Q6_K,
         GgufTensorType::Q8_0,
     ],
+};
+
+/// **Phase Q (Qwen3 family support).** Llama-like name layout
+/// (no GGUF extras; the canonical Qwen3 GGUF conversion mirrors
+/// the common Llama-layout table). HF transforms add per-head
+/// QK-Norm γ rules and move the attention scale from k_proj to
+/// k_norm γ. GGUF support is out of scope this phase:
+/// `gguf_transforms: None`, `required_gguf_dtypes` empty.
+pub(crate) static QWEN3_SPEC: FamilyTensorSpec = FamilyTensorSpec {
+    id: "qwen3",
+    name_extra: NameTable {
+        top_level: &[],
+        block_suffix: &[],
+    },
+    hf_transforms: QWEN3_HF_TRANSFORMS,
+    gguf_transforms: None,
+    required_gguf_dtypes: &[],
 };
 
 /// Phi-3: fused QKV + fused gate_up name extras.

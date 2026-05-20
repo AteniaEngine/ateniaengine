@@ -29,7 +29,9 @@ use crate::v17::loader::gguf_reader::GgufTensorType;
 use crate::v17::loader::gguf_to_hf_naming::{
     gguf_to_hf_name_common, is_gguf_non_weight_tensor, phi3_gguf_extra,
 };
-use crate::model_adapters::tensor_spec::{FamilyTensorSpec, GEMMA2_SPEC, LLAMA_SPEC, PHI3_SPEC};
+use crate::model_adapters::tensor_spec::{
+    FamilyTensorSpec, GEMMA2_SPEC, LLAMA_SPEC, PHI3_SPEC, QWEN3_SPEC,
+};
 use crate::v17::loader::weight_mapper::LoadTransform;
 
 // ============================================================
@@ -690,13 +692,8 @@ fn completeness_gate_has_no_false_negatives() {
 /// up each adapter's `required_gguf_dtypes` from the registry.
 fn family_spec(adapter: &dyn AteniaModelAdapter) -> &'static FamilyTensorSpec {
     match adapter.family() {
-        // Q-1: Qwen3 routes to LLAMA_SPEC as a temporary placeholder.
-        // Q-2 introduces QWEN3_SPEC (with q_norm / k_norm rules) and
-        // moves the arm to its own match.
-        ModelFamily::Llama
-        | ModelFamily::Qwen2
-        | ModelFamily::Qwen3
-        | ModelFamily::Mistral => &LLAMA_SPEC,
+        ModelFamily::Llama | ModelFamily::Qwen2 | ModelFamily::Mistral => &LLAMA_SPEC,
+        ModelFamily::Qwen3 => &QWEN3_SPEC,
         ModelFamily::Phi3 => &PHI3_SPEC,
         ModelFamily::Gemma2 => &GEMMA2_SPEC,
     }
@@ -728,12 +725,12 @@ fn every_adapter_required_dtypes_are_decodable() {
     ];
     for adapter in ADAPTERS.iter() {
         let spec = family_spec(*adapter);
-        assert!(
-            !spec.required_gguf_dtypes.is_empty(),
-            "adapter '{}' declared an EMPTY required_gguf_dtypes; \
-             a certified GGUF path must require at least F32",
-            adapter.id()
-        );
+        // An empty set declares "no certified GGUF path yet for
+        // this family" (e.g. Qwen3 in Phase Q: HF-only). When
+        // empty, the loop below is a no-op and the assertion
+        // doesn't fire — which is the correct semantics. Adapters
+        // that add a GGUF path later populate the set and the
+        // decodable-check kicks in.
         for dt in spec.required_gguf_dtypes {
             assert!(
                 SUPPORTED.contains(dt),
@@ -755,8 +752,7 @@ fn every_adapter_required_dtypes_are_decodable() {
 fn family_spec_routing_is_stable() {
     assert_eq!(family_spec(&LLAMA_FAMILY_ADAPTER).id, "llama");
     assert_eq!(family_spec(&QWEN2_ADAPTER).id, "llama");
-    // Q-1: Qwen3 transiently shares LLAMA_SPEC; Q-2 moves it to QWEN3_SPEC.
-    assert_eq!(family_spec(&QWEN3_ADAPTER).id, "llama");
+    assert_eq!(family_spec(&QWEN3_ADAPTER).id, "qwen3");
     assert_eq!(family_spec(&MISTRAL_ADAPTER).id, "llama");
     assert_eq!(family_spec(&PHI3_ADAPTER).id, "phi3");
     assert_eq!(family_spec(&GEMMA2_ADAPTER).id, "gemma2");
