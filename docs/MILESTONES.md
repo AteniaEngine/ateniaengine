@@ -539,6 +539,25 @@ builder, numeric validation and explicit review. Lib 409/0/0;
 `tinyllama_config_test` 15/0/3; CI dual-blocking green; no
 tracked debt remains.
 
+**Post-v1 local validation battery.** A load-and-generate sweep
+over the 18 checkpoints under `models/` on the dev box (RTX 4070
+Laptop, 8 GB VRAM, default certified mode, 12-token greedy
+continuation) returned 17 PASS / 1 WARN / 0 FAIL. The mandated
+regressions (TinyLlama Q4_K_M GGUF, Phi-3.5-mini Q4_K_M GGUF,
+gemma-2-2b-it Q4_K_M GGUF) all generated text identical to their
+HF safetensors references. The single WARN was `gpt2-safetensors`,
+a directory missing `config.json` (incomplete checkpoint, not a
+load-path defect; no GPT-2 adapter is registered). One drift in
+the STATUS known-limitations was detected: the previously
+documented "Mistral 7B and Falcon 3 7B fail in
+certified/manifest mode with `BF16->VRAM slow-path upload
+failed`" no longer reproduces on the local
+`mistral-7b-v0.3` and `falcon3-7b-instruct` safetensors — both
+load and generate coherent text. The limitation is downgraded in
+STATUS to "previously observed, currently dormant" pending
+broader coverage; no new F64 numcert was added for these two
+checkpoints. No regression in any previously-validated family.
+
 ---
 
 ## Beyond v20

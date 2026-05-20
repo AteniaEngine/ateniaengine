@@ -124,6 +124,19 @@ locked by regression tests.
   serialized contract is frozen and no automatic / magic model
   support is promised. A new family still requires a graph
   builder, numeric validation and explicit review.
+- **Local validation battery (post-Adapter-Toolkit-v1).** A
+  load-and-generate sweep over the 18 checkpoints currently
+  present under `models/` on the dev box (RTX 4070 Laptop, 8 GB
+  VRAM, default certified mode, 12-token greedy continuation of
+  `"The capital of France is "`): **17 PASS / 1 WARN / 0 FAIL**.
+  The mandated regressions (TinyLlama Q4_K_M GGUF, Phi-3.5-mini
+  Q4_K_M GGUF, gemma-2-2b-it Q4_K_M GGUF) all loaded and
+  generated coherent text identical to their HF safetensors
+  references. The only WARN was `gpt2-safetensors`, whose
+  directory is missing `config.json` (incomplete checkpoint, not
+  a load-path defect; GPT-2 is **not** a supported family — no
+  GPT-2 adapter is registered). No new failure class surfaced;
+  no regression in any previously-validated family.
 
 ## Opt-in / experimental (documented profile, not default)
 
@@ -162,10 +175,19 @@ but they bound what you should rely on.
   return to CPU between ops. The tied LM-head path transposes
   `embed_tokens.weight` every forward (CPU-heavy for large-vocab models) — a
   known follow-up.
-- **Certified BF16→F32 VRAM slow path.** Mistral 7B and Falcon 3 7B fail in
-  certified/manifest mode with `BF16->VRAM slow-path upload failed`; the same
-  checkpoints pass in fast mode. The helper currently returns `None`, so the
-  underlying CUDA error is swallowed — diagnosis is a resolution-plan item.
+- **Certified BF16→F32 VRAM slow path (no longer reproduces; not formally
+  recertified).** Previously documented as a hard failure
+  (`BF16->VRAM slow-path upload failed`) on Mistral 7B and Falcon 3 7B in
+  certified/manifest mode. The post-Adapter-Toolkit-v1 local validation
+  battery exercised the default certified path on the dev hardware (RTX 4070
+  Laptop, 8 GB VRAM) and both `mistral-7b-v0.3` and `falcon3-7b-instruct`
+  safetensors loaded and generated coherent text end-to-end. The original
+  CUDA error path was not reproduced. This is a single-host observation —
+  no F64 numcert was added for these two checkpoints, and "all Mistral /
+  all Falcon variants" is not claimed; the underlying helper still returns
+  `None` on the swallowed-error path, so a future regression is possible.
+  The limitation is downgraded from "fails" to "previously observed,
+  currently dormant" pending broader coverage.
 - **Decode graph rebuilt per token.** Generation rebuilds a fresh decode graph
   every token (graph rebuild is <1 ms per D68, so this is not the bottleneck,
   but it shapes the GPU-utilisation profile).
