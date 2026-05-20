@@ -9,6 +9,7 @@ mod common;
 mod gemma2;
 mod llama_family;
 mod phi3;
+mod qwen3;
 
 // **AT-2** — conformance harness. Test-only: an executable freeze
 // of current adapter behaviour, the oracle for the AT-1 refactor
@@ -59,6 +60,7 @@ pub struct ScratchGraphBuild {
 pub enum ModelFamily {
     Llama,
     Qwen2,
+    Qwen3,
     Mistral,
     Phi3,
     Gemma2,
@@ -359,13 +361,15 @@ impl<T> AteniaModelAdapter for T where
 
 static LLAMA_FAMILY_ADAPTER: LlamaFamilyAdapter = LlamaFamilyAdapter;
 static QWEN2_ADAPTER: Qwen2Adapter = Qwen2Adapter;
+static QWEN3_ADAPTER: qwen3::Qwen3Adapter = qwen3::Qwen3Adapter;
 static MISTRAL_ADAPTER: MistralAdapter = MistralAdapter;
 static PHI3_ADAPTER: Phi3Adapter = Phi3Adapter;
 static GEMMA2_ADAPTER: Gemma2Adapter = Gemma2Adapter;
 
-static ADAPTERS: [&'static dyn AteniaModelAdapter; 5] = [
+static ADAPTERS: [&'static dyn AteniaModelAdapter; 6] = [
     &PHI3_ADAPTER,
     &GEMMA2_ADAPTER,
+    &QWEN3_ADAPTER,
     &QWEN2_ADAPTER,
     &MISTRAL_ADAPTER,
     &LLAMA_FAMILY_ADAPTER,
@@ -593,7 +597,7 @@ mod tests {
     fn registered_adapter_contracts_are_stable_and_unique() {
         let contracts = registered_adapter_contracts();
         let ids: Vec<_> = contracts.iter().map(|contract| contract.id).collect();
-        assert_eq!(ids, ["phi3", "gemma2", "qwen2", "mistral", "llama"]);
+        assert_eq!(ids, ["phi3", "gemma2", "qwen3", "qwen2", "mistral", "llama"]);
 
         let mut unique_ids = std::collections::BTreeSet::new();
         for contract in &contracts {

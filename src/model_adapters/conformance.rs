@@ -156,8 +156,12 @@ fn phi3_family_override_wins_over_common() {
 
     // Llama family keeps the separate (common) mapping and has no
     // fused QKV at all.
-    let llama_family: [&dyn AteniaModelAdapter; 3] =
-        [&LLAMA_FAMILY_ADAPTER, &QWEN2_ADAPTER, &MISTRAL_ADAPTER];
+    let llama_family: [&dyn AteniaModelAdapter; 4] = [
+        &LLAMA_FAMILY_ADAPTER,
+        &QWEN2_ADAPTER,
+        &QWEN3_ADAPTER,
+        &MISTRAL_ADAPTER,
+    ];
     for a in llama_family {
         assert_eq!(
             a.gguf_to_hf_name("blk.3.ffn_up.weight").as_deref(),
@@ -548,9 +552,10 @@ fn fused_qkv_and_gate_up_are_phi3_only() {
             .as_deref(),
         Some("model.layers.7.self_attn.qkv_proj.weight")
     );
-    let non_phi3: [&dyn AteniaModelAdapter; 4] = [
+    let non_phi3: [&dyn AteniaModelAdapter; 5] = [
         &LLAMA_FAMILY_ADAPTER,
         &QWEN2_ADAPTER,
+        &QWEN3_ADAPTER,
         &MISTRAL_ADAPTER,
         &GEMMA2_ADAPTER,
     ];
@@ -685,7 +690,13 @@ fn completeness_gate_has_no_false_negatives() {
 /// up each adapter's `required_gguf_dtypes` from the registry.
 fn family_spec(adapter: &dyn AteniaModelAdapter) -> &'static FamilyTensorSpec {
     match adapter.family() {
-        ModelFamily::Llama | ModelFamily::Qwen2 | ModelFamily::Mistral => &LLAMA_SPEC,
+        // Q-1: Qwen3 routes to LLAMA_SPEC as a temporary placeholder.
+        // Q-2 introduces QWEN3_SPEC (with q_norm / k_norm rules) and
+        // moves the arm to its own match.
+        ModelFamily::Llama
+        | ModelFamily::Qwen2
+        | ModelFamily::Qwen3
+        | ModelFamily::Mistral => &LLAMA_SPEC,
         ModelFamily::Phi3 => &PHI3_SPEC,
         ModelFamily::Gemma2 => &GEMMA2_SPEC,
     }
@@ -744,6 +755,8 @@ fn every_adapter_required_dtypes_are_decodable() {
 fn family_spec_routing_is_stable() {
     assert_eq!(family_spec(&LLAMA_FAMILY_ADAPTER).id, "llama");
     assert_eq!(family_spec(&QWEN2_ADAPTER).id, "llama");
+    // Q-1: Qwen3 transiently shares LLAMA_SPEC; Q-2 moves it to QWEN3_SPEC.
+    assert_eq!(family_spec(&QWEN3_ADAPTER).id, "llama");
     assert_eq!(family_spec(&MISTRAL_ADAPTER).id, "llama");
     assert_eq!(family_spec(&PHI3_ADAPTER).id, "phi3");
     assert_eq!(family_spec(&GEMMA2_ADAPTER).id, "gemma2");
