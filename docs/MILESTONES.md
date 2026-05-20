@@ -560,6 +560,61 @@ checkpoints. No regression in any previously-validated family.
 
 ---
 
+## Phase Q — Qwen3 family support
+
+The Adapter Toolkit v1 closure validated against five families
+(Llama, Qwen2, Mistral, Phi-3, Gemma 2). Phase Q adds **Qwen3**
+as the first new family on top of the toolkit, exercising the
+"add a family" path against a real safetensors checkpoint
+(`Qwen/Qwen3-0.6B`) on the dev box.
+
+Topological deltas vs Llama (confirmed by reading the safetensors
+header directly): **per-head QK-Norm** RMSNorm applied to Q and K
+after the reshape-to-heads and before RoPE — γ shape `[head_dim]`,
+broadcast across heads — plus **no QKV biases** and an explicit
+`head_dim` (128 in the 0.6B checkpoint, not equal to
+`hidden_size / num_attention_heads = 64`), so q/k/v/o projection
+shapes use `n_heads * head_dim` instead of `hidden`. No new AMG
+NodeTypes are introduced; the per-head RmsNorm is expressible
+with the existing `RmsNorm` + `BroadcastMul` over the
+`[batch, seq, n_heads, head_dim]` layout. The
+`1 / sqrt(head_dim)` attention scale is moved from `k_proj` into
+the K-Norm γ via the load transform (a pre-normalize scale would
+be stripped by RMSNorm; a post-normalize γ scale survives),
+preserving the toolkit's "scale lives in the weight" convention.
+
+Landed in three layered commits (`2d76076`, `5809253`, `40e0633`):
+`ModelFamily::Qwen3` + `Qwen3Adapter` + registry entry; declarative
+`QWEN3_SPEC` with `ReshapeHeadDim4D` recipe and the per-head γ rules
+in `tensor_spec.rs` plus the conformance routing; the self-
+contained `nn/llama/qwen3.rs` graph builder + weight mapper
+mirroring the Phi-3 / Gemma 2 self-contained pattern. Qwen3's
+LM head is always registered as a separate parameter (independent
+of `tie_word_embeddings`) because Qwen3 safetensors physically
+ships `lm_head.weight`; the math matches the tied case when
+checkpoint weights coincide. The imperative escape hatch from
+ADR-006 Decision 5 was **not** used — the spec expressed the
+QK-Norm transform purely as declarative data.
+
+Validated end-to-end against `Qwen3-0.6B`: load 6.4 s on the dev
+box, 12-token greedy generation produces coherent text
+(`<think>\nOkay, the user is asking about the capital of France.
+Let me think. I know that France's capital is Paris...`). Lib
+409/0/0, `tinyllama_config_test` 15/0/3, build clean (0 warnings).
+Mandatory regressions all green at the same HEAD: TinyLlama
+Q4_K_M GGUF, Phi-3.5-mini Q4_K_M GGUF, gemma-2-2b-it Q4_K_M GGUF,
+Qwen2.5-Coder-1.5B-Instruct safetensors. No regression in any
+previously-validated family.
+
+What Phase Q deliberately does NOT include: Qwen3 GGUF (out of
+scope; `required_gguf_dtypes` empty, no certified checkpoint), and
+Qwen3 numcert / F64 fixture (no manifest added for the 0.6B
+checkpoint). Larger Qwen3 variants share the same topology and
+should resolve through the same adapter without further code,
+subject to hardware fit; none validated end-to-end yet.
+
+---
+
 ## Beyond v20
 
 The roadmap horizons (v21/M12 production hardening → v22 Intel iGPU → v23 AMD

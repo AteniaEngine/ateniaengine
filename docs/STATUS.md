@@ -124,6 +124,22 @@ locked by regression tests.
   serialized contract is frozen and no automatic / magic model
   support is promised. A new family still requires a graph
   builder, numeric validation and explicit review.
+- **Qwen3 family supported (HF safetensors).** `Qwen3-0.6B`
+  loads and generates coherent text on the dev box. Topology
+  delta vs Llama: per-head QK-Norm RMSNorm applied to Q and K
+  after reshape-to-heads and before RoPE (γ shape `[head_dim]`),
+  plus explicit `head_dim` (128 in 0.6B, ≠ `hidden_size /
+  num_attention_heads = 64`) threaded through the projection
+  shapes (q/k/v/o use `n_heads * head_dim` instead of `hidden`),
+  and `attention_bias = false` (no QKV biases, opposite of
+  Qwen2's family default). The 1 / √head_dim attention scale
+  lives in the K-Norm γ (a pre-normalize scale would be
+  stripped by RMSNorm; a post-normalize γ scale survives). No
+  new AMG ops introduced. Qwen3 GGUF is out of scope this
+  phase (`required_gguf_dtypes` empty). Larger Qwen3 variants
+  (1.7B / 4B / 8B / 14B / 32B) share the same topology and
+  should load through the same adapter without further code,
+  modulo hardware fit — none validated end-to-end yet.
 - **Local validation battery (post-Adapter-Toolkit-v1).** A
   load-and-generate sweep over the 18 checkpoints currently
   present under `models/` on the dev box (RTX 4070 Laptop, 8 GB
