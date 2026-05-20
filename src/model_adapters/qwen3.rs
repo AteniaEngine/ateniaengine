@@ -5,11 +5,10 @@ use crate::nn::llama::builder::LlamaRuntime;
 use crate::nn::llama::builder_shared::{BuildError, LlamaHandlesShared};
 use crate::nn::llama::config::LlamaConfig;
 use crate::nn::llama::gguf_weight_loading::llama_gguf_weight_mapper;
-use crate::nn::llama::weight_loading::llama_weight_mapper;
+use crate::nn::llama::qwen3::{build_qwen3, build_qwen3_with_store, qwen3_weight_mapper};
 use crate::v17::loader::loader_errors::LoaderError;
 use crate::v17::loader::weight_mapper::WeightMapper;
 
-use super::common::{build_llama_scratch, build_llama_store_graph};
 use super::{
     AdapterCapabilities, ConfigPolicy, GgufNameMapper, GgufWeightMapper, HfWeightMapper,
     ModelAdapter, ModelFamily, ModelMetadata, ResidencyHints, ResidencyPolicyHints,
@@ -82,10 +81,12 @@ impl ModelAdapter for Qwen3Adapter {
         runtime: &LlamaRuntime,
         token_input_id: usize,
     ) -> ScratchGraphBuild {
-        // Q-1 stub: delegate to the Llama scratch graph. Replaced in
-        // Q-3 by `build_qwen3` (= build_llama + 2 RmsNorm calls per
-        // attention before RoPE).
-        build_llama_scratch(gb, config, runtime, token_input_id)
+        let h = build_qwen3(gb, config, runtime, token_input_id);
+        ScratchGraphBuild {
+            logits_id: h.logits_id,
+            param_ids: h.param_ids,
+            param_names: h.param_names,
+        }
     }
 }
 
@@ -96,10 +97,7 @@ impl HfWeightMapper for Qwen3Adapter {
         param_names: &[String],
         param_ids: &[usize],
     ) -> Result<WeightMapper, LoaderError> {
-        // Q-1 stub: delegate to llama_weight_mapper. Replaced in Q-3
-        // by `qwen3_weight_mapper` which handles `q_norm.weight` /
-        // `k_norm.weight` (γ shape `[head_dim]`).
-        llama_weight_mapper(config, param_names, param_ids)
+        qwen3_weight_mapper(config, param_names, param_ids)
     }
 }
 
@@ -133,9 +131,7 @@ impl StoreBackedGraphBuilder for Qwen3Adapter {
         store: &WeightStore,
         kv_cache: Option<&KvCacheBuildSpec>,
     ) -> Result<LlamaHandlesShared, BuildError> {
-        // Q-1 stub: delegated to the Llama store-graph builder.
-        // Replaced in Q-3 by `build_qwen3_with_store`.
-        build_llama_store_graph(gb, config, runtime, token_input_id, store, kv_cache)
+        build_qwen3_with_store(gb, config, runtime, token_input_id, store, kv_cache)
     }
 }
 

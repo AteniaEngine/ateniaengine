@@ -20,6 +20,7 @@ pub mod gguf_weight_loading;
 pub mod numcert;
 pub mod phi3;
 pub mod pipeline;
+pub mod qwen3;
 pub mod weight_loading;
 
 pub use builder::{LlamaHandles, LlamaRuntime, build_llama};
