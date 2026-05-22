@@ -441,9 +441,10 @@ that lock the contract. Indexed from
 
 ## Reproducing the numbers
 
-The repository ships ~376 `cargo test` functions covering tensor
-operations, graph construction, adapter dispatch, weight loading,
-numeric drift, and generation contracts:
+The repository ships 503 library `cargo test` functions covering
+tensor operations, graph construction, adapter dispatch, weight
+loading, numeric drift, generation contracts, the Adapter Toolkit
+v2, and the CLI — plus integration suites for the CLI surface:
 
 ```bash
 cargo test --lib -- --test-threads=1
@@ -460,8 +461,9 @@ verifiable against that output.
 ## Status, license, citation
 
 **Status.** Early research. Single-author development, active. The
-public CLI surface (`atenia generate`, `atenia run`, `atenia probe`)
-is stable across the M4.9 → M11 series. Full readiness breakdown:
+public CLI surface is stable — Core CLI: `generate`, `chat`,
+`doctor`, `diagnose`, `capabilities`; Adapter Toolkit CLI: `load`,
+`inspect`, `debug`. Full readiness breakdown:
 [docs/STATUS.md](./docs/STATUS.md).
 
 **License.** Apache 2.0 — see [LICENSE](./LICENSE).

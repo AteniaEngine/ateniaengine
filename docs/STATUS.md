@@ -53,7 +53,7 @@ locked by regression tests.
   no longer branches on `arch`. The execution core is fully
   family-agnostic for both config and weight mapping.
 - **Determinism.** Greedy generation is reproducible bit-exact (D67 fixture);
-  the lib test suite (376 tests) is green.
+  the lib test suite (503 tests) is green.
 - **CI.** A minimal GitHub Actions workflow runs on push / PR to `main`
   with **two blocking jobs**: a `cuda-toolkit` job (mirrors the
   locally-validated environment; no GPU, device tests auto-skip) running
@@ -372,6 +372,27 @@ locked by regression tests.
   loud instead of being silently swapped. `serde_yaml 0.9` is
   deprecated upstream — accepted, contained (DSL front-end only,
   off the hot path), with a migration TODO.
+- **Command-line interface (CLI-0 → CLI-5, complete).** A
+  product-grade CLI built as a frontier layer in `src/cli/` — no
+  runtime-core, loader or graph-builder change. **CLI-1** — a
+  structured error system: stable `E-*` codes, a human
+  *what-happened / how-to-fix* format, and a unified exit-code
+  scheme (`0` success, `1` system/IO, `2` user input, `3` runtime,
+  `101` internal panic), plus a panic boundary that renders a
+  caught panic instead of dumping a backtrace. **CLI-2** — a
+  logging layer with levels (`--quiet` / `--verbose` / `--debug` /
+  `--trace` / `--log-level`), an optional `--log-file`, and a
+  per-run `--trace-id`; stdout stays reserved for command results,
+  stderr for logs. **CLI-3** — diagnostics: `atenia doctor` (host
+  CPU/RAM/CUDA/build), `atenia diagnose --model` (pre-flight model
+  check, no generation), `atenia capabilities` (supported families,
+  formats, quants), all with `--json`. **CLI-4/5** — `atenia chat`,
+  an interactive multi-turn REPL using the model chat template,
+  with `/help` `/history` `/reset` `/clear` `/exit`, lazy pipeline
+  load, and a streamed token-by-token response. **503 / 503**
+  `cargo test --lib`; the CLI surface is covered by four
+  integration suites (`cli_errors`, `cli_logging`, `cli_diagnostics`,
+  `cli_chat`, `cli_ux`). Full reference: `docs/CLI.md`.
 - **Local validation battery (post-Adapter-Toolkit-v1).** A
   load-and-generate sweep over the 18 checkpoints currently
   present under `models/` on the dev box (RTX 4070 Laptop, 8 GB
@@ -447,13 +468,17 @@ but they bound what you should rely on.
   enforced in CI — but multi-vendor execution itself is still not built (a
   CUDA-less binary links and runs the non-GPU surface; it does not provide
   an alternative compute backend).
-- **Production hardening — diagnostics slice done (M12), UX/logging pending
-  (v21).** The M12.1–M12.5 series closed the observability/error-surface
-  slice (see *Operability hardening* above): failures now propagate with a
-  root cause and an exit code instead of being swallowed or panicking. Still
-  pending for v21: structured logging, replay harnesses, and the
-  installer/first-run UX. Known carried-over issue (untouched by M12): the
-  adaptive memory-pressure threshold (`0.85`) sits above the OS pagefile
+- **Production hardening — CLI slice done (CLI-0 → CLI-5), engine-internal
+  observability pending (v21).** The M12 series plus the CLI-0 → CLI-5 phases
+  closed the user-facing error / logging / diagnostics slice: failures
+  propagate with a stable `E-*` code and an exit code, logging has explicit
+  levels and an optional log file, and `doctor` / `diagnose` report host and
+  model state (see the *Command-line interface* entry above). Still pending
+  for v21: replay harnesses, the installer/first-run UX, and gating the
+  engine-internal `[APX]` / `[ATENIA]` log lines emitted by the runtime core
+  on stderr (the CLI log level does not yet reach them — they are printed
+  before / independently of the CLI logging layer). Known carried-over issue:
+  the adaptive memory-pressure threshold (`0.85`) sits above the OS pagefile
   trigger on RAM-dominated boxes, so the OS pages before the reaction loop
   reacts.
 

@@ -1376,6 +1376,81 @@ does not run generation.
 
 ---
 
+## Command-line interface (CLI-0 → CLI-5)
+
+A product-grade command-line interface, built in six phases as a
+**frontier layer** in `src/cli/`. No runtime core, loader or
+graph builder was modified; generation semantics are unchanged.
+
+**CLI-0 / CLI-1 — structured errors and exit codes.** The CLI's
+boundary error type `CliError` (`src/cli/error.rs`) carries a
+stable code, a one-line summary, a *what-happened* explanation, a
+*how-to-fix* instruction, optional technical details, and an exit
+code. Engine errors (`LoaderError`, `ConfigError`, `ToolkitError`,
+`std::io::Error`) are translated to `CliError` at the CLI
+boundary — the engine stays technical, the CLI speaks to people.
+Error codes: `E-CLI-INVALID-ARGS`, `E-IO-NOT-FOUND`,
+`E-IO-PERMISSION`, `E-CONFIG-MISSING`, `E-TOKENIZER-MISSING`,
+`E-ADAPTER-UNSUPPORTED-ARCHITECTURE`, `E-ADAPTER-INVALID-SPEC`,
+`E-ADAPTER-INSPECT-FAILED`, `E-GENERATION-FAILED`,
+`E-INTERNAL-PANIC`. The exit-code scheme is unified across
+commands: `0` success, `1` system/IO, `2` user input, `3`
+runtime, `101` internal panic. A panic boundary in `main()`
+catches an internal panic and renders it as `E-INTERNAL-PANIC`
+instead of dumping a Rust backtrace.
+
+**CLI-2 — logging.** A dependency-free logging layer
+(`src/cli/logging.rs`) with five levels (`error` < `warn` <
+`info` < `debug` < `trace`), controlled by global flags
+`--quiet` / `--verbose` / `--debug` / `--trace` / `--log-level`.
+`--log-file` mirrors logs to a file; `--trace-id` (or an
+auto-generated `atenia-<unix>-<hex>` id) tags the run and appears
+in the error footer. stdout stays reserved for command results;
+logs go to stderr. `tracing` was evaluated and deliberately not
+adopted — the CLI-frontier scope is small and the project keeps
+its dependency surface minimal.
+
+**CLI-3 — diagnostics.** Three read-only commands
+(`src/cli/diagnostics.rs`): `atenia doctor` (host CPU / RAM /
+CUDA / build flavour / supported formats and quants), `atenia
+diagnose --model <dir>` (pre-flight check of a model directory —
+format, family, tokenizer, adapter resolution — without running
+generation), and `atenia capabilities` (supported families,
+out-of-scope architectures, formats, quants, features). All three
+support `--json`.
+
+**CLI-4 / CLI-5 — interactive chat and UX.** `atenia chat`
+(`src/cli/chat.rs`) is an interactive multi-turn REPL: an
+in-memory `ChatSession` history, the model's chat template
+applied across the whole conversation (with a `User:`/`Assistant:`
+fallback), the commands `/help` `/history` `/reset` `/clear`
+`/exit`, lazy pipeline loading, EOF handling, and a streamed
+token-by-token response. CLI-5 polished the UX: a `You> ` prompt,
+a `Thinking ...` indicator, TTY detection (the banner is skipped
+when stdin is piped). `--temperature` is accepted but not wired
+— generation is greedy; a non-zero value warns. There is no
+persistent KV cache across turns (out of scope).
+
+**Files.** New module `src/cli/` (`error`, `exit`, `logging`,
+`diagnostics`, `chat`); `src/bin/atenia.rs` gained the global
+flags and the `doctor` / `diagnose` / `capabilities` / `chat`
+subcommands; `src/cli_generate.rs` was rewired onto `CliError`
+and the logging layer. No engine code changed.
+
+**Tests.** `cargo test --lib -- --test-threads=1` → **503 / 503
+PASS**. Five integration suites cover the CLI surface as
+subprocess tests: `cli_errors_test` (9), `cli_logging_test` (11),
+`cli_diagnostics_test` (10), `cli_chat_test` (9), `cli_ux_test`
+(8). `cargo test --test tinyllama_config_test` → 15 PASS.
+
+**Conclusion.** The CLI is a complete, tested, product-grade
+surface — human errors, consistent exit codes, controllable
+logging, host/model diagnostics, and an interactive chat — built
+without touching the runtime. The full reference is
+`docs/CLI.md`.
+
+---
+
 ## Beyond v20
 
 The roadmap horizons (v21/M12 production hardening → v22 Intel iGPU → v23 AMD
