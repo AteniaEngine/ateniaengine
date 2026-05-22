@@ -149,14 +149,16 @@ Models that already run end-to-end on the engine. The full M11 certification pas
 | Llama 3.2 1B Instruct  | ✅ Loader + inference + generation              | ADR-004 F64 fixture (drift 1.3e-4); RoPE llama3 scaling |
 | Llama 2 7B Chat        | ✅ Loader + inference + generation              | M6 / M8 end-to-end smoke; no F64 fixture (size)  |
 | Llama 2 13B Chat       | ✅ Loader + inference + generation (beyond-VRAM)| M4.7 / M7.3 / M8.7 / M9 smokes; no F64 fixture (size) |
-| Mistral 7B v0.3        | ✅ Loader (M4.7.1.c — 291 tensors / 3 shards / 14.5 GB BF16) | Loader-only; full inference path slated for M11 |
+| Mistral 7B v0.3        | ✅ Loader + inference + generation              | Mistral-dense mastery battery; pure Llama topology |
 | **GGUF quantized models (M11.D.5)** |                                                 |                                                  |
 | TinyLlama 1.1B Chat Q4_K_M GGUF | ✅ Loader + inference + generation (Q4_K_M) | Functional smoke test (5 tok); lm_head drift ~10.19 |
 | TinyLlama 1.1B Chat Q8_0 GGUF | ✅ Loader + inference + generation (Q8_0) | Functional smoke test (5 tok); drift ~2.28 |
 | Llama 3.2 1B Instruct Q4_K_M GGUF | ✅ Loader + inference + generation (Q4_K_M) | Functional smoke test (5 tok); norm drift 0.0 (F16) |
 | SmolLM2 1.7B Q4_K_M GGUF | ✅ Loader + inference + generation (Q4_K_M) | Functional smoke test (5 tok); q_proj drift ~0.287 |
 
-The four small models (TinyLlama, SmolLM2, Qwen 2.5 1.5B, Llama 3.2 1B) form the M4.6 / M4.7.2.e / M4.7.3.f / M4.7.4.f / M4.7.5.f / M4.8.f / M8.5 regression fixture and are exercised under every numerical-contract milestone. The two 13B-class checkpoints (Llama 2 7B and 13B) are validated end-to-end at the generation level (`atenia generate` produces coherent text, argmax bit-exact across milestone gates) but not under the F64 fixture due to peak-memory cost. Mistral 7B has loader parity but the full forward path is queued for M11.
+The four small models (TinyLlama, SmolLM2, Qwen 2.5 1.5B, Llama 3.2 1B) form the M4.6 / M4.7.2.e / M4.7.3.f / M4.7.4.f / M4.7.5.f / M4.8.f / M8.5 regression fixture and are exercised under every numerical-contract milestone. The two 13B-class checkpoints (Llama 2 7B and 13B) are validated end-to-end at the generation level (`atenia generate` produces coherent text, argmax bit-exact across milestone gates) but not under the F64 fixture due to peak-memory cost.
+
+The table above is the original M11-era safetensors + GGUF fixture. Coverage has since broadened to **seven validated model families** — Llama, Qwen, Gemma, Phi, Mistral dense, SmolLM and Falcon3 — across many more checkpoints and quantisations. The authoritative, current per-family list (with formats, quants and the real fixes each phase required) is [docs/MODEL_FAMILY_VALIDATION.md](./docs/MODEL_FAMILY_VALIDATION.md). Note that family validation is *functional* — load, generate, stop cleanly — and is distinct from the stricter ADR-004 numeric certification, which still applies to the four F64-fixture models only.
 
 ---
 
@@ -477,13 +479,16 @@ See [HANDOFF M8.6](./docs/HANDOFF_APX_V20_M8.6.md) for the full closing notes.
 
 ## Post-v20 consolidation (M10 → Phase 16)
 
-APX v20 closed end-to-end (M1 → M11): real Llama-family inference on commodity hardware with per-checkpoint numeric certificates. After v20, three tightly-scoped series hardened the engine without changing its numeric contract:
+APX v20 closed end-to-end (M1 → M11): real Llama-family inference on commodity hardware with per-checkpoint numeric certificates. After v20, several tightly-scoped series hardened and broadened the engine without changing its numeric contract:
 
 - **M12** — the engine surfaces *why* it fails (CUDA root cause, clean CLI errors with exit codes, env/hardware diagnostics, visible fallbacks) instead of swallowing it.
 - **Vendor-agnostic build (CPU-1 → CPU-5)** — the CUDA FFI is fully `#[cfg]`-gated; a CUDA-less `cargo build --lib` links and is CI-enforced. A *build* boundary, not a non-NVIDIA compute backend.
 - **Phase 16** — the GGUF→HF weight-name mapping moved behind the adapter; the execution core is now fully family-agnostic for config **and** weight mapping.
+- **Model family validation** — seven model families validated end-to-end (load + 1-turn generation + clean EOS): Llama, Qwen, Gemma, Phi, Mistral dense, SmolLM and Falcon3, across HuggingFace safetensors and GGUF. Classic Falcon (`FalconForCausalLM`), mixture-of-experts and multimodal architectures are classified out of scope and fail loud. Full per-family report: [docs/MODEL_FAMILY_VALIDATION.md](./docs/MODEL_FAMILY_VALIDATION.md).
+- **Adapter Toolkit v2** — a declarative layer on top of the v1 adapter system: a model is described by a small YAML/JSON spec, validated and resolved to a `GeneratedAdapter` that delegates to the hand-written v1 adapter. No core, graph-builder or v1-adapter change; no Rust generated at runtime. Commands `atenia load` / `inspect` / `debug`. Full manual: [docs/ADAPTER_TOOLKIT_V2.md](./docs/ADAPTER_TOOLKIT_V2.md).
+- **Command-line interface (CLI-0 → CLI-5)** — a product-grade CLI built as a frontier layer: structured `E-*` errors with a unified exit-code scheme, a logging layer (`--quiet` / `--verbose` / `--debug` / `--trace`, `--log-file`, `--trace-id`), diagnostics (`atenia doctor` / `diagnose` / `capabilities`), and an interactive `atenia chat` REPL. No runtime change. Full reference: [docs/CLI.md](./docs/CLI.md).
 
-No tracked debt remains, CI is dual-blocking (CUDA + no-CUDA), and the core no longer depends on model identity. Per-milestone history and commits live in [MILESTONES.md](./docs/MILESTONES.md); current readiness in [docs/STATUS.md](./docs/STATUS.md).
+CI is dual-blocking (CUDA + no-CUDA), and the core no longer depends on model identity. `cargo test --lib` is at 503/503. Per-milestone history and commits live in [MILESTONES.md](./docs/MILESTONES.md); current readiness in [docs/STATUS.md](./docs/STATUS.md).
 
 ---
 
@@ -503,7 +508,9 @@ AMD / Intel / Metal are roadmap, not shipped. The codebase is structured to make
 
 ### Extensibility — adapters and weight mapping
 
-The adapter boundary is fully closed: config (Phases 13–15) and weight mapping (Phase 16) are adapter-owned via `ConfigPolicy` / `HfWeightMapper` / `GgufWeightMapper` / `GgufNameMapper`; the execution core is family-agnostic. Adding a new family is a contained change inside the adapter layer. Future direction: keep the adapter trait internal (not a public SDK) while exploring a more declarative config/mapping description so a new family is closer to data than code.
+The adapter boundary is fully closed: config (Phases 13–15) and weight mapping (Phase 16) are adapter-owned via `ConfigPolicy` / `HfWeightMapper` / `GgufWeightMapper` / `GgufNameMapper`; the execution core is family-agnostic. Adding a new family is a contained change inside the adapter layer.
+
+**Adapter Toolkit v2 delivered the declarative layer.** A model that belongs to a supported family can now be described by a small YAML/JSON spec instead of a hand-written Rust adapter — the toolkit parses, validates and resolves it to a `GeneratedAdapter` that delegates to the v1 adapter, with no core or graph-builder change and no runtime Rust generation. The adapter trait stays internal (not a public SDK). Remaining future direction: broaden the DSL only as genuinely new — but still dense, causal — families appear; classic Falcon, MoE and multimodal stay out of scope.
 
 ### Runtime and performance
 
@@ -514,10 +521,11 @@ The two-mode (certified / fast) + per-tensor-certificate dispatch is the durable
 
 ### Product and demo
 
-The M12 series closed the diagnostics / error-surface slice. The remaining production-hardening work (the v21 label) is **not** done:
+The M12 series plus CLI-0 → CLI-5 closed the user-facing diagnostics, error-surface and logging slice: structured `E-*` errors with exit codes, log levels (`--quiet` / `--verbose` / `--debug` / `--trace`) with an optional log file and trace id, `doctor` / `diagnose` / `capabilities`, and an interactive `atenia chat`. The remaining production-hardening work (the v21 label) is **not** done:
 
 - Installer / first-run UX so a non-developer can install and run.
-- Structured logging, metrics, replay harnesses for debugging.
+- Metrics and replay harnesses for debugging.
+- **Gating engine-internal logs.** The `[APX]` / `[ATENIA]` lines emitted by the runtime core on stderr are not yet routed through the CLI log level (they print before / independently of the CLI logging layer).
 - **Adaptive memory-pressure threshold (the one open known issue).** The `0.85` threshold sits above the OS pagefile trigger on RAM-dominated boxes (the OS pages before the reaction loop reacts); it should land below that trigger (~0.78 measured on the dev box) with hysteresis. Empirical baseline in HANDOFF M4.7.
 
 ### v25 — Distributed execution
