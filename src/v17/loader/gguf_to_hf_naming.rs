@@ -9,7 +9,8 @@
 //! `golden_name_maps_match_live_functions`, kept green here too).
 
 use crate::model_adapters::tensor_spec::{
-    COMMON_NAME_TABLE, GEMMA2_SPEC, NON_WEIGHT_TENSORS, PHI3_SPEC, resolve_name,
+    COMMON_NAME_TABLE, GEMMA2_SPEC, GEMMA3_SPEC, NON_WEIGHT_TENSORS, PHI3_SPEC, QWEN3_SPEC,
+    resolve_name,
 };
 
 /// **Phase 16.1 / AT-1b** — architecture-agnostic GGUF → HF name
@@ -43,6 +44,25 @@ pub fn phi3_gguf_extra(gguf_name: &str) -> Option<String> {
 /// `GEMMA2_SPEC.name_extra`.
 pub fn gemma2_gguf_extra(gguf_name: &str) -> Option<String> {
     resolve_name(&GEMMA2_SPEC.name_extra, gguf_name)
+}
+
+/// **Qwen GGUF support** — Qwen3-specific GGUF suffixes not
+/// covered by [`gguf_to_hf_name_common`]: the per-head QK-Norm γ
+/// tensors (`blk.N.attn_{q,k}_norm.weight`). Body delegates to
+/// [`resolve_name`] over `QWEN3_SPEC.name_extra`.
+pub fn qwen3_gguf_extra(gguf_name: &str) -> Option<String> {
+    resolve_name(&QWEN3_SPEC.name_extra, gguf_name)
+}
+
+/// **Gemma 3 GGUF support** — Gemma 3-specific GGUF suffixes: the
+/// four per-layer norms (as Gemma 2) plus the per-head QK-Norm γ
+/// tensors (`blk.N.attn_{q,k}_norm.weight`). Body delegates to
+/// [`resolve_name`] over `GEMMA3_SPEC.name_extra`. Must be tried
+/// **before** [`gguf_to_hf_name_common`] (the `ffn_norm` override
+/// shadows the common 2-norm mapping — same composition class as
+/// Gemma 2).
+pub fn gemma3_gguf_extra(gguf_name: &str) -> Option<String> {
+    resolve_name(&GEMMA3_SPEC.name_extra, gguf_name)
 }
 
 // **Phase 16.3** — the arch-branching composing free function

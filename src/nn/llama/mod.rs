@@ -15,6 +15,7 @@ pub mod builder;
 pub mod builder_shared;
 pub mod config;
 pub mod gemma2;
+pub mod gemma3;
 pub mod generator;
 pub mod gguf_weight_loading;
 pub mod numcert;

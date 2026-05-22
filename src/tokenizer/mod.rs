@@ -396,6 +396,14 @@ impl AteniaTokenizer {
     pub fn eos_id(&self) -> u32 {
         self.eos_id
     }
+    /// Resolve a token string to its vocabulary id, if the token
+    /// exists in the vocab. Used by the generation pipeline to
+    /// locate chat-format turn-terminator sentinels
+    /// (`<end_of_turn>`, `<|eot_id|>`, `<|im_end|>`) that are not
+    /// always the tokenizer's declared `eos_token`.
+    pub fn token_to_id(&self, token: &str) -> Option<u32> {
+        self.inner.token_to_id(token)
+    }
     /// Whether the underlying config wants BOS prepended by default.
     pub fn add_bos_token(&self) -> bool {
         self.add_bos_token

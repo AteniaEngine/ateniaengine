@@ -1,0 +1,21 @@
+# Adapter Toolkit v2 — Mistral family example (intermediate level).
+#
+# Mistral 7B dense: pure Llama topology with GQA. Resolves to the
+# v1 `mistral` adapter, which delegates graph build and weight
+# mapping to the Llama path. Mixtral / Mistral-MoE are out of
+# scope — the DSL has no MoE family.
+#
+#   atenia load config/adapters/mistral.yaml
+family: mistral
+architecture: MistralForCausalLM
+format: safetensors
+
+config:
+  rope: standard
+
+attention:
+  type: gqa
+  kv_heads: auto
+
+tokenizer:
+  eos_tokens: [2]

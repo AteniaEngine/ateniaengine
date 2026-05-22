@@ -118,7 +118,7 @@ fn greedy_loop_matches_per_step_no_cache_argmax() {
     // Run generation.
     let gen_cfg = GenerationConfig {
         max_new_tokens: n_new,
-        eos_token_id: 9999, // outside vocab → never fires
+        eos_token_ids: vec![9999], // outside vocab → never fires
     };
     let mut sink = CollectingTokenSink::default();
     // Trivial decode_token (returns id as decimal string).
@@ -205,7 +205,7 @@ fn eos_halts_generation_immediately() {
 
     let gen_cfg = GenerationConfig {
         max_new_tokens: 100,
-        eos_token_id: first_id,
+        eos_token_ids: vec![first_id],
     };
     let mut sink = CollectingTokenSink::default();
     let generated = generate_greedy(
@@ -246,7 +246,7 @@ fn max_new_tokens_caps_runaway_generation() {
 
     let gen_cfg = GenerationConfig {
         max_new_tokens: cap,
-        eos_token_id: 9999,
+        eos_token_ids: vec![9999],
     };
     let mut sink = CollectingTokenSink::default();
     let generated = generate_greedy(
@@ -280,7 +280,7 @@ fn streaming_sink_receives_each_token_in_order() {
 
     let gen_cfg = GenerationConfig {
         max_new_tokens: 3,
-        eos_token_id: 9999,
+        eos_token_ids: vec![9999],
     };
     let mut received: Vec<u32> = Vec::new();
     let generated = generate_greedy(

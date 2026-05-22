@@ -172,18 +172,28 @@ impl HfWeightMapper for Qwen2Adapter {
 }
 
 impl GgufWeightMapper for Qwen2Adapter {
+    /// **Qwen GGUF support** — Qwen2 GGUF uses the *HF* weight
+    /// mapper, not `llama_gguf_weight_mapper`. llama.cpp's
+    /// `LLM_ARCH_QWEN2` conversion does **not** row-permute q/k
+    /// (the permute is Llama-arch specific), and the residency
+    /// loader's `.rev()` leaves every tensor in HF orientation —
+    /// so the correct transform set is exactly the Llama HF table
+    /// with **no** `LlamaRopeUnpermuteRows`, the same relationship
+    /// Phi-3 / Gemma 2 GGUF already have. The QKV biases Qwen2
+    /// carries are name-mapped by `COMMON_NAME_TABLE` and
+    /// transformed by the shared Llama HF bias rules.
     fn map_gguf_weights(
         &self,
         config: &LlamaConfig,
         param_names: &[String],
         param_ids: &[usize],
     ) -> Result<WeightMapper, LoaderError> {
-        llama_gguf_weight_mapper(config, param_names, param_ids)
+        llama_weight_mapper(config, param_names, param_ids)
     }
 }
 
-// **Phase 16.2** — Qwen 2 reuses the Llama GGUF layout; default
-// common name mapping.
+// Qwen 2 GGUF uses the common Llama-layout names (including the
+// QKV bias suffixes now in `COMMON_NAME_TABLE`); default mapping.
 impl GgufNameMapper for Qwen2Adapter {}
 
 impl StoreBackedGraphBuilder for Qwen2Adapter {

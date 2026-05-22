@@ -155,6 +155,29 @@ enum Command {
     ///     --max-tokens 100
     /// ```
     Generate(GenerateArgs),
+
+    /// **Adapter Toolkit v2** — parse a declarative adapter DSL
+    /// file (`.yaml` / `.json`), validate it, build the v2
+    /// adapter, and print a summary. Does **not** run generation.
+    ///
+    /// ```text
+    /// atenia load config/adapters/llama.yaml
+    /// ```
+    Load(AdapterFileArgs),
+
+    /// **Adapter Toolkit v2** — like `load`, but prints the
+    /// verbose report (v1 capabilities + GGUF→HF tensor-name
+    /// sample) and any validation warnings.
+    Debug(AdapterFileArgs),
+
+    /// **Adapter Toolkit v2** — auto-detect a model directory
+    /// (`config.json` or `*.gguf`) and emit a valid adapter DSL
+    /// (YAML) that `atenia load` can consume directly.
+    ///
+    /// ```text
+    /// atenia inspect ./models/llama-3.2-1b-instruct
+    /// ```
+    Inspect(ModelDirArgs),
 }
 
 #[derive(clap::Args)]
@@ -294,6 +317,22 @@ struct ExplainArgs {
     ram_band: u8,
 }
 
+/// Arguments for `load` / `debug` — a single Adapter Toolkit v2
+/// DSL file path (`.yaml` / `.yml` / `.json`).
+#[derive(clap::Args)]
+struct AdapterFileArgs {
+    /// Path to the adapter DSL file.
+    file: PathBuf,
+}
+
+/// Arguments for `inspect` — a model directory containing a
+/// `config.json` or a single `*.gguf` file.
+#[derive(clap::Args)]
+struct ModelDirArgs {
+    /// Path to the model directory.
+    model_dir: PathBuf,
+}
+
 /// Output format shared by `probe` and `run`. `text` is the
 /// human-readable banner; `json` is a stable machine-readable
 /// schema documented in `docs/CLI.md` (M4.9.f).
@@ -321,9 +360,51 @@ fn main() {
         Command::Run(args) => run_demo(args),
         Command::Explain(args) => run_explain(args),
         Command::Generate(args) => run_generate(args),
+        Command::Load(args) => run_adapter_load(&args.file, false),
+        Command::Debug(args) => run_adapter_load(&args.file, true),
+        Command::Inspect(args) => run_adapter_inspect(&args.model_dir),
     };
 
     std::process::exit(exit_code);
+}
+
+/// `atenia load` / `atenia debug` — Adapter Toolkit v2 entry point.
+/// Prints the adapter report to stdout, or a typed error to stderr.
+/// Exit 0 on success, 2 on any toolkit error (matches the
+/// missing-config.json convention used by `generate`).
+fn run_adapter_load(file: &std::path::Path, verbose: bool) -> i32 {
+    use atenia_engine::adapter_toolkit::{run_debug, run_load};
+    let result = if verbose {
+        run_debug(file)
+    } else {
+        run_load(file)
+    };
+    match result {
+        Ok(report) => {
+            println!("{report}");
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            2
+        }
+    }
+}
+
+/// `atenia inspect` — Adapter Toolkit v2 auto-detection. Emits a
+/// loadable YAML DSL plus a resolved-spec preview to stdout.
+fn run_adapter_inspect(model_dir: &std::path::Path) -> i32 {
+    use atenia_engine::adapter_toolkit::run_inspect;
+    match run_inspect(model_dir) {
+        Ok(report) => {
+            println!("{report}");
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            2
+        }
+    }
 }
 
 // ============================================================

@@ -4,7 +4,6 @@ use crate::amg::weight_store::WeightStore;
 use crate::nn::llama::builder::LlamaRuntime;
 use crate::nn::llama::builder_shared::{BuildError, LlamaHandlesShared};
 use crate::nn::llama::config::LlamaConfig;
-use crate::nn::llama::gguf_weight_loading::llama_gguf_weight_mapper;
 use crate::nn::llama::qwen3::{build_qwen3, build_qwen3_with_store, qwen3_weight_mapper};
 use crate::v17::loader::loader_errors::LoaderError;
 use crate::v17::loader::weight_mapper::WeightMapper;
@@ -102,24 +101,35 @@ impl HfWeightMapper for Qwen3Adapter {
 }
 
 impl GgufWeightMapper for Qwen3Adapter {
+    /// **Qwen GGUF support** — Qwen3 GGUF reuses the *HF* weight
+    /// mapper. llama.cpp's `LLM_ARCH_QWEN3` does not row-permute
+    /// q/k, and the residency loader's `.rev()` leaves every
+    /// tensor in HF orientation, so the QK-Norm-aware HF transform
+    /// table (`QWEN3_SPEC.hf_transforms`, driven by
+    /// `qwen3_weight_mapper`) applies unchanged — no
+    /// `LlamaRopeUnpermuteRows`. The per-head QK-Norm γ tensors
+    /// are name-mapped by `qwen3_gguf_extra` (see `GgufNameMapper`
+    /// below).
     fn map_gguf_weights(
         &self,
         config: &LlamaConfig,
         param_names: &[String],
         param_ids: &[usize],
     ) -> Result<WeightMapper, LoaderError> {
-        // GGUF Qwen3 is out of scope for Phase Q (no checkpoint
-        // validated yet). The trait impl reuses the Llama GGUF mapper
-        // as a defensive default; not a tested path.
-        llama_gguf_weight_mapper(config, param_names, param_ids)
+        qwen3_weight_mapper(config, param_names, param_ids)
     }
 }
 
-// Qwen3 GGUF, if/when supported, uses the same Llama-layout common
-// names as Qwen2 (the official Qwen3 GGUF conversion follows
-// llama.cpp's `LLM_ARCH_QWEN3` which mirrors the Llama tensor
-// naming). No family-specific name extras.
-impl GgufNameMapper for Qwen3Adapter {}
+// Qwen3 GGUF adds the per-head QK-Norm γ tensors
+// (`blk.N.attn_{q,k}_norm.weight`) on top of the common
+// Llama-layout names; `qwen3_gguf_extra` resolves those and the
+// common table covers the rest.
+impl GgufNameMapper for Qwen3Adapter {
+    fn gguf_to_hf_name(&self, gguf_name: &str) -> Option<String> {
+        crate::v17::loader::gguf_to_hf_naming::qwen3_gguf_extra(gguf_name)
+            .or_else(|| crate::v17::loader::gguf_to_hf_naming::gguf_to_hf_name_common(gguf_name))
+    }
+}
 
 impl StoreBackedGraphBuilder for Qwen3Adapter {
     fn build_store_graph(

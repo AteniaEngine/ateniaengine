@@ -272,22 +272,27 @@ fn build_transformer_block_phi3(
     let k_flat = gb.slice_last_dim(qkv_flat, q_end, k_end);
     let v_flat = gb.slice_last_dim(qkv_flat, k_end, v_end);
 
+    // ---- 2.5 Grouped-query K/V head expansion ----
+    // For GQA Phi (Phi-4-mini: 24 q / 8 kv) repeat each KV head
+    // `kv_groups` times so K / V carry `n_heads_q` heads, matching
+    // Q for the batched attention matmul. No-op for MHA Phi-3 /
+    // Phi-3.5 (`kv_groups == 1`).
+    let kv_groups = n_heads_q / n_heads_kv;
+    let k_flat = expand_kv_heads_flat(gb, k_flat, n_heads_kv, head_dim, kv_groups);
+    let v_flat = expand_kv_heads_flat(gb, v_flat, n_heads_kv, head_dim, kv_groups);
+
     // ---- 3. Multi-head reshape ----
+    // After the GQA expansion K / V have `n_heads_q` heads, so all
+    // three reshape to the same `q_split` shape.
     let q_split = vec![
         batch as isize,
         seq as isize,
         n_heads_q as isize,
         head_dim as isize,
     ];
-    let kv_split = vec![
-        batch as isize,
-        seq as isize,
-        n_heads_kv as isize,
-        head_dim as isize,
-    ];
     let q = gb.reshape(q_flat, q_split.clone());
-    let k_unscaled = gb.reshape(k_flat, kv_split.clone());
-    let v = gb.reshape(v_flat, kv_split);
+    let k_unscaled = gb.reshape(k_flat, q_split.clone());
+    let v = gb.reshape(v_flat, q_split.clone());
 
     // ---- 3.5 K-side attention scale ----
     //
@@ -303,9 +308,10 @@ fn build_transformer_block_phi3(
     // input.
     let k = gb.broadcast_mul(k_unscaled, attention_scale_param_id);
 
-    // ---- 4. RoPE-LongRope on Q and K ----
-    let q_rope = gb.rope_longrope(q, head_dim, config.rope_theta, longrope_scaling.clone());
-    let k_rope = gb.rope_longrope(k, head_dim, config.rope_theta, longrope_scaling.clone());
+    // ---- 4. RoPE-LongRope on Q and K (partial-rotary aware) ----
+    let rotary_dim = config.rotary_dim();
+    let q_rope = apply_phi3_rope(gb, q, head_dim, rotary_dim, config.rope_theta, longrope_scaling);
+    let k_rope = apply_phi3_rope(gb, k, head_dim, rotary_dim, config.rope_theta, longrope_scaling);
 
     // ---- 5. [b, s, h, d] → [b, h, s, d] ----
     let q_perm = gb.permute(q_rope, vec![0, 2, 1, 3]);
@@ -391,6 +397,156 @@ fn build_transformer_block_phi3(
     gb.add(x_residual_1, ffn_out)
 }
 
+/// Resolve the LongRope scaling for the Phi-3 builders.
+///
+/// Phi-3.5 / Phi-3-mini-128k / Phi-4-mini declare
+/// `rope_scaling.type = "longrope"`. Phi-3-mini-4k (and any
+/// 4k-context Phi-3) declare **no** `rope_scaling` block — plain
+/// RoPE. A [`RopeScalingLongRope`] with unit per-dimension factors
+/// and `original == max` position embeddings degenerates exactly
+/// to standard RoPE: the per-dimension inverse frequencies are
+/// unscaled and `attention_factor` is `1.0` (the scale ratio is
+/// `1.0`, not `> 1.0`). Representing plain RoPE as a unit LongRope
+/// keeps the block builder a single code path. The `panic!`
+/// survives only for a genuinely wrong scaling type — `llama3`
+/// scaling declared on a Phi-3 checkpoint — which is a malformed
+/// config, not a supported shape.
+///
+/// The factor vectors have length `rotary_dim / 2`, where
+/// `rotary_dim` honours Phi-4's partial-rotary fraction (so the
+/// unit-factor length matches what `rope_longrope` validates when
+/// the builder rotates only the partial-rotary slice).
+fn resolve_phi3_longrope(config: &LlamaConfig) -> RopeScalingLongRope {
+    match config.effective_rope_scaling() {
+        Some(RopeScaling::LongRope {
+            short_factor,
+            long_factor,
+            original_max_position_embeddings,
+            max_position_embeddings,
+        }) => RopeScalingLongRope::new(
+            short_factor,
+            long_factor,
+            *original_max_position_embeddings,
+            *max_position_embeddings,
+        ),
+        None => {
+            let half = config.rotary_dim() / 2;
+            let unit = vec![1.0_f32; half];
+            let ctx = config.max_position_embeddings as u32;
+            RopeScalingLongRope::new(&unit, &unit, ctx, ctx)
+        }
+        other => panic!(
+            "build_phi3 requires rope_scaling = LongRope or absent (plain RoPE), \
+             got {other:?}. A Phi-3 checkpoint must not declare `llama3` scaling."
+        ),
+    }
+}
+
+/// Apply RoPE to a `[batch, seq, heads, head_dim]` tensor,
+/// honouring Phi-4's partial-rotary fraction. When
+/// `rotary_dim == head_dim` (Phi-3 / Phi-3.5 — full rotary) the
+/// whole tensor is rotated. When `rotary_dim < head_dim` (Phi-4,
+/// `partial_rotary_factor = 0.75`) only the **first** `rotary_dim`
+/// dimensions are rotated; the tail passes through un-rotated and
+/// the two halves are concatenated back — matching HF
+/// `Phi3Attention`'s `cat([rope(x[..., :rot]), x[..., rot:]])`.
+/// Built from the existing `SliceLastDim` / `Concat` / `RoPE`
+/// nodes — no new op types.
+fn apply_phi3_rope(
+    gb: &mut GraphBuilder,
+    x: usize,
+    head_dim: usize,
+    rotary_dim: usize,
+    rope_theta: u32,
+    longrope_scaling: &RopeScalingLongRope,
+) -> usize {
+    if rotary_dim == head_dim {
+        return gb.rope_longrope(x, head_dim, rope_theta, longrope_scaling.clone());
+    }
+    let x_rot = gb.slice_last_dim(x, 0, rotary_dim);
+    let x_pass = gb.slice_last_dim(x, rotary_dim, head_dim);
+    let x_rot_roped = gb.rope_longrope(x_rot, rotary_dim, rope_theta, longrope_scaling.clone());
+    // q / k are 4-D `[batch, seq, heads, head_dim]`; the head_dim
+    // is axis 3.
+    gb.concat(x_rot_roped, x_pass, 3)
+}
+
+/// Cache-aware (`position_offset`) twin of [`apply_phi3_rope`].
+/// Same partial-rotary split; used by the store-backed builder
+/// where decode steps carry a non-zero KV-cache offset.
+fn apply_phi3_rope_with_offset(
+    gb: &mut GraphBuilder,
+    x: usize,
+    head_dim: usize,
+    rotary_dim: usize,
+    rope_theta: u32,
+    longrope_scaling: &RopeScalingLongRope,
+    position_offset: u32,
+) -> usize {
+    if rotary_dim == head_dim {
+        return gb.rope_longrope_with_offset(
+            x,
+            head_dim,
+            rope_theta,
+            longrope_scaling.clone(),
+            position_offset,
+        );
+    }
+    let x_rot = gb.slice_last_dim(x, 0, rotary_dim);
+    let x_pass = gb.slice_last_dim(x, rotary_dim, head_dim);
+    let x_rot_roped = gb.rope_longrope_with_offset(
+        x_rot,
+        rotary_dim,
+        rope_theta,
+        longrope_scaling.clone(),
+        position_offset,
+    );
+    gb.concat(x_rot_roped, x_pass, 3)
+}
+
+/// Expand a flattened GQA **K** or **V** activation from
+/// `n_heads_kv` heads up to the full `n_heads_q` heads, repeating
+/// each KV head `kv_groups = n_heads_q / n_heads_kv` times in the
+/// interleaved order HF `repeat_kv` produces — output head `e`
+/// carries KV head `e / kv_groups`, i.e. `[kv0×g, kv1×g, ...]`.
+///
+/// The Llama builder expands grouped-query K/V by tiling the
+/// standalone `k_proj` / `v_proj` weight at load time
+/// (`TileGroupedDim`). Phi-3 fuses Q/K/V into one `qkv_proj` and
+/// slices the *activation*, so the per-head repeat cannot be a
+/// load-time weight transform without a column-range-aware
+/// variant; it is done here in the graph from existing
+/// `SliceLastDim` / `Concat` nodes instead. This is exercised
+/// only by GQA Phi checkpoints (Phi-4-mini, 24 q / 8 kv);
+/// `kv_groups == 1` (MHA — Phi-3 / Phi-3.5) returns the input
+/// unchanged and adds no nodes.
+///
+/// Input  `[bs, n_heads_kv * head_dim]`
+/// Output `[bs, n_heads_q  * head_dim]`
+fn expand_kv_heads_flat(
+    gb: &mut GraphBuilder,
+    kv_flat: usize,
+    n_heads_kv: usize,
+    head_dim: usize,
+    kv_groups: usize,
+) -> usize {
+    if kv_groups <= 1 {
+        return kv_flat;
+    }
+    let mut acc: Option<usize> = None;
+    for h in 0..n_heads_kv {
+        let head = gb.slice_last_dim(kv_flat, h * head_dim, (h + 1) * head_dim);
+        for _ in 0..kv_groups {
+            acc = Some(match acc {
+                None => head,
+                // 2-D `[bs, .]` activation — the head axis is 1.
+                Some(a) => gb.concat(a, head, 1),
+            });
+        }
+    }
+    acc.expect("n_heads_kv >= 1")
+}
+
 /// Build the complete Phi-3 graph.
 ///
 /// Mirrors `build_llama`'s contract: `token_input_id` must be a
@@ -409,27 +565,7 @@ pub fn build_phi3(
 ) -> Phi3Handles {
     config.validate().expect("invalid LlamaConfig (Phi-3 path)");
 
-    // Resolve LongRope scaling from the parsed config. The
-    // builder expects it to be present; otherwise the caller
-    // routed a non-Phi-3 config to the Phi-3 builder.
-    let longrope_scaling = match config.effective_rope_scaling() {
-        Some(RopeScaling::LongRope {
-            short_factor,
-            long_factor,
-            original_max_position_embeddings,
-            max_position_embeddings,
-        }) => RopeScalingLongRope::new(
-            short_factor,
-            long_factor,
-            *original_max_position_embeddings,
-            *max_position_embeddings,
-        ),
-        other => panic!(
-            "build_phi3 requires rope_scaling = LongRope, got {other:?}. \
-             Phi-3 / Phi-3.5 checkpoints must declare type=\"longrope\" in \
-             config.json's rope_scaling block."
-        ),
-    };
+    let longrope_scaling = resolve_phi3_longrope(config);
 
     let mut param_ids: Vec<usize> = Vec::new();
     let mut param_names: Vec<String> = Vec::new();
@@ -558,22 +694,8 @@ pub fn build_phi3_with_store(
 
     config.validate().expect("invalid LlamaConfig (Phi-3 path)");
 
-    // Resolve LongRope scaling — same precondition as
-    // `build_phi3` (no-cache prefill builder).
-    let longrope_scaling = match config.effective_rope_scaling() {
-        Some(RopeScaling::LongRope {
-            short_factor,
-            long_factor,
-            original_max_position_embeddings,
-            max_position_embeddings,
-        }) => RopeScalingLongRope::new(
-            short_factor,
-            long_factor,
-            *original_max_position_embeddings,
-            *max_position_embeddings,
-        ),
-        other => panic!("build_phi3_with_store requires rope_scaling = LongRope, got {other:?}"),
-    };
+    // Resolve LongRope scaling — same handling as `build_phi3`.
+    let longrope_scaling = resolve_phi3_longrope(config);
 
     // Helper closures local to this builder. They mirror the
     // private helpers in `builder_shared.rs` but stay closed
@@ -686,39 +808,44 @@ pub fn build_phi3_with_store(
         let k_flat = gb.slice_last_dim(qkv_flat, q_end, k_end);
         let v_flat = gb.slice_last_dim(qkv_flat, k_end, v_end);
 
-        // 3. Multi-head reshape
+        // 2.5 Grouped-query K/V head expansion (no-op for MHA).
+        let kv_groups = n_heads_q / n_heads_kv;
+        let k_flat = expand_kv_heads_flat(gb, k_flat, n_heads_kv, head_dim, kv_groups);
+        let v_flat = expand_kv_heads_flat(gb, v_flat, n_heads_kv, head_dim, kv_groups);
+
+        // 3. Multi-head reshape — K / V carry `n_heads_q` heads
+        // after the GQA expansion, so all three use `q_split`.
         let q_split = vec![
             batch as isize,
             seq as isize,
             n_heads_q as isize,
             head_dim as isize,
         ];
-        let kv_split = vec![
-            batch as isize,
-            seq as isize,
-            n_heads_kv as isize,
-            head_dim as isize,
-        ];
         let q = gb.reshape(q_flat, q_split.clone());
-        let k_unscaled = gb.reshape(k_flat, kv_split.clone());
-        let v = gb.reshape(v_flat, kv_split);
+        let k_unscaled = gb.reshape(k_flat, q_split.clone());
+        let v = gb.reshape(v_flat, q_split.clone());
 
         // 3.5 K-side attention scale (graph-level)
         let k = gb.broadcast_mul(k_unscaled, attention_scale_id);
 
-        // 4. RoPE-LongRope with offset
-        let q_rope = gb.rope_longrope_with_offset(
+        // 4. RoPE-LongRope with offset (partial-rotary aware)
+        let rotary_dim = config.rotary_dim();
+        let q_rope = apply_phi3_rope_with_offset(
+            gb,
             q,
             head_dim,
+            rotary_dim,
             config.rope_theta,
-            longrope_scaling.clone(),
+            &longrope_scaling,
             position_offset,
         );
-        let k_rope = gb.rope_longrope_with_offset(
+        let k_rope = apply_phi3_rope_with_offset(
+            gb,
             k,
             head_dim,
+            rotary_dim,
             config.rope_theta,
-            longrope_scaling.clone(),
+            &longrope_scaling,
             position_offset,
         );
 
@@ -731,7 +858,12 @@ pub fn build_phi3_with_store(
         let (k_full, v_full, layer_handle): (usize, usize, Option<KvLayerHandle>) = match kv_cache {
             None => (new_k_perm, new_v_perm, None),
             Some(spec) => {
-                let cache_shape = vec![batch, n_heads_kv, spec.cached_len, head_dim];
+                // K / V carry `n_heads_q` heads after the GQA
+                // expansion, so the resident cache is sized to
+                // `n_heads_q` (Atenia caches the expanded K/V, the
+                // same way the Llama path caches load-time-tiled
+                // K/V).
+                let cache_shape = vec![batch, n_heads_q, spec.cached_len, head_dim];
                 let cache_k_id = local_zero(gb, cache_shape.clone());
                 let cache_v_id = local_zero(gb, cache_shape);
                 let k_full_id = gb.concat(cache_k_id, new_k_perm, 2);
@@ -1085,6 +1217,7 @@ mod tests {
             model_type: Some("phi3".to_string()),
             bos_token_id: 1,
             eos_token_id: 32_000,
+            eos_token_ids: vec![32_000],
             pad_token_id: None,
             head_dim: None,
             rope_scaling: Some(RopeScaling::LongRope {
@@ -1097,6 +1230,9 @@ mod tests {
             final_logit_softcapping: None,
             sliding_window: None,
             query_pre_attn_scalar: None,
+            rope_local_base_freq: None,
+            sliding_window_pattern: None,
+            partial_rotary_factor: None,
         };
         let runtime = LlamaRuntime { batch: 1, seq: 4 };
         let mut gb = GraphBuilder::new();

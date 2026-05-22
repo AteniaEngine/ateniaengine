@@ -5,11 +5,14 @@ pub fn architecture_from_gguf(reader: &GgufReader) -> Result<String, GgufError> 
     let arch = required_string(reader, "general.architecture")?;
     match arch {
         "llama" => Ok("LlamaForCausalLM".to_string()),
+        "qwen2" => Ok("Qwen2ForCausalLM".to_string()),
+        "qwen3" => Ok("Qwen3ForCausalLM".to_string()),
         "phi3" => Ok("Phi3ForCausalLM".to_string()),
         "gemma2" => Ok("Gemma2ForCausalLM".to_string()),
+        "gemma3" => Ok("Gemma3ForCausalLM".to_string()),
         other => Err(GgufError::InvalidFormat(format!(
             "GGUF config: unsupported general.architecture = \"{other}\"; \
-             Atenia supports llama, phi3, and gemma2 in M11.D.3"
+             Atenia supports llama, qwen2, qwen3, phi3, gemma2, and gemma3"
         ))),
     }
 }
@@ -54,10 +57,24 @@ pub fn llama_config_from_gguf(reader: &GgufReader) -> Result<LlamaConfig, GgufEr
             &format!("{prefix}.attention.layer_norm_rms_epsilon"),
         )?,
         tie_word_embeddings,
-        attention_bias: Some(false),
+        // **Qwen GGUF support** — `None` (not `Some(false)`) so the
+        // resolved adapter owns the family default via
+        // `effective_attention_bias()`: Qwen2 GGUF carries QKV
+        // biases (`Qwen2Adapter::default_attention_bias = Some(true)`),
+        // while Llama / Qwen3 / Phi-3 / Gemma 2 have none (their
+        // adapter default `None` resolves to `false`). Behaviour is
+        // byte-identical to the old hard-coded `Some(false)` for
+        // every previously-supported family; only Qwen2 changes,
+        // and there the old value was wrong.
+        attention_bias: None,
         model_type: Some(model_type_for_arch(arch).to_string()),
         bos_token_id: optional_u32(reader, "tokenizer.ggml.bos_token_id").unwrap_or(1),
         eos_token_id: optional_u32(reader, "tokenizer.ggml.eos_token_id").unwrap_or(2),
+        // GGUF metadata carries a single `eos_token_id` scalar
+        // (llama.cpp picks the family-correct one — e.g.
+        // `<end_of_turn>` for Gemma instruct), so the multi-EOS
+        // set is just that scalar.
+        eos_token_ids: vec![optional_u32(reader, "tokenizer.ggml.eos_token_id").unwrap_or(2)],
         pad_token_id: optional_u32(reader, "tokenizer.ggml.padding_token_id"),
         head_dim: explicit_head_dim.filter(|d| *d != inferred_head_dim),
         rope_scaling: None,
@@ -81,6 +98,36 @@ pub fn llama_config_from_gguf(reader: &GgufReader) -> Result<LlamaConfig, GgufEr
             reader,
             &format!("{prefix}.attention.query_pre_attn_scalar"),
         ),
+        // **Gemma 3** — dual-RoPE / sliding-window-pattern GGUF
+        // metadata. llama.cpp's `LLM_ARCH_GEMMA3` stores the local
+        // (sliding) RoPE base under `gemma3.rope.local.freq_base`
+        // and the global one under the standard
+        // `gemma3.rope.freq_base` (mapped to `rope_theta` above);
+        // the local:global period is `gemma3.attention
+        // .sliding_window_pattern`. `None` for every non-Gemma-3
+        // GGUF, so `cfg` stays byte-equivalent for those.
+        rope_local_base_freq: optional_f32(reader, &format!("{prefix}.rope.local.freq_base"))
+            .map(|v| v as u32),
+        sliding_window_pattern: optional_u32(
+            reader,
+            &format!("{prefix}.attention.sliding_window_pattern"),
+        ),
+        // **Phi-4 (partial rotary).** A Phi-4 GGUF stores the
+        // rotated dimension count as the absolute
+        // `{arch}.rope.dimension_count`; convert it back to the
+        // HF-style fraction `dimension_count / head_dim`. `None`
+        // when the key is absent (every full-rotary GGUF, where
+        // dimension_count == head_dim anyway) — kept `None` then so
+        // `rotary_dim()` returns the full head_dim unchanged.
+        partial_rotary_factor: optional_usize(reader, &format!("{prefix}.rope.dimension_count"))
+            .and_then(|dim| {
+                let head_dim = explicit_head_dim.unwrap_or(inferred_head_dim);
+                if head_dim > 0 && dim != head_dim {
+                    Some(dim as f32 / head_dim as f32)
+                } else {
+                    None
+                }
+            }),
     };
 
     // **Phase 15** — the resolved adapter owns family config
@@ -113,7 +160,7 @@ pub fn llama_config_from_gguf(reader: &GgufReader) -> Result<LlamaConfig, GgufEr
 
 fn arch_prefix(arch: &str) -> Result<&str, GgufError> {
     match arch {
-        "llama" | "phi3" | "gemma2" => Ok(arch),
+        "llama" | "qwen2" | "qwen3" | "phi3" | "gemma2" | "gemma3" => Ok(arch),
         other => Err(GgufError::InvalidFormat(format!(
             "GGUF config: unsupported general.architecture = \"{other}\""
         ))),
@@ -122,8 +169,11 @@ fn arch_prefix(arch: &str) -> Result<&str, GgufError> {
 
 fn model_type_for_arch(arch: &str) -> &'static str {
     match arch {
+        "qwen2" => "qwen2",
+        "qwen3" => "qwen3",
         "phi3" => "phi3",
         "gemma2" => "gemma2",
+        "gemma3" => "gemma3_text",
         _ => "llama",
     }
 }

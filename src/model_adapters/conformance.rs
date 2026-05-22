@@ -30,7 +30,7 @@ use crate::v17::loader::gguf_to_hf_naming::{
     gguf_to_hf_name_common, is_gguf_non_weight_tensor, phi3_gguf_extra,
 };
 use crate::model_adapters::tensor_spec::{
-    FamilyTensorSpec, GEMMA2_SPEC, LLAMA_SPEC, PHI3_SPEC, QWEN3_SPEC,
+    FamilyTensorSpec, GEMMA2_SPEC, GEMMA3_SPEC, LLAMA_SPEC, PHI3_SPEC, QWEN3_SPEC,
 };
 use crate::v17::loader::weight_mapper::LoadTransform;
 
@@ -88,11 +88,14 @@ fn every_adapter_resolves_common_names() {
             // before the fix). The conformance set is updated here
             // to assert the family-correct value for gemma2 rather
             // than freeze the wrong shared one.
-            if *gguf == "blk.5.ffn_norm.weight" && adapter.id() == "gemma2" {
+            if *gguf == "blk.5.ffn_norm.weight"
+                && (adapter.id() == "gemma2" || adapter.id() == "gemma3")
+            {
                 assert_eq!(
                     adapter.gguf_to_hf_name(gguf).as_deref(),
                     Some("model.layers.5.pre_feedforward_layernorm.weight"),
-                    "gemma2 maps ffn_norm -> pre_feedforward_layernorm (4-norm layout)"
+                    "{} maps ffn_norm -> pre_feedforward_layernorm (4-norm layout)",
+                    adapter.id()
                 );
                 continue;
             }
@@ -554,12 +557,13 @@ fn fused_qkv_and_gate_up_are_phi3_only() {
             .as_deref(),
         Some("model.layers.7.self_attn.qkv_proj.weight")
     );
-    let non_phi3: [&dyn AteniaModelAdapter; 5] = [
+    let non_phi3: [&dyn AteniaModelAdapter; 6] = [
         &LLAMA_FAMILY_ADAPTER,
         &QWEN2_ADAPTER,
         &QWEN3_ADAPTER,
         &MISTRAL_ADAPTER,
         &GEMMA2_ADAPTER,
+        &GEMMA3_ADAPTER,
     ];
     for a in non_phi3 {
         assert_eq!(
@@ -576,7 +580,7 @@ fn fused_qkv_and_gate_up_are_phi3_only() {
 
 /// Freezes the `GgufTensorType` raw-id <-> variant table — the
 /// routing key `decode_tensor`'s `match` switches on. The
-/// supported set {F32,F16,Q8_0,Q4_K,Q5_K,Q6_K} and the
+/// supported set {F32,F16,Q5_0,Q8_0,Q4_K,Q5_K,Q6_K} and the
 /// known-but-unsupported set (which hit the `UnsupportedDType`
 /// arm) must all round-trip stably; an unknown id must fall to
 /// `Unknown(v)`.
@@ -595,6 +599,7 @@ fn gguf_dtype_id_table_is_frozen() {
     let supported = [
         (0u32, GgufTensorType::F32),
         (1, GgufTensorType::F16),
+        (6, GgufTensorType::Q5_0),
         (8, GgufTensorType::Q8_0),
         (12, GgufTensorType::Q4_K),
         (13, GgufTensorType::Q5_K),
@@ -605,7 +610,6 @@ fn gguf_dtype_id_table_is_frozen() {
     let unsupported = [
         (2u32, GgufTensorType::Q4_0),
         (3, GgufTensorType::Q4_1),
-        (6, GgufTensorType::Q5_0),
         (7, GgufTensorType::Q5_1),
         (9, GgufTensorType::Q8_1),
         (10, GgufTensorType::Q2_K),
@@ -696,6 +700,7 @@ fn family_spec(adapter: &dyn AteniaModelAdapter) -> &'static FamilyTensorSpec {
         ModelFamily::Qwen3 => &QWEN3_SPEC,
         ModelFamily::Phi3 => &PHI3_SPEC,
         ModelFamily::Gemma2 => &GEMMA2_SPEC,
+        ModelFamily::Gemma3 => &GEMMA3_SPEC,
     }
 }
 
@@ -719,6 +724,7 @@ fn every_adapter_required_dtypes_are_decodable() {
         GgufTensorType::F32,
         GgufTensorType::F16,
         GgufTensorType::Q8_0,
+        GgufTensorType::Q5_0,
         GgufTensorType::Q4_K,
         GgufTensorType::Q5_K,
         GgufTensorType::Q6_K,
@@ -756,4 +762,5 @@ fn family_spec_routing_is_stable() {
     assert_eq!(family_spec(&MISTRAL_ADAPTER).id, "llama");
     assert_eq!(family_spec(&PHI3_ADAPTER).id, "phi3");
     assert_eq!(family_spec(&GEMMA2_ADAPTER).id, "gemma2");
+    assert_eq!(family_spec(&GEMMA3_ADAPTER).id, "gemma3");
 }

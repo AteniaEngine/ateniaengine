@@ -1,0 +1,22 @@
+# Adapter Toolkit v2 — Gemma family example (intermediate level).
+#
+# Gemma 2 text model: GQA attention, standard RoPE, the Gemma turn
+# terminator. Soft-caps and the dual-norm topology are owned by the
+# v1 `gemma2` adapter and need no DSL declaration. Resolves to the
+# v1 `gemma2` adapter.
+#
+#   atenia load config/adapters/gemma.yaml
+family: gemma
+architecture: Gemma2ForCausalLM
+format: safetensors
+
+config:
+  rope: standard
+
+attention:
+  type: gqa
+  kv_heads: auto
+
+tokenizer:
+  turn_terminators:
+    - "<end_of_turn>"

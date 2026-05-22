@@ -1,0 +1,10 @@
+# Adapter Toolkit v2 — Llama family example (simple level).
+#
+# The minimal valid spec: a family is the only required field.
+# Architecture, attention shape, RoPE and EOS are all read from the
+# model's own config.json at load time. Resolves to the v1 `llama`
+# adapter (architecture LlamaForCausalLM).
+#
+#   atenia load config/adapters/llama.yaml
+family: llama
+format: safetensors

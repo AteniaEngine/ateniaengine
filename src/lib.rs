@@ -82,6 +82,7 @@ pub mod kernels;
 pub mod matmul;
 pub mod matmul_dispatcher;
 pub mod model_adapters;
+pub mod adapter_toolkit;
 pub mod nn;
 pub mod ops;
 pub mod optim;

@@ -121,7 +121,7 @@ fn store_from_graph(g: &Graph, ids: &[usize], names: &[String]) -> WeightStore {
 fn run_greedy(store: &WeightStore, cfg: &LlamaConfig, prompt: &[u32], n_new: usize) -> Vec<u32> {
     let gen_cfg = GenerationConfig {
         max_new_tokens: n_new,
-        eos_token_id: 9999, // outside vocab → never fires
+        eos_token_ids: vec![9999], // outside vocab → never fires
     };
     let mut sink = CollectingTokenSink::default();
     let decode = |id: u32| format!("[{id}]");

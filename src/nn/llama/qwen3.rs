@@ -16,14 +16,14 @@
 //!    scale).
 //! 2. **No QKV biases** (`attention_bias=false`).
 //!
-//! Plus a checkpoint-layout quirk: Qwen3 safetensors physically
-//! stores `lm_head.weight` even when `tie_word_embeddings=true`.
-//! `build_qwen3` therefore always registers a separate `lm_head`
-//! parameter (independent of the config tie flag), which loads
-//! straight from the checkpoint without needing a completeness-
-//! gate change. The math is unaffected — when the checkpoint's
-//! `lm_head.weight` equals `embed_tokens.weight` (the standard
-//! tied case) the result is identical to the tied path.
+//! LM head: `build_qwen3` honours `config.tie_word_embeddings`
+//! exactly like `build_llama`. The small variants (0.6B / 1.7B)
+//! ship a physical (redundant) `lm_head.weight` *and* set
+//! `tie_word_embeddings=true`; the larger variants (4B / 8B /
+//! 14B / 32B) are genuinely tied and ship no `lm_head.weight`.
+//! The tied branch reuses `embed_tokens` transposed and is
+//! correct for every variant — any redundant `lm_head.weight`
+//! in a checkpoint is simply left unconsumed.
 //!
 //! No new AMG ops are introduced. The graph uses the existing
 //! `RmsNorm`, `BroadcastMul`, `RoPE`, `MatMul`, `Softmax`,
@@ -357,23 +357,35 @@ pub fn build_qwen3(
     let x_normed = gb.rms_norm(x, config.rms_norm_eps);
     let x_final = gb.broadcast_mul(x_normed, final_ln_gamma);
 
-    // **Qwen3 LM head:** always registered as a separate parameter,
-    // even when `tie_word_embeddings=true`, because Qwen3
-    // safetensors physically ship `lm_head.weight`. Tying the
-    // graph would mark the checkpoint's `lm_head.weight` as
-    // unexpected at the completeness gate. The math is unaffected
-    // when the checkpoint stores tied weights (lm_head ==
-    // embed_tokens).
+    // **Qwen3 LM head:** honour `config.tie_word_embeddings`,
+    // identical to `build_llama`. The small Qwen3 variants
+    // (0.6B / 1.7B) ship a physical `lm_head.weight` in the
+    // safetensors *and* set `tie_word_embeddings=true`; the
+    // larger variants (4B / 8B / 14B / 32B) are genuinely tied
+    // and ship **no** `lm_head.weight` at all. Always registering
+    // a separate `lm_head.weight` parameter therefore leaves it
+    // zero-initialised for the larger variants (the loader does
+    // not error on a graph param absent from the checkpoint),
+    // producing uniform logits. The tied branch reuses
+    // `embed_tokens` transposed and is correct for every variant:
+    // when the checkpoint also ships a redundant `lm_head.weight`
+    // it is simply left unconsumed (the loader maps graph params
+    // to checkpoint tensors, not the reverse, so an extra
+    // checkpoint tensor is not an error).
     let bs = (runtime.batch * runtime.seq) as isize;
     let x_flat = gb.reshape(x_final, vec![bs, config.hidden_size as isize]);
-    let lm_head_w = register_param(
-        gb,
-        "lm_head.weight",
-        vec![config.hidden_size, config.vocab_size],
-        &mut param_ids,
-        &mut param_names,
-    );
-    let logits_flat = gb.matmul(x_flat, lm_head_w);
+    let logits_flat = if config.tie_word_embeddings {
+        gb.matmul_rhs_transposed(x_flat, embed_w)
+    } else {
+        let lm_head_w = register_param(
+            gb,
+            "lm_head.weight",
+            vec![config.hidden_size, config.vocab_size],
+            &mut param_ids,
+            &mut param_names,
+        );
+        gb.matmul(x_flat, lm_head_w)
+    };
     let logits = gb.reshape(
         logits_flat,
         vec![runtime.batch as isize, seq as isize, config.vocab_size as isize],
@@ -670,17 +682,25 @@ pub fn build_qwen3_with_store(
     let x_normed = gb.rms_norm(x, config.rms_norm_eps);
     let x_final = gb.broadcast_mul(x_normed, final_ln_gamma);
 
+    // **Qwen3 LM head:** honour `config.tie_word_embeddings`
+    // (see the `build_qwen3` scratch-path comment for why the
+    // always-separate-`lm_head` design fails on the genuinely
+    // tied 4B / 8B / 14B / 32B variants).
     let bs = (runtime.batch * runtime.seq) as isize;
     let x_flat = gb.reshape(x_final, vec![bs, config.hidden_size as isize]);
-    let lm_head_w = register_param_from_store(
-        gb,
-        store,
-        "lm_head.weight",
-        vec![config.hidden_size, config.vocab_size],
-        &mut param_ids,
-        &mut param_names,
-    )?;
-    let logits_flat = gb.matmul(x_flat, lm_head_w);
+    let logits_flat = if config.tie_word_embeddings {
+        gb.matmul_rhs_transposed(x_flat, embed_w)
+    } else {
+        let lm_head_w = register_param_from_store(
+            gb,
+            store,
+            "lm_head.weight",
+            vec![config.hidden_size, config.vocab_size],
+            &mut param_ids,
+            &mut param_names,
+        )?;
+        gb.matmul(x_flat, lm_head_w)
+    };
     let logits = gb.reshape(
         logits_flat,
         vec![runtime.batch as isize, seq as isize, config.vocab_size as isize],

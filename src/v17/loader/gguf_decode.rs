@@ -64,6 +64,13 @@ pub const Q8_0_BLOCK_ELEMS: usize = 32;
 /// Q8_0 block size in bytes: 2-byte f16 scale + 32 × i8.
 pub const Q8_0_BLOCK_BYTES: usize = 2 + Q8_0_BLOCK_ELEMS;
 
+/// Q5_0 (`block_q5_0`, QK5_0 = 32): legacy llama.cpp 5-bit quant.
+/// Layout: f16 `d` (scale) + `uint8 qh[4]` (one 5th bit per
+/// element, 32 bits LE) + `uint8 qs[16]` (the low 4 bits, two
+/// nibbles per byte). 2 + 4 + 16 = 22 bytes/block.
+pub const Q5_0_BLOCK_ELEMS: usize = 32;
+pub const Q5_0_BLOCK_BYTES: usize = 2 + 4 + Q5_0_BLOCK_ELEMS / 2;
+
 pub const Q4_K_BLOCK_ELEMS: usize = 256;
 pub const Q4_K_SCALE_BYTES: usize = 12;
 pub const Q4_K_QUANT_BYTES: usize = Q4_K_BLOCK_ELEMS / 2;
@@ -135,6 +142,7 @@ pub fn decode_tensor(
         GgufTensorType::F32 => decode_f32(&mut buf, numel, &descriptor.name),
         GgufTensorType::F16 => decode_f16(&mut buf, numel, &descriptor.name),
         GgufTensorType::Q8_0 => decode_q8_0(&mut buf, numel, &descriptor.name),
+        GgufTensorType::Q5_0 => decode_q5_0(&mut buf, numel, &descriptor.name),
         GgufTensorType::Q4_K => decode_q4_k(&mut buf, numel, &descriptor.name),
         GgufTensorType::Q5_K => decode_q5_k(&mut buf, numel, &descriptor.name),
         GgufTensorType::Q6_K => decode_q6_k(&mut buf, numel, &descriptor.name),
@@ -250,6 +258,56 @@ fn decode_q8_0(buf: &mut BufReader<File>, numel: usize, name: &str) -> Result<Ve
         for k in 0..Q8_0_BLOCK_ELEMS {
             let q = bytes[qs_off + k] as i8;
             out.push(scale * (q as f32));
+        }
+    }
+    Ok(out)
+}
+
+/// Q5_0 decoder: 32-element blocks of `block_q5_0` (f16 `d`,
+/// 4-byte `qh`, 16-byte `qs`). Mirrors ggml's
+/// `dequantize_row_q5_0`: for `j` in `0..16` the low nibble of
+/// `qs[j]` plus the `j`-th bit of `qh` give element `j`; the high
+/// nibble plus the `(j+16)`-th bit of `qh` give element `j+16`.
+/// The 5-bit value is centred at 16: `y = (q5 - 16) * d`.
+fn decode_q5_0(buf: &mut BufReader<File>, numel: usize, name: &str) -> Result<Vec<f32>, GgufError> {
+    if numel % Q5_0_BLOCK_ELEMS != 0 {
+        return Err(GgufError::InvalidFormat(format!(
+            "GGUF decode '{name}': Q5_0 numel {numel} is not a multiple of \
+             block size {Q5_0_BLOCK_ELEMS}; partial blocks are not defined \
+             under the GGUF spec"
+        )));
+    }
+    let n_blocks = numel / Q5_0_BLOCK_ELEMS;
+    let total_bytes = n_blocks * Q5_0_BLOCK_BYTES;
+    let mut bytes = vec![0u8; total_bytes];
+    buf.read_exact(&mut bytes).map_err(|e| {
+        GgufError::IoError(format!(
+            "GGUF decode '{name}': Q5_0 read of {total_bytes} bytes \
+             ({n_blocks} blocks × {Q5_0_BLOCK_BYTES} B) failed: {e}"
+        ))
+    })?;
+
+    let mut out: Vec<f32> = vec![0.0_f32; numel];
+    for b in 0..n_blocks {
+        let block_off = b * Q5_0_BLOCK_BYTES;
+        let scale_bits = u16::from_le_bytes([bytes[block_off], bytes[block_off + 1]]);
+        let d = half::f16::from_bits(scale_bits).to_f32();
+        let qh = u32::from_le_bytes([
+            bytes[block_off + 2],
+            bytes[block_off + 3],
+            bytes[block_off + 4],
+            bytes[block_off + 5],
+        ]);
+        let qs_off = block_off + 6;
+        let out_off = b * Q5_0_BLOCK_ELEMS;
+        for j in 0..16 {
+            let byte = bytes[qs_off + j];
+            let xh_0 = ((qh >> j) & 1) << 4;
+            let xh_1 = ((qh >> (j + 16)) & 1) << 4;
+            let x0 = ((byte & 0x0F) as u32) | xh_0;
+            let x1 = ((byte >> 4) as u32) | xh_1;
+            out[out_off + j] = (x0 as i32 - 16) as f32 * d;
+            out[out_off + j + 16] = (x1 as i32 - 16) as f32 * d;
         }
     }
     Ok(out)

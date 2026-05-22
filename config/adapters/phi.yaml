@@ -1,0 +1,28 @@
+# Adapter Toolkit v2 — Phi family example (advanced level).
+#
+# Phi-3: declares LongRope, the fused QKV / gate-up weight layout
+# with its split strategy, GQA attention, and the Phi turn
+# terminator. These declarations describe what the v1 `phi3`
+# adapter already implements — the DSL does not change the builder,
+# it documents and validates the model's shape.
+#
+#   atenia load config/adapters/phi.yaml
+family: phi
+architecture: Phi3ForCausalLM
+format: safetensors
+
+config:
+  rope: longrope
+
+weights:
+  fused_qkv: true
+  fused_mlp: true
+  split_strategy: phi_qkv
+
+attention:
+  type: gqa
+  kv_heads: auto
+
+tokenizer:
+  turn_terminators:
+    - "<|end|>"

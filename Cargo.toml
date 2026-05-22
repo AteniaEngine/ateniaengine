@@ -91,6 +91,26 @@ clap = { version = "4", features = ["derive", "env"] }
 # rather than being feature-gated.
 serde_json = "1"
 
+# Adapter Toolkit v2 — declarative adapter DSL. The toolkit accepts
+# both `.yaml` and `.json` adapter specs; `serde_yaml` parses the
+# YAML form into the same serde schema serde_json already handles.
+# Pure-Rust, no C toolchain — preserves the vendor-agnostic posture.
+#
+# TECHNICAL DEBT — serde_yaml 0.9 is deprecated upstream (the crate
+# is unmaintained; the published version is literally tagged
+# `0.9.34+deprecated`). It still builds, parses correctly, and has
+# no known security advisory, so it is ACCEPTED debt for now rather
+# than a blocker. The exposure is contained: YAML parsing is used
+# only by the Adapter Toolkit v2 DSL front-end (`adapter_toolkit`),
+# never on the inference hot path, and the schema is a fixed, small
+# set of structs. The JSON path (serde_json) is fully maintained
+# and is a complete substitute — `AdapterDsl::from_str(.., false)`.
+# TODO(adapter-toolkit): migrate to a maintained YAML crate (e.g.
+# `serde_yml`, the maintained fork, or `serde_yaml_ng`) when one
+# stabilises; the swap is isolated to the two `serde_yaml::` calls
+# in `src/adapter_toolkit/dsl.rs`.
+serde_yaml = "0.9"
+
 # M4.9.c: serde is now mandatory rather than optional. The
 # `atenia run --output json` path needs `#[derive(Serialize)]`
 # on its report structs, and Mode A / B / C all share that

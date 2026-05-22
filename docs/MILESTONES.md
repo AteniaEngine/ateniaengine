@@ -615,6 +615,767 @@ subject to hardware fit; none validated end-to-end yet.
 
 ---
 
+## Model family validation
+
+The per-family mastery validation sections that follow are
+consolidated — per-checkpoint tables, formats, quants, real fixes,
+out-of-scope notes — in `docs/MODEL_FAMILY_VALIDATION.md`. That
+document is the single-page reference; the sections below keep the
+full per-phase narrative. Both describe *functional / family
+validation*, which is distinct from ADR-004 numeric certification.
+
+## Llama-family mastery validation
+
+Pre-Adapter-Toolkit-v2 audit of the Llama family: confirm the
+existing `LlamaFamilyAdapter` (closed at Phase 16) handles every
+checkpoint in the target Llama scope without regressions and
+without family-specific code.
+
+**Phase 2 (read-only audit) findings.** Config parsing
+(`rope_theta` legacy default 10000 for Llama 1/2; `eos_token_id`
+array → first element for Llama 3.x; `rope_scaling.llama3`
+adapter-owned in `common::parse_llama3_rope_scaling`); adapter
+resolution (`LlamaForCausalLM` + `model_type=llama` → both
+DeepSeek-R1-Distill-Llama and plain Llama route here); tokenizer
+(`tokenizer_config.json::eos_token` resolves `<|eot_id|>` → 128009
+for Llama 3.x instruct, so the single-EOS `GenerationConfig`
+contract holds correctly without multi-EOS support); safetensors
++ GGUF weight mappers (`llama_weight_mapper` /
+`llama_gguf_weight_mapper` with `LlamaRopeUnpermuteRows` for q/k);
+GGUF quant decoders (F16, Q8_0, Q4_K, Q5_K, Q6_K all decoded).
+**No gap surfaced.**
+
+**Phase 5 smokes (`target/validation/llama_mastery/`).** Greedy,
+certified mode, prompt `"What is the capital of France?"`
+(`"What is recursion in programming?"` for the DeepSeek distill so
+its chain-of-thought is exercised), max-tokens 80 (120 for
+DeepSeek). **9 / 9 PASS:**
+
+| # | Checkpoint                              | Format       | Output                                | Load   | tok/s  |
+|---|-----------------------------------------|--------------|---------------------------------------|--------|--------|
+| A | TinyLlama 1.1B                          | safetensors  | "The capital of France is Paris."     |  70.9s | 2.33   |
+| B | Llama 3.2 1B Instruct                   | safetensors  | "The capital of France is Paris."     |  62.4s | 2.19   |
+| C | Llama 3.2 1B Instruct                   | Q4_K_M GGUF  | "The capital of France is Paris."     |  25.4s | 2.52   |
+| D | Llama 3.2 3B Instruct                   | safetensors  | "The capital of France is Paris."     | 119.3s | 0.28   |
+| E | Llama 3.1 8B Instruct                   | safetensors  | "The capital of France is Paris."     | 507.9s | 0.07   |
+| F | Llama 3.1 8B Instruct                   | Q4_K_M GGUF  | "The capital of France is Paris."     | 186.5s | 0.07   |
+| H | Llama 3.1 8B Instruct                   | Q5_K_M GGUF  | "The capital of France is Paris."     | 215.7s | 0.07   |
+| I | Llama 3.1 8B Instruct                   | Q6_K GGUF    | "The capital of France is Paris."     |  83.5s | 0.10   |
+| J | DeepSeek-R1-Distill-Llama-8B            | Q4_K_M GGUF  | coherent CoT reasoning (120 tok)      | 158.7s | 0.10   |
+
+A–C halt on EOS; D–I halt on EOS (Llama 3.x `<|eot_id|>` = 128009);
+J halts on max-tokens (CoT model deliberately keeps reasoning).
+The 8B-class throughput (0.07–0.10 tok/s) is dominated by
+tier-aware spill on an 8 GB VRAM + 32 GB RAM box, not a kernel
+or adapter regression. `cargo build --lib` clean;
+`cargo test --lib -- --test-threads=1` → **409 / 409 PASS**;
+`cargo test --test tinyllama_config_test` → **15 PASS / 3 ignored**.
+
+**Non-claims.** Llama 2 7B Chat was **not** validated end-to-end
+in this battery: gated on HuggingFace, no token available, not
+downloaded. Llama 2 13B Chat coverage stays via
+`m5_dc_llama2_13b_coherence_test` (locked integration test,
+ship since M5.d.c). DeepSeek-R1 distill is validated as a
+Llama-family derivative; the `<think>...</think>` special-token
+behaviour was not exhaustively checked beyond a single coherent
+120-token sample. No numcert manifest was added for any of the
+new 8B GGUF checkpoints — the smoke is functional, not the
+ADR-004 strict gate.
+
+**Conclusion.** The Llama family is dominated in the M11–16
+sense for the validated scope. No production code touched in
+this phase; the Adapter Toolkit v1 (`LlamaFamilyAdapter` +
+`llama_weight_mapper` + `llama_gguf_weight_mapper` +
+`common::parse_llama3_rope_scaling`) already covered every
+checkpoint, including the DeepSeek-R1 distill derivative,
+without family-specific branches.
+
+---
+
+## Qwen-family mastery validation
+
+Pre-Adapter-Toolkit-v2 audit of the Qwen family (Qwen2 + Qwen3):
+confirm the adapters handle every checkpoint in the target Qwen
+scope. Unlike the Llama battery, this one surfaced **real gaps**
+and required adapter/config fixes — all generalizable, none
+touching the execution core.
+
+**Phase 2 audit + Phase 6 smokes** ran together: the safetensors
+smokes passed unchanged, the GGUF smokes failed and drove the
+fixes. Final result, prompt `"What is the capital of France?"`
+(reasoning prompt for the distill), greedy, certified mode —
+**11 / 11 PASS**:
+
+| Checkpoint                          | Format        | Output                            |
+|-------------------------------------|---------------|-----------------------------------|
+| Qwen2.5 1.5B Instruct               | safetensors   | "...is Paris." (EOS)              |
+| Qwen2.5 3B Instruct                 | safetensors   | "...is Paris." (EOS)              |
+| Qwen2.5 7B Instruct                 | safetensors   | "...is Paris." (EOS)              |
+| Qwen2.5 7B Instruct                 | Q4_K_M GGUF   | "...is Paris." (EOS)              |
+| Qwen2.5 7B Instruct                 | Q5_K_M GGUF   | "...is Paris." (EOS)              |
+| Qwen2.5 7B Instruct                 | Q6_K GGUF     | "...is Paris." (EOS)              |
+| Qwen2.5-Coder 1.5B Instruct         | safetensors   | "...is Paris." (EOS)              |
+| Qwen3 0.6B                          | safetensors   | coherent `<think>` CoT            |
+| Qwen3 4B                            | safetensors   | coherent `<think>` CoT            |
+| Qwen3 8B                            | Q4_K_M GGUF   | coherent `<think>` CoT            |
+| DeepSeek-R1-Distill-Qwen-7B         | Q4_K_M GGUF   | coherent CoT reasoning            |
+
+**Gaps found and fixed (adapter / config / transform — no core):**
+
+1. **Qwen3 LM-head tie (adapter).** `build_qwen3` /
+   `build_qwen3_with_store` always registered a separate
+   `lm_head.weight`. The small variants (0.6B / 1.7B) ship a
+   physical (redundant) `lm_head.weight` so this happened to
+   work; the larger variants (4B / 8B / 14B / 32B) are genuinely
+   tied and ship none, so the loader left the graph parameter
+   zero-initialised → uniform logits → the model emitted a
+   constant degenerate token (vocab_size−1) every step. Root
+   cause confirmed by inspecting the safetensors headers
+   (Qwen3-4B has no `lm_head.weight`). Fixed to honour
+   `config.tie_word_embeddings` exactly like `build_llama`
+   (tied → reuse `embed_tokens` transposed). Re-validated:
+   Qwen3-4B coherent, Qwen3-0.6B still coherent (310 params,
+   was 311).
+
+2. **Qwen2 / Qwen3 GGUF architecture (config).**
+   `gguf_config.rs` rejected `general.architecture = "qwen2"` /
+   `"qwen3"`. Added both to `architecture_from_gguf`,
+   `arch_prefix` (metadata-key prefix), and `model_type_for_arch`.
+
+3. **Qwen2 GGUF QKV biases (config + name mapping).** Qwen2
+   carries q/k/v biases. `COMMON_NAME_TABLE` gained the
+   `attn_{q,k,v}.bias` → `self_attn.{q,k,v}_proj.bias` suffixes
+   (additive — no other family's GGUF has them). The hard-coded
+   `attention_bias = Some(false)` in `llama_config_from_gguf`
+   became `None`, so `effective_attention_bias()` resolves the
+   family default (Qwen2 → `true`); byte-identical for every
+   previously-supported GGUF family.
+
+4. **Qwen3 GGUF QK-Norm + weight mapper (adapter).**
+   `QWEN3_SPEC.name_extra` maps `blk.N.attn_{q,k}_norm.weight`;
+   the Qwen3 adapter's `GgufNameMapper` composes it with the
+   common table, and `map_gguf_weights` now uses the
+   QK-Norm-aware HF transform table (`qwen3_weight_mapper`)
+   instead of the Llama GGUF mapper. llama.cpp does **not**
+   row-permute Qwen2/Qwen3 q/k (the permute is Llama-arch
+   specific), and the residency loader's `.rev()` leaves tensors
+   in HF orientation, so both Qwen GGUF paths reuse their HF
+   transform table with **no** `LlamaRopeUnpermuteRows` — the
+   same relationship Phi-3 / Gemma 2 GGUF already have. The
+   coherent GGUF smoke output is the empirical confirmation that
+   the no-permute decision is correct (a permute error scrambles
+   attention into incoherent output).
+
+**Files changed.** `src/nn/llama/qwen3.rs` (lm_head tie),
+`src/v17/loader/gguf_config.rs` (arch whitelist + attention_bias),
+`src/model_adapters/tensor_spec.rs` (COMMON QKV bias suffixes +
+QWEN3_SPEC QK-Norm extras + required_gguf_dtypes),
+`src/v17/loader/gguf_to_hf_naming.rs` (`qwen3_gguf_extra`),
+`src/model_adapters/llama_family.rs` (Qwen2 GGUF mapper),
+`src/model_adapters/qwen3.rs` (Qwen3 GGUF mapper + name mapper).
+
+**Tests.** `cargo build --lib` clean;
+`cargo test --lib -- --test-threads=1` → **409 / 409 PASS** (run
+both after the lm_head fix and after the GGUF fixes);
+`cargo test --test tinyllama_config_test` → 15 PASS / 3 ignored.
+
+**Non-claims.** The 7–8B GGUF checkpoints have no numcert
+manifest — the smoke is functional, not the ADR-004 strict gate.
+Qwen3 variants 14B / 32B were not downloaded (hardware fit);
+they share the topology and should resolve through the same
+adapter. Throughput on the 7–8B class (0.07–0.12 tok/s) is
+bounded by tier-aware spill on the 8 GB-VRAM dev box.
+
+**Conclusion.** Qwen is dominated for the validated scope:
+Qwen2 safetensors + GGUF (Q4_K_M / Q5_K_M / Q6_K), Qwen3
+safetensors + GGUF, and the DeepSeek-R1 distill-Qwen derivative
+all load and generate coherently, with no per-model hacks and
+no core changes.
+
+---
+
+## Gemma-family mastery validation
+
+Pre-Adapter-Toolkit-v2 audit of the Gemma family (Gemma 2 +
+Gemma 3 text). Gemma 2 was already supported; **Gemma 3 (text)
+is a new family added in this phase**. Text-only focus —
+multimodal Gemma 3 is explicitly out of scope.
+
+**Phase 6 smokes** — prompt `"What is the capital of France?"`,
+greedy, certified mode — **8 / 8 in-scope PASS**:
+
+| Checkpoint                  | Format       | Output                         |
+|-----------------------------|--------------|--------------------------------|
+| Gemma 2 2B Instruct         | safetensors  | "...is **Paris**. 🇫🇷" (EOS)    |
+| Gemma 2 9B Instruct         | safetensors  | "...is **Paris**. 🇫🇷" (EOS)    |
+| Gemma 2 9B Instruct         | Q4_K_M GGUF  | "...is **Paris**." (EOS)       |
+| Gemma 2 9B Instruct         | Q5_K_M GGUF  | "...is **Paris**. 🇫🇷" (EOS)    |
+| Gemma 2 9B Instruct         | Q6_K GGUF    | "...is **Paris**." (EOS)       |
+| Gemma 3 1B Instruct         | safetensors  | "...is **Paris**." + note (EOS)|
+| Gemma 3 1B Instruct         | Q4_K_M GGUF  | "...is **Paris**." (EOS)       |
+| Gemma 3 4B Instruct         | Q4_K_M GGUF  | coherent (text path)           |
+
+**Gemma 3 (text) — new family.** `Gemma3ForCausalLM` /
+`model_type = gemma3_text`. It is Gemma 2's topology — dual-norm
+per block, `(1+γ)` RMSNorm, GeGLU FFN, `× sqrt(hidden)` embedding
+scale, tied LM head — with three deltas:
+
+1. **Per-head QK-Norm** — RMSNorm γ `[head_dim]` on q and k after
+   reshape-to-heads, before RoPE (as Qwen3). The
+   `1/√query_pre_attn_scalar` attention scale is folded into the
+   k_norm γ (post-`+1`).
+2. **No soft-cap** — Gemma 3 dropped Gemma 2's attention/final
+   logit soft-caps; the builder's conditional `Some/None` already
+   skips the `SoftCap` node.
+3. **Dual RoPE base frequency** — local (sliding-window) layers
+   use `rope_local_base_freq` (10 000), global layers use
+   `rope_theta` (1 000 000), selected per layer by
+   `sliding_window_pattern` (every `pattern`-th layer is global).
+
+Implemented as a new `Gemma3Adapter` + `build_gemma3` /
+`build_gemma3_with_store` builder + `GEMMA3_SPEC` (HF and GGUF
+transform tables) + the GGUF `gemma3` architecture route. No new
+AMG ops — the dual RoPE is just a per-layer `theta` argument to
+the existing `RoPE` node. Sliding-window attention is deferred
+(full causal — equivalent below the window, as for Gemma 2); the
+dual RoPE base **is** applied per layer.
+
+**Gaps found and fixed (adapter / config / tokenizer / decoder —
+no core change):**
+
+1. **Gemma 3 unsupported (adapter + config + graph).** Added the
+   two config fields, the adapter, the builder, the spec, and the
+   GGUF architecture.
+
+2. **Multi-EOS (config + tokenizer).** Generation collapsed a
+   model's `eos_token_id` to the first array element. A Gemma
+   instruct turn ends with `<end_of_turn>` (id 106 in Gemma 3's
+   262 k vocab, a *different* id in Gemma 2's 256 k vocab), not
+   `<eos>`. Collapsing to the first element left Gemma 3 running
+   past its natural stop into off-distribution garbage —
+   confirmed by a token-id diagnostic (the model correctly
+   emitted `<end_of_turn>` right after the answer; the generator
+   did not halt). Fix: `LlamaConfig` keeps the full
+   `eos_token_ids` set, `GenerationConfig.eos_token_ids` is a
+   `Vec`, the generator halts on any member, and the pipeline
+   additionally resolves the standard chat turn-terminators
+   (`<end_of_turn>` / `<|eot_id|>` / `<|im_end|>`) by **name**
+   from the vocabulary — the GGUF metadata carries only a scalar
+   `eos_token_id`, so the array is unavailable there. Generalises
+   to every chat family; Llama 3.x and Qwen were already correct
+   (their `eos_token` *is* the turn-terminator) and the name
+   lookup is a dedup no-op for them.
+
+3. **Q5_0 decoder (loader).** The Gemma 3 1B Q4_K_M GGUF mixes
+   `Q5_0` into its attention tensors — the standard llama.cpp
+   quant recipe for small models (verified identical across the
+   ggml-org and bartowski conversions). Added `decode_q5_0` for
+   the legacy ggml `block_q5_0` format (32-element, 22-byte
+   blocks: f16 scale + 4-byte high-bit field + 16-byte nibbles)
+   and threaded `Q5_0` through the loader's dtype gate.
+
+**Out of scope.** Gemma 3 4B *safetensors* is the multimodal
+`Gemma3ForConditionalGeneration` wrapper — it has a `vision_config`
+and nests the text config under `text_config`, so the config
+parser hard-errors on the absent top-level `vocab_size`.
+Classified out of scope per the text-only focus (no vision /
+encoder work). The text-only path is covered by the Gemma 3 4B
+Q4_K_M GGUF (llama.cpp's GGUF conversion extracts the text model),
+which loads and generates coherently.
+
+**Files changed.** `src/nn/llama/config.rs` (eos_token_ids +
+rope_local_base_freq + sliding_window_pattern + parser helper),
+`src/nn/llama/gemma3.rs` (new — builder + weight mappers),
+`src/model_adapters/gemma3.rs` (new — `Gemma3Adapter`),
+`src/model_adapters/tensor_spec.rs` (`GEMMA3_SPEC` + transform
+tables), `src/model_adapters/mod.rs` (`ModelFamily::Gemma3` +
+registry), `src/model_adapters/conformance.rs` (Gemma 3 +
+Q5_0 entries), `src/v17/loader/gguf_config.rs` (gemma3 arch +
+eos_token_ids + dual-RoPE metadata), `src/v17/loader/gguf_to_hf_naming.rs`
+(`gemma3_gguf_extra`), `src/v17/loader/gguf_decode.rs`
+(`decode_q5_0`), `src/nn/llama/generator.rs` +
+`src/nn/llama/pipeline.rs` (multi-EOS), `src/tokenizer/mod.rs`
+(`token_to_id`), `src/nn/llama/mod.rs` (`pub mod gemma3`).
+
+**Tests.** `cargo build --lib` clean;
+`cargo test --lib -- --test-threads=1` → **409 / 409 PASS**;
+`cargo test --test tinyllama_config_test` → 15 PASS / 3 ignored;
+TinyLlama Q4_K_M GGUF regression smoke coherent ("...is Paris.").
+
+**Non-claims.** The 9B / 4B GGUF checkpoints have no numcert
+manifest — the smoke is functional, not the ADR-004 strict gate.
+Gemma 3 sliding-window attention is deferred (full causal below
+the window). Gemma 3 12B / 27B were not downloaded; the 12B/27B
+are multimodal-wrapped like the 4B. CodeGemma and Gemma 2 27B
+(optional targets) were not exercised.
+
+**Conclusion.** Gemma is dominated for the validated text scope:
+Gemma 2 safetensors + GGUF (Q4_K_M / Q5_K_M / Q6_K), Gemma 3
+(text) 1B safetensors + GGUF and 4B GGUF all load and generate
+coherently, with SoftCap / GeGLU / dual-norm / QK-Norm / dual-RoPE
+correct, no per-model hacks, and no core changes. Multimodal
+Gemma 3 remains explicitly out of scope.
+
+---
+
+## Phi-family mastery validation
+
+Pre-Adapter-Toolkit-v2 audit of the Phi family (Phi-3 / Phi-3.5 /
+Phi-4). Phi-3 / Phi-3.5 were already supported — fused QKV, fused
+`gate_up`, LongRope — via `Phi3Adapter` / `build_phi3`. This phase
+extended the adapter to the rest of the family and exercised the
+GGUF quant paths.
+
+**Phase 6 smokes** — prompt `"What is the capital of France?"`,
+greedy, certified mode — **8 / 8 PASS**:
+
+| Checkpoint                | Format       | Output                          |
+|---------------------------|--------------|---------------------------------|
+| Phi-3.5-mini-instruct     | safetensors  | coherent (max-tokens)           |
+| Phi-3.5-mini-instruct     | Q4_K_M GGUF  | coherent (max-tokens)           |
+| Phi-3.5-mini-instruct     | Q5_K_M GGUF  | coherent (max-tokens)           |
+| Phi-3.5-mini-instruct     | Q6_K GGUF    | "…Notre-Dame Cathedral." (EOS)  |
+| Phi-3-mini-4k-instruct    | safetensors  | coherent (max-tokens)           |
+| Phi-3-mini-128k-instruct  | safetensors  | "…Notre-Dame Cathedral." (EOS)  |
+| Phi-4-mini-instruct       | safetensors  | coherent (max-tokens)           |
+| Phi-4-mini-instruct       | Q4_K_M GGUF  | coherent (max-tokens)           |
+
+All four Phi checkpoints carry HF architecture `Phi3ForCausalLM` /
+`model_type = phi3`, so they route to the existing `Phi3Adapter`
+unchanged. Phi-4-mini is the same architecture class with three
+config-driven differences (GQA, partial rotary, a 200 k vocab).
+
+**Gaps found and fixed (builder / config — no core change, no
+new AMG ops):**
+
+1. **Plain-RoPE Phi-3 (graph/builder).** `build_phi3` /
+   `build_phi3_with_store` `panic!`'d unless the config declared a
+   `rope_scaling.type = "longrope"` block. Phi-3-mini-4k is the
+   4k-context model — it ships **no** `rope_scaling` (plain RoPE)
+   — so it crashed on load. Fix: `resolve_phi3_longrope` maps an
+   absent `rope_scaling` to a unit-factor `RopeScalingLongRope`
+   (all-1.0 short/long factors, `original == max` position
+   embeddings), which degenerates exactly to standard RoPE — the
+   inverse frequencies are unscaled and `attention_factor` is 1.0.
+   One builder code path; the `panic!` survives only for a
+   genuinely wrong scaling type (`llama3` on a Phi checkpoint).
+
+2. **Phi-4 partial rotary (config + graph).** Phi-4-mini sets
+   `partial_rotary_factor = 0.75`: RoPE rotates only the first
+   `round(0.75 · head_dim) = 96` of the 128 head dimensions; the
+   remaining 32 pass through un-rotated (the layout HF
+   `Phi3Attention` uses when `partial_rotary_factor < 1`). Added
+   `LlamaConfig::partial_rotary_factor` + the `rotary_dim()`
+   helper; `apply_phi3_rope` / `apply_phi3_rope_with_offset` slice
+   q / k into a rotary head and a pass-through tail, RoPE the
+   rotary head, and `Concat` the two back — built from existing
+   `SliceLastDim` / `Concat` / `RoPE` nodes, full rotary
+   (`rotary_dim == head_dim`, Phi-3 / 3.5) takes the unchanged
+   single-`rope` path. A Phi-4 GGUF stores the rotated count as
+   `phi3.rope.dimension_count`; the GGUF config parser converts it
+   back to the HF-style fraction.
+
+3. **Phi-4 grouped-query attention (graph/builder).** Phi-4-mini
+   is GQA — 24 query heads, 8 KV heads — where Phi-3 / Phi-3.5 are
+   MHA (32 / 32). The Llama builder expands grouped-query K/V by
+   tiling the *standalone* `k_proj` / `v_proj` weight at load time
+   (`TileGroupedDim`). Phi-3 fuses Q/K/V into one `qkv_proj` and
+   slices the *activation*, so the builder produced 8-head K/V
+   against 24-head Q → `BatchMatMul4D dim 1 mismatch: 24 vs 8`.
+   Fix: `expand_kv_heads_flat` repeats each KV head `kv_groups`
+   times in the graph, in the interleaved order HF `repeat_kv`
+   produces (`[kv0×g, kv1×g, …]`), from `SliceLastDim` / `Concat`.
+   K/V then carry `n_heads_q` heads through reshape / scale / RoPE
+   / cache — identical to how the Llama path caches load-time
+   tiled K/V. No-op for the MHA variants (`kv_groups == 1`).
+
+Phi-4-mini's 200 k tiktoken-derived tokenizer, `tie_word_embeddings
+= true`, and fused QKV/gate_up were already handled by the
+existing adapter (`build_phi3` honours the tie; `split_fused_qkv`
+is GQA-aware). The chat turn-terminator `<|end|>` was added to the
+pipeline's stop-token resolution (Phi instruct ends a turn with
+`<|end|>`, not its `eos_token`) — the same multi-EOS mechanism the
+Gemma phase introduced.
+
+**Files changed.** `src/nn/llama/config.rs`
+(`partial_rotary_factor` field + parse + `rotary_dim()`),
+`src/nn/llama/phi3.rs` (`resolve_phi3_longrope`, `apply_phi3_rope`
+/ `apply_phi3_rope_with_offset`, `expand_kv_heads_flat`, both
+builders), `src/v17/loader/gguf_config.rs`
+(`rope.dimension_count` → `partial_rotary_factor`),
+`src/nn/llama/pipeline.rs` (`<|end|>` turn-terminator),
+`src/nn/llama/gemma2.rs` (struct-literal field).
+
+**Tests.** `cargo build --lib` clean;
+`cargo test --lib -- --test-threads=1` → **409 / 409 PASS**
+(one flaky failure on the first run — the GPU VRAM-probe test
+`legacy_probe_is_unwrap_or_zero_of_detailed`, contending with
+concurrent smokes; clean on a re-run with no GPU load);
+`cargo test --test tinyllama_config_test` → 15 PASS / 3 ignored.
+
+**Non-claims.** The Phi GGUF checkpoints have no numcert manifest
+— the smokes are functional, not the ADR-004 strict gate. Phi-4
+(14B) and Phi-3-medium (optional targets) were not downloaded.
+Phi-4-multimodal / Phi-vision are out of scope (multimodal) and
+were not touched.
+
+**Conclusion.** Phi is dominated for the validated text scope:
+Phi-3-mini-4k / Phi-3-mini-128k / Phi-3.5-mini safetensors,
+Phi-3.5-mini GGUF (Q4_K_M / Q5_K_M / Q6_K), and Phi-4-mini
+safetensors + GGUF all load and generate coherently, with
+LongRope, plain RoPE, partial rotary, fused QKV, fused gate_up,
+and grouped-query attention all correct — no per-model hacks and
+no core changes.
+
+---
+
+## Mistral-dense mastery validation
+
+Pre-Adapter-Toolkit-v2 audit of the Mistral dense family
+(7B v0.1 / v0.2 / v0.3). Mixtral / Mistral-MoE are explicitly out
+of scope — the focus is the dense causal text models.
+
+**Phase 2 audit — no gaps.** Mistral dense is pure Llama
+topology: GQA (32 query / 8 KV heads), SwiGLU MLP, RMSNorm,
+standard RoPE, no QKV bias, untied LM head. `MistralAdapter`
+(in `model_adapters/llama_family.rs`) already delegates the
+scratch graph, the store-backed graph, and both the HF and GGUF
+weight mappers to the Llama path; Mistral GGUF exports under
+`general.architecture = "llama"`, so a Mistral GGUF resolves to
+the Llama-family adapter directly. The config audit (`mistral-7b-v0.3`:
+`MistralForCausalLM` / `model_type = mistral`, GQA 32/8, head_dim
+derived 128, `rope_theta = 1e6`, `sliding_window = null`,
+`attention_bias` absent → `false`, `tie_word_embeddings = false`)
+surfaced nothing the existing path does not already handle. Like
+the Llama mastery phase, this was a **validation-only** phase —
+no source file was modified.
+
+**Phase 6 smokes** — prompt `"What is the capital of France?"`,
+greedy, certified mode — **7 / 7 PASS**:
+
+| Checkpoint                    | Format       | Output                       |
+|-------------------------------|--------------|------------------------------|
+| Mistral-7B-v0.3 (base)        | safetensors  | "Paris is the capital…"      |
+| Mistral-7B-Instruct-v0.3      | safetensors  | "…is Paris. …Eiffel Tower…"  |
+| Mistral-7B-Instruct-v0.3      | Q4_K_M GGUF  | "…is Paris. …Louvre…"        |
+| Mistral-7B-Instruct-v0.3      | Q5_K_M GGUF  | "…is Paris. …Eiffel Tower…"  |
+| Mistral-7B-Instruct-v0.3      | Q6_K GGUF    | "…is Paris. …Notre-Dame…"    |
+| Mistral-7B-Instruct-v0.2      | safetensors  | "…city of France is Paris…"  |
+| Mistral-7B-Instruct-v0.2      | Q4_K_M GGUF  | "…city of France is Paris…"  |
+
+The base model was smoked with `--no-chat-template` (raw
+completion); the instruct variants apply the `[INST] … [/INST]`
+template from `tokenizer_config.json`. All outputs were coherent
+— no loops, no degenerate tokens, no empty output. Each ran to
+the 60-token cap (Mistral instruct is verbose; the text is fully
+coherent throughout — not a stop defect). v0.2 carries
+`sliding_window = 4096` and v0.3 dropped it; both are below the
+smoke context length, where sliding-window attention is
+equivalent to full causal — no divergence observed (the
+sliding-window restriction itself remains deferred, as for
+Gemma 2 / 3).
+
+**Files changed.** None — `scripts/dl_mistral.py` was added to
+fetch the checkpoints, but no engine source was modified.
+
+**Tests.** `cargo build --lib` clean;
+`cargo test --lib -- --test-threads=1` → **409 / 409 PASS**;
+`cargo test --test tinyllama_config_test` → 15 PASS / 3 ignored
+(baseline re-run — confirms no regression in the other families).
+
+**Non-claims.** The Mistral GGUF checkpoints have no numcert
+manifest — the smokes are functional, not the ADR-004 strict
+gate. Mistral-7B-v0.1, Mistral-Nemo, and Ministral-8B (optional
+targets) were not downloaded; Nemo and Ministral are dense and
+would route through the same Llama path, but were not validated
+end-to-end. Mixtral / Mistral-MoE / Pixtral are out of scope and
+were not touched — no MoE code path exists or was added.
+
+**Conclusion.** Mistral dense is dominated for the validated
+scope: 7B v0.2 / v0.3 base + instruct safetensors and GGUF
+(Q4_K_M / Q5_K_M / Q6_K) all load and generate coherently through
+the existing Llama-family path, with no per-model hacks, no core
+changes, and no accidental MoE support.
+
+---
+
+## SmolLM-family mastery validation
+
+Pre-Adapter-Toolkit-v2 audit of the SmolLM / SmolLM2 family, plus
+a Falcon-3 regression. The focus is dense causal text models.
+
+**Phase 2 audit — no gaps.** SmolLM and SmolLM2 are built
+directly on the Llama architecture: every checkpoint declares
+`architectures = ["LlamaForCausalLM"]` and `model_type =
+"llama"`, so they resolve to `LlamaFamilyAdapter` with no
+SmolLM-specific code — there is no SmolLM adapter and none is
+needed. Config audit (`smollm2-1.7b-instruct`: MHA 32/32,
+`head_dim` derived 64, `rope_theta = 130000`,
+`rms_norm_eps = 1e-5`, `tie_word_embeddings = true`,
+`vocab_size = 49152`, no `rope_scaling`) is plain Llama topology
+with a tied LM head — already handled by `build_llama`'s
+`matmul_rhs_transposed` tied branch. Falcon-3 is also
+`LlamaForCausalLM` (GQA 12/4, explicit `head_dim = 256`) and
+rides the identical path. As with the Llama and Mistral mastery
+phases, this was a **validation-only** phase — no source file was
+modified.
+
+**Phase 6 smokes** — prompt `"What is the capital of France?"`,
+greedy, certified mode — **9 / 9 PASS** (+ 1 Falcon-3 regression):
+
+| Checkpoint                  | Format       | Output                       |
+|-----------------------------|--------------|------------------------------|
+| SmolLM2-135M-Instruct       | safetensors  | coherent (verbose, max-tok)  |
+| SmolLM2-360M-Instruct       | safetensors  | coherent refusal*            |
+| SmolLM2-1.7B-Instruct       | safetensors  | "…is Paris." (EOS)           |
+| SmolLM2-1.7B-Instruct       | Q4_K_M GGUF  | "…is Paris." (EOS)           |
+| SmolLM2-1.7B-Instruct       | Q5_K_M GGUF  | "…is Paris." (EOS)           |
+| SmolLM2-1.7B-Instruct       | Q6_K GGUF    | "…is Paris." (EOS)           |
+| SmolLM-135M-Instruct        | safetensors  | coherent (verbose, max-tok)  |
+| SmolLM-360M-Instruct        | safetensors  | "…city of Paris…" (EOS)      |
+| SmolLM-1.7B-Instruct        | safetensors  | "…is Paris…" (EOS)           |
+| Falcon-3-7B-Instruct        | safetensors  | "…is Paris." (EOS)           |
+
+\* SmolLM2-360M produced a well-formed "I can't provide
+geographical information" refusal — a genuine small-model
+behaviour (coherent English, no loop, no degenerate token), not
+an engine defect. The 135M models are verbose and mildly
+repetitive at the tail (greedy decoding on a 135M model), again a
+model-capacity artifact — the first sentence is correct and
+coherent in every case. The 1.7B variants halt cleanly on EOS.
+
+**Files changed.** None — `scripts/dl_smollm.py` was added to
+fetch the checkpoints; no engine source was modified.
+
+**Tests.** `cargo build --lib` clean;
+`cargo test --lib -- --test-threads=1` → **409 / 409 PASS**;
+`cargo test --test tinyllama_config_test` → 15 PASS / 3 ignored
+(baseline re-run — no regression in any other family).
+
+**Non-claims.** The SmolLM2 GGUF checkpoints have no numcert
+manifest beyond SmolLM2-1.7B's existing ADR-004 F64 fixture entry
+— the GGUF smokes are functional, not the strict gate. SmolLM
+base (non-instruct) models were not exercised. Falcon-3 was
+smoked as a single-checkpoint regression, not a full sweep of the
+Falcon-3 size range.
+
+**Conclusion.** SmolLM is dominated for the validated scope:
+SmolLM2 135M / 360M / 1.7B and SmolLM 135M / 360M / 1.7B instruct
+safetensors, plus SmolLM2-1.7B GGUF (Q4_K_M / Q5_K_M / Q6_K), all
+load and generate coherently through the existing Llama-family
+path — tied LM head correct, no empty output, no degenerate
+loops, no per-model hacks, no core changes. Falcon-3 confirmed as
+a clean Llama-path regression.
+
+---
+
+## Falcon-family mastery validation
+
+Pre-Adapter-Toolkit-v2 audit of the Falcon family, with an
+explicit classification of modern Falcon3 versus classic Falcon.
+Falcon multimodal / vision / MoE / encoder-decoder variants are
+out of scope — the focus is dense causal text models.
+
+**Phase 2 audit — Falcon3 is Llama, classic Falcon is not.**
+Falcon3 (1B / 3B / 7B-Instruct) declares
+`architectures = ["LlamaForCausalLM"]` and `model_type =
+"llama"`, so it resolves to `LlamaFamilyAdapter` with no
+Falcon-specific code — there is no Falcon adapter and Falcon3
+needs none. Config audit (`falcon3-7b-instruct`: GQA 12/4,
+explicit `head_dim = 256`, `rope_theta = 1000042`,
+`rms_norm_eps = 1e-6`, `tie_word_embeddings = false`,
+`vocab_size = 131072`, no `rope_scaling`) is plain Llama topology;
+Falcon3 GGUF exports under `general.architecture = "llama"`.
+Classic Falcon (`falcon-7b-instruct`: `FalconForCausalLM`,
+`model_type = "falcon"`, `multi_query = true`,
+`parallel_attn = true`, `new_decoder_architecture = false`,
+`alibi = false`, LayerNorm via `layer_norm_epsilon`) is a
+genuinely distinct architecture — LayerNorm instead of RMSNorm,
+a single shared norm feeding parallel attention + MLP, and a
+multi-query fused QKV layout. Supporting it would require a new
+graph builder and new AMG nodes, which trips the phase STOP
+rule, so classic Falcon is **classified out of scope** rather
+than forced onto the Llama path.
+
+**Phase 4 fix — one config-layer tolerance.** Falcon3-1B and
+Falcon3-3B-Instruct omit `bos_token_id` from `config.json` (it
+is kept only in `generation_config.json`). The config parser
+required the field and rejected the load. Fix: `get_bos_token_id`
+falls back to `eos_token_id` when `bos_token_id` is absent —
+generalizable, and behaviour-neutral because
+`LlamaConfig.bos_token_id` is not consumed by the generation
+path (the tokenizer owns BOS via its own `bos_token`). An
+explicit `bos_token_id` is still honoured verbatim. No core,
+adapter, or graph-builder change.
+
+**Phase 6 smokes** — prompt `"What is the capital of France?"`,
+greedy, certified mode — **6 / 6 PASS**:
+
+| Checkpoint               | Format       | Output               |
+|--------------------------|--------------|----------------------|
+| Falcon3-1B-Instruct      | safetensors  | "…is Paris." (EOS)   |
+| Falcon3-3B-Instruct      | safetensors  | "…is Paris." (EOS)   |
+| Falcon3-7B-Instruct      | safetensors  | "…is Paris." (EOS)   |
+| Falcon3-7B-Instruct      | Q4_K_M GGUF  | "…is Paris." (EOS)   |
+| Falcon3-7B-Instruct      | Q5_K_M GGUF  | "…is Paris." (EOS)   |
+| Falcon3-7B-Instruct      | Q6_K GGUF    | "…is Paris." (EOS)   |
+
+Every Falcon3 checkpoint emitted *"The capital of France is
+Paris."* and halted cleanly on EOS — no loops, no degenerate
+tokens, no empty output. Classic Falcon was load-tested for
+classification: `falcon-7b-instruct` safetensors fails loud with
+a typed config error (missing `num_key_value_heads`), and
+`falcon-7b-instruct` Q4_K_M GGUF fails loud with
+`unsupported general.architecture = "falcon"`. Both are clean
+fail-loud rejections, not crashes — the expected behaviour for an
+unsupported architecture.
+
+**Files changed.** `src/nn/llama/config.rs` — added
+`get_bos_token_id` (fallback to `eos_token_id`) plus two unit
+tests. `scripts/dl_falcon.py` added to fetch the checkpoints. No
+other engine source modified; the adapter registry, graph
+builders, and GGUF whitelist are untouched.
+
+**Tests.** `cargo build --lib` clean;
+`cargo test --lib -- --test-threads=1` → **411 / 411 PASS**
+(409 baseline + 2 new bos-fallback tests);
+`cargo test --test tinyllama_config_test` → 15 PASS / 3 ignored
+(no regression in any other family).
+
+**Non-claims.** The Falcon3 GGUF checkpoints have no numcert
+manifest — the GGUF smokes are functional, not the ADR-004
+strict gate. Falcon2-11B and Falcon3-10B (optional targets) were
+not downloaded or validated. Classic Falcon
+(`FalconForCausalLM` / `RWForCausalLM`) is **not supported** — no
+graph builder, AMG node, ALiBi path, parallel-attention path, or
+multi-query QKV transform was added; classic Falcon is recorded
+as out-of-scope architecture, not a regression.
+
+**Conclusion.** Falcon3 is dominated for the validated scope:
+1B / 3B / 7B-Instruct safetensors and Falcon3-7B-Instruct GGUF
+(Q4_K_M / Q5_K_M / Q6_K) all load and generate coherently through
+the existing Llama-family path, with one generalizable
+config-tolerance fix and no core changes. Verdict: **Falcon3
+dominada; Falcon clásico fuera de scope actual.**
+
+---
+
+## Adapter Toolkit v2
+
+A declarative layer **on top of** the v1 model-adapter system
+(`src/model_adapters/`). It lets a model be described by a small
+YAML/JSON document instead of a hand-written Rust adapter. It is a
+strict addition: it never modifies v1, never touches the runtime
+core or the graph builders, and never generates Rust code.
+
+**Module — `src/adapter_toolkit/`.**
+
+- `dsl.rs` — serde schema for the three authoring levels (simple /
+  intermediate / advanced); parses `.yaml`/`.yml` (serde_yaml) and
+  `.json` (serde_json). `deny_unknown_fields` makes a misspelled
+  key a hard parse error.
+- `spec.rs` — `ResolvedAdapterSpec`, the IR: the DSL `family`
+  resolved to a v1 `ModelFamily` + architecture, the feature flags
+  normalised into a `FeatureSet` (the Part-5 pattern catalog:
+  `RopeKind`, `AttentionKind`, `KvHeadsResolved`, fused-QKV/MLP),
+  and the per-checkpoint overrides layered.
+- `generator.rs` — `GeneratedAdapter`. A v2 adapter holds a
+  `&'static dyn AteniaModelAdapter` (the v1 hand-written adapter
+  for the family) and implements the v1 7-trait supertrait by
+  **pure delegation**. The DSL parameterises an existing family; it
+  never defines a new architecture. Graph topology, weight mapping
+  and GGUF naming stay v1's, untouched.
+- `registry.rs` — `AdapterRegistry`: dynamic, **v2-first /
+  v1-fallback**. Lookup by metadata, name, or family. v1 is never
+  shadowed for models with no v2 spec.
+- `validate.rs` — declarative validators. Errors (blocking): `gqa`
+  without `kv_heads`, `fused_qkv` without `split_strategy`,
+  `partial_rotary_factor` contradicting an explicit `rope`,
+  out-of-range `partial_rotary_factor`, `mqa` with `kv_heads != 1`,
+  unknown family/architecture. Warnings: fused weights / LongRope
+  declared on a family whose v1 builder has no such path; an empty
+  `eos_tokens` list.
+- `introspect.rs` — human-readable rendering of a generated
+  adapter: family, architecture, v1 base adapter, capabilities,
+  feature set, overrides, and a GGUF→HF tensor-name sample.
+- `inspect.rs` — auto-detection. Reads a model dir, detects format
+  (`config.json` vs `*.gguf`), family/architecture, attention shape
+  (MHA/GQA/MQA from the head counts), EOS set, and RoPE variant
+  (`longrope`/`partial`/`standard`), and emits an `AdapterDsl`. The
+  emitted YAML is self-checked to validate and resolve, so
+  `atenia inspect` output feeds straight into `atenia load`.
+
+**CLI — three subcommands in `src/bin/atenia.rs`.**
+
+- `atenia load <file>` — parse the DSL, validate, build the v2
+  adapter, print the summary. **Never runs generation.** Exit 2 on
+  any toolkit error.
+- `atenia debug <file>` — same, verbose (v1 capabilities + tensor
+  sample) plus validation warnings.
+- `atenia inspect <dir>` — auto-detect a model directory and emit a
+  loadable YAML DSL plus a resolved-spec preview.
+
+Generation stays exactly where it was — `atenia generate` and the
+v1 load path are untouched.
+
+**Examples.** `config/adapters/{llama,qwen,gemma,phi,mistral}.yaml`
+— one per authoring level, each loadable directly with
+`atenia load`.
+
+**Validation.** `cargo build --lib` clean (one new dependency:
+`serde_yaml 0.9`, pure-Rust). `cargo test --lib -- --test-threads=1`
+→ **475 / 475 PASS** (411 v1 baseline + 64 adapter_toolkit), zero
+regressions. `cargo test --test tinyllama_config_test` → 15 PASS /
+3 ignored. CLI smokes: `load` / `debug` on all five examples;
+`inspect` on TinyLlama, Llama 3.2, Qwen 2.5, Gemma 2, Phi-3.5, with
+the emitted YAML round-tripping back through `load`; failure cases
+(`gqa` without `kv_heads`, unknown family, classic Falcon dir) all
+fail loud with exit 2; v1 `atenia generate` on TinyLlama unchanged
+(*"The capital of France is Paris."*, EOS).
+
+**Technical-debt audit (post-completion).** Three fragile points
+were reviewed and hardened:
+1. *GGUF RoPE detection.* GGUF metadata carries no RoPE-variant
+   tag (llama.cpp folds LongRoPE / partial-rotary into the
+   `rope_factors` tensors). `inspect` no longer guesses — it leaves
+   `rope` unset (standard) and emits an explicit
+   [`InspectionReport`] note, surfaced as a comment in the
+   generated YAML, that long-context models may need
+   `config.rope: longrope` added by hand.
+2. *Declarative-vs-authoritative DSL sections.* The `config` /
+   `weights` / `attention` sections are expected constraints —
+   validated and used for introspection, **never** applied to the
+   model's `LlamaConfig`. This is now explicit in the struct doc
+   comments, the introspection output label ("declared features
+   (validated, not applied — config.json is authoritative)"), and
+   the example YAML comments. The YAML cannot appear to control
+   something it does not.
+3. *`serde_yaml 0.9` deprecation.* The crate is unmaintained
+   (`0.9.34+deprecated`). Accepted, not replaced: the exposure is
+   contained to the DSL front-end, off the inference hot path, and
+   the maintained `serde_json` path is a complete substitute. A
+   migration TODO is recorded in `Cargo.toml` and `dsl.rs`.
+
+Hidden-debt sweep — confirmed and fixed: an explicit unrecognised
+`model_type` used to be silently swapped for the family default
+(now a hard `Resolution` error); a `split_strategy` with no
+`fused_qkv` is now a validator warning. Reviewed and accepted: the
+resolve path runs `ResolvedAdapterSpec::resolve` more than once per
+`load` (cheap, pure, single source of truth — no divergence); the
+`resolve_family` family→architecture table mirrors knowledge v1
+owns, but `GeneratedAdapter::from_spec` re-checks against v1's real
+`resolve_adapter` and asserts the family matches, so a stale table
+fails loud rather than silently. `inspect` output verified
+round-trippable for HF and GGUF inputs.
+
+**Out of scope.** The DSL only parameterises the seven v1
+families. An unknown family / architecture (e.g. classic Falcon
+`FalconForCausalLM`) is a typed error, never a forced fallback —
+the toolkit never invents a builder. `atenia load` deliberately
+does not run generation.
+
+---
+
 ## Beyond v20
 
 The roadmap horizons (v21/M12 production hardening → v22 Intel iGPU → v23 AMD

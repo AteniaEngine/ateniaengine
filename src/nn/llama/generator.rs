@@ -59,9 +59,15 @@ use crate::tensor::Tensor;
 pub struct GenerationConfig {
     /// Maximum number of NEW tokens to generate (cap).
     pub max_new_tokens: usize,
-    /// Stop generation when this token id is produced.
-    /// Typical: `tokenizer.eos_id()`.
-    pub eos_token_id: u32,
+    /// Stop generation when **any** of these token ids is
+    /// produced. Built from the union of `tokenizer.eos_id()` and
+    /// the model config's full `eos_token_id` set. Multi-valued
+    /// because chat-tuned families declare several end-of-sequence
+    /// sentinels — Gemma instruct ends a turn with `<end_of_turn>`
+    /// rather than `<eos>`, Llama 3.x ships a 3-element set — and
+    /// generation must halt on whichever the model emits. Never
+    /// empty.
+    pub eos_token_ids: Vec<u32>,
 }
 
 /// One generated token. The runtime hands this to the sink
@@ -285,7 +291,7 @@ where
         // newly-predicted one from the previous step / the
         // prefill output).
         let token_id = next_token;
-        let is_eos = token_id == gen_cfg.eos_token_id;
+        let is_eos = gen_cfg.eos_token_ids.contains(&token_id);
         let text = if is_eos {
             String::new()
         } else {

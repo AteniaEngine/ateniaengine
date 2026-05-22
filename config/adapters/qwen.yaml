@@ -1,0 +1,25 @@
+# Adapter Toolkit v2 — Qwen family example (intermediate level).
+#
+# Declares the explicit architecture, the GQA attention shape, the
+# multi-EOS set, and a per-checkpoint override for the DeepSeek-R1
+# distill (which uses a different EOS set). Resolves to the v1
+# `qwen2` adapter.
+#
+#   atenia load config/adapters/qwen.yaml
+family: qwen
+architecture: Qwen2ForCausalLM
+format: safetensors
+
+attention:
+  type: gqa
+  kv_heads: auto
+
+tokenizer:
+  eos_tokens: [151643, 151645]
+  turn_terminators:
+    - "<|im_end|>"
+
+overrides:
+  deepseek-distill:
+    tokenizer:
+      eos_tokens: [151643]

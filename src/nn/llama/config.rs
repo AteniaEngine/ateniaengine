@@ -53,7 +53,21 @@ pub struct LlamaConfig {
     /// per-family defaults when the explicit field is absent.
     pub model_type: Option<String>,
     pub bos_token_id: u32,
+    /// Canonical (first) end-of-sequence token id. Kept for
+    /// backward compatibility; new stop-condition logic should
+    /// prefer [`Self::eos_token_ids`], the **full** set.
     pub eos_token_id: u32,
+    /// **Multi-EOS** — every end-of-sequence token id the model
+    /// declares. Most checkpoints ship a scalar `eos_token_id`
+    /// (`[2]` for TinyLlama). Chat-tuned families ship an array:
+    /// Llama 3.x `[128001, 128008, 128009]`, Gemma `[1, 106]`
+    /// (`<eos>` + `<end_of_turn>`). Generation must halt on **any**
+    /// of these — a Gemma instruct turn ends with `<end_of_turn>`
+    /// (`106`), not `<eos>` (`1`), so collapsing the array to its
+    /// first element (the old behaviour) left Gemma generation
+    /// running past the model's natural stop into off-distribution
+    /// garbage. Never empty: a scalar field yields `[scalar]`.
+    pub eos_token_ids: Vec<u32>,
     /// `pad_token_id` is absent from many Llama configs (TinyLlama
     /// included), so it is optional.
     pub pad_token_id: Option<u32>,
@@ -98,6 +112,32 @@ pub struct LlamaConfig {
     /// Encoded in the config as an integer (`256`); read as
     /// `f32` for the downstream `1/sqrt(.)` computation.
     pub query_pre_attn_scalar: Option<f32>,
+    /// **Gemma 3** — RoPE base frequency for the *local*
+    /// (sliding-window) layers. Gemma 3 alternates local and
+    /// global attention layers and gives them different RoPE
+    /// base frequencies: the global layers use `rope_theta`
+    /// (`1_000_000`), the local layers use this field
+    /// (`10_000`). `None` for every family that uses a single
+    /// RoPE base (Llama / Qwen / Mistral / Phi-3 / Gemma 2).
+    pub rope_local_base_freq: Option<u32>,
+    /// **Gemma 3** — sliding-window layer period. Layer `i` is a
+    /// *global* (full-attention, `rope_theta`) layer when
+    /// `(i + 1) % sliding_window_pattern == 0`, otherwise it is a
+    /// *local* (sliding-window, `rope_local_base_freq`) layer.
+    /// Gemma 3 ships `6` (5 local : 1 global). `None` for
+    /// single-attention-type families.
+    pub sliding_window_pattern: Option<u32>,
+    /// **Phi-4 (partial rotary).** Fraction of each head's
+    /// dimension that RoPE is applied to. Phi-4-mini ships
+    /// `0.75` — RoPE rotates the first `round(0.75 * head_dim)`
+    /// dimensions of q / k and the remainder passes through
+    /// un-rotated. Phi-3 / Phi-3.5 (and every Llama-family model)
+    /// use full rotary; the field is then absent (`None`) and
+    /// [`Self::rotary_dim`] returns the full `head_dim`. The HF
+    /// `config.json` stores the fraction; a Phi-4 GGUF stores the
+    /// absolute `phi3.rope.dimension_count`, which the GGUF
+    /// config parser converts back to a fraction.
+    pub partial_rotary_factor: Option<f32>,
 }
 
 /// Parsed `rope_scaling` block from a Llama-family `config.json`.
@@ -286,6 +326,77 @@ fn get_u32_or_first_of_array(v: &Value, key: &str) -> Result<u32, ConfigError> {
             )));
         }
         return Ok(first as u32);
+    }
+    Err(ConfigError::Parse(format!(
+        "field `{}` must be an integer or a non-empty integer array",
+        key
+    )))
+}
+
+/// Read `bos_token_id`, tolerating its absence from `config.json`.
+///
+/// Recent HuggingFace checkpoints (Falcon3-1B / Falcon3-3B-Instruct,
+/// among others) drop `bos_token_id` from `config.json` and keep it
+/// only in `generation_config.json`. `LlamaConfig.bos_token_id` is
+/// not consumed by the generation path — the tokenizer owns BOS via
+/// its own `bos_token` from `tokenizer_config.json` — so the parsed
+/// value only needs to be a valid token id. When `config.json` omits
+/// it, fall back to `eos_token_id`: every checkpoint observed that
+/// omits `bos_token_id` sets `bos == eos` anyway (Falcon3 uses token
+/// 11 for both). An explicit `bos_token_id` is still honoured exactly
+/// as before, so behaviour is byte-identical for every checkpoint
+/// that ships the field.
+fn get_bos_token_id(v: &Value) -> Result<u32, ConfigError> {
+    if v.get("bos_token_id").is_some() {
+        get_u32_or_first_of_array(v, "bos_token_id")
+    } else {
+        get_u32_or_first_of_array(v, "eos_token_id")
+    }
+}
+
+/// **Multi-EOS** — read a `u32` field that may be a scalar or a
+/// non-empty integer array, returning **every** value. A scalar
+/// yields `[scalar]`; an array yields all its elements. Mirrors
+/// [`get_u32_or_first_of_array`]'s validation (missing field /
+/// empty array / non-integer element / overflow are all errors)
+/// but keeps the whole set instead of collapsing to the first.
+/// Used for `eos_token_id`: a Gemma instruct turn ends with
+/// `<end_of_turn>` (the *second* array entry), so generation must
+/// see the complete stop set.
+fn get_u32_array_all(v: &Value, key: &str) -> Result<Vec<u32>, ConfigError> {
+    let raw = v
+        .get(key)
+        .ok_or_else(|| ConfigError::Parse(format!("missing field `{}`", key)))?;
+    if let Some(n) = raw.as_u64() {
+        if n > u32::MAX as u64 {
+            return Err(ConfigError::Parse(format!(
+                "field `{}` value {} exceeds u32::MAX",
+                key, n
+            )));
+        }
+        return Ok(vec![n as u32]);
+    }
+    if let Some(arr) = raw.as_array() {
+        if arr.is_empty() {
+            return Err(ConfigError::Parse(format!(
+                "field `{}` is an empty array (expected ≥ 1 token id)",
+                key
+            )));
+        }
+        let mut out = Vec::with_capacity(arr.len());
+        for (i, x) in arr.iter().enumerate() {
+            let n = x.as_u64().ok_or_else(|| {
+                ConfigError::Parse(format!("field `{}`[{}] is not an integer", key, i))
+            })?;
+            if n > u32::MAX as u64 {
+                return Err(ConfigError::Parse(format!(
+                    "field `{}`[{}] value {} exceeds u32::MAX",
+                    key, i, n
+                )));
+            }
+            out.push(n as u32);
+        }
+        return Ok(out);
     }
     Err(ConfigError::Parse(format!(
         "field `{}` must be an integer or a non-empty integer array",
@@ -613,11 +724,12 @@ impl LlamaConfig {
             tie_word_embeddings: get_tie_word_embeddings(&v)?,
             attention_bias: get_optional_bool(&v, "attention_bias")?,
             model_type: get_optional_string(&v, "model_type")?,
-            bos_token_id: get_u32_or_first_of_array(&v, "bos_token_id")?,
+            bos_token_id: get_bos_token_id(&v)?,
             // **M11.A.1** — Llama 3.x ships eos_token_id as a
             // 3-element array of sentinel tokens. Take the first
             // (canonical end-of-text); see helper docstring.
             eos_token_id: get_u32_or_first_of_array(&v, "eos_token_id")?,
+            eos_token_ids: get_u32_array_all(&v, "eos_token_id")?,
             pad_token_id: get_optional_u32(&v, "pad_token_id")?,
             head_dim: get_optional_usize(&v, "head_dim")?,
             rope_scaling: get_rope_scaling(&v)?,
@@ -629,6 +741,14 @@ impl LlamaConfig {
             final_logit_softcapping: get_optional_f32(&v, "final_logit_softcapping")?,
             sliding_window: get_optional_u32(&v, "sliding_window")?,
             query_pre_attn_scalar: get_optional_f32(&v, "query_pre_attn_scalar")?,
+            // **Gemma 3** — dual-RoPE / sliding-window-pattern
+            // fields. `None` for every non-Gemma-3 checkpoint, so
+            // existing fixtures stay byte-equivalent.
+            rope_local_base_freq: get_optional_u32(&v, "rope_local_base_freq")?,
+            sliding_window_pattern: get_optional_u32(&v, "sliding_window_pattern")?,
+            // **Phi-4** — partial rotary fraction. `None` for every
+            // full-rotary checkpoint (Phi-3 / Llama / Qwen / Gemma).
+            partial_rotary_factor: get_optional_f32(&v, "partial_rotary_factor")?,
         };
         // **Phase 15** — the resolved adapter owns family config
         // policy. `resolve_adapter_for_config` returns a `'static`
@@ -674,6 +794,24 @@ impl LlamaConfig {
     pub fn effective_head_dim(&self) -> usize {
         self.head_dim
             .unwrap_or_else(|| self.hidden_size / self.num_attention_heads)
+    }
+
+    /// Number of per-head dimensions RoPE is applied to. For
+    /// full-rotary models (`partial_rotary_factor` absent) this is
+    /// the whole `effective_head_dim()`. For Phi-4 (partial
+    /// rotary, factor `0.75`) it is `round(factor * head_dim)` —
+    /// the first `rotary_dim` dims of q / k are rotated and the
+    /// remaining `head_dim - rotary_dim` pass through un-rotated.
+    /// Always even (RoPE half-split); a partial factor that
+    /// produced an odd count would be a malformed config caught by
+    /// the builder's `rope_longrope` length check.
+    pub fn rotary_dim(&self) -> usize {
+        match self.partial_rotary_factor {
+            Some(f) => ((f * self.effective_head_dim() as f32).round() as usize).min(
+                self.effective_head_dim(),
+            ),
+            None => self.effective_head_dim(),
+        }
     }
 
     /// Convenience accessor for the parsed `rope_scaling` block.
@@ -844,6 +982,30 @@ mod tests {
     fn eos_token_id_scalar_parses() {
         let v = base_config_value(json!(2));
         let cfg = LlamaConfig::from_json_str(&v.to_string()).expect("scalar eos parses");
+        assert_eq!(cfg.eos_token_id, 2);
+    }
+
+    /// **Falcon3** — `bos_token_id` absent from `config.json`
+    /// (Falcon3-1B / Falcon3-3B-Instruct keep it only in
+    /// `generation_config.json`) falls back to `eos_token_id`.
+    #[test]
+    fn bos_token_id_missing_falls_back_to_eos() {
+        let mut v = base_config_value(json!(11));
+        v.as_object_mut().unwrap().remove("bos_token_id");
+        let cfg = LlamaConfig::from_json_str(&v.to_string())
+            .expect("missing bos falls back to eos");
+        assert_eq!(cfg.bos_token_id, 11);
+        assert_eq!(cfg.eos_token_id, 11);
+    }
+
+    /// **Falcon3** — an explicit `bos_token_id` is still honoured
+    /// verbatim and is independent of `eos_token_id`.
+    #[test]
+    fn bos_token_id_explicit_is_honoured() {
+        let v = base_config_value(json!(2));
+        let cfg = LlamaConfig::from_json_str(&v.to_string())
+            .expect("explicit bos parses");
+        assert_eq!(cfg.bos_token_id, 1);
         assert_eq!(cfg.eos_token_id, 2);
     }
 

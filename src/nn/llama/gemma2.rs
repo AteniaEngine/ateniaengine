@@ -778,6 +778,7 @@ mod tests {
             model_type: Some("gemma2".to_string()),
             bos_token_id: 1,
             eos_token_id: 2,
+            eos_token_ids: vec![2],
             pad_token_id: None,
             head_dim: Some(4),
             rope_scaling: None,
@@ -785,6 +786,9 @@ mod tests {
             final_logit_softcapping: Some(30.0),
             sliding_window: Some(4096),
             query_pre_attn_scalar: Some(4.0),
+            rope_local_base_freq: None,
+            sliding_window_pattern: None,
+            partial_rotary_factor: None,
         }
     }
 

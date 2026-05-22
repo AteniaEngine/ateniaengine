@@ -389,13 +389,15 @@ fn gguf_tensor_metas(
             crate::v17::loader::gguf_reader::GgufTensorType::F32
             | crate::v17::loader::gguf_reader::GgufTensorType::F16
             | crate::v17::loader::gguf_reader::GgufTensorType::Q8_0
+            | crate::v17::loader::gguf_reader::GgufTensorType::Q5_0
             | crate::v17::loader::gguf_reader::GgufTensorType::Q4_K
             | crate::v17::loader::gguf_reader::GgufTensorType::Q5_K
             | crate::v17::loader::gguf_reader::GgufTensorType::Q6_K => {}
             other => {
                 return Err(PipelineError::Loader(LoaderError::UnsupportedDType(
                     format!(
-                        "GGUF tensor '{}' has unsupported type {:?} for M11.D.3",
+                        "GGUF tensor '{}' has unsupported type {:?}; \
+                         decode_tensor supports F32/F16/Q8_0/Q5_0/Q4_K/Q5_K/Q6_K",
                         descriptor.name, other
                     ),
                 )));
@@ -1058,9 +1060,44 @@ impl GenerationPipeline {
         sink: &mut S,
     ) -> Result<String, PipelineError> {
         let prompt_ids = self.tokenizer.encode(prompt_text, true)?;
+        // **Multi-EOS** — the stop set is the union of the
+        // tokenizer's `eos_token` and the model config's full
+        // `eos_token_id` set. A Gemma instruct turn ends with
+        // `<end_of_turn>` (config array entry, *not* the
+        // tokenizer's `<eos>`); Llama 3.x ships a 3-element set.
+        // Generation halts on whichever the model emits.
+        let mut eos_token_ids: Vec<u32> = self.config.eos_token_ids.clone();
+        let tok_eos = self.tokenizer.eos_id();
+        if !eos_token_ids.contains(&tok_eos) {
+            eos_token_ids.push(tok_eos);
+        }
+        // **Chat turn-terminator stop tokens.** A chat-tuned model
+        // ends its assistant turn with a format sentinel that is
+        // *not* always the tokenizer's `eos_token` — Gemma uses
+        // `<end_of_turn>` while its `eos_token` is `<eos>`. The HF
+        // safetensors path picks this up because `config.json`'s
+        // `eos_token_id` is the full array `[<eos>, <end_of_turn>]`,
+        // but the GGUF metadata carries only a scalar `eos_token_id`,
+        // so the turn-terminator is lost. Resolve the standard
+        // turn-end sentinels by name from the vocabulary and add
+        // any that exist: `<end_of_turn>` (Gemma), `<|eot_id|>`
+        // (Llama 3), `<|im_end|>` (Qwen / ChatML), `<|end|>`
+        // (Phi-3 / Phi-4). Keyed on published chat-format token
+        // strings (not checkpoint names); harmless for models whose
+        // vocab lacks them. Token ids are not constant across
+        // families/vocab sizes (`<end_of_turn>` is 106 in Gemma 3's
+        // 262 k vocab but a different id in Gemma 2's 256 k vocab),
+        // so the lookup is by string.
+        for sentinel in ["<end_of_turn>", "<|eot_id|>", "<|im_end|>", "<|end|>"] {
+            if let Some(id) = self.tokenizer.token_to_id(sentinel) {
+                if !eos_token_ids.contains(&id) {
+                    eos_token_ids.push(id);
+                }
+            }
+        }
         let gen_cfg = GenerationConfig {
             max_new_tokens,
-            eos_token_id: self.tokenizer.eos_id(),
+            eos_token_ids,
         };
 
         // **M5.d.c — incremental-context detokenisation.**

@@ -237,6 +237,13 @@ pub(crate) static COMMON_NAME_TABLE: NameTable = NameTable {
         ("attn_k.weight", "self_attn.k_proj.weight"),
         ("attn_v.weight", "self_attn.v_proj.weight"),
         ("attn_output.weight", "self_attn.o_proj.weight"),
+        // QKV biases — llama.cpp's standard naming for any family
+        // that carries them. Only Qwen2 GGUF has these tensors;
+        // Llama / Qwen3 / Phi-3 / Gemma 2 GGUF ship none, so the
+        // entries simply never match for those families.
+        ("attn_q.bias", "self_attn.q_proj.bias"),
+        ("attn_k.bias", "self_attn.k_proj.bias"),
+        ("attn_v.bias", "self_attn.v_proj.bias"),
         ("ffn_norm.weight", "post_attention_layernorm.weight"),
         ("ffn_gate.weight", "mlp.gate_proj.weight"),
         ("ffn_up.weight", "mlp.up_proj.weight"),
@@ -494,20 +501,34 @@ pub(crate) static LLAMA_SPEC: FamilyTensorSpec = FamilyTensorSpec {
 };
 
 /// **Phase Q (Qwen3 family support).** Llama-like name layout
-/// (no GGUF extras; the canonical Qwen3 GGUF conversion mirrors
-/// the common Llama-layout table). HF transforms add per-head
-/// QK-Norm γ rules and move the attention scale from k_proj to
-/// k_norm γ. GGUF support is out of scope this phase:
-/// `gguf_transforms: None`, `required_gguf_dtypes` empty.
+/// plus the two QK-Norm tensors as GGUF extras: llama.cpp's
+/// `LLM_ARCH_QWEN3` stores per-head QK-Norm γ as
+/// `blk.N.attn_{q,k}_norm.weight`, which the common Llama-layout
+/// table does not cover. HF transforms add per-head QK-Norm γ
+/// rules and move the attention scale from k_proj to k_norm γ.
+/// `gguf_transforms: None` because the GGUF residency loader's
+/// `.rev()` leaves Qwen3 tensors in HF orientation and llama.cpp
+/// does not row-permute Qwen3 q/k (the permute is Llama-arch
+/// specific) — so the HF transform table applies unchanged.
 pub(crate) static QWEN3_SPEC: FamilyTensorSpec = FamilyTensorSpec {
     id: "qwen3",
     name_extra: NameTable {
         top_level: &[],
-        block_suffix: &[],
+        block_suffix: &[
+            ("attn_q_norm.weight", "self_attn.q_norm.weight"),
+            ("attn_k_norm.weight", "self_attn.k_norm.weight"),
+        ],
     },
     hf_transforms: QWEN3_HF_TRANSFORMS,
     gguf_transforms: None,
-    required_gguf_dtypes: &[],
+    // Qwen3-8B Q4_K_M: F32 norms + Q4_K / Q6_K weight quants
+    // (Q6_K for the embedding / output tensors, as bartowski's
+    // Qwen3 conversions do).
+    required_gguf_dtypes: &[
+        GgufTensorType::F32,
+        GgufTensorType::Q4_K,
+        GgufTensorType::Q6_K,
+    ],
 };
 
 /// Phi-3: fused QKV + fused gate_up name extras.
@@ -570,6 +591,147 @@ pub(crate) static GEMMA2_SPEC: FamilyTensorSpec = FamilyTensorSpec {
     // Q6_K embed / v_proj / down_proj).
     required_gguf_dtypes: &[
         GgufTensorType::F32,
+        GgufTensorType::Q4_K,
+        GgufTensorType::Q6_K,
+    ],
+};
+
+/// **Gemma 3 (text).** Gemma 2's dual-norm / GeGLU / embed-scale
+/// topology, plus three deltas: (1) per-head QK-Norm γ on q/k
+/// (`*.self_attn.{q,k}_norm.weight`, `[head_dim]`), like Qwen3;
+/// (2) **no soft-cap** (config `attn`/`final_logit_softcapping`
+/// are `None` — handled by the builder, not the transforms);
+/// (3) dual RoPE base frequency (builder-side, not a transform).
+/// Every RMSNorm still carries the Gemma `(1+γ)` fold — including
+/// the new q/k norms. The `1/√query_pre_attn_scalar` attention
+/// scale lives in the K-Norm γ (a pre-normalize scale on k_proj
+/// would be stripped by the K-Norm RMSNorm — same reasoning as
+/// Qwen3), folded **after** the `+1` so the loaded γ is
+/// `(1+γ)·scale`.
+static GEMMA3_HF_TRANSFORMS: &[TransformRule] = &[
+    TransformRule {
+        any_of: &[NameMatch::Contains(".self_attn.q_norm.weight")],
+        recipes: &[
+            TransformRecipe::ReshapeHeadDim4D,
+            TransformRecipe::AddScalarOne,
+        ],
+    },
+    TransformRule {
+        any_of: &[NameMatch::Contains(".self_attn.k_norm.weight")],
+        recipes: &[
+            TransformRecipe::ReshapeHeadDim4D,
+            TransformRecipe::AddScalarOne,
+            TransformRecipe::ScaleAttn,
+        ],
+    },
+    TransformRule {
+        any_of: &[
+            NameMatch::Exact("model.norm.weight"),
+            NameMatch::EndsWith("layernorm.weight"),
+        ],
+        recipes: &[
+            TransformRecipe::ReshapeHidden3D,
+            TransformRecipe::AddScalarOne,
+        ],
+    },
+    TransformRule {
+        any_of: &[NameMatch::Contains(".self_attn.k_proj.weight")],
+        // No ScaleAttn — the attention scale lives in k_norm γ.
+        recipes: &[TransformRecipe::TileKvDim0, TransformRecipe::Transpose2D],
+    },
+    TransformRule {
+        any_of: &[NameMatch::Contains(".self_attn.v_proj.weight")],
+        recipes: &[TransformRecipe::TileKvDim0, TransformRecipe::Transpose2D],
+    },
+    TransformRule {
+        any_of: &[
+            NameMatch::Contains(".self_attn.q_proj.weight"),
+            NameMatch::Contains(".self_attn.o_proj.weight"),
+            NameMatch::Contains(".mlp.gate_proj.weight"),
+            NameMatch::Contains(".mlp.up_proj.weight"),
+            NameMatch::Contains(".mlp.down_proj.weight"),
+            NameMatch::Exact("lm_head.weight"),
+        ],
+        recipes: &[TransformRecipe::Transpose2D],
+    },
+];
+
+/// **Gemma 3 (text) GGUF transform table.** Identical to
+/// [`GEMMA3_HF_TRANSFORMS`] except every RMSNorm rule drops the
+/// `AddScalarOne` (`+1`) fold — llama.cpp pre-folds `1 + γ` into
+/// the Gemma GGUF norm weights (verified for Gemma 2 at G-1c;
+/// Gemma 3 uses the same `Gemma3RMSNorm` so the GGUF conversion
+/// pre-folds identically). The K-Norm keeps `ScaleAttn` (the
+/// attention scale is still not a llama.cpp GGUF metadata-side
+/// operation; folding it into the post-norm γ is correct for
+/// both formats).
+static GEMMA3_GGUF_TRANSFORMS: &[TransformRule] = &[
+    TransformRule {
+        any_of: &[NameMatch::Contains(".self_attn.q_norm.weight")],
+        recipes: &[TransformRecipe::ReshapeHeadDim4D],
+    },
+    TransformRule {
+        any_of: &[NameMatch::Contains(".self_attn.k_norm.weight")],
+        recipes: &[
+            TransformRecipe::ReshapeHeadDim4D,
+            TransformRecipe::ScaleAttn,
+        ],
+    },
+    TransformRule {
+        any_of: &[
+            NameMatch::Exact("model.norm.weight"),
+            NameMatch::EndsWith("layernorm.weight"),
+        ],
+        recipes: &[TransformRecipe::ReshapeHidden3D],
+    },
+    TransformRule {
+        any_of: &[NameMatch::Contains(".self_attn.k_proj.weight")],
+        recipes: &[TransformRecipe::TileKvDim0, TransformRecipe::Transpose2D],
+    },
+    TransformRule {
+        any_of: &[NameMatch::Contains(".self_attn.v_proj.weight")],
+        recipes: &[TransformRecipe::TileKvDim0, TransformRecipe::Transpose2D],
+    },
+    TransformRule {
+        any_of: &[
+            NameMatch::Contains(".self_attn.q_proj.weight"),
+            NameMatch::Contains(".self_attn.o_proj.weight"),
+            NameMatch::Contains(".mlp.gate_proj.weight"),
+            NameMatch::Contains(".mlp.up_proj.weight"),
+            NameMatch::Contains(".mlp.down_proj.weight"),
+            NameMatch::Exact("lm_head.weight"),
+        ],
+        recipes: &[TransformRecipe::Transpose2D],
+    },
+];
+
+/// **Gemma 3 (text).** Four-norm name extras (as Gemma 2) plus the
+/// QK-Norm γ tensors. `Gemma3ForCausalLM` / `model_type =
+/// gemma3_text`.
+pub(crate) static GEMMA3_SPEC: FamilyTensorSpec = FamilyTensorSpec {
+    id: "gemma3",
+    name_extra: NameTable {
+        top_level: &[],
+        block_suffix: &[
+            ("attn_post_norm.weight", "post_attention_layernorm.weight"),
+            ("post_attention_norm.weight", "post_attention_layernorm.weight"),
+            ("post_ffw_norm.weight", "post_feedforward_layernorm.weight"),
+            ("ffn_post_norm.weight", "post_feedforward_layernorm.weight"),
+            ("ffn_norm.weight", "pre_feedforward_layernorm.weight"),
+            ("attn_q_norm.weight", "self_attn.q_norm.weight"),
+            ("attn_k_norm.weight", "self_attn.k_norm.weight"),
+        ],
+    },
+    hf_transforms: GEMMA3_HF_TRANSFORMS,
+    gguf_transforms: Some(GEMMA3_GGUF_TRANSFORMS),
+    // gemma-3-1b-it Q4_K_M (ggml-org): F32 norms + Q4_K + Q6_K +
+    // Q8_0 + **Q5_0** (the ggml-org Gemma 3 conversion mixes Q5_0
+    // into the attention tensors of the nominally-Q4_K_M file).
+    // gemma-3-4b-it Q4_K_M is F32 + Q4_K + Q6_K only.
+    required_gguf_dtypes: &[
+        GgufTensorType::F32,
+        GgufTensorType::Q5_0,
+        GgufTensorType::Q8_0,
         GgufTensorType::Q4_K,
         GgufTensorType::Q6_K,
     ],
