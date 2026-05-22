@@ -7,15 +7,17 @@
 //! no graph builder, no generation logic is touched.
 //!
 //! Output contract: **stdout** carries model responses (and the
-//! `/history` dump); **stderr** carries the `> ` prompt, banners,
-//! logs and errors. Piping `atenia chat` therefore yields a clean
-//! transcript of assistant turns.
+//! `/history` dump); **stderr** carries the `You> ` turn prompt,
+//! banners, the "Thinking ..." indicator, logs and errors. Piping
+//! `atenia chat` therefore yields a clean transcript of assistant
+//! turns. A non-interactive (piped) invocation skips the welcome
+//! banner via TTY detection.
 //!
 //! The pipeline is **lazy-loaded** on the first real message, so
 //! `/exit` / `/help` / `/reset` / `/history` work — and are
 //! testable — without a real checkpoint on disk.
 
-use std::io::{BufRead, Write};
+use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 use crate::nn::llama::{GenerationPipeline, StdoutTokenSink};
@@ -145,7 +147,8 @@ pub fn parse_command(line: &str) -> Option<ChatCommand> {
     }
     Some(match t {
         "/exit" | "/quit" => ChatCommand::Exit,
-        "/reset" => ChatCommand::Reset,
+        // `/clear` is an alias for `/reset` — both clear history.
+        "/reset" | "/clear" => ChatCommand::Reset,
         "/history" => ChatCommand::History,
         "/help" => ChatCommand::Help,
         _ => ChatCommand::Unknown,
@@ -173,6 +176,7 @@ Commands:
   /help     show this help
   /history  print the conversation so far
   /reset    clear the conversation history
+  /clear    alias for /reset
   /exit     leave the chat (Ctrl+D also works)
 Anything else is sent to the model as your message.";
 
@@ -214,7 +218,12 @@ pub fn run_chat(args: ChatArgs) -> i32 {
     }
 
     let quiet = !logging::level_at_least(logging::LogLevel::Warn);
-    if !quiet {
+    // TTY detection: a piped invocation (`echo ... | atenia chat`)
+    // is non-interactive — skip the welcome banner, which is chrome
+    // a script does not need. The `You> ` turn prompt is still
+    // printed (to stderr) so a piped transcript stays readable.
+    let interactive = std::io::stdin().is_terminal();
+    if !quiet && interactive {
         eprintln!("Atenia chat — type /help for commands, /exit to leave.");
     }
 
@@ -228,9 +237,9 @@ pub fn run_chat(args: ChatArgs) -> i32 {
     let mut line = String::new();
 
     loop {
-        // The interactive prompt is UI chrome → stderr, so a piped
-        // stdout stays a clean transcript of assistant turns.
-        eprint!("> ");
+        // The turn prompt is UI chrome → stderr, so a piped stdout
+        // stays a clean transcript of assistant turns.
+        eprint!("You> ");
         let _ = std::io::stderr().flush();
 
         line.clear();
@@ -310,6 +319,12 @@ pub fn run_chat(args: ChatArgs) -> i32 {
         };
         logging::debug(&format!("full prompt:\n{prompt}"));
         logging::info("generating response ...");
+        // A visible "thinking" indicator (stderr) so the user is
+        // not left staring at a silent gap during prefill. Shown
+        // by default; suppressed only under --quiet.
+        if !quiet {
+            eprintln!("Thinking ...");
+        }
 
         // Stream the response to stdout; `generate_raw` also
         // returns the full text, which we keep for the history.
