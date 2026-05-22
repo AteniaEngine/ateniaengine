@@ -32,6 +32,7 @@ pub mod demo;
 // directly via integration tests (M4.9.f). Behind the `demo`
 // feature because every mode goes through `crate::demo`.
 #[cfg(feature = "demo")]
+pub mod cli;
 pub mod cli_run;
 
 // M5.e — `atenia generate` CLI runner. Greedy decoding +

@@ -8,13 +8,14 @@
 //! binary stays small and the orchestration is integration-
 //! testable.
 //!
-//! Exit codes:
+//! Exit codes (CLI-1 unified scheme, see `crate::cli::exit`):
 //!
 //! | Code | Meaning                                                        |
 //! |------|----------------------------------------------------------------|
 //! | 0    | Generation finished cleanly (EOS or `--max-tokens` reached).   |
-//! | 1    | Runtime error during load or generation (OOM, kernel fail).    |
-//! | 2    | Argument / configuration error (model dir missing, bad flag). |
+//! | 1    | System / I/O fault (permission denied, unreadable file).       |
+//! | 2    | User-input fault (missing model dir, missing config, bad flag).|
+//! | 3    | Runtime fault during model load or generation (OOM, kernel).   |
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -23,6 +24,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
 
+use crate::cli::logging::{self, LogLevel};
+use crate::cli::CliError;
 use crate::nn::llama::{
     CollectingTokenSink, GeneratedToken, GenerationPipeline, StdoutTokenSink, TokenSink,
 };
@@ -181,7 +184,13 @@ impl CounterSnapshot {
     }
 }
 
+/// Emit the matmul/loader counter summary. CLI-2: counters are
+/// diagnostic noise for a normal user, so they are gated behind
+/// `--debug` (log level `debug` or finer). Always to stderr.
 fn log_counter_summary(label: &str, c: CounterSnapshot) {
+    if !logging::level_at_least(LogLevel::Debug) {
+        return;
+    }
     eprintln!(
         "[ATENIA] {label} counters: loader(vram_fast={}, vram_slow={}, bf16_fast={}, bf16_slow={}, int8={}, disk_fast={}, disk_slow={}); \
          matmul(resident={}, roundtrip={}, non_pooled={}, legacy={}, total={}, bf16_certified={}, bf16_native={}, disk_streamed={}); \
@@ -249,24 +258,28 @@ fn warn_low_ram() {
     sys.refresh_memory();
     let ram_gib = sys.total_memory() as f64 / (1024.0_f64.powi(3));
     if ram_gib < 28.0 {
-        eprintln!(
-            "warning: detected {ram_gib:.1} GiB of system RAM. The 13B target needs \
+        // A real environment limitation — emitted at `warn`, so it
+        // is visible by default but suppressed under `--quiet`.
+        logging::warn(&format!(
+            "detected {ram_gib:.1} GiB of system RAM. The 13B target needs \
              ~28 GiB minimum at BF16. Smaller models (TinyLlama, SmolLM2, Llama 3.2 1B) \
              work fine on this host."
-        );
+        ));
     }
 }
 
 /// Entry point for `atenia generate`. Returns the process
 /// exit code (0/1/2) per the contract documented above.
 pub fn run(args: GenerateArgs) -> i32 {
-    // ---- Validate paths up front (exit 2) ----
+    // ---- Validate paths up front ----
+    // Every failure below is rendered through the CLI error layer
+    // (`CliError`): a stable code, a human explanation, and a
+    // consistent exit code. Errors go to stderr; stdout stays
+    // reserved for generated text / the JSON report.
     if !args.model.exists() {
-        eprintln!(
-            "error: model directory does not exist: {}",
-            args.model.display()
-        );
-        return 2;
+        let err = CliError::io_not_found("the model directory", &args.model);
+        eprintln!("{err}");
+        return err.exit.code();
     }
 
     // Detect GGUF vs HuggingFace checkpoint
@@ -290,30 +303,59 @@ pub fn run(args: GenerateArgs) -> i32 {
             .unwrap_or(false);
 
     if !is_gguf && !args.model.join("config.json").exists() {
-        eprintln!(
-            "error: model directory {} is missing config.json — does it actually contain a HuggingFace checkpoint?",
-            args.model.display()
-        );
-        return 2;
+        let err = CliError::config_missing(&args.model);
+        eprintln!("{err}");
+        return err.exit.code();
+    }
+    // HuggingFace checkpoints need tokenizer.json; surface a clear
+    // tokenizer error before the loader fails with a generic one.
+    if !is_gguf && !args.model.join("tokenizer.json").exists() {
+        let err = CliError::tokenizer_missing(&args.model);
+        eprintln!("{err}");
+        return err.exit.code();
     }
     if args.max_tokens == 0 {
-        eprintln!("error: --max-tokens must be > 0");
-        return 2;
+        let err = CliError::invalid_args(
+            "--max-tokens must be greater than 0",
+            "Pass --max-tokens with a value of 1 or more.",
+        );
+        eprintln!("{err}");
+        return err.exit.code();
     }
     let _ = args.cache_dir;
 
+    // CLI-2: command-start logging. `info` shows under --verbose;
+    // the parameter dump shows under --debug.
+    logging::info("command start: generate");
+    logging::debug(&format!("model path: {}", args.model.display()));
+    logging::debug(&format!("max tokens: {}", args.max_tokens));
+    logging::debug(&format!(
+        "chat template: {}",
+        if args.no_chat_template { "disabled" } else { "enabled" }
+    ));
+    if let Some(dir) = &args.cache_dir {
+        logging::debug(&format!("cache dir: {}", dir.display()));
+    }
+
     warn_low_ram();
-    // **M12.3** — one consolidated env/hardware diagnostics block,
-    // after arg validation and before the load. Read-and-echo
-    // only; suppressed under apx_is_silent().
-    crate::diag::log_env_and_hardware_diagnostics();
+    // **M12.3** — env/hardware diagnostics. CLI-2: this block is
+    // operator diagnostics, gated behind `--debug` so a normal
+    // run stays quiet.
+    if logging::level_at_least(LogLevel::Debug) {
+        crate::diag::log_env_and_hardware_diagnostics();
+    }
+
+    // CLI-2: under --quiet only human errors reach stderr — no
+    // progress, no banners. `quiet` gates the text-mode progress
+    // lines below; it never affects stdout or generation itself.
+    let quiet = !logging::level_at_least(LogLevel::Warn);
 
     // ---- Load model with heartbeat dots ----
     let counters_before_load = CounterSnapshot::capture();
-    if matches!(args.output, OutputFormat::Text) {
+    if matches!(args.output, OutputFormat::Text) && !quiet {
         eprintln!("Loading model from {} ...", args.model.display());
     }
-    let heartbeat = if !args.no_progress && matches!(args.output, OutputFormat::Text) {
+    let heartbeat = if !args.no_progress && !quiet && matches!(args.output, OutputFormat::Text) {
         Some(Heartbeat::start(2000))
     } else {
         None
@@ -330,15 +372,12 @@ pub fn run(args: GenerateArgs) -> i32 {
             if let Some(hb) = heartbeat {
                 hb.stop();
             }
-            eprintln!("error: failed to load model: {e}");
-            // **M12.4 H5** — a raw error is not actionable on its
-            // own; point the operator at the usual causes.
-            eprintln!(
-                "hint: verify the model path exists and contains either a \
-                 valid config.json plus weight files, or exactly one .gguf \
-                 file."
-            );
-            return 1;
+            // The loader returns a technical error string; the CLI
+            // error layer preserves it verbatim in the technical
+            // details while giving the user an actionable summary.
+            let err = CliError::generation_failed("failed to load the model", e.to_string());
+            eprintln!("{err}");
+            return err.exit.code();
         }
     };
     let load_secs = load_start.elapsed().as_secs_f32();
@@ -349,7 +388,8 @@ pub fn run(args: GenerateArgs) -> i32 {
     let load_counter_delta = counters_after_load.delta_since(counters_before_load);
     log_counter_summary("Load", load_counter_delta);
 
-    if matches!(args.output, OutputFormat::Text) {
+    logging::info(&format!("model loaded in {load_secs:.1}s"));
+    if matches!(args.output, OutputFormat::Text) && !quiet {
         let resident_gib = pipe.store.resident_bytes() as f64 / (1024.0_f64.powi(3));
         eprintln!(
             "Model loaded in {:.1}s ({} parameters, {:.2} GiB resident).",
@@ -387,10 +427,10 @@ pub fn run(args: GenerateArgs) -> i32 {
             // the silent gap as a hang and ctrl-C'd. Show a
             // visible "thinking" indicator that stops the
             // moment the first token lands.
-            if !args.no_progress {
+            if !args.no_progress && !quiet {
                 eprintln!("Prefilling prompt and generating ...");
             }
-            let prefill_hb = if !args.no_progress {
+            let prefill_hb = if !args.no_progress && !quiet {
                 Some(Heartbeat::start(2000))
             } else {
                 None
@@ -419,8 +459,9 @@ pub fn run(args: GenerateArgs) -> i32 {
     let text = match result {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("error: generation failed: {e}");
-            return 1;
+            let err = CliError::generation_failed("generation failed", e);
+            eprintln!("{err}");
+            return err.exit.code();
         }
     };
 
@@ -435,6 +476,11 @@ pub fn run(args: GenerateArgs) -> i32 {
         generation_delta: generation_counter_delta,
         total_delta: total_counter_delta,
     };
+    logging::info(&format!(
+        "generation finished: {} tokens in {:.1}s",
+        collected.tokens.len(),
+        total_secs
+    ));
     log_counter_summary("Generation", generation_counter_delta);
     if std::env::var("ATENIA_NODE_TIMING").as_deref() == Ok("1") {
         eprintln!("[ATENIA] Node timing summary (top 30 by total time):");
@@ -451,22 +497,26 @@ pub fn run(args: GenerateArgs) -> i32 {
 
     match args.output {
         OutputFormat::Text => {
-            // Final newline so the prompt returns to the
-            // user's shell on its own line.
+            // Final newline so the prompt returns to the user's
+            // shell on its own line — stdout, always.
             println!();
-            eprintln!();
-            eprintln!("---");
-            eprintln!(
-                "Generated: {} tokens in {:.1}s ({:.2} tok/s){}",
-                collected.tokens.len(),
-                total_secs,
-                tps,
-                if eos_reached {
-                    " [EOS]"
-                } else {
-                    " [max-tokens reached]"
-                },
-            );
+            // The stats summary is stderr progress: shown by
+            // default, suppressed under --quiet.
+            if !quiet {
+                eprintln!();
+                eprintln!("---");
+                eprintln!(
+                    "Generated: {} tokens in {:.1}s ({:.2} tok/s){}",
+                    collected.tokens.len(),
+                    total_secs,
+                    tps,
+                    if eos_reached {
+                        " [EOS]"
+                    } else {
+                        " [max-tokens reached]"
+                    },
+                );
+            }
             log_counter_summary("Total", total_counter_delta);
         }
         OutputFormat::Json => {
@@ -484,8 +534,12 @@ pub fn run(args: GenerateArgs) -> i32 {
             match serde_json::to_string_pretty(&report) {
                 Ok(s) => println!("{}", s),
                 Err(e) => {
-                    eprintln!("error: failed to serialise report as JSON: {e}");
-                    return 1;
+                    let err = CliError::generation_failed(
+                        "failed to serialise the JSON report",
+                        e.to_string(),
+                    );
+                    eprintln!("{err}");
+                    return err.exit.code();
                 }
             }
         }

@@ -62,7 +62,10 @@
 
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
+use atenia_engine::cli::logging::{self, CliLogConfig};
+use atenia_engine::cli::CliError;
 use atenia_engine::v13::learning_narrative::build_narrative;
 use atenia_engine::v13::learning_snapshot::LearningContextSnapshot;
 use atenia_engine::v13::self_trainer::SelfTrainer;
@@ -96,6 +99,49 @@ Run `atenia <subcommand> --help` for details."
 struct Cli {
     #[command(subcommand)]
     command: Command,
+
+    // ---- CLI-2 global logging flags ----
+    // `global = true` makes every flag accepted in any position,
+    // before or after the subcommand (`atenia --quiet load X` and
+    // `atenia load X --quiet` both work).
+    /// Quiet mode: only human errors on stderr, no progress, no
+    /// banners, no counters.
+    #[arg(long, short = 'q', global = true)]
+    quiet: bool,
+
+    /// Verbose mode: show useful progress steps (log level `info`).
+    #[arg(long, short = 'v', global = true)]
+    verbose: bool,
+
+    /// Debug mode: show resolved configuration and internal
+    /// decisions (log level `debug`).
+    #[arg(long, global = true)]
+    debug: bool,
+
+    /// Trace mode: fine-grained CLI-frontier detail (log level
+    /// `trace`).
+    #[arg(long, global = true)]
+    trace: bool,
+
+    /// Explicit log level — overrides --quiet/--verbose/--debug/
+    /// --trace. One of: error, warn, info, debug, trace.
+    #[arg(long, global = true, value_name = "LEVEL")]
+    log_level: Option<String>,
+
+    /// Also write logs to this file (created if absent, parent
+    /// directories included). Does not affect stdout.
+    #[arg(long, global = true, value_name = "PATH")]
+    log_file: Option<PathBuf>,
+
+    /// Use this trace id for the run instead of an auto-generated
+    /// one.
+    #[arg(long, global = true, value_name = "ID")]
+    trace_id: Option<String>,
+
+    /// Disable colored output. Accepted now; colored output is not
+    /// implemented yet, so this is currently a no-op.
+    #[arg(long, global = true)]
+    no_color: bool,
 }
 
 #[derive(Subcommand)]
@@ -178,6 +224,33 @@ enum Command {
     /// atenia inspect ./models/llama-3.2-1b-instruct
     /// ```
     Inspect(ModelDirArgs),
+
+    /// **CLI-3** — global host + build diagnostics: CPU, RAM,
+    /// CUDA, build flavour, supported formats and quants.
+    Doctor(JsonArgs),
+
+    /// **CLI-3** — pre-flight diagnosis of a model directory
+    /// (format, family, tokenizer, adapter resolution). Does not
+    /// run generation.
+    ///
+    /// ```text
+    /// atenia diagnose --model ./models/llama-3.2-1b-instruct
+    /// ```
+    Diagnose(DiagnoseArgs),
+
+    /// **CLI-3** — list the engine's capabilities: supported
+    /// families, out-of-scope architectures, formats, quants,
+    /// features.
+    Capabilities(JsonArgs),
+
+    /// **CLI-4** — interactive chat REPL against a checkpoint.
+    /// Keeps an in-memory history and applies the model chat
+    /// template. Commands: /help, /history, /reset, /exit.
+    ///
+    /// ```text
+    /// atenia chat --model ./models/llama-3.2-1b-instruct
+    /// ```
+    Chat(ChatArgs),
 }
 
 #[derive(clap::Args)]
@@ -333,6 +406,51 @@ struct ModelDirArgs {
     model_dir: PathBuf,
 }
 
+/// Arguments for `doctor` / `capabilities` — only an output toggle.
+#[derive(clap::Args)]
+struct JsonArgs {
+    /// Emit the report as JSON instead of the human checklist.
+    #[arg(long)]
+    json: bool,
+}
+
+/// Arguments for `diagnose` — a model directory plus an output
+/// toggle.
+#[derive(clap::Args)]
+struct DiagnoseArgs {
+    /// Path to the model directory to diagnose.
+    #[arg(long)]
+    model: PathBuf,
+
+    /// Emit the report as JSON instead of the human checklist.
+    #[arg(long)]
+    json: bool,
+}
+
+/// Arguments for `chat` — the interactive REPL.
+#[derive(clap::Args)]
+struct ChatArgs {
+    /// Path to the model directory (config.json + weights, or a
+    /// directory with a single .gguf file).
+    #[arg(long)]
+    model: PathBuf,
+
+    /// Maximum new tokens per assistant turn.
+    #[arg(long, default_value_t = 256)]
+    max_tokens: usize,
+
+    /// Sampling temperature. Accepted for forward compatibility;
+    /// chat currently uses greedy decoding, so a non-zero value is
+    /// ignored with a warning.
+    #[arg(long, default_value_t = 0.0)]
+    temperature: f32,
+
+    /// Skip the model chat template; use a plain User:/Assistant:
+    /// transcript instead.
+    #[arg(long)]
+    no_chat_template: bool,
+}
+
 /// Output format shared by `probe` and `run`. `text` is the
 /// human-readable banner; `json` is a stable machine-readable
 /// schema documented in `docs/CLI.md` (M4.9.f).
@@ -355,7 +473,62 @@ enum Mode {
 fn main() {
     let cli = Cli::parse();
 
-    let exit_code = match cli.command {
+    // **CLI-2 logging.** Resolve the effective level from the
+    // global flags, then initialise the CLI logger. A bad
+    // `--log-file` is the only failure here; render it like any
+    // other CLI error and exit.
+    let level = match logging::resolve_level(
+        cli.quiet,
+        cli.verbose,
+        cli.debug,
+        cli.trace,
+        cli.log_level.as_deref(),
+    ) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(e.exit.code());
+        }
+    };
+    if let Err(e) = logging::init_cli_logging(CliLogConfig {
+        level,
+        log_file: cli.log_file.clone(),
+        trace_id: cli.trace_id.clone(),
+        no_color: cli.no_color,
+    }) {
+        eprintln!("{e}");
+        std::process::exit(e.exit.code());
+    }
+
+    // **CLI-1 panic boundary.** Install a panic hook that captures
+    // the panic message + location into a slot, then run the
+    // dispatch under `catch_unwind`. An internal panic becomes a
+    // rendered `E-INTERNAL-PANIC` (exit 101) instead of a raw Rust
+    // backtrace dumped at the user. The hook replaces the default
+    // one, so the backtrace is not printed; the captured message
+    // is surfaced in the error's technical details.
+    let panic_slot: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    {
+        let slot = Arc::clone(&panic_slot);
+        std::panic::set_hook(Box::new(move |info| {
+            let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
+                (*s).to_string()
+            } else if let Some(s) = info.payload().downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "unknown panic payload".to_string()
+            };
+            let located = match info.location() {
+                Some(l) => format!("{payload} (at {}:{})", l.file(), l.line()),
+                None => payload,
+            };
+            if let Ok(mut guard) = slot.lock() {
+                *guard = Some(located);
+            }
+        }));
+    }
+
+    let dispatch = std::panic::AssertUnwindSafe(|| match cli.command {
         Command::Probe(args) => run_probe(args),
         Command::Run(args) => run_demo(args),
         Command::Explain(args) => run_explain(args),
@@ -363,17 +536,51 @@ fn main() {
         Command::Load(args) => run_adapter_load(&args.file, false),
         Command::Debug(args) => run_adapter_load(&args.file, true),
         Command::Inspect(args) => run_adapter_inspect(&args.model_dir),
+        Command::Doctor(args) => {
+            atenia_engine::cli::diagnostics::run_doctor(args.json)
+        }
+        Command::Diagnose(args) => {
+            atenia_engine::cli::diagnostics::run_diagnose(&args.model, args.json)
+        }
+        Command::Capabilities(args) => {
+            atenia_engine::cli::diagnostics::run_capabilities(args.json)
+        }
+        Command::Chat(args) => {
+            atenia_engine::cli::chat::run_chat(atenia_engine::cli::chat::ChatArgs {
+                model: args.model,
+                max_tokens: args.max_tokens,
+                temperature: args.temperature,
+                no_chat_template: args.no_chat_template,
+            })
+        }
+    });
+
+    let exit_code = match std::panic::catch_unwind(dispatch) {
+        Ok(code) => code,
+        Err(_) => {
+            let detail = panic_slot
+                .lock()
+                .ok()
+                .and_then(|mut g| g.take())
+                .unwrap_or_else(|| "unknown internal panic".to_string());
+            let err = CliError::internal_panic(detail);
+            eprintln!("{err}");
+            err.exit.code()
+        }
     };
 
     std::process::exit(exit_code);
 }
 
 /// `atenia load` / `atenia debug` — Adapter Toolkit v2 entry point.
-/// Prints the adapter report to stdout, or a typed error to stderr.
-/// Exit 0 on success, 2 on any toolkit error (matches the
-/// missing-config.json convention used by `generate`).
+/// Prints the adapter report to stdout on success, or a rendered
+/// [`CliError`] to stderr. The exit code is set by the CLI error
+/// layer: 2 for spec/adapter/validation faults, 1 for I/O faults.
 fn run_adapter_load(file: &std::path::Path, verbose: bool) -> i32 {
     use atenia_engine::adapter_toolkit::{run_debug, run_load};
+    let cmd = if verbose { "debug" } else { "load" };
+    logging::info(&format!("command start: {cmd}"));
+    logging::debug(&format!("adapter spec file: {}", file.display()));
     let result = if verbose {
         run_debug(file)
     } else {
@@ -382,27 +589,44 @@ fn run_adapter_load(file: &std::path::Path, verbose: bool) -> i32 {
     match result {
         Ok(report) => {
             println!("{report}");
+            logging::info(&format!("command completed: {cmd}"));
             0
         }
         Err(e) => {
-            eprintln!("error: {e}");
-            2
+            // Boundary translation: ToolkitError -> CliError. The
+            // toolkit itself is unchanged.
+            let err = CliError::from(e);
+            eprintln!("{err}");
+            err.exit.code()
         }
     }
 }
 
 /// `atenia inspect` — Adapter Toolkit v2 auto-detection. Emits a
-/// loadable YAML DSL plus a resolved-spec preview to stdout.
+/// loadable YAML DSL plus a resolved-spec preview to stdout, or a
+/// rendered [`CliError`] to stderr.
 fn run_adapter_inspect(model_dir: &std::path::Path) -> i32 {
-    use atenia_engine::adapter_toolkit::run_inspect;
+    use atenia_engine::adapter_toolkit::{run_inspect, ToolkitError};
+    logging::info("command start: inspect");
+    logging::debug(&format!("model directory: {}", model_dir.display()));
     match run_inspect(model_dir) {
         Ok(report) => {
             println!("{report}");
+            logging::info("command completed: inspect");
             0
         }
         Err(e) => {
-            eprintln!("error: {e}");
-            2
+            // `inspect` reads a model *directory*, not a spec file.
+            // The generic `ToolkitError::Io` -> `CliError` mapping
+            // is worded for spec files, so re-word the I/O case
+            // here for the inspect context. Other variants keep
+            // the shared mapping.
+            let err = match e {
+                ToolkitError::Io(msg) => CliError::adapter_inspect_failed(msg),
+                other => CliError::from(other),
+            };
+            eprintln!("{err}");
+            err.exit.code()
         }
     }
 }
