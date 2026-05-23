@@ -121,7 +121,7 @@ jobs:
           "$hash  ${{ matrix.asset }}.${{ matrix.archive_ext }}" | Out-File -Encoding ascii "${{ matrix.asset }}.${{ matrix.archive_ext }}.sha256"
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.asset }}
           path: |
@@ -138,7 +138,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - name: Download all build artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
           path: dist
           merge-multiple: true
