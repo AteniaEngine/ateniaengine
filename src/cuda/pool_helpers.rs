@@ -23,6 +23,11 @@
 //! wired into Rust-side dispatchers that remain vendor-neutral above
 //! this boundary.
 
+// FFI bindings below mirror CUDA C symbol names verbatim (`cudaMemcpy`).
+// Renaming them would break linker resolution; silence the snake_case
+// lint module-wide.
+#![allow(non_snake_case)]
+
 use std::ffi::c_void;
 use std::mem;
 use std::os::raw::c_int;

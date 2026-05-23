@@ -1,5 +1,15 @@
+// FFI bindings in this module mirror CUDA / cuBLAS C symbol names
+// verbatim (e.g. `cudaMemcpy`, `cublasGemmEx`). Renaming them would
+// break the linker resolution, so the conventional Rust snake_case
+// lint is silenced module-wide rather than per declaration.
+#![allow(non_snake_case)]
+
 use std::ffi::c_void;
 use std::os::raw::c_int;
+// `OnceLock` is only referenced from the cuBLAS handle singleton, which
+// is itself `#[cfg(atenia_cuda)]`-gated. Gate the import the same way so
+// CPU-only builds do not flag it as unused.
+#[cfg(atenia_cuda)]
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
