@@ -44,7 +44,7 @@ jobs:
             archive_ext: zip
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Rust toolchain (stable, edition 2024 needs >= 1.85)
         uses: dtolnay/rust-toolchain@stable
@@ -121,7 +121,7 @@ jobs:
           "$hash  ${{ matrix.asset }}.${{ matrix.archive_ext }}" | Out-File -Encoding ascii "${{ matrix.asset }}.${{ matrix.archive_ext }}.sha256"
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ${{ matrix.asset }}
           path: |
@@ -138,7 +138,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - name: Download all build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: dist
           merge-multiple: true
@@ -147,7 +147,7 @@ jobs:
         run: ls -la dist
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/*.tar.gz
