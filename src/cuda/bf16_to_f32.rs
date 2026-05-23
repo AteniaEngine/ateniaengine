@@ -23,6 +23,11 @@
 //! `cuda_available()` guard. Encapsulating it here keeps every
 //! future caller on the same vetted error-handling chain.
 
+// FFI bindings below mirror CUDA C symbol names verbatim
+// (`cudaMemGetInfo`, `cudaGetErrorString`, ...). Renaming them would
+// break linker resolution; silence the snake_case lint module-wide.
+#![allow(non_snake_case)]
+
 use std::ffi::c_void;
 #[cfg(atenia_cuda)]
 use std::ffi::CStr;
