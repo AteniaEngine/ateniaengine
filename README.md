@@ -72,23 +72,33 @@ model download.)
 
 #### Option A — Download a prebuilt binary (recommended)
 
-CPU-only binaries for Windows and Linux ship with every release:
+CPU-only binaries for Windows and Linux ship with every release.
+Pick the latest from
+[github.com/AteniaEngine/ateniaengine/releases/latest](https://github.com/AteniaEngine/ateniaengine/releases/latest).
+
+**Linux (x86_64):**
 
 ```bash
-# Pick your platform from the latest release:
-#   https://github.com/AteniaEngine/ateniaengine/releases
-# Linux:
+curl -LO https://github.com/AteniaEngine/ateniaengine/releases/latest/download/atenia-linux-x86_64.tar.gz
+curl -LO https://github.com/AteniaEngine/ateniaengine/releases/latest/download/atenia-linux-x86_64.tar.gz.sha256
+sha256sum -c atenia-linux-x86_64.tar.gz.sha256
 tar -xzf atenia-linux-x86_64.tar.gz
 cd atenia-linux-x86_64
 ./atenia doctor
-
-# Windows:
-#   unzip atenia-windows-x86_64.zip
-#   atenia.exe doctor
 ```
 
-Each archive bundles `atenia`, `README.md`, `LICENSE`, `CLI.md` and a
-`QUICKSTART.txt`. A matching `.sha256` is published next to each archive.
+**Windows (x86_64, PowerShell):**
+
+```powershell
+Invoke-WebRequest -Uri https://github.com/AteniaEngine/ateniaengine/releases/latest/download/atenia-windows-x86_64.zip -OutFile atenia-windows-x86_64.zip
+Expand-Archive atenia-windows-x86_64.zip -DestinationPath .
+cd atenia-windows-x86_64
+.\atenia.exe doctor
+```
+
+Each archive bundles the `atenia` binary plus `README.md`, `LICENSE`,
+`CLI.md` and a `QUICKSTART.txt`. A matching `.sha256` is published
+alongside every archive — verify it before running on production hosts.
 
 #### Option B — Build from source (required for CUDA)
 
