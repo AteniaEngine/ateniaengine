@@ -1,0 +1,159 @@
+name: Release
+
+# Produces CPU-only prebuilt binaries for the public `atenia` CLI.
+#
+# Triggers:
+#   - `git tag vX.Y.Z && git push origin vX.Y.Z` (canonical: publishes to Releases)
+#   - manual `workflow_dispatch` (smoke-tests the matrix without publishing)
+#
+# The build relies on the CPU-only fallback path in `build.rs`: when no CUDA
+# toolkit is detected the script returns early, the `atenia_cuda` cfg is not
+# emitted, and the CPU FFI stubs are compiled. This matches the contract
+# already enforced as a blocking job in `ci.yml` (`cpu-only`).
+#
+# Engine and CLI behavior are not modified; this workflow only packages the
+# existing binary.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: write  # required to upload assets to GitHub Releases
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bin: atenia
+            asset: atenia-linux-x86_64
+            archive_ext: tar.gz
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            bin: atenia.exe
+            asset: atenia-windows-x86_64
+            archive_ext: zip
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain (stable, edition 2024 needs >= 1.85)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      # CPU-only release build. `build.rs` auto-falls-back when no CUDA is
+      # detected; `cargo build --release --bin atenia` is the same command
+      # `cargo install` uses, so we ship exactly what end users would build.
+      - name: Build release binary (CPU-only)
+        run: cargo build --release --bin atenia --target ${{ matrix.target }}
+
+      - name: Strip binary (Linux only)
+        if: runner.os == 'Linux'
+        run: strip target/${{ matrix.target }}/release/${{ matrix.bin }}
+
+      # Smoke tests must pass before the artifact is packaged. `doctor` and
+      # `capabilities` exercise the CLI front-end without needing a model.
+      - name: Smoke test — atenia doctor
+        shell: bash
+        run: ./target/${{ matrix.target }}/release/${{ matrix.bin }} doctor
+
+      - name: Smoke test — atenia capabilities --json
+        shell: bash
+        run: ./target/${{ matrix.target }}/release/${{ matrix.bin }} capabilities --json > /dev/null
+
+      - name: Smoke test — atenia --version
+        shell: bash
+        run: ./target/${{ matrix.target }}/release/${{ matrix.bin }} --version
+
+      - name: Stage release directory
+        shell: bash
+        run: |
+          mkdir -p "dist/${{ matrix.asset }}"
+          cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "dist/${{ matrix.asset }}/"
+          cp README.md LICENSE "dist/${{ matrix.asset }}/"
+          cp docs/CLI.md "dist/${{ matrix.asset }}/CLI.md"
+          cat > "dist/${{ matrix.asset }}/QUICKSTART.txt" <<'EOF'
+          Atenia Engine — Quick Start
+
+          1. Run:
+             atenia doctor
+
+          2. Download a model
+             Place a Hugging Face checkpoint directory under ./models/
+             (e.g. SmolLM2-135M, Llama-3.2-1B, Qwen2.5-0.5B, ...)
+
+          3. Run:
+             atenia chat --model ./models/<your-model>
+
+          See CLI.md for the full command reference.
+          EOF
+
+      - name: Pack archive (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          cd dist
+          tar -czf "${{ matrix.asset }}.${{ matrix.archive_ext }}" "${{ matrix.asset }}"
+          sha256sum "${{ matrix.asset }}.${{ matrix.archive_ext }}" > "${{ matrix.asset }}.${{ matrix.archive_ext }}.sha256"
+
+      - name: Pack archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Set-Location dist
+          Compress-Archive -Path "${{ matrix.asset }}" -DestinationPath "${{ matrix.asset }}.${{ matrix.archive_ext }}"
+          $hash = (Get-FileHash "${{ matrix.asset }}.${{ matrix.archive_ext }}" -Algorithm SHA256).Hash.ToLower()
+          "$hash  ${{ matrix.asset }}.${{ matrix.archive_ext }}" | Out-File -Encoding ascii "${{ matrix.asset }}.${{ matrix.archive_ext }}.sha256"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: |
+            dist/${{ matrix.asset }}.${{ matrix.archive_ext }}
+            dist/${{ matrix.asset }}.${{ matrix.archive_ext }}.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    # Only publish when a real version tag was pushed. `workflow_dispatch`
+    # runs the build matrix as a dry-run without touching Releases.
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List staged release assets
+        run: ls -la dist
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+            dist/*.zip
+            dist/*.zip.sha256
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
