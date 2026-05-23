@@ -70,6 +70,28 @@ model download.)
 
 ### 1. Install
 
+#### Option A — Download a prebuilt binary (recommended)
+
+CPU-only binaries for Windows and Linux ship with every release:
+
+```bash
+# Pick your platform from the latest release:
+#   https://github.com/AteniaEngine/ateniaengine/releases
+# Linux:
+tar -xzf atenia-linux-x86_64.tar.gz
+cd atenia-linux-x86_64
+./atenia doctor
+
+# Windows:
+#   unzip atenia-windows-x86_64.zip
+#   atenia.exe doctor
+```
+
+Each archive bundles `atenia`, `README.md`, `LICENSE`, `CLI.md` and a
+`QUICKSTART.txt`. A matching `.sha256` is published next to each archive.
+
+#### Option B — Build from source (required for CUDA)
+
 ```bash
 git clone https://github.com/AteniaEngine/ateniaengine.git
 cd ateniaengine
@@ -79,7 +101,8 @@ cargo install --path .
 The build script auto-detects CUDA Toolkit and (on Windows) MSVC
 BuildTools. Override via `CUDA_PATH` / `MSVC_TOOLS_PATH` if
 detection fails. The core also builds with **no CUDA toolkit
-installed** (CPU path).
+installed** (CPU path) — that is the configuration the prebuilt
+binaries above use.
 
 Verify your host before running models:
 
@@ -114,6 +137,21 @@ atenia chat --model ./models/llama-3.2-1b-instruct
 
 An interactive multi-turn REPL — type `/help` for commands, `/exit`
 to leave. Responses stream token-by-token to stdout.
+
+### Docker (optional)
+
+A CPU-only `Dockerfile` is included for zero-setup trials. The image
+mounts your models directory at `/models`:
+
+```bash
+docker build -t atenia .
+docker run --rm atenia doctor
+docker run --rm -v "$(pwd)/models:/models" atenia \
+    generate --model /models/<your-model> --prompt "Hello"
+```
+
+GPU acceleration still requires Option B (build from source on a host
+with CUDA); the image is intended as a quick way to try the CLI.
 
 ### Reproduce the beyond-VRAM demo
 
