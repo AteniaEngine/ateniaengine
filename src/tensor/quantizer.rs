@@ -278,6 +278,299 @@ pub fn as_cpu_int8_view(tensor: &Tensor) -> Option<(&[i8], &[f32], &[usize], usi
     }
 }
 
+// ============================================================================
+// M10β.1 — CPU-only outlier-decomposition spike.
+//
+// Experimental scaffolding for Track β of the M9 INT8 follow-up
+// (`docs/HANDOFF_APX_V20_M9.md` §10). The M9 4-model F64 fixture
+// showed that absmax INT8 (per-channel and per-group) cannot
+// satisfy ADR-004 strict on Llama-family weights: a small number
+// of outlier columns dominate the per-column `max(|W|)`, crushing
+// the resolution of every other column to ~5 effective bits.
+//
+// This module's hypothesis: if we *remove* the top-k highest-
+// magnitude columns from the INT8 base and preserve them exactly
+// in a small dense F32 sidecar, the remaining absmax scales tighten
+// and per-element drift drops sharply.
+//
+// **Scope contract (β.1).** CPU-only. No storage variant change.
+// No loader / tier-planner / numcert / CUDA integration. The whole
+// module is dead code at runtime — only consumed by the unit
+// tests below and (future) the β.2 storage step.
+//
+// **The math** for a row-major `[K, N]` weight `W`, threshold k:
+//
+// ```text
+//     c[n] = max_k(|W[k, n]|)                       (per-column absmax)
+//     S    = top_k_indices(c)                       (set of outlier columns)
+//     W'   = W with columns in S zeroed             (cleaned base)
+//     (q, scales) = absmax_per_group_symmetric(W', shape, group_size)
+//     O[k, j] = W[k, S[j]]   for j in [0, |S|)      (dense sidecar)
+//
+//     reconstruct(k, n) = dequant(q, scales)[k, n]   if n ∉ S
+//                       = O[k, index_in_S(n)]        if n ∈ S
+// ```
+//
+// `outlier_values` is **row-major `K × |S|`**: the j-th outlier
+// column's K values land at offsets `[0..K] * |S| + j`. This is
+// the layout that makes the reconstruction inner loop (over `j`)
+// stride-1.
+
+/// Errors returned by [`decompose_outliers_topk_by_absmax`]. The
+/// spike uses an inline enum (rather than panicking like the
+/// pre-existing absmax helpers) because the validation surface is
+/// richer and the experimental path benefits from being driveable
+/// from tests without `catch_unwind`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutlierDecompositionError {
+    /// `shape` is not exactly 2 axes. The β.1 spike only handles
+    /// `[K, N]`; higher-rank fallthrough is future work.
+    NotTwoDimensional { rank: usize },
+    /// `values.len() != K * N` for the given shape.
+    LengthMismatch {
+        expected: usize,
+        actual: usize,
+    },
+    /// `group_size == 0`.
+    InvalidGroupSize,
+    /// `k > N` — cannot pick more outlier columns than the matrix
+    /// has columns to begin with.
+    OutlierKExceedsColumns { k: usize, n: usize },
+}
+
+impl std::fmt::Display for OutlierDecompositionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OutlierDecompositionError::NotTwoDimensional { rank } => write!(
+                f,
+                "decompose_outliers_topk_by_absmax: shape must be 2D (got rank {rank})"
+            ),
+            OutlierDecompositionError::LengthMismatch { expected, actual } => write!(
+                f,
+                "decompose_outliers_topk_by_absmax: values.len() = {actual} does not match K * N = {expected}"
+            ),
+            OutlierDecompositionError::InvalidGroupSize => write!(
+                f,
+                "decompose_outliers_topk_by_absmax: group_size must be > 0"
+            ),
+            OutlierDecompositionError::OutlierKExceedsColumns { k, n } => write!(
+                f,
+                "decompose_outliers_topk_by_absmax: k = {k} exceeds N = {n}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for OutlierDecompositionError {}
+
+/// One outlier-decomposed weight. Carries the INT8 per-group base
+/// + a dense F32 sidecar of preserved-exactly columns.
+///
+/// β.1 uses F32 in the sidecar so the spike can isolate the
+/// numerical question from any subsequent BF16 packing question
+/// (which belongs to β.2 storage work). Memory footprint is
+/// therefore worse than what β.2 will end at; the spike is not
+/// trying to win on bytes.
+#[derive(Debug, Clone)]
+pub struct OutlierDecomposition {
+    /// INT8 base — same layout / semantics as the existing
+    /// [`absmax_per_group_symmetric`] output. Length `K * N`.
+    pub q: Vec<i8>,
+    /// Per-(group, column) scales. Length
+    /// `ceil(K / group_size) * N`. Outlier columns' entries are
+    /// `1e-12` clamp values (their `q` rows are zeroed in
+    /// [`decompose_outliers_topk_by_absmax`]).
+    pub scales: Vec<f32>,
+    /// Original shape `[K, N]`.
+    pub shape: Vec<usize>,
+    /// Group size along the K axis (matches the M9.4 contract).
+    pub group_size: usize,
+    /// Sorted-ascending list of column indices preserved in the
+    /// sidecar. Length `M = min(k, N)`.
+    pub outlier_cols: Vec<usize>,
+    /// **Row-major `K × M`** dense F32 sidecar. Element
+    /// `(row, j)` lives at offset `row * M + j` and equals the
+    /// original `values[row * N + outlier_cols[j]]`.
+    pub outlier_values: Vec<f32>,
+}
+
+impl OutlierDecomposition {
+    /// `M`, the number of outlier columns actually preserved.
+    pub fn outlier_count(&self) -> usize {
+        self.outlier_cols.len()
+    }
+}
+
+/// **M10β.1** — decompose a 2D weight into an INT8 per-group base
+/// plus a top-k dense outlier sidecar.
+///
+/// `k = 0` is the boundary case that produces an empty sidecar
+/// and a pure-INT8 base; `k = N` produces zero INT8 quality (all
+/// columns are outliers) and an exact-reconstruction sidecar.
+/// Anything in between is the experimental regime.
+///
+/// Ties on per-column absmax are broken by lower index first
+/// (deterministic). NaN / inf inputs are not validated — same
+/// contract as [`absmax_per_group_symmetric`].
+pub fn decompose_outliers_topk_by_absmax(
+    values: &[f32],
+    shape: &[usize],
+    group_size: usize,
+    k: usize,
+) -> Result<OutlierDecomposition, OutlierDecompositionError> {
+    if shape.len() != 2 {
+        return Err(OutlierDecompositionError::NotTwoDimensional { rank: shape.len() });
+    }
+    if group_size == 0 {
+        return Err(OutlierDecompositionError::InvalidGroupSize);
+    }
+    let (k_rows, n_cols) = (shape[0], shape[1]);
+    let expected = k_rows * n_cols;
+    if values.len() != expected {
+        return Err(OutlierDecompositionError::LengthMismatch {
+            expected,
+            actual: values.len(),
+        });
+    }
+    if k > n_cols {
+        return Err(OutlierDecompositionError::OutlierKExceedsColumns { k, n: n_cols });
+    }
+
+    // Per-column absmax sweep. Bypassed when the matrix is empty.
+    let mut col_absmax: Vec<f32> = vec![0.0; n_cols];
+    if k_rows > 0 && n_cols > 0 {
+        for row in 0..k_rows {
+            for col in 0..n_cols {
+                let v = values[row * n_cols + col].abs();
+                if v > col_absmax[col] {
+                    col_absmax[col] = v;
+                }
+            }
+        }
+    }
+
+    // Pick the top-k column indices by absmax. Tie-break by lower
+    // column index first so the function is deterministic.
+    let mut indexed: Vec<(usize, f32)> =
+        col_absmax.iter().copied().enumerate().collect();
+    indexed.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.0.cmp(&b.0))
+    });
+    let actual_k = k.min(n_cols);
+    let mut outlier_cols: Vec<usize> = indexed.into_iter().take(actual_k).map(|(i, _)| i).collect();
+    outlier_cols.sort_unstable();
+
+    // Build the dense sidecar `O[row, j] = values[row, outlier_cols[j]]`.
+    let m = outlier_cols.len();
+    let mut outlier_values: Vec<f32> = vec![0.0; k_rows * m];
+    if m > 0 && k_rows > 0 {
+        for row in 0..k_rows {
+            for (j, &col) in outlier_cols.iter().enumerate() {
+                outlier_values[row * m + j] = values[row * n_cols + col];
+            }
+        }
+    }
+
+    // Build the cleaned base: copy of `values` with outlier columns
+    // zeroed. This is what gets handed to the existing per-group
+    // absmax quantiser — the M9.4 algorithm is reused unchanged.
+    let mut cleaned: Vec<f32> = values.to_vec();
+    if m > 0 && k_rows > 0 {
+        // `outlier_cols` is sorted ascending; binary_search is
+        // O(log M) per (row, col). For the spike this is fine; β.2
+        // can replace with a bitmap when the storage settles.
+        for row in 0..k_rows {
+            for col in 0..n_cols {
+                if outlier_cols.binary_search(&col).is_ok() {
+                    cleaned[row * n_cols + col] = 0.0;
+                }
+            }
+        }
+    }
+
+    let (q, scales) = absmax_per_group_symmetric(&cleaned, shape, group_size);
+
+    Ok(OutlierDecomposition {
+        q,
+        scales,
+        shape: shape.to_vec(),
+        group_size,
+        outlier_cols,
+        outlier_values,
+    })
+}
+
+/// Reconstruct the full `[K, N]` matrix as a row-major `Vec<f32>`.
+///
+/// Dequantises the INT8 base into a fresh buffer, then overwrites
+/// the outlier-column slots with the exact F32 sidecar values.
+/// Equivalent (numerically) to evaluating
+/// `dequant(q, scales) · (I − P_S) + W_O · P_S` where `P_S` is the
+/// projection onto outlier columns and `W_O` is the sidecar.
+pub fn reconstruct_outlier_decomposition(decomp: &OutlierDecomposition) -> Vec<f32> {
+    let (k_rows, n_cols) = (decomp.shape[0], decomp.shape[1]);
+    let mut out: Vec<f32> = vec![0.0; k_rows * n_cols];
+    if k_rows == 0 || n_cols == 0 {
+        return out;
+    }
+
+    // Dequant the INT8 base.
+    for row in 0..k_rows {
+        let g = row / decomp.group_size;
+        for col in 0..n_cols {
+            let s = decomp.scales[g * n_cols + col];
+            out[row * n_cols + col] = (decomp.q[row * n_cols + col] as f32) * s;
+        }
+    }
+
+    // Splice the outlier sidecar over the top.
+    let m = decomp.outlier_cols.len();
+    for (j, &col) in decomp.outlier_cols.iter().enumerate() {
+        for row in 0..k_rows {
+            out[row * n_cols + col] = decomp.outlier_values[row * m + j];
+        }
+    }
+
+    out
+}
+
+/// Naive `[B, K] × [K, N]` row-major matmul against a
+/// reconstructed [`OutlierDecomposition`]. O(BKN) — for the β.1
+/// spike tests only. Not exposed to the runtime, not on the hot
+/// path of anything; β.6 will introduce a CUDA mixed-precision
+/// kernel that fuses the two products.
+pub fn matmul_outlier_decomposition_cpu(
+    lhs: &[f32],
+    lhs_shape: &[usize],
+    rhs: &OutlierDecomposition,
+) -> Vec<f32> {
+    assert_eq!(
+        lhs_shape.len(),
+        2,
+        "matmul_outlier_decomposition_cpu: lhs must be 2D"
+    );
+    let (b, k_lhs) = (lhs_shape[0], lhs_shape[1]);
+    let (k_rhs, n) = (rhs.shape[0], rhs.shape[1]);
+    assert_eq!(
+        k_lhs, k_rhs,
+        "matmul_outlier_decomposition_cpu: lhs cols ({k_lhs}) != rhs rows ({k_rhs})"
+    );
+    let w = reconstruct_outlier_decomposition(rhs);
+    let mut out = vec![0.0_f32; b * n];
+    for i in 0..b {
+        for j in 0..n {
+            let mut acc = 0.0_f32;
+            for kk in 0..k_lhs {
+                acc += lhs[i * k_lhs + kk] * w[kk * n + j];
+            }
+            out[i * n + j] = acc;
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -633,5 +926,277 @@ mod tests {
     fn m9_4_per_group_rejects_zero_group_size() {
         let r = std::panic::catch_unwind(|| absmax_per_group_symmetric(&[0.0_f32; 4], &[2, 2], 0));
         assert!(r.is_err(), "expected panic on group_size = 0");
+    }
+
+    // ====================================================================
+    // M10β.1 — outlier-decomposition spike tests
+    // ====================================================================
+
+    /// Compute max(|a - b|) over two same-length slices. Helper for
+    /// the error-reduction assertions below.
+    fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
+        assert_eq!(a.len(), b.len(), "max_abs_diff: length mismatch");
+        a.iter()
+            .zip(b.iter())
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0_f32, f32::max)
+    }
+
+    /// Build a 2D matrix where a handful of columns carry values
+    /// orders of magnitude larger than the bulk — the regime that
+    /// crushes plain absmax INT8 (HANDOFF_M9 §4 root-cause).
+    fn synth_outlier_matrix(
+        k: usize,
+        n: usize,
+        outlier_cols: &[usize],
+        bulk_scale: f32,
+        outlier_scale: f32,
+    ) -> Vec<f32> {
+        let mut w = vec![0.0_f32; k * n];
+        for row in 0..k {
+            for col in 0..n {
+                // Pseudo-random-ish but reproducible: a small,
+                // deterministic spread around zero.
+                let idx = (row * n + col) as i32;
+                let bit = ((idx.wrapping_mul(1103515245).wrapping_add(12345) >> 7) & 0xff) as f32;
+                let base = (bit - 128.0) / 128.0; // ∈ [-1, ~1)
+                let scale = if outlier_cols.contains(&col) {
+                    outlier_scale
+                } else {
+                    bulk_scale
+                };
+                w[row * n + col] = base * scale;
+            }
+        }
+        // Inject extreme spikes on a couple of rows in each outlier
+        // column to guarantee the absmax detector picks them.
+        for &col in outlier_cols {
+            if k > 0 {
+                w[col] = outlier_scale * 2.0; // row 0
+            }
+            if k > 1 {
+                w[1 * n + col] = -outlier_scale * 2.0;
+            }
+        }
+        w
+    }
+
+    #[test]
+    fn decompose_outliers_topk_preserves_selected_columns() {
+        let k = 8;
+        let n = 6;
+        let outliers = vec![1usize, 4];
+        let w = synth_outlier_matrix(k, n, &outliers, 0.1, 10.0);
+
+        let d = decompose_outliers_topk_by_absmax(&w, &[k, n], 4, 2).unwrap();
+
+        // Top-2 by absmax with this synthesis must be columns 1 and 4.
+        assert_eq!(d.outlier_cols, outliers);
+        // Sidecar layout: [K, M=2] row-major, j-th column = original
+        // values at outlier_cols[j].
+        assert_eq!(d.outlier_values.len(), k * 2);
+        for row in 0..k {
+            for (j, &col) in d.outlier_cols.iter().enumerate() {
+                assert_eq!(
+                    d.outlier_values[row * 2 + j],
+                    w[row * n + col],
+                    "sidecar mismatch at (row={row}, j={j})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn decompose_outliers_reconstructs_outlier_columns_exactly() {
+        let k = 6;
+        let n = 5;
+        let outliers = vec![0usize, 3];
+        let w = synth_outlier_matrix(k, n, &outliers, 0.05, 8.0);
+
+        let d = decompose_outliers_topk_by_absmax(&w, &[k, n], 3, 2).unwrap();
+        let recon = reconstruct_outlier_decomposition(&d);
+
+        // Outlier-column slots must round-trip with zero error.
+        for row in 0..k {
+            for &col in &outliers {
+                let lhs = recon[row * n + col];
+                let rhs = w[row * n + col];
+                assert_eq!(
+                    lhs, rhs,
+                    "outlier col {col} row {row} should reconstruct bit-exact (got {lhs}, want {rhs})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn decompose_outliers_zero_k_matches_pure_int8_envelope() {
+        let k = 8;
+        let n = 6;
+        let w = synth_outlier_matrix(k, n, &[], 0.5, 0.5);
+
+        // k=0 → empty sidecar, base is the standard per-group quant.
+        let d = decompose_outliers_topk_by_absmax(&w, &[k, n], 4, 0).unwrap();
+        assert!(d.outlier_cols.is_empty());
+        assert!(d.outlier_values.is_empty());
+
+        let recon = reconstruct_outlier_decomposition(&d);
+        let (q_ref, s_ref) = absmax_per_group_symmetric(&w, &[k, n], 4);
+        // Manually dequant the reference and compare element-wise.
+        let mut ref_recon = vec![0.0_f32; k * n];
+        for row in 0..k {
+            let g = row / 4;
+            for col in 0..n {
+                ref_recon[row * n + col] =
+                    (q_ref[row * n + col] as f32) * s_ref[g * n + col];
+            }
+        }
+        assert_eq!(
+            recon, ref_recon,
+            "k=0 path must be numerically identical to absmax_per_group_symmetric"
+        );
+    }
+
+    #[test]
+    fn decompose_outliers_k_equals_n_reconstructs_exactly() {
+        let k = 5;
+        let n = 4;
+        let w = synth_outlier_matrix(k, n, &[1, 3], 0.4, 7.0);
+
+        // k=N → every column is a sidecar column → reconstruction
+        // is bit-exact regardless of the INT8 base.
+        let d = decompose_outliers_topk_by_absmax(&w, &[k, n], 2, n).unwrap();
+        assert_eq!(d.outlier_cols.len(), n);
+        let recon = reconstruct_outlier_decomposition(&d);
+        assert_eq!(
+            recon, w,
+            "k=N must round-trip the input exactly via the sidecar"
+        );
+    }
+
+    #[test]
+    fn decompose_outliers_reduces_error_vs_plain_int8_on_outlier_matrix() {
+        // The headline assertion: on a matrix with two strong
+        // outlier columns, splitting them out of the INT8 base
+        // must reduce the reconstruction error by a clear margin
+        // versus M9.4's `absmax_per_group_symmetric` baseline.
+        let k = 32;
+        let n = 16;
+        let outliers = vec![5usize, 12];
+        let w = synth_outlier_matrix(k, n, &outliers, 0.1, 50.0);
+
+        // Plain INT8 per-group, group_size=8.
+        let (q_plain, s_plain) = absmax_per_group_symmetric(&w, &[k, n], 8);
+        let mut plain_recon = vec![0.0_f32; k * n];
+        for row in 0..k {
+            let g = row / 8;
+            for col in 0..n {
+                plain_recon[row * n + col] =
+                    (q_plain[row * n + col] as f32) * s_plain[g * n + col];
+            }
+        }
+        let plain_max_err = max_abs_diff(&plain_recon, &w);
+
+        // Outlier-decomposed, k=2 (matches the two synthesised
+        // outliers).
+        let d = decompose_outliers_topk_by_absmax(&w, &[k, n], 8, 2).unwrap();
+        let recon = reconstruct_outlier_decomposition(&d);
+        let decomp_max_err = max_abs_diff(&recon, &w);
+
+        // Outlier decomposition must clear the bar by a wide
+        // margin: the synthesised outliers are 500× the bulk,
+        // and isolating them should make the remaining base
+        // resolution ~250× better. Assert at least 10× improvement
+        // to leave headroom for the rounding noise floor.
+        assert!(
+            decomp_max_err * 10.0 < plain_max_err,
+            "outlier decomposition should be ≥10× better; got \
+             plain={plain_max_err} decomp={decomp_max_err}"
+        );
+
+        // Sanity: even when the matmul goes through the
+        // reconstructed weight, the error stays bounded.
+        let b = 3;
+        let lhs: Vec<f32> = (0..(b * k))
+            .map(|i| (((i as i32 * 11) % 17) as f32) / 5.0 - 1.6)
+            .collect();
+        let y_true = {
+            let mut y = vec![0.0_f32; b * n];
+            for i in 0..b {
+                for j in 0..n {
+                    let mut acc = 0.0_f32;
+                    for kk in 0..k {
+                        acc += lhs[i * k + kk] * w[kk * n + j];
+                    }
+                    y[i * n + j] = acc;
+                }
+            }
+            y
+        };
+        let y_decomp = matmul_outlier_decomposition_cpu(&lhs, &[b, k], &d);
+        let y_plain = {
+            let mut y = vec![0.0_f32; b * n];
+            for i in 0..b {
+                for j in 0..n {
+                    let mut acc = 0.0_f32;
+                    for kk in 0..k {
+                        acc += lhs[i * k + kk] * plain_recon[kk * n + j];
+                    }
+                    y[i * n + j] = acc;
+                }
+            }
+            y
+        };
+        let mm_plain_err = max_abs_diff(&y_plain, &y_true);
+        let mm_decomp_err = max_abs_diff(&y_decomp, &y_true);
+        assert!(
+            mm_decomp_err * 5.0 < mm_plain_err,
+            "matmul error after decomp should be ≥5× better; got \
+             plain_mm={mm_plain_err} decomp_mm={mm_decomp_err}"
+        );
+    }
+
+    #[test]
+    fn decompose_outliers_rejects_non_2d_shape() {
+        let err = decompose_outliers_topk_by_absmax(&[0.0_f32; 6], &[2, 3, 1], 2, 1).unwrap_err();
+        assert!(matches!(
+            err,
+            OutlierDecompositionError::NotTwoDimensional { rank: 3 }
+        ));
+        let err = decompose_outliers_topk_by_absmax(&[0.0_f32; 4], &[4], 2, 1).unwrap_err();
+        assert!(matches!(
+            err,
+            OutlierDecompositionError::NotTwoDimensional { rank: 1 }
+        ));
+    }
+
+    #[test]
+    fn decompose_outliers_rejects_invalid_k() {
+        // k > N is rejected.
+        let err = decompose_outliers_topk_by_absmax(&[0.0_f32; 6], &[3, 2], 1, 3).unwrap_err();
+        assert!(matches!(
+            err,
+            OutlierDecompositionError::OutlierKExceedsColumns { k: 3, n: 2 }
+        ));
+        // k == N is allowed (boundary, asserted above in its own test).
+        assert!(decompose_outliers_topk_by_absmax(&[0.0_f32; 6], &[3, 2], 1, 2).is_ok());
+    }
+
+    #[test]
+    fn decompose_outliers_rejects_invalid_group_size() {
+        let err = decompose_outliers_topk_by_absmax(&[0.0_f32; 4], &[2, 2], 0, 1).unwrap_err();
+        assert!(matches!(err, OutlierDecompositionError::InvalidGroupSize));
+    }
+
+    #[test]
+    fn decompose_outliers_rejects_length_mismatch() {
+        let err = decompose_outliers_topk_by_absmax(&[0.0_f32; 5], &[2, 3], 1, 1).unwrap_err();
+        assert!(matches!(
+            err,
+            OutlierDecompositionError::LengthMismatch {
+                expected: 6,
+                actual: 5
+            }
+        ));
     }
 }
