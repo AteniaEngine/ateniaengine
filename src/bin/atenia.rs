@@ -251,6 +251,20 @@ enum Command {
     /// atenia chat --model ./models/llama-3.2-1b-instruct
     /// ```
     Chat(ChatArgs),
+
+    /// **CLI-6** — download a curated, public Hugging Face
+    /// checkpoint and place it under `./models/<alias>/`.
+    ///
+    /// Use the literal alias `list` to print the available
+    /// catalog instead of downloading.
+    ///
+    /// ```text
+    /// atenia download list
+    /// atenia download tinyllama
+    /// atenia download smollm2-135m --dir ./scratch/sm
+    /// atenia download tinyllama --dry-run
+    /// ```
+    Download(DownloadArgs),
 }
 
 #[derive(clap::Args)]
@@ -427,6 +441,33 @@ struct DiagnoseArgs {
     json: bool,
 }
 
+/// Arguments for `download` — curated model fetcher.
+#[derive(clap::Args)]
+struct DownloadArgs {
+    /// Curated alias (run `atenia download list` to see the
+    /// available ones), or the literal token `list`.
+    alias: String,
+
+    /// Destination directory. Defaults to `./models/<default_subdir>`
+    /// where `default_subdir` comes from the catalog entry.
+    #[arg(long, value_name = "DIR")]
+    dir: Option<PathBuf>,
+
+    /// Overwrite an existing destination directory.
+    #[arg(long)]
+    force: bool,
+
+    /// Resolve the alias and print what would be downloaded
+    /// without writing any files.
+    #[arg(long)]
+    dry_run: bool,
+
+    /// Skip the post-download "Next:" footer that suggests
+    /// `atenia diagnose` / `atenia chat`.
+    #[arg(long)]
+    no_suggest: bool,
+}
+
 /// Arguments for `chat` — the interactive REPL.
 #[derive(clap::Args)]
 struct ChatArgs {
@@ -552,6 +593,17 @@ fn main() {
                 temperature: args.temperature,
                 no_chat_template: args.no_chat_template,
             })
+        }
+        Command::Download(args) => {
+            atenia_engine::cli::download::run_download(
+                atenia_engine::cli::download::DownloadArgs {
+                    alias: args.alias,
+                    dir: args.dir,
+                    force: args.force,
+                    dry_run: args.dry_run,
+                    no_suggest: args.no_suggest,
+                },
+            )
         }
     });
 

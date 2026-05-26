@@ -147,6 +147,7 @@ tokenizer, adapter resolution — without generating anything.
 |---------|---------|--------------|
 | `generate` | One-shot text generation from a prompt | everyone |
 | `chat` | Interactive multi-turn conversation | everyone |
+| `download` | Fetch a curated, public checkpoint from Hugging Face | everyone |
 | `doctor` | Diagnose the host: CPU, RAM, CUDA, build | everyone |
 | `diagnose` | Pre-flight check of a specific model | everyone |
 | `capabilities` | List supported families, formats, quants | engineer |
@@ -385,7 +386,66 @@ supported GGUF quantisations; and the engine features. It is
 deliberately honest — the unsupported list is as prominent as the
 supported list. `--json` emits the same data as JSON.
 
-### 6.6 `load` / `inspect` / `debug`
+### 6.6 `download`
+
+A curated, one-shot model downloader. The catalog is small on
+purpose — it lists three public, non-gated Hugging Face
+checkpoints across the families Atenia supports, so a first-time
+user can go from `cargo install` to a running chat in two
+commands.
+
+```text
+atenia download list                       # show the catalog
+atenia download <alias>                    # download to ./models/<default>
+atenia download <alias> --dir DIR          # custom destination
+atenia download <alias> --force            # overwrite an existing dir
+atenia download <alias> --dry-run          # print the plan, write nothing
+atenia download <alias> --no-suggest       # skip the post-download footer
+```
+
+**Current catalog (v0.2):**
+
+| Alias | Family | Size | Format |
+|-------|--------|------|--------|
+| `smollm2-135m` | SmolLM | ~270 MB | safetensors |
+| `tinyllama` | Llama | ~2.2 GB | safetensors |
+| `qwen2.5-0.5b` | Qwen | ~1 GB | safetensors |
+
+**What it does:** for each file listed in the catalog entry,
+fetch it from `https://huggingface.co/<repo>/resolve/main/<file>`
+into `<dest>/<file>.partial` then atomically rename. One simple
+retry with backoff is applied per file. All progress is written
+to **stderr**; stdout is left empty.
+
+**What it explicitly does not do (v1):**
+
+- arbitrary `--hf-repo <id>` downloads — use `huggingface-cli`
+  for anything outside the catalog,
+- gated or private checkpoints — no OAuth, no `--token`,
+- resume of partial downloads — interrupted runs are restarted
+  from scratch on re-execution,
+- checksum verification — the post-condition check is
+  "every expected file exists and is non-empty",
+- parallel per-file downloads.
+
+**Exit codes:**
+
+| Code | Error | Meaning |
+|------|-------|---------|
+| `0` | — | Every catalog file landed cleanly. |
+| `2` | `E-DOWNLOAD-UNKNOWN-MODEL` | Alias not in the curated catalog. |
+| `2` | `E-DOWNLOAD-DESTINATION-EXISTS` | Destination directory exists and `--force` was not passed. |
+| `1` | `E-DOWNLOAD-NETWORK` | Per-file HTTP/TLS/DNS/timeout fault. |
+| `1` | `E-DOWNLOAD-INCOMPLETE` | A file fetched but ended empty or missing on disk. |
+| `2` | `E-DOWNLOAD-GATED-MODEL` | Catalog entry is marked gated (no entries in v1). |
+
+After a successful download the command prints a "Next:" footer
+suggesting `atenia diagnose --model <dest>` and
+`atenia chat --model <dest>` so the user has a one-paste path to
+verifying the checkpoint and starting a conversation. The footer
+is suppressed by `--no-suggest`.
+
+### 6.7 `load` / `inspect` / `debug`
 
 These three commands belong to **Adapter Toolkit v2** (ATKv2), the
 declarative adapter layer. For the full ATKv2 manual see

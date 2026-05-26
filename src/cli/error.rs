@@ -251,6 +251,95 @@ impl CliError {
         .with_detail("engine_error", detail.into())
     }
 
+    /// `E-DOWNLOAD-UNKNOWN-MODEL` — the alias supplied to
+    /// `atenia download` is not in the curated catalog.
+    pub fn download_unknown_model(alias: &str) -> Self {
+        let aliases: Vec<&'static str> =
+            crate::cli::download::catalog::aliases().collect();
+        Self::new(
+            "E-DOWNLOAD-UNKNOWN-MODEL",
+            format!("unknown model alias `{alias}`"),
+            "Atenia's download command only accepts aliases from a curated \
+             catalog of known-good public checkpoints.",
+            "Run `atenia download list` to see the available aliases, then \
+             retry with one of them.",
+            CliExit::UserInput,
+        )
+        .with_check_command("atenia download list")
+        .with_detail("known_aliases", aliases.join(", "))
+    }
+
+    /// `E-DOWNLOAD-DESTINATION-EXISTS` — the destination directory
+    /// already exists and `--force` was not supplied.
+    pub fn download_destination_exists(dest: &Path) -> Self {
+        Self::new(
+            "E-DOWNLOAD-DESTINATION-EXISTS",
+            "destination directory already exists",
+            "Atenia refuses to overwrite an existing directory by default, \
+             so a half-downloaded model cannot silently clobber a working \
+             one.",
+            "Pass `--force` to overwrite the directory, or remove it manually \
+             and retry.",
+            CliExit::UserInput,
+        )
+        .with_detail("destination", dest.display().to_string())
+    }
+
+    /// `E-DOWNLOAD-NETWORK` — a per-file HTTP/TLS/DNS fault. The
+    /// raw underlying error is preserved verbatim in the technical
+    /// details for the user to share when reporting.
+    pub fn download_network(file: &str, detail: impl Into<String>) -> Self {
+        Self::new(
+            "E-DOWNLOAD-NETWORK",
+            format!("network error while fetching `{file}`"),
+            "Atenia could not retrieve a file from Hugging Face. This is \
+             typically a transient network, DNS or TLS issue, or a Hugging \
+             Face outage.",
+            "Check your network connectivity and Hugging Face's status page, \
+             then retry the command. The download starts over from the first \
+             file each time; partial files from this attempt are discarded.",
+            CliExit::System,
+        )
+        .with_detail("file", file.to_string())
+        .with_detail("network_error", detail.into())
+    }
+
+    /// `E-DOWNLOAD-INCOMPLETE` — every file looked like it was
+    /// fetched but a post-condition check failed (missing file or
+    /// zero-sized file). Usually means the HF endpoint served an
+    /// HTML error page instead of the expected payload.
+    pub fn download_incomplete(file: &str, detail: impl Into<String>) -> Self {
+        Self::new(
+            "E-DOWNLOAD-INCOMPLETE",
+            format!("file `{file}` did not download cleanly"),
+            "The download reported success for this file but the result was \
+             empty or missing on disk. This usually means the server returned \
+             an error page instead of the expected payload.",
+            "Re-run the command with `--force` to redownload from scratch.",
+            CliExit::System,
+        )
+        .with_detail("file", file.to_string())
+        .with_detail("reason", detail.into())
+    }
+
+    /// `E-DOWNLOAD-GATED-MODEL` — defence-in-depth check. v1 of the
+    /// catalog excludes gated models entirely, but if one ever
+    /// slips in with `gated = true` we refuse politely.
+    pub fn download_gated_model(entry: &crate::cli::download::catalog::CatalogEntry) -> Self {
+        Self::new(
+            "E-DOWNLOAD-GATED-MODEL",
+            format!("`{}` is a gated model", entry.alias),
+            "This model requires accepting a licence on Hugging Face before \
+             it can be downloaded. Atenia's download command does not \
+             implement OAuth or token-based authentication in v1.",
+            "Open the model page in a browser, accept the licence, then use \
+             `huggingface-cli download` with a logged-in account.",
+            CliExit::UserInput,
+        )
+        .with_check_command(entry.source_url())
+        .with_detail("hf_repo", entry.hf_repo.to_string())
+    }
+
     /// `E-INTERNAL-PANIC` — an unexpected panic was caught at the
     /// CLI boundary.
     pub fn internal_panic(detail: impl Into<String>) -> Self {

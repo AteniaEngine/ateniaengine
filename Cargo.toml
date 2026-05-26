@@ -158,6 +158,16 @@ minijinja = { version = "2", default-features = false, features = ["builtins", "
 # templates actually exercise.
 minijinja-contrib = { version = "2", default-features = false, features = ["pycompat"] }
 
+# CLI-6 — synchronous HTTP client for the `atenia download` command.
+# `ureq` is the smallest mature Rust HTTP client that:
+#   - is fully synchronous (no tokio runtime drag),
+#   - uses pure-Rust rustls for TLS (no openssl-sys, preserves the
+#     vendor-agnostic / no-C-toolchain posture for inference),
+#   - builds out of the box on x86_64-pc-windows-msvc and
+#     x86_64-unknown-linux-gnu in CI.
+# Used only by `src/cli/download/*`; never on the inference hot path.
+ureq = { version = "2", default-features = false, features = ["tls"] }
+
 # Optional deps, only pulled in with `--features hw-probe`.
 wgpu = { version = "22", optional = true }
 nvml-wrapper = { version = "0.10", optional = true }

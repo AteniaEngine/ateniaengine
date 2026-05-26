@@ -1376,7 +1376,7 @@ does not run generation.
 
 ---
 
-## Command-line interface (CLI-0 → CLI-5)
+## Command-line interface (CLI-0 → CLI-6)
 
 A product-grade command-line interface, built in six phases as a
 **frontier layer** in `src/cli/`. No runtime core, loader or
@@ -1436,6 +1436,25 @@ persistent KV cache across turns (out of scope).
 flags and the `doctor` / `diagnose` / `capabilities` / `chat`
 subcommands; `src/cli_generate.rs` was rewired onto `CliError`
 and the logging layer. No engine code changed.
+
+**CLI-6 — `atenia download`: curated model fetcher.** A small
+sub-module `src/cli/download/` exposes `atenia download list` and
+`atenia download <alias>` against a hardcoded, audited catalog of
+three public, non-gated Hugging Face checkpoints — one per family
+slice that ships small + fast (`smollm2-135m`, `tinyllama`,
+`qwen2.5-0.5b`). The downloader streams over `ureq` + rustls
+(synchronous, pure-Rust TLS, no openssl-sys), writes each file to
+`<dest>/<file>.partial` and atomically renames on completion, with
+one simple retry on transport faults. Five new error codes
+(`E-DOWNLOAD-UNKNOWN-MODEL`, `E-DOWNLOAD-DESTINATION-EXISTS`,
+`E-DOWNLOAD-NETWORK`, `E-DOWNLOAD-INCOMPLETE`,
+`E-DOWNLOAD-GATED-MODEL`) plug into the existing `CliError`
+catalog. Tests use an in-memory `FakeFetcher`; no network is hit
+in CI. Closes the "first model" onboarding gap.
+
+**Out of scope for CLI-6 v1:** arbitrary `--hf-repo`, gated /
+private models, OAuth, resume, parallel per-file fetch, sha256
+verification, `--json` output.
 
 **Tests.** `cargo test --lib -- --test-threads=1` → **503 / 503
 PASS**. Five integration suites cover the CLI surface as

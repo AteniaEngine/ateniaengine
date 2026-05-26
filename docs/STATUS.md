@@ -372,7 +372,7 @@ locked by regression tests.
   loud instead of being silently swapped. `serde_yaml 0.9` is
   deprecated upstream — accepted, contained (DSL front-end only,
   off the hot path), with a migration TODO.
-- **Command-line interface (CLI-0 → CLI-5, complete).** A
+- **Command-line interface (CLI-0 → CLI-6, complete).** A
   product-grade CLI built as a frontier layer in `src/cli/` — no
   runtime-core, loader or graph-builder change. **CLI-1** — a
   structured error system: stable `E-*` codes, a human
@@ -389,10 +389,17 @@ locked by regression tests.
   formats, quants), all with `--json`. **CLI-4/5** — `atenia chat`,
   an interactive multi-turn REPL using the model chat template,
   with `/help` `/history` `/reset` `/clear` `/exit`, lazy pipeline
-  load, and a streamed token-by-token response. **503 / 503**
-  `cargo test --lib`; the CLI surface is covered by four
-  integration suites (`cli_errors`, `cli_logging`, `cli_diagnostics`,
-  `cli_chat`, `cli_ux`). Full reference: `docs/CLI.md`.
+  load, and a streamed token-by-token response. **CLI-6** —
+  `atenia download`, a curated downloader (three public, non-gated
+  Hugging Face checkpoints: `smollm2-135m`, `tinyllama`,
+  `qwen2.5-0.5b`) so first-time users go from `cargo install` to a
+  running chat without learning `huggingface-cli`. Sequential
+  fetch over `ureq` + rustls with `.partial` + atomic rename and a
+  single retry; no resume, no checksum, no arbitrary repo support.
+  **516 / 516** `cargo test --lib`; the CLI surface is covered by
+  six integration suites (`cli_errors`, `cli_logging`,
+  `cli_diagnostics`, `cli_chat`, `cli_ux`, `cli_download`). Full
+  reference: `docs/CLI.md`.
 - **Local validation battery (post-Adapter-Toolkit-v1).** A
   load-and-generate sweep over the 18 checkpoints currently
   present under `models/` on the dev box (RTX 4070 Laptop, 8 GB
@@ -468,8 +475,8 @@ but they bound what you should rely on.
   enforced in CI — but multi-vendor execution itself is still not built (a
   CUDA-less binary links and runs the non-GPU surface; it does not provide
   an alternative compute backend).
-- **Production hardening — CLI slice done (CLI-0 → CLI-5), engine-internal
-  observability pending (v21).** The M12 series plus the CLI-0 → CLI-5 phases
+- **Production hardening — CLI slice done (CLI-0 → CLI-6), engine-internal
+  observability pending (v21).** The M12 series plus the CLI-0 → CLI-6 phases
   closed the user-facing error / logging / diagnostics slice: failures
   propagate with a stable `E-*` code and an exit code, logging has explicit
   levels and an optional log file, and `doctor` / `diagnose` report host and

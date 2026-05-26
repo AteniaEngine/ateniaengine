@@ -124,11 +124,29 @@ atenia doctor
 
 ### 2. Download a model
 
+Atenia ships a curated downloader for the most common "first
+model" path — no `huggingface-cli`, no manual LFS handling:
+
 ```bash
-# Llama 3.2 1B Instruct — the smallest fully-certified checkpoint.
+atenia download list                # show the curated catalog
+atenia download smollm2-135m        # smallest, ~270 MB
+atenia download tinyllama           # ~2.2 GB
+atenia download qwen2.5-0.5b        # ~1 GB
+```
+
+The catalog is intentionally small: three public, non-gated
+checkpoints across three supported families. For anything else,
+download manually:
+
+```bash
+# Any other Hugging Face checkpoint, e.g. Llama 3.2 1B Instruct.
 huggingface-cli download meta-llama/Llama-3.2-1B-Instruct \
   --local-dir ./models/llama-3.2-1b-instruct
 ```
+
+`atenia download <alias>` supports `--dir`, `--force`, `--dry-run`
+and `--no-suggest`. See [docs/CLI.md](./docs/CLI.md) for the full
+flag reference and the exit-code contract.
 
 ### 3. Generate
 
@@ -184,6 +202,7 @@ Empirical baseline for the demo:
 |---------|---------|
 | `atenia generate` | One-shot text generation from a prompt. |
 | `atenia chat` | Interactive multi-turn conversation. |
+| `atenia download` | Fetch a curated, public checkpoint from Hugging Face. |
 | `atenia doctor` | Diagnose the host: CPU, RAM, CUDA, build flavour. |
 | `atenia diagnose` | Pre-flight check of a specific model directory. |
 | `atenia capabilities` | List supported families, formats and quants. |

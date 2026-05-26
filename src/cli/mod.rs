@@ -17,6 +17,7 @@
 
 pub mod chat;
 pub mod diagnostics;
+pub mod download;
 pub mod error;
 pub mod exit;
 pub mod logging;
