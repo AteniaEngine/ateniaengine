@@ -90,15 +90,19 @@ pub fn run_quickstart_with(args: QuickstartArgs, fetcher: &dyn HttpFetcher) -> i
         }
     };
 
-    // Pre-compute the destination path that the suggested
-    // commands will reference. Mirrors `download::resolve_destination`;
-    // we don't go through the download module's private resolver to
-    // keep this module decoupled — a single `Path::new(...).join(...)`
-    // is not worth re-exporting an internal helper for.
-    let dest = args
+    // First-run UX contract: `--dir` is a **base** directory, not
+    // the final destination. The model always lands in a
+    // per-alias subdirectory underneath it so the user can run
+    // `atenia quickstart --download --model X --dir ./scratch`
+    // twice with different aliases without one overwriting the
+    // other. This intentionally diverges from `atenia download
+    // --dir`, where `--dir` is the literal destination (power-user
+    // command, no surprises). Default base is `./models`.
+    let base = args
         .dir
         .clone()
-        .unwrap_or_else(|| std::path::Path::new("./models").join(entry.default_subdir));
+        .unwrap_or_else(|| std::path::PathBuf::from("./models"));
+    let dest = base.join(entry.default_subdir);
 
     print_intro(entry, &dest, args.download);
 
@@ -109,7 +113,12 @@ pub fn run_quickstart_with(args: QuickstartArgs, fetcher: &dyn HttpFetcher) -> i
         // `UreqFetcher::new()`.
         let dl_args = DownloadArgs {
             alias: args.model.clone(),
-            dir: args.dir.clone(),
+            // Pass the already-resolved `<base>/<alias>` so the
+            // downloader (whose `--dir` is the literal destination)
+            // ends up writing to the same path the suggestion
+            // footer is going to advertise. Matches the UX
+            // contract described above.
+            dir: Some(dest.clone()),
             force: false,
             dry_run: false,
             // We will print our own (slightly richer) "Next:"

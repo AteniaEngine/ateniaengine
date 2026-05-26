@@ -92,11 +92,51 @@ fn quickstart_no_suggest_suppresses_next_commands() {
 }
 
 #[test]
+fn quickstart_default_uses_models_alias_path() {
+    // Plan mode with no --dir must advertise ./models/<alias subdir>.
+    let out = bin().arg("quickstart").output().expect("run atenia");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let entry = catalog::find(DEFAULT_MODEL).unwrap();
+    let expected = std::path::Path::new("./models").join(entry.default_subdir);
+    let expected_str = expected.display().to_string();
+    assert!(
+        stderr.contains(&expected_str),
+        "expected destination `{expected_str}` in stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn quickstart_custom_dir_is_base_directory() {
+    // Plan mode with --dir ./scratch must advertise
+    // ./scratch/<alias subdir>, NOT ./scratch as the literal path.
+    let out = bin()
+        .args(["quickstart", "--model", "tinyllama", "--dir", "./scratch-xyz"])
+        .output()
+        .expect("run atenia");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let entry = catalog::find("tinyllama").unwrap();
+    let expected = std::path::Path::new("./scratch-xyz").join(entry.default_subdir);
+    let expected_str = expected.display().to_string();
+    assert!(
+        stderr.contains(&expected_str),
+        "expected `{expected_str}` (base + subdir), got:\n{stderr}"
+    );
+    // And the bare base path must NOT appear as the destination,
+    // i.e. `destination  ./scratch-xyz` followed by a newline
+    // (rather than `./scratch-xyz/tinyllama-1.1b-chat`).
+    assert!(
+        !stderr.contains("destination        ./scratch-xyz\n"),
+        "bare base path leaked into destination line"
+    );
+}
+
+#[test]
 fn quickstart_download_uses_download_module_with_mock_fetcher() {
     let tmp = tempdir();
-    let dest = tmp.join("smollm2-135m");
-
+    // tmp itself is the base; the alias subdir gets appended.
     let entry = catalog::find("smollm2-135m").unwrap();
+    let dest = tmp.join(entry.default_subdir);
+
     let mut fetcher = FakeFetcher::new();
     for file in entry.files {
         fetcher = fetcher.with_body(
@@ -107,18 +147,44 @@ fn quickstart_download_uses_download_module_with_mock_fetcher() {
 
     let mut a = args("smollm2-135m");
     a.download = true;
-    a.dir = Some(dest.clone());
+    a.dir = Some(tmp.clone()); // base directory, not final dest
 
     let code = run_quickstart_with(a, &fetcher);
     assert_eq!(code, 0);
 
     // The same files the `download` subcommand would have written
-    // must be on disk — proves we reused the downloader instead of
-    // duplicating its logic.
+    // must be on disk under <base>/<alias subdir> — proves we
+    // reused the downloader AND honoured the base-directory UX.
     for file in entry.files {
         let body = fs::read(dest.join(file)).expect(file);
         let expected = format!("payload-{file}");
         assert_eq!(body, expected.as_bytes(), "wrong body for {file}");
+    }
+}
+
+#[test]
+fn quickstart_custom_model_custom_dir_uses_model_subdir() {
+    let tmp = tempdir();
+    let entry = catalog::find("qwen2.5-0.5b").unwrap();
+    let dest = tmp.join(entry.default_subdir);
+
+    let mut fetcher = FakeFetcher::new();
+    for file in entry.files {
+        fetcher = fetcher.with_body(entry.file_url(file), file.as_bytes().to_vec());
+    }
+
+    let mut a = args("qwen2.5-0.5b");
+    a.download = true;
+    a.dir = Some(tmp.clone());
+
+    let code = run_quickstart_with(a, &fetcher);
+    assert_eq!(code, 0);
+    for file in entry.files {
+        assert!(
+            dest.join(file).exists(),
+            "missing {file} under {}",
+            dest.display()
+        );
     }
 }
 

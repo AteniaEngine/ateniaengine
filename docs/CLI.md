@@ -464,8 +464,26 @@ atenia quickstart --no-suggest          # suppress the "Tip:" footer
 
 **Defaults.** `--model smollm2-135m` — the smallest entry in the
 CLI-6 curated catalog, chosen so a first download finishes in a
-coffee break on any connection. `--dir ./models/<default_subdir>`
-when omitted (same resolution as `atenia download`).
+coffee break on any connection.
+
+**`--dir` is a base directory, not a final destination.** This is
+the one place quickstart intentionally diverges from `atenia
+download`. The chosen alias always lands in a per-model
+subdirectory underneath the base, so you can run quickstart twice
+with two different models pointing at the same `--dir` and they
+will not collide:
+
+```text
+atenia quickstart                                  # ./models/smollm2-135m
+atenia quickstart --dir ./scratch                  # ./scratch/smollm2-135m
+atenia quickstart --model tinyllama --dir ./scratch
+                                                   # ./scratch/tinyllama-1.1b-chat
+atenia quickstart --download --model smollm2-135m --dir ./scratch
+                                                   # writes to ./scratch/smollm2-135m
+```
+
+`atenia download --dir` keeps its CLI-6 semantics (the literal
+destination directory) — power-user command, no surprise wrapping.
 
 **Exit codes.** Inherits the CLI-6 download surface:
 
