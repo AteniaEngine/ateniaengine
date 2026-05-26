@@ -265,6 +265,19 @@ enum Command {
     /// atenia download tinyllama --dry-run
     /// ```
     Download(DownloadArgs),
+
+    /// **CLI-7** — first-run guided onboarding. Prints the
+    /// recommended four-step flow (`doctor` → `download` →
+    /// `diagnose` → `chat`) with the exact commands to run.
+    /// Pass `--download` to actually fetch the recommended
+    /// model in place of step 2.
+    ///
+    /// ```text
+    /// atenia quickstart
+    /// atenia quickstart --download
+    /// atenia quickstart --model tinyllama
+    /// ```
+    Quickstart(QuickstartArgs),
 }
 
 #[derive(clap::Args)]
@@ -468,6 +481,30 @@ struct DownloadArgs {
     no_suggest: bool,
 }
 
+/// Arguments for `quickstart` — first-run UX.
+#[derive(clap::Args)]
+struct QuickstartArgs {
+    /// Actually run the recommended download instead of just
+    /// printing the suggested commands.
+    #[arg(long)]
+    download: bool,
+
+    /// Curated alias to recommend / download. Defaults to the
+    /// smallest entry in the catalog so the first run finishes
+    /// in a coffee break on any connection.
+    #[arg(long, default_value = atenia_engine::cli::quickstart::DEFAULT_MODEL)]
+    model: String,
+
+    /// Custom destination directory passed through to
+    /// `atenia download` when `--download` is set.
+    #[arg(long, value_name = "DIR")]
+    dir: Option<PathBuf>,
+
+    /// Suppress the "Next:" / "Want the shortest path?" footer.
+    #[arg(long)]
+    no_suggest: bool,
+}
+
 /// Arguments for `chat` — the interactive REPL.
 #[derive(clap::Args)]
 struct ChatArgs {
@@ -601,6 +638,16 @@ fn main() {
                     dir: args.dir,
                     force: args.force,
                     dry_run: args.dry_run,
+                    no_suggest: args.no_suggest,
+                },
+            )
+        }
+        Command::Quickstart(args) => {
+            atenia_engine::cli::quickstart::run_quickstart(
+                atenia_engine::cli::quickstart::QuickstartArgs {
+                    download: args.download,
+                    model: args.model,
+                    dir: args.dir,
                     no_suggest: args.no_suggest,
                 },
             )

@@ -1376,7 +1376,7 @@ does not run generation.
 
 ---
 
-## Command-line interface (CLI-0 → CLI-6)
+## Command-line interface (CLI-0 → CLI-7)
 
 A product-grade command-line interface, built in six phases as a
 **frontier layer** in `src/cli/`. No runtime core, loader or
@@ -1455,6 +1455,24 @@ in CI. Closes the "first model" onboarding gap.
 **Out of scope for CLI-6 v1:** arbitrary `--hf-repo`, gated /
 private models, OAuth, resume, parallel per-file fetch, sha256
 verification, `--json` output.
+
+**CLI-7 — `atenia quickstart`: first-run UX.** A pure-presentation
+subcommand that prints the recommended four-step flow (`doctor` →
+`download` → `diagnose` → `chat`) with the exact commands a new
+user should run. With `--download` it executes step 2 by delegating
+to the CLI-6 `run_download_with` orchestration — no duplicated
+fetch logic, no new error codes, no new dependencies. Custom alias
+via `--model`, custom destination via `--dir`, footer suppression
+via `--no-suggest`. The default model is `smollm2-135m`, asserted
+at compile time as the smallest catalog entry so that invariant
+travels with any future catalog change. All output is on stderr
+and there are no interactive prompts — `atenia quickstart` is
+scriptable and idempotent. Closes the "I just installed it, now
+what?" gap before users have to read any docs.
+
+**Out of scope for CLI-7 v1:** interactive prompts, auto-run of
+`chat` / `generate`, benchmarks, hardware probes beyond pointing
+at `doctor`, JSON output, arbitrary HF repos.
 
 **Tests.** `cargo test --lib -- --test-threads=1` → **503 / 503
 PASS**. Five integration suites cover the CLI surface as

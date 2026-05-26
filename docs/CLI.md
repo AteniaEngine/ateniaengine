@@ -148,6 +148,7 @@ tokenizer, adapter resolution — without generating anything.
 | `generate` | One-shot text generation from a prompt | everyone |
 | `chat` | Interactive multi-turn conversation | everyone |
 | `download` | Fetch a curated, public checkpoint from Hugging Face | everyone |
+| `quickstart` | First-run guided onboarding (`doctor` → `download` → `diagnose` → `chat`) | first-time |
 | `doctor` | Diagnose the host: CPU, RAM, CUDA, build | everyone |
 | `diagnose` | Pre-flight check of a specific model | everyone |
 | `capabilities` | List supported families, formats, quants | engineer |
@@ -445,7 +446,41 @@ suggesting `atenia diagnose --model <dest>` and
 verifying the checkpoint and starting a conversation. The footer
 is suppressed by `--no-suggest`.
 
-### 6.7 `load` / `inspect` / `debug`
+### 6.7 `quickstart`
+
+First-run onboarding. Prints the recommended four-step flow
+(`doctor` → `download` → `diagnose` → `chat`) with the exact
+commands the user should run, substituting the recommended model
+into each step. With `--download` it also runs step 2 immediately,
+reusing the CLI-6 downloader.
+
+```text
+atenia quickstart                       # print the plan, do nothing
+atenia quickstart --download            # also run the download step
+atenia quickstart --model tinyllama     # recommend / download tinyllama
+atenia quickstart --dir ./scratch       # custom destination
+atenia quickstart --no-suggest          # suppress the "Tip:" footer
+```
+
+**Defaults.** `--model smollm2-135m` — the smallest entry in the
+CLI-6 curated catalog, chosen so a first download finishes in a
+coffee break on any connection. `--dir ./models/<default_subdir>`
+when omitted (same resolution as `atenia download`).
+
+**Exit codes.** Inherits the CLI-6 download surface:
+
+| Code | Meaning |
+|------|---------|
+| `0` | Plan printed, or download succeeded. |
+| `2` | `E-DOWNLOAD-UNKNOWN-MODEL` — `--model` was not in the catalog. |
+| `1` | `E-DOWNLOAD-NETWORK` / `-INCOMPLETE` — only when `--download` is set. |
+
+**Not implemented (intentional):** interactive prompts, auto-run
+of `chat`/`generate`, benchmarks, arbitrary HF repos, JSON output.
+The command is deliberately scriptable and non-interactive — the
+same output every time you run it.
+
+### 6.8 `load` / `inspect` / `debug`
 
 These three commands belong to **Adapter Toolkit v2** (ATKv2), the
 declarative adapter layer. For the full ATKv2 manual see

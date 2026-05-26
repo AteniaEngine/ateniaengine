@@ -21,6 +21,7 @@ pub mod download;
 pub mod error;
 pub mod exit;
 pub mod logging;
+pub mod quickstart;
 
 pub use error::CliError;
 pub use exit::CliExit;

@@ -68,6 +68,16 @@ model download.)
 
 ## Quick Start
 
+> **Just installed Atenia? Run this and follow what it prints:**
+>
+> ```bash
+> atenia quickstart           # prints the recommended flow
+> atenia quickstart --download   # runs steps 1–2 automatically
+> ```
+>
+> The sections below cover the same flow in detail and stay useful as
+> a reference once you are past the first run.
+
 ### 1. Install
 
 #### Option A — Download a prebuilt binary (recommended)
@@ -203,6 +213,7 @@ Empirical baseline for the demo:
 | `atenia generate` | One-shot text generation from a prompt. |
 | `atenia chat` | Interactive multi-turn conversation. |
 | `atenia download` | Fetch a curated, public checkpoint from Hugging Face. |
+| `atenia quickstart` | Guided first-run flow; prints (or runs) the recommended steps. |
 | `atenia doctor` | Diagnose the host: CPU, RAM, CUDA, build flavour. |
 | `atenia diagnose` | Pre-flight check of a specific model directory. |
 | `atenia capabilities` | List supported families, formats and quants. |
