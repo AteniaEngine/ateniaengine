@@ -283,6 +283,102 @@ two-line replacement experiments.
 
 ---
 
+## 7.bis. β-pivot.1 — no-calibration AWQ spike
+
+After β.5 failed on TinyLlama (drift 1.20, k=64), the audit
+recommended AWQ as the first follow-up. β-pivot.1 implements a
+**simplified, no-calibration variant**: per-K-row scales derived
+from the weight L2 norm itself rather than from a real activation
+calibration pass. The math is the standard AWQ pre/post-scale
+identity collapsed to a CPU F32 perturbation:
+
+```text
+    W'[k, n] = W[k, n] · s[k]                    (pre-scale)
+    (q, group_scales) = absmax_per_group(W', g)
+    W_recon[k, n] = (q[k, n] · group_scales[g, n]) / s[k]
+
+    where s[k] = (||W[k, :]||_2)^α, normalised to unit mean.
+```
+
+### What this implementation ships
+
+- `quantizer::awq_per_row_scales_from_weight_norm(weights, shape, α)`
+  → unit-mean per-K-row scales from the weight L2 norm.
+- `quantizer::apply_awq_perturbation_inplace(weights, shape, g, scales)`
+  → pre-scale → INT8 absmax → dequant → inverse-scale, all on a
+  mutable F32 buffer. The runtime sees a plain F32 weight; no
+  new storage variant is introduced.
+- `WeightStore::perturb_param_with_awq(idx, group_size, α)` —
+  opt-in helper that drives the perturbation through the
+  existing F32/Bf16 `SharedParam` slots and reinserts as F32.
+- Heavy F64 forward test
+  `beta_pivot1_tinyllama_awq_forward_reports_adr_004` reusing
+  the β.5 harness verbatim.
+
+### β-pivot.1 results — TinyLlama 1.1B end-to-end
+
+```
+========================================================
+β-pivot.1 TinyLlama 1.1B — AWQ vs F64 fixture
+========================================================
+Mode                       drift     argmax    ADR-004 (< 0.5)
+certified F32 baseline   0.000063     4/4      PASS (8000x margin)
+β.5  outlier k=64        1.200260     0/4      FAIL (2.4x over gate)
+β.5  outlier k=256       1.142564     0/4      FAIL (2.3x over gate)
+β-piv AWQ α=0.0          1.260771     0/4      FAIL (≡ plain INT8)
+β-piv AWQ α=0.5          2.478883     0/4      FAIL — *worse than plain*
+========================================================
+```
+
+### Interpretation
+
+The α=0 row is the control: AWQ degenerates to plain per-group
+absmax INT8 there, and the drift (1.26) matches the β.5 outlier
+path (1.20) within the residual sidecar effect. This is the
+**floor** of any weight-only INT8 strategy on TinyLlama.
+
+α=0.5 is **worse** by ~2×. Without real activation statistics,
+the weight-norm proxy actively distorts the model: rows with
+large weight norm get amplified pre-quantisation, which gives
+them more INT8 headroom, but they are not necessarily the rows
+whose dequant errors will propagate most through RMSNorm gain
+× attention softmax × residual sum. The proxy is uncorrelated
+with the actual sensitivity.
+
+### Verdict
+
+**STOP β-pivot.1 AWQ (no-calibration variant) before further
+investigation.** The numerical evidence is unambiguous:
+
+- Outlier removal alone does not close the gap (β.5).
+- Weight-norm AWQ scaling actively makes it worse (β-pivot.1).
+- The α=0 floor (1.26) is intrinsic to plain INT8 cascade
+  amplification on this model.
+
+Any further INT8 weight-only progress requires **real activation
+statistics**. Two viable next steps:
+
+1. **AWQ with real calibration** — extend the forward harness
+   with hooks that capture activation absmax per-K-axis from
+   each `_proj.weight`'s LHS input during a calibration forward,
+   feed those into `apply_awq_perturbation_inplace` instead of
+   the weight-norm proxy. ~3–5 days of work (graph hook
+   plumbing + per-tensor stats aggregation + per-weight scale
+   table propagation).
+
+2. **GPTQ (Hessian-inverse weight-only calibration)** — the
+   established state-of-art for outlier-heavy LLMs.
+   Mathematically different from AWQ (computes weight updates
+   that minimise the local matmul error against a Hessian
+   estimate, not a per-channel scale). ~1–2 weeks.
+
+The audit's original recommendation order (AWQ first, GPTQ as
+fallback) **is preserved** — β-pivot.1 falsified only the
+*no-calibration* simplification, not the AWQ family itself. A
+real-calibration AWQ retry is the appropriate next experiment.
+
+---
+
 ## 8. Recommended pivot
 
 In increasing cost / depth:

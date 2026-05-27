@@ -395,6 +395,70 @@ impl WeightStore {
         Ok(())
     }
 
+    /// **M10β-pivot.1** — apply an AWQ-style perturbation to the
+    /// parameter at `idx`. Materialises the F32 buffer, runs
+    /// [`crate::tensor::quantizer::apply_awq_perturbation_inplace`]
+    /// with weight-norm scales derived from the buffer itself, and
+    /// reinserts the perturbed F32 as a fresh `SharedParam::F32`.
+    ///
+    /// The runtime sees a plain F32 weight — no new storage variant
+    /// is required because the AWQ math collapses to a "perturbed
+    /// F32" buffer at the boundary. Drift attributable to INT8
+    /// quantisation is encoded in the buffer relative to the input.
+    ///
+    /// CPU-only by construction (Cuda / Disk variants panic). β-pivot
+    /// is opt-in and isolated to the test harness; production paths
+    /// never call this method.
+    pub fn perturb_param_with_awq(
+        &mut self,
+        idx: usize,
+        group_size: usize,
+        alpha: f32,
+    ) -> Result<(), crate::tensor::quantizer::AwqError> {
+        let param = self
+            .params
+            .get(idx)
+            .unwrap_or_else(|| panic!("perturb_param_with_awq: idx {idx} out of range"));
+        let shape = param.shape().to_vec();
+        let name = self.names.get(idx).cloned().unwrap_or_default();
+        let mut f32_buf: Vec<f32> = match param {
+            SharedParam::F32 { arc, .. } => (**arc).clone(),
+            SharedParam::Bf16 { arc, .. } => {
+                let mut out = vec![0.0_f32; arc.len()];
+                crate::simd_kernels::avx2::bf16_decode_bulk(arc, &mut out);
+                out
+            }
+            SharedParam::Cuda { .. } => panic!(
+                "perturb_param_with_awq: SharedParam::Cuda is not supported in β-pivot.1 \
+                 (the experimental path is CPU-only; rebuild with kernel_dtype = F32)"
+            ),
+            SharedParam::Disk { .. } => panic!(
+                "perturb_param_with_awq: SharedParam::Disk is not supported in β-pivot.1 \
+                 (ensure_cpu the parameter first)"
+            ),
+            SharedParam::CpuInt8Outlier(_) => panic!(
+                "perturb_param_with_awq: idx {idx} ({name}) is already CpuInt8Outlier; \
+                 β-pivot.1 runs against a clean F32 baseline"
+            ),
+        };
+
+        let scales = crate::tensor::quantizer::awq_per_row_scales_from_weight_norm(
+            &f32_buf, &shape, alpha,
+        )?;
+        crate::tensor::quantizer::apply_awq_perturbation_inplace(
+            &mut f32_buf,
+            &shape,
+            group_size,
+            &scales,
+        )?;
+
+        self.params[idx] = SharedParam::F32 {
+            shape,
+            arc: Arc::new(f32_buf),
+        };
+        Ok(())
+    }
+
     /// Lookup a parameter by index. Index is the value
     /// returned by `insert_*`.
     pub fn get(&self, idx: usize) -> Option<&SharedParam> {

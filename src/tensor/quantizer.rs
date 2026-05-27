@@ -536,6 +536,211 @@ pub fn reconstruct_outlier_decomposition(decomp: &OutlierDecomposition) -> Vec<f
     out
 }
 
+// ============================================================================
+// M10β-pivot.1 — AWQ-style per-row scaling spike (CPU only, no calibration).
+//
+// Track β.5 showed that removing per-column weight outliers does not satisfy
+// ADR-004 end-to-end on TinyLlama; the cascade amplifies per-element error
+// ~60× over the linear projection. The β-pivot.1 hypothesis is that the
+// residual drift is dominated by *which* per-K-row channels matter, not by
+// the magnitude of isolated weight outliers.
+//
+// AWQ (Lin et al., 2023) addresses this by applying a per-input-channel
+// scale `s[k]` derived from activation statistics: large-activation rows
+// receive a multiplicative boost before quantisation (so their absmax-
+// driven INT8 scale is larger, giving them more precision), and the matmul
+// math is preserved by dividing the dequantised weight by `s[k]` at
+// reconstruction time:
+//
+// ```text
+//     W'[k, n] = W[k, n] · s[k]                        (pre-scale)
+//     (q, group_scales) = absmax_per_group(W', shape, g)
+//     W_recon[k, n] = (q[k, n] · group_scales[g, n]) / s[k]
+// ```
+//
+// At infinite precision `W_recon == W`; with INT8 precision the channels
+// with large `s[k]` retain proportionally more quantisation headroom.
+//
+// **β-pivot.1 simplification: no-calibration weight-norm scales.** A proper
+// AWQ run captures activation stats from a calibration pass. This spike
+// substitutes a *weight-derived* scale (the per-row L2 norm raised to a
+// power α and normalised to unit mean) so the experiment can run without
+// a calibration harness. The numerical question this answers is binary:
+//   - if per-row scaling improves drift markedly on TinyLlama, the
+//     activation-aware hypothesis is supported and the next step is a real
+//     calibration pass.
+//   - if it does not improve drift, weight-only INT8 (with or without
+//     activation-aware scaling) is hitting the model's intrinsic cascade
+//     ceiling and the right pivot is GPTQ-class (Hessian-inverse).
+//
+// The helper is CPU-only, deterministic, dead code at runtime, and
+// consumed exclusively by the β-pivot.1 forward harness in
+// `tests/int8_outlier_f64_validation_test.rs`.
+
+/// Errors returned by the AWQ helpers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AwqError {
+    NotTwoDimensional { rank: usize },
+    LengthMismatch { expected: usize, actual: usize },
+    InvalidGroupSize,
+    InvalidAlpha,
+    ScalesLengthMismatch { expected: usize, actual: usize },
+}
+
+impl std::fmt::Display for AwqError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AwqError::NotTwoDimensional { rank } => {
+                write!(f, "AWQ helpers require a 2D weight (got rank {rank})")
+            }
+            AwqError::LengthMismatch { expected, actual } => write!(
+                f,
+                "AWQ: values.len() = {actual} does not match K * N = {expected}"
+            ),
+            AwqError::InvalidGroupSize => write!(f, "AWQ: group_size must be > 0"),
+            AwqError::InvalidAlpha => {
+                write!(f, "AWQ: alpha must be finite and in [0, 1] for the spike")
+            }
+            AwqError::ScalesLengthMismatch { expected, actual } => write!(
+                f,
+                "AWQ: scales.len() = {actual} does not match K = {expected}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for AwqError {}
+
+/// **M10β-pivot.1** — per-K-row scales derived from the L2 norm of each
+/// row, raised to the power `alpha` and normalised to unit mean.
+///
+/// This is the *no-calibration* fallback: no activation statistics are
+/// required, so the spike can run without a calibration harness. The
+/// normalisation keeps the scales from drifting the absolute weight
+/// magnitude away from unit (which would interact badly with downstream
+/// RMSNorm).
+///
+/// Recommended α defaults: `0.0` (everything = 1.0, equivalent to plain
+/// INT8), `0.5` (the spike default), `1.0` (full norm-weighted scaling).
+pub fn awq_per_row_scales_from_weight_norm(
+    weights: &[f32],
+    shape: &[usize],
+    alpha: f32,
+) -> Result<Vec<f32>, AwqError> {
+    if shape.len() != 2 {
+        return Err(AwqError::NotTwoDimensional { rank: shape.len() });
+    }
+    if !alpha.is_finite() || alpha < 0.0 || alpha > 1.0 {
+        return Err(AwqError::InvalidAlpha);
+    }
+    let (k_rows, n_cols) = (shape[0], shape[1]);
+    let expected = k_rows * n_cols;
+    if weights.len() != expected {
+        return Err(AwqError::LengthMismatch {
+            expected,
+            actual: weights.len(),
+        });
+    }
+
+    if k_rows == 0 || n_cols == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut row_norm: Vec<f32> = vec![0.0; k_rows];
+    for row in 0..k_rows {
+        let mut acc = 0.0_f64;
+        for col in 0..n_cols {
+            let v = weights[row * n_cols + col] as f64;
+            acc += v * v;
+        }
+        // sqrt of the sum of squares, then raise to alpha. Clamp to a
+        // small floor so a degenerate all-zero row does not produce a
+        // zero scale (which would zero the dequant pre-multiplication).
+        row_norm[row] = (acc.sqrt().powf(alpha as f64) as f32).max(1e-8);
+    }
+
+    // Normalise to unit mean — keeps the post-perturbation weight at the
+    // same average magnitude as the input.
+    let mean: f64 =
+        row_norm.iter().map(|x| *x as f64).sum::<f64>() / (row_norm.len() as f64);
+    let mean = mean.max(1e-8) as f32;
+    for v in &mut row_norm {
+        *v /= mean;
+    }
+
+    Ok(row_norm)
+}
+
+/// **M10β-pivot.1** — apply the AWQ-style quantisation perturbation to
+/// the weight buffer in place, given per-K-row scales.
+///
+/// The output is the F32 reconstruction `(q * group_scales) / s[k]`,
+/// which means the dispatcher consumes a plain F32 tensor and the
+/// runtime does not need to know about AWQ at all. Drift attributable
+/// to INT8 quantisation is encoded in the buffer's perturbation from
+/// the input.
+pub fn apply_awq_perturbation_inplace(
+    weights: &mut [f32],
+    shape: &[usize],
+    group_size: usize,
+    scales: &[f32],
+) -> Result<(), AwqError> {
+    if shape.len() != 2 {
+        return Err(AwqError::NotTwoDimensional { rank: shape.len() });
+    }
+    if group_size == 0 {
+        return Err(AwqError::InvalidGroupSize);
+    }
+    let (k_rows, n_cols) = (shape[0], shape[1]);
+    let expected = k_rows * n_cols;
+    if weights.len() != expected {
+        return Err(AwqError::LengthMismatch {
+            expected,
+            actual: weights.len(),
+        });
+    }
+    if scales.len() != k_rows {
+        return Err(AwqError::ScalesLengthMismatch {
+            expected: k_rows,
+            actual: scales.len(),
+        });
+    }
+    if k_rows == 0 || n_cols == 0 {
+        return Ok(());
+    }
+
+    // (1) Pre-scale W' = W * s per row.
+    for row in 0..k_rows {
+        let s = scales[row];
+        for col in 0..n_cols {
+            weights[row * n_cols + col] *= s;
+        }
+    }
+
+    // (2) Per-group absmax INT8 quantisation of the scaled buffer.
+    let (q, group_scales) = absmax_per_group_symmetric(weights, shape, group_size);
+
+    // (3) Dequantise into the same buffer.
+    for idx in 0..expected {
+        let row = idx / n_cols;
+        let col = idx % n_cols;
+        let g = row / group_size;
+        weights[idx] = (q[idx] as f32) * group_scales[g * n_cols + col];
+    }
+
+    // (4) Inverse-scale the dequant. The matmul math is now
+    //     X @ W_recon, where W_recon = (W * s through quant) / s
+    //     ≈ W minus the quantisation noise weighted by 1/s.
+    for row in 0..k_rows {
+        let inv = 1.0 / scales[row].max(1e-8);
+        for col in 0..n_cols {
+            weights[row * n_cols + col] *= inv;
+        }
+    }
+
+    Ok(())
+}
+
 /// Naive `[B, K] × [K, N]` row-major matmul against a
 /// reconstructed [`OutlierDecomposition`]. O(BKN) — for the β.1
 /// spike tests only. Not exposed to the runtime, not on the hot
@@ -1196,6 +1401,130 @@ mod tests {
             OutlierDecompositionError::LengthMismatch {
                 expected: 6,
                 actual: 5
+            }
+        ));
+    }
+
+    // ---- β-pivot.1 AWQ helpers ----
+
+    #[test]
+    fn awq_scales_are_finite_and_have_unit_mean() {
+        let w: Vec<f32> = (0..32).map(|i| (i as f32) * 0.1 - 1.0).collect();
+        let s = awq_per_row_scales_from_weight_norm(&w, &[8, 4], 0.5).unwrap();
+        assert_eq!(s.len(), 8);
+        assert!(s.iter().all(|v| v.is_finite()), "no NaN/inf");
+        assert!(s.iter().all(|v| *v > 0.0), "no zero scales");
+        let mean: f32 = s.iter().sum::<f32>() / (s.len() as f32);
+        assert!(
+            (mean - 1.0).abs() < 1e-4,
+            "scales must normalise to unit mean (got {mean})"
+        );
+    }
+
+    #[test]
+    fn awq_scales_alpha_zero_collapses_to_uniform() {
+        let w: Vec<f32> = (0..16).map(|i| (i as f32) * 0.1 - 0.5).collect();
+        let s = awq_per_row_scales_from_weight_norm(&w, &[4, 4], 0.0).unwrap();
+        // α = 0 means every row contributes the same `1.0` before
+        // normalisation, so all-ones to within float rounding.
+        for v in &s {
+            assert!((v - 1.0).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn awq_scales_alpha_one_emphasises_large_norm_rows() {
+        let mut w = vec![0.0_f32; 8];
+        for col in 0..4 {
+            w[col] = 1.0; // row 0
+            w[4 + col] = 0.1; // row 1
+        }
+        let s = awq_per_row_scales_from_weight_norm(&w, &[2, 4], 1.0).unwrap();
+        assert!(
+            s[0] > 5.0 * s[1],
+            "α = 1 must amplify the large-norm row (got s[0]={}, s[1]={})",
+            s[0],
+            s[1]
+        );
+    }
+
+    #[test]
+    fn awq_scales_reject_non_2d_shape() {
+        let w = vec![0.5_f32; 8];
+        let r = awq_per_row_scales_from_weight_norm(&w, &[2, 2, 2], 0.5);
+        assert!(matches!(r, Err(AwqError::NotTwoDimensional { rank: 3 })));
+    }
+
+    #[test]
+    fn awq_scales_reject_invalid_alpha() {
+        let w = vec![0.5_f32; 8];
+        assert!(matches!(
+            awq_per_row_scales_from_weight_norm(&w, &[2, 4], -0.5),
+            Err(AwqError::InvalidAlpha)
+        ));
+        assert!(matches!(
+            awq_per_row_scales_from_weight_norm(&w, &[2, 4], 1.5),
+            Err(AwqError::InvalidAlpha)
+        ));
+    }
+
+    #[test]
+    fn awq_perturbation_is_deterministic() {
+        let w: Vec<f32> = (0..256).map(|i| (i as f32 * 0.07 - 1.0).sin()).collect();
+        let scales = awq_per_row_scales_from_weight_norm(&w, &[16, 16], 0.5).unwrap();
+        let mut a = w.clone();
+        let mut b = w.clone();
+        apply_awq_perturbation_inplace(&mut a, &[16, 16], 8, &scales).unwrap();
+        apply_awq_perturbation_inplace(&mut b, &[16, 16], 8, &scales).unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn awq_perturbation_with_alpha_zero_matches_plain_int8() {
+        // α = 0 → s = [1, 1, ...] → AWQ degenerates to plain
+        // per-group absmax INT8 round-trip.
+        let w: Vec<f32> = (0..128).map(|i| (i as f32 * 0.03 - 0.7).cos()).collect();
+        let scales = vec![1.0_f32; 16];
+        let mut awq_path = w.clone();
+        apply_awq_perturbation_inplace(&mut awq_path, &[16, 8], 8, &scales).unwrap();
+        let (q, sc) = absmax_per_group_symmetric(&w, &[16, 8], 8);
+        let mut plain_path = vec![0.0_f32; w.len()];
+        for idx in 0..w.len() {
+            let row = idx / 8;
+            let col = idx % 8;
+            let g = row / 8;
+            plain_path[idx] = (q[idx] as f32) * sc[g * 8 + col];
+        }
+        let max_diff = awq_path
+            .iter()
+            .zip(&plain_path)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "AWQ α=0 must collapse to plain INT8 (max diff = {max_diff})"
+        );
+    }
+
+    #[test]
+    fn awq_perturbation_preserves_shape() {
+        let w: Vec<f32> = (0..256).map(|i| i as f32 * 0.01).collect();
+        let mut buf = w.clone();
+        let scales = awq_per_row_scales_from_weight_norm(&w, &[16, 16], 0.5).unwrap();
+        apply_awq_perturbation_inplace(&mut buf, &[16, 16], 16, &scales).unwrap();
+        assert_eq!(buf.len(), w.len());
+    }
+
+    #[test]
+    fn awq_perturbation_rejects_scales_length_mismatch() {
+        let mut buf = vec![0.5_f32; 16];
+        let err = apply_awq_perturbation_inplace(&mut buf, &[4, 4], 4, &[1.0; 3])
+            .expect_err("must reject K-mismatched scales");
+        assert!(matches!(
+            err,
+            AwqError::ScalesLengthMismatch {
+                expected: 4,
+                actual: 3
             }
         ));
     }

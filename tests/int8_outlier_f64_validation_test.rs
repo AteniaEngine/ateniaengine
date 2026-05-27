@@ -550,6 +550,131 @@ mod beta5_forward {
         (drift, matches)
     }
 
+    /// Replace every `_proj.weight` with its AWQ-perturbed F32
+    /// version using `WeightStore::perturb_param_with_awq`. The
+    /// runtime sees a plain F32 weight — no new storage variant
+    /// is needed because the AWQ math collapses to a "perturbed
+    /// F32" buffer at the boundary.
+    fn convert_proj_weights_to_awq(
+        store: &mut WeightStore,
+        group_size: usize,
+        alpha: f32,
+    ) -> usize {
+        let mut count = 0;
+        let mut targets: Vec<usize> = Vec::new();
+        for (i, name) in store.names.iter().enumerate() {
+            if name.ends_with("_proj.weight")
+                && matches!(
+                    store.params[i],
+                    SharedParam::F32 { .. } | SharedParam::Bf16 { .. }
+                )
+            {
+                targets.push(i);
+            }
+        }
+        for idx in targets {
+            store
+                .perturb_param_with_awq(idx, group_size, alpha)
+                .expect("perturb_param_with_awq must succeed on a valid _proj.weight");
+            count += 1;
+        }
+        count
+    }
+
+    /// β-pivot.1 headline test: load TinyLlama 1.1B on CPU, AWQ-
+    /// perturb every `_proj.weight` with weight-norm scales
+    /// (α = 0.5 default), run the forward, compare the logits
+    /// versus the F64 fixture. Honest reporting — the test does
+    /// not panic on ADR-004 FAIL; the verdict is printed and
+    /// recorded in the milestone doc.
+    #[test]
+    #[ignore = "requires TINYLLAMA_SAFETENSORS_PATH; very slow (CPU F32 forward)"]
+    fn beta_pivot1_tinyllama_awq_forward_reports_adr_004() {
+        let Some((mut store, names, config, runtime, vocab)) = load_tinyllama_cpu() else {
+            panic!(
+                "TINYLLAMA_SAFETENSORS_PATH not set; rerun with the env var pointing at \
+                 model.safetensors (see docs/MODELS_LAYOUT.md)"
+            );
+        };
+
+        eprintln!("β-pivot.1 TinyLlama: certified forward (F32 CPU baseline) ...");
+        let baseline_drift;
+        let baseline_matches;
+        {
+            let baseline_store = WeightStore {
+                params: store.params.clone(),
+                names: store.names.clone(),
+            };
+            let (d, m) = forward_and_drift(
+                baseline_store,
+                names.clone(),
+                config.clone(),
+                runtime.clone(),
+                vocab,
+                "tinyllama_reference",
+            );
+            baseline_drift = d;
+            baseline_matches = m;
+        }
+        eprintln!(
+            "  certified drift = {:.6}, argmax matches = {:?}",
+            baseline_drift, baseline_matches
+        );
+
+        let alpha = env::var("ATENIA_AWQ_ALPHA")
+            .ok()
+            .and_then(|s| s.parse::<f32>().ok())
+            .unwrap_or(0.5);
+
+        eprintln!(
+            "β-pivot.1 TinyLlama: applying AWQ perturbation (g={}, α={}, no-cal weight-norm) ...",
+            GROUP_SIZE, alpha
+        );
+        let converted = convert_proj_weights_to_awq(&mut store, GROUP_SIZE, alpha);
+        eprintln!("  perturbed {converted} params via AWQ");
+        assert!(converted >= 100, "expected ≥100 _proj.weight conversions");
+
+        eprintln!("β-pivot.1 TinyLlama: AWQ forward (this will take a few minutes) ...");
+        let (awq_drift, awq_matches) = forward_and_drift(
+            store,
+            names,
+            config,
+            runtime,
+            vocab,
+            "tinyllama_reference",
+        );
+        let argmax_count = awq_matches.iter().filter(|m| **m).count();
+
+        let baseline_pass = baseline_drift < ADR_004_THRESHOLD;
+        let awq_pass = awq_drift < ADR_004_THRESHOLD;
+
+        eprintln!("\n========================================================");
+        eprintln!("β-pivot.1 TinyLlama 1.1B — AWQ vs F64 fixture");
+        eprintln!("  group_size      = {GROUP_SIZE}");
+        eprintln!("  alpha           = {alpha}");
+        eprintln!(
+            "  certified drift = {:.6}  argmax 4/4 = {}  ADR-004 = {}",
+            baseline_drift,
+            baseline_matches.iter().all(|m| *m),
+            if baseline_pass { "PASS" } else { "FAIL" }
+        );
+        eprintln!(
+            "  AWQ       drift = {:.6}  argmax 4/4 = {}  ADR-004 = {}",
+            awq_drift,
+            argmax_count == 4,
+            if awq_pass { "PASS" } else { "FAIL" }
+        );
+        eprintln!("  ADR-004 gate    = max_abs_diff < {ADR_004_THRESHOLD}");
+        eprintln!("  Reference β.5   = outlier k=64 drift was 1.200, k=256 was 1.143 (both FAIL)");
+        eprintln!("========================================================");
+
+        assert!(awq_drift.is_finite(), "AWQ drift must be finite");
+        assert!(
+            baseline_drift < ADR_004_THRESHOLD,
+            "certified baseline must PASS ADR-004 (harness sanity)"
+        );
+    }
+
     /// β.5 headline test: load TinyLlama 1.1B on CPU, convert
     /// every `_proj.weight` to `SharedParam::CpuInt8Outlier`,
     /// run the forward, compare the logits versus the F64
