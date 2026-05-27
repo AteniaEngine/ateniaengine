@@ -459,6 +459,55 @@ impl WeightStore {
         Ok(())
     }
 
+    /// **M10β-pivot.5** — apply the hybrid AWQ + outlier-sidecar
+    /// perturbation. Combines β-pivot.2 activation-aware scaling
+    /// with β.5 outlier carve-out in one helper. CPU-only opt-in;
+    /// the runtime sees a plain F32 weight afterwards.
+    pub fn perturb_param_with_hybrid_awq_outlier(
+        &mut self,
+        idx: usize,
+        group_size: usize,
+        awq_scales: &[f32],
+        outlier_k: usize,
+    ) -> Result<(), crate::tensor::quantizer::AwqError> {
+        let param = self.params.get(idx).unwrap_or_else(|| {
+            panic!("perturb_param_with_hybrid_awq_outlier: idx {idx} out of range")
+        });
+        let shape = param.shape().to_vec();
+        let name = self.names.get(idx).cloned().unwrap_or_default();
+        let mut f32_buf: Vec<f32> = match param {
+            SharedParam::F32 { arc, .. } => (**arc).clone(),
+            SharedParam::Bf16 { arc, .. } => {
+                let mut out = vec![0.0_f32; arc.len()];
+                crate::simd_kernels::avx2::bf16_decode_bulk(arc, &mut out);
+                out
+            }
+            SharedParam::Cuda { .. } => panic!(
+                "perturb_param_with_hybrid_awq_outlier: SharedParam::Cuda not supported \
+                 (CPU-only experimental path)"
+            ),
+            SharedParam::Disk { .. } => panic!(
+                "perturb_param_with_hybrid_awq_outlier: SharedParam::Disk not supported"
+            ),
+            SharedParam::CpuInt8Outlier(_) => panic!(
+                "perturb_param_with_hybrid_awq_outlier: idx {idx} ({name}) already perturbed"
+            ),
+        };
+
+        crate::tensor::quantizer::apply_hybrid_awq_outlier_perturbation_inplace(
+            &mut f32_buf,
+            &shape,
+            group_size,
+            awq_scales,
+            outlier_k,
+        )?;
+        self.params[idx] = SharedParam::F32 {
+            shape,
+            arc: Arc::new(f32_buf),
+        };
+        Ok(())
+    }
+
     /// **M10β-pivot.2** — apply an AWQ-style perturbation using
     /// pre-computed per-K-row scales (typically derived from real
     /// activation statistics via a calibration pass). Same flow as

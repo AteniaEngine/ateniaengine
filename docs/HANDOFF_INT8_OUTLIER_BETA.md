@@ -423,6 +423,120 @@ Ladder of next experiments, in order of cost-to-confidence:
 
 ---
 
+## 7.5. β-pivot.5 — AWQ + outlier hybrid (HYPOTHESIS FALSIFIED)
+
+The β-pivot.2 / β-pivot.3 series narrowed the drift floor to
+~0.78, ~0.89. The β-pivot.5 hypothesis was that calibrated AWQ
+scaling and β.5 outlier carve-out address **orthogonal** failure
+modes (activation sensitivity vs per-column extreme magnitudes)
+and could be stacked for a multiplicative improvement.
+
+### Pipeline (CPU-only, deterministic)
+
+```text
+   (1) W'[k, n]  = W[k, n] · s[k]                  pre-scale (AWQ)
+   (2) outlier_cols = top_k_by_absmax(W'[:, n])    detect
+   (3) outlier[k, j] = W'[k, outlier_cols[j]]      carve out
+   (4) W'[k, outlier_cols[j]] = 0                  zero base
+   (5) (q, group_scales) = absmax_per_group(W')    quantise
+   (6) W_recon = dequant base                      reconstruct
+   (7) W_recon[k, outlier_cols[j]] = outlier[k, j] restore sidecar
+   (8) W_final = W_recon / s[k]                    inverse-scale
+```
+
+`k_outlier == 0` collapses to β-pivot.2 plain AWQ; `s[k] == 1`
+collapses to β.5 plain outlier carve-out. Strict superset of
+both predecessors.
+
+### β-pivot.5 results — TinyLlama 1.1B
+
+```
+α     outlier_k   drift     argmax 4/4
+0.20      128     1.131       4/4 ✓
+0.25       64     0.832       0/4 ✗
+0.25      128     0.844       0/4 ✗
+0.30       64     0.829       0/4 ✗   ← hybrid min
+```
+
+### Headline
+
+- **Hybrid minimum: 0.829 (α=0.30, k=64)**. That is
+  **6% worse than β-pivot.2 synthetic α=0.3 alone (0.78)** and
+  ~7% better than β-pivot.3 real-text α=0.25 alone (0.89).
+- Increasing `outlier_k` from 64 → 128 **does not help**
+  (0.832 → 0.844). The AWQ pre-scaling already absorbs most
+  of what the outlier sidecar would otherwise preserve.
+- α=0.20 + k=128 gives the only argmax-4/4 hybrid we found,
+  but at a much higher drift (1.13).
+- No hybrid configuration crossed the ADR-004 gate (0.5).
+
+### Hypothesis verdict
+
+**The orthogonality hypothesis is FALSIFIED.** AWQ pre-scaling
+redistributes per-column absmax in a way that already absorbs
+the per-column outliers the β.5 carve-out targets. The two
+mechanisms compete in the same per-column-precision subspace
+rather than addressing disjoint failure modes. Stacking them
+buys no further improvement.
+
+### Full investigation table (definitive)
+
+```
+                                       drift    argmax 4/4
+  Certified F32 baseline               6.3e-5      true
+  M9 plain INT8 (≡ AWQ α=0)            1.261       0/4
+  β.5  outlier k=64                    1.200       0/4
+  β.5  outlier k=256                   1.143       0/4
+  β-piv.1 weight-norm AWQ α=0.5        2.479       0/4   (worst)
+  β-piv.2 synth-cal AWQ α=0.3        * 0.782 *     0/4   (min drift)
+  β-piv.3 real-text AWQ α=0.25       * 0.889 *     4/4   (min w/ argmax)
+  β-piv.5 hybrid α=0.30 k=64           0.829       0/4
+  ADR-004 strict gate                  < 0.5         —
+```
+
+### Final verdict for the β / β-pivot family
+
+**No weight-only INT8 strategy implementable as a perturbation
+on top of plain INT8 has closed the gap.** The best six
+configurations land in a tight band 0.78–0.89, all FAIL.
+
+The next experimental tier requires methods that *change* the
+quantisation algorithm itself rather than re-weight its input:
+
+1. **Per-tensor α grid search** — separate α per `_proj.weight`,
+   optimised against the local matmul reconstruction loss.
+   Cheap to implement (1 day) but improvements over single-α
+   are typically 5–15% in the literature, not enough on its own.
+2. **GPTQ** (Hessian-inverse weight-only calibration). The
+   established state-of-art for outlier-heavy LLMs. Computes
+   per-weight updates that minimise the matmul reconstruction
+   error against a Hessian estimate — fundamentally different
+   from "pick a per-channel scale". Literature reports
+   ~0.1 % perplexity delta vs F16 on Llama 7B at 4-bit.
+   ~1–2 weeks of new infrastructure (Hessian inverse op +
+   per-tensor weight update + calibration runner).
+3. **AWQ with per-tensor α + longer / more real-text
+   calibration** — best non-GPTQ option, ~2–3 days.
+
+Given the consistency of the 0.78–0.89 plateau across five
+distinct weight-only mechanisms (plain INT8, outlier removal,
+weight-norm AWQ, calibrated AWQ, hybrid), **the recommendation
+is to skip (1) and (3) and go directly to GPTQ for any
+ADR-004-strict ambition**. The β infrastructure
+(`CpuInt8Outlier`, `WeightStore` perturbation helpers, F64
+forward harness, activation walker, calibration loop) reuses
+unchanged for a GPTQ implementation — the only new piece is
+the Hessian inverse + per-tensor update step.
+
+If a GPTQ-class infrastructure investment is not warranted,
+**M9 INT8 stays as the opt-in experimental mode** (per the
+v0.1.0 release contract), and ADR-004 strict remains a
+F32 / BF16 contract. The β investigation produced enough
+evidence to make this trade-off explicitly rather than
+implicitly.
+
+---
+
 ## 7.ter. β-pivot.2 — calibrated AWQ (PASS PARTIAL)
 
 After β-pivot.1 falsified the *no-calibration* simplification,

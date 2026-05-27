@@ -962,6 +962,104 @@ mod beta5_forward {
         );
     }
 
+    /// β-pivot.5 headline test: calibration forward, then
+    /// AWQ+outlier hybrid perturbation per `_proj.weight`, then
+    /// final forward + F64 comparison. Honest reporting.
+    #[test]
+    #[ignore = "requires TINYLLAMA_SAFETENSORS_PATH; very slow"]
+    fn beta_pivot5_tinyllama_hybrid_reports_adr_004() {
+        let Some((store, names, config, runtime, vocab)) = load_tinyllama_cpu() else {
+            panic!("TINYLLAMA_SAFETENSORS_PATH not set");
+        };
+
+        eprintln!("β-pivot.5 TinyLlama: certified forward (F32 CPU baseline) ...");
+        let (baseline_drift, baseline_matches) = {
+            let baseline_store = WeightStore {
+                params: store.params.clone(),
+                names: store.names.clone(),
+            };
+            forward_and_drift(
+                baseline_store,
+                names.clone(),
+                config.clone(),
+                runtime.clone(),
+                vocab,
+                "tinyllama_reference",
+            )
+        };
+        eprintln!(
+            "  certified drift = {:.6}, argmax = {:?}",
+            baseline_drift, baseline_matches
+        );
+
+        eprintln!("β-pivot.5 TinyLlama: calibration pass (real-text via tokenizer) ...");
+        let captured = run_calibration(&store, &config, &runtime);
+        eprintln!("  captured stats for {} _proj.weight params", captured.len());
+
+        let alpha = env::var("ATENIA_AWQ_ALPHA")
+            .ok()
+            .and_then(|s| s.parse::<f32>().ok())
+            .unwrap_or(0.25);
+        let outlier_k = env::var("ATENIA_BETA_OUTLIER_K")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(64);
+
+        let scales_map = calibrated_scales(&captured, alpha);
+        eprintln!(
+            "β-pivot.5 TinyLlama: applying HYBRID AWQ + outlier (g={}, α={}, k={}) ...",
+            GROUP_SIZE, alpha, outlier_k
+        );
+        let mut store_hybrid = store;
+        let mut converted = 0;
+        for (idx, scales) in &scales_map {
+            store_hybrid
+                .perturb_param_with_hybrid_awq_outlier(
+                    *idx, GROUP_SIZE, scales, outlier_k,
+                )
+                .expect("hybrid perturbation must succeed");
+            converted += 1;
+        }
+        eprintln!("  perturbed {converted} params via HYBRID");
+        assert!(converted >= 100, "expected ≥100 perturbations");
+
+        eprintln!("β-pivot.5 TinyLlama: hybrid forward ...");
+        let (hybrid_drift, hybrid_matches) = forward_and_drift(
+            store_hybrid,
+            names,
+            config,
+            runtime,
+            vocab,
+            "tinyllama_reference",
+        );
+        let argmax_count = hybrid_matches.iter().filter(|m| **m).count();
+
+        eprintln!("\n========================================================");
+        eprintln!("β-pivot.5 TinyLlama 1.1B — HYBRID AWQ + outlier vs F64");
+        eprintln!("  group_size           = {GROUP_SIZE}");
+        eprintln!("  alpha                = {alpha}");
+        eprintln!("  outlier_k            = {outlier_k}");
+        eprintln!("  captured tensors     = {}", scales_map.len());
+        eprintln!(
+            "  certified drift      = {:.6}  argmax 4/4 = {}",
+            baseline_drift,
+            baseline_matches.iter().all(|m| *m)
+        );
+        eprintln!(
+            "  HYBRID    drift      = {:.6}  argmax 4/4 = {}  ADR-004 = {}",
+            hybrid_drift,
+            argmax_count == 4,
+            if hybrid_drift < ADR_004_THRESHOLD { "PASS" } else { "FAIL" }
+        );
+        eprintln!("  Reference β.5 outlier k=64       = 1.200 (FAIL, 0/4)");
+        eprintln!("  Reference β-piv.2 synth α=0.3    = 0.782 (FAIL, 0/4)");
+        eprintln!("  Reference β-piv.3 real α=0.25    = 0.889 (FAIL, 4/4)");
+        eprintln!("========================================================");
+
+        assert!(hybrid_drift.is_finite());
+        assert!(baseline_drift < ADR_004_THRESHOLD);
+    }
+
     /// β-pivot.1 headline test: load TinyLlama 1.1B on CPU, AWQ-
     /// perturb every `_proj.weight` with weight-norm scales
     /// (α = 0.5 default), run the forward, compare the logits

@@ -775,6 +775,152 @@ pub fn apply_awq_perturbation_inplace(
     Ok(())
 }
 
+/// **M10β-pivot.5** — apply the *hybrid* AWQ + outlier-carveout
+/// perturbation to the weight buffer in place.
+///
+/// The math composes β-pivot.2 calibrated AWQ scaling with β.5
+/// outlier carve-out. The two mechanisms target orthogonal
+/// failure modes (activation-sensitive channels vs per-column
+/// extreme magnitudes); stacking them is the natural next
+/// experiment before pivoting to GPTQ.
+///
+/// Pipeline (CPU only, deterministic):
+///
+/// ```text
+///   (1) W'[k, n]  =  W[k, n] · s[k]                  pre-scale
+///   (2) outlier_cols = top_k_by_absmax(W'[:, n])     detect
+///   (3) outlier[k, j] = W'[k, outlier_cols[j]]       carve out
+///   (4) W'[k, n] = 0   for n in outlier_cols         zero base
+///   (5) (q, group_scales) = absmax_per_group(W', g)  quantise
+///   (6) W_recon[k, n] = q[k, n] · group_scales[g, n] dequant base
+///   (7) W_recon[k, outlier_cols[j]] = outlier[k, j]  restore sidecar
+///   (8) W_final[k, n] = W_recon[k, n] / s[k]         inverse-scale
+/// ```
+///
+/// Steps (2)–(4)+(7) collapse to a no-op when `outlier_k == 0`,
+/// recovering β-pivot.2 plain AWQ. Steps (1)+(8) collapse when
+/// `s[k] == 1` for all k, recovering β.5 plain outlier carve-out.
+/// The hybrid is a strict superset of both predecessors.
+///
+/// The runtime sees a plain F32 weight (drift attributable to
+/// quantisation is encoded in the buffer perturbation).
+pub fn apply_hybrid_awq_outlier_perturbation_inplace(
+    weights: &mut [f32],
+    shape: &[usize],
+    group_size: usize,
+    awq_scales: &[f32],
+    outlier_k: usize,
+) -> Result<(), AwqError> {
+    if shape.len() != 2 {
+        return Err(AwqError::NotTwoDimensional { rank: shape.len() });
+    }
+    if group_size == 0 {
+        return Err(AwqError::InvalidGroupSize);
+    }
+    let (k_rows, n_cols) = (shape[0], shape[1]);
+    let expected = k_rows * n_cols;
+    if weights.len() != expected {
+        return Err(AwqError::LengthMismatch {
+            expected,
+            actual: weights.len(),
+        });
+    }
+    if awq_scales.len() != k_rows {
+        return Err(AwqError::ScalesLengthMismatch {
+            expected: k_rows,
+            actual: awq_scales.len(),
+        });
+    }
+    if k_rows == 0 || n_cols == 0 {
+        return Ok(());
+    }
+
+    // (1) Pre-scale W' = W * s per row.
+    for row in 0..k_rows {
+        let s = awq_scales[row];
+        for col in 0..n_cols {
+            weights[row * n_cols + col] *= s;
+        }
+    }
+
+    // (2)–(3) Detect outlier columns on the scaled buffer and
+    // carve them into a dense `[K, M]` sidecar. Reuse the
+    // β.1 decomposition helper to share the absmax sort + ordering
+    // logic with the rest of the outlier path.
+    let actual_k = outlier_k.min(n_cols);
+    let (outlier_cols, outlier_values) = if actual_k > 0 {
+        let mut col_absmax: Vec<f32> = vec![0.0; n_cols];
+        for row in 0..k_rows {
+            for col in 0..n_cols {
+                let v = weights[row * n_cols + col].abs();
+                if v > col_absmax[col] {
+                    col_absmax[col] = v;
+                }
+            }
+        }
+        let mut indexed: Vec<(usize, f32)> = col_absmax.iter().copied().enumerate().collect();
+        indexed.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.0.cmp(&b.0))
+        });
+        let mut cols: Vec<usize> =
+            indexed.into_iter().take(actual_k).map(|(i, _)| i).collect();
+        cols.sort_unstable();
+
+        let m = cols.len();
+        let mut vals = vec![0.0_f32; k_rows * m];
+        if m > 0 {
+            for row in 0..k_rows {
+                for (j, &col) in cols.iter().enumerate() {
+                    vals[row * m + j] = weights[row * n_cols + col];
+                }
+            }
+            // (4) Zero out outlier columns in the base buffer so
+            // the per-group absmax does not see them.
+            for row in 0..k_rows {
+                for &col in &cols {
+                    weights[row * n_cols + col] = 0.0;
+                }
+            }
+        }
+        (cols, vals)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
+    // (5) Per-group absmax INT8 quantisation of the cleaned scaled buffer.
+    let (q, group_scales) = absmax_per_group_symmetric(weights, shape, group_size);
+
+    // (6) Dequantise the base into the same buffer.
+    for idx in 0..expected {
+        let row = idx / n_cols;
+        let col = idx % n_cols;
+        let g = row / group_size;
+        weights[idx] = (q[idx] as f32) * group_scales[g * n_cols + col];
+    }
+
+    // (7) Splice the outlier sidecar over the dequant base. The
+    // outlier columns now carry the exact (scaled) F32 values; the
+    // inverse-scale in (8) restores them to the original-W magnitude.
+    let m = outlier_cols.len();
+    for (j, &col) in outlier_cols.iter().enumerate() {
+        for row in 0..k_rows {
+            weights[row * n_cols + col] = outlier_values[row * m + j];
+        }
+    }
+
+    // (8) Inverse-scale: divide every row by s[k].
+    for row in 0..k_rows {
+        let inv = 1.0 / awq_scales[row].max(1e-8);
+        for col in 0..n_cols {
+            weights[row * n_cols + col] *= inv;
+        }
+    }
+
+    Ok(())
+}
+
 /// Naive `[B, K] × [K, N]` row-major matmul against a
 /// reconstructed [`OutlierDecomposition`]. O(BKN) — for the β.1
 /// spike tests only. Not exposed to the runtime, not on the hot
