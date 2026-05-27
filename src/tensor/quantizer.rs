@@ -671,6 +671,40 @@ pub fn awq_per_row_scales_from_weight_norm(
     Ok(row_norm)
 }
 
+/// **M10β-pivot.2** — per-K-row scales derived from real activation
+/// statistics captured during a calibration forward.
+///
+/// `act_absmax` must have length `shape[0]` — the per-input-channel
+/// max-absolute activation magnitude observed across the calibration
+/// dataset. The scales are `act_absmax[k]^α`, clamped against a small
+/// floor and normalised to unit mean. Higher α (≤1) puts more weight
+/// on high-activation channels.
+pub fn awq_per_row_scales_from_activations(
+    act_absmax: &[f32],
+    alpha: f32,
+) -> Result<Vec<f32>, AwqError> {
+    if !alpha.is_finite() || alpha < 0.0 || alpha > 1.0 {
+        return Err(AwqError::InvalidAlpha);
+    }
+    if act_absmax.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Raise to the power α and clamp to a tiny floor so a degenerate
+    // dead channel (absmax = 0) does not produce a zero scale.
+    let mut s: Vec<f32> = act_absmax
+        .iter()
+        .map(|v| ((*v).max(1e-8) as f64).powf(alpha as f64).max(1e-8) as f32)
+        .collect();
+
+    let mean: f64 = s.iter().map(|x| *x as f64).sum::<f64>() / (s.len() as f64);
+    let mean = mean.max(1e-8) as f32;
+    for v in &mut s {
+        *v /= mean;
+    }
+    Ok(s)
+}
+
 /// **M10β-pivot.1** — apply the AWQ-style quantisation perturbation to
 /// the weight buffer in place, given per-K-row scales.
 ///

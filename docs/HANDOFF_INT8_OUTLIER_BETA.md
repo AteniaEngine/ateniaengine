@@ -283,6 +283,136 @@ two-line replacement experiments.
 
 ---
 
+## 7.ter. β-pivot.2 — calibrated AWQ (PASS PARTIAL)
+
+After β-pivot.1 falsified the *no-calibration* simplification,
+β-pivot.2 replaces the weight-norm proxy with **real activation
+statistics captured during a calibration forward**.
+
+### Activation capture
+
+A graph walker iterates `Graph::nodes` after each calibration
+forward, finding every `NodeType::MatMul` whose RHS is a store
+parameter ending in `_proj.weight`. For each such matmul it reads
+the LHS node's `.output` tensor and accumulates per-input-channel
+absmax. The walker is non-invasive — it adds no hooks inside the
+engine; it relies on the executor leaving `node.output`
+populated post-forward, which the current implementation does.
+
+```text
+ActivationStats {
+    absmax: Vec<f32>,    // length K (input-channel count)
+    sample_count: usize, // for diagnostics
+}
+```
+
+Stats from multiple prompts are merged with max-of-max semantics
+(the conservative envelope).
+
+### Calibration prompts
+
+Four small synthetic token sequences. No tokenizer dependency,
+no external dataset. The experiment measures whether *any* real
+activation signal beats the β-pivot.1 weight-norm proxy:
+
+```text
+[1.0, 100.0, 200.0, 300.0]
+[50.0, 250.0, 450.0, 650.0]
+[10.0, 20.0, 30.0, 40.0]
+[500.0, 600.0, 700.0, 800.0]
+```
+
+### Scale formula
+
+```text
+s[k] = (activation_absmax[k])^α     (per input channel)
+s[k] /= mean(s)                      (normalise to unit mean)
+W'[k, n] = W[k, n] · s[k]            (pre-scale)
+(q, group_scales) = absmax_per_group(W', g)
+W_recon[k, n] = (q[k, n] · group_scales[g, n]) / s[k]
+```
+
+### β-pivot.2 results — TinyLlama 1.1B (α sweep)
+
+```
+========================================================
+β-pivot.2 TinyLlama — calibrated AWQ α sweep
+group_size = 128,  prompts = 4 (synthetic), captured tensors = 154
+--------------------------------------------------------
+                drift     vs prior best (β.5 = 1.20)
+α = 0.0       1.26        ≈ plain INT8 control
+α = 0.1       1.12        −7 %  vs β.5
+α = 0.2       0.84       −30 %
+α = 0.3       0.78       −35 %  ← minimum
+α = 0.5       1.04       −13 %
+α = 0.7       1.25         0 %  ≈ plain INT8 again
+========================================================
+```
+
+### Headline
+
+- **α = 0.3 gives the best drift: 0.78** on TinyLlama against
+  the F64 fixture.
+- That is the **best number across every quantisation
+  experiment in this whole investigation** (plain INT8 / β
+  outlier / β-pivot.1 weight-norm AWQ / β-pivot.2 calibrated AWQ).
+- The U-shaped curve around α = 0.3 confirms that
+  activation-aware scaling is the right *direction*: the
+  weight-norm proxy (β-pivot.1) actively distorts, real
+  activation stats actively help.
+- ADR-004 gate is **still not met** (0.78 vs the 0.5 cap, FAIL
+  by ×1.56). The β-pivot.2 spec calls this regime "PASS
+  PARTIAL": 1.20 → 0.78 is a 35 % drift reduction; AWQ remains
+  viable but the simplified spike does not close the gap alone.
+
+### Why it does not (yet) clear the gate
+
+- Calibration uses 4 **synthetic** token sequences, not real
+  text. Real activation distributions on natural language
+  vocabulary are more spread; better calibration data should
+  shrink drift further.
+- A single global `α` is applied to every `_proj.weight`. The
+  paper's recipe optimises per-tensor `α` via a small grid
+  search per layer (`α ∈ {0.0, 0.05, ..., 1.0}` minimising
+  per-layer reconstruction loss). β-pivot.2 picks one `α` for
+  the whole model.
+- The stats use `max_abs` only. Mean-abs + percentile fusion
+  is the established choice and tightens the envelope.
+- No outlier-column carve-out is combined with AWQ scaling. The
+  β.5 sidecar and β-pivot.2 scale are orthogonal mechanisms;
+  combining them is a separate experiment.
+
+### Verdict
+
+⚠️ **PASS PARTIAL — continue AWQ refinement, do NOT pivot to GPTQ
+yet.**
+
+The β-pivot.2 contract says:
+
+> PASS parcial: TinyLlama: 1.20 → 0.6~0.9 → AWQ sigue viable.
+
+0.78 lands inside that band. The natural next experiments
+(ordered by cost-to-confidence ratio):
+
+1. **β-pivot.3** — real calibration text. Replace the 4
+   synthetic sequences with a fixed Pile-style mini-batch
+   tokenised via the existing CLI tokenizer (8–32 prompts).
+   ~½ day of work; expected drift reduction ~10–20 % based on
+   the literature.
+2. **β-pivot.4** — per-tensor α grid search. For each
+   `_proj.weight` independently, pick the `α` that minimises
+   the post-perturbation reconstruction loss against the
+   un-perturbed F32 weight. ~1 day of work.
+3. **β-pivot.5** — combine β outlier-column carve-out with
+   β-pivot.2 calibrated scaling. The two mechanisms target
+   orthogonal failure modes; stacking them might close the
+   remaining ×1.56 gap.
+
+GPTQ remains the fallback if these three exhaust without
+passing the gate.
+
+---
+
 ## 7.bis. β-pivot.1 — no-calibration AWQ spike
 
 After β.5 failed on TinyLlama (drift 1.20, k=64), the audit

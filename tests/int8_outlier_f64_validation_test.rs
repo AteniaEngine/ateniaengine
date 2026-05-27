@@ -550,6 +550,147 @@ mod beta5_forward {
         (drift, matches)
     }
 
+    // β-pivot.2 — real activation calibration helpers.
+    //
+    // The math axis. Llama loader transposes HF weights from
+    // `[N_out, K_in]` to `[K_in, N_out]` before they hit the store
+    // (the `linear` builder consumes `[B, K] @ [K, N] = [B, N]`).
+    // For AWQ to align with that convention, the per-row scale
+    // `s[k]` must index the **leading axis (= K_in = input
+    // channels)** of the stored weight, which matches the **last
+    // axis** of the LHS activation tensor.
+
+    use std::collections::HashMap;
+
+    /// Per-K-channel activation statistics.
+    #[derive(Debug, Clone)]
+    struct ActivationStats {
+        absmax: Vec<f32>,
+        sample_count: usize,
+    }
+
+    impl ActivationStats {
+        fn new(k: usize) -> Self {
+            Self {
+                absmax: vec![0.0; k],
+                sample_count: 0,
+            }
+        }
+
+        /// Update with a flat activation slice `[N_samples, K]`.
+        fn update_from_flat(&mut self, data: &[f32], k: usize) {
+            let n_samples = data.len() / k;
+            for s in 0..n_samples {
+                for ki in 0..k {
+                    let v = data[s * k + ki].abs();
+                    if v > self.absmax[ki] {
+                        self.absmax[ki] = v;
+                    }
+                }
+            }
+            self.sample_count += n_samples;
+        }
+
+        /// Merge stats from `other` (max-of-max semantics).
+        fn merge(&mut self, other: &ActivationStats) {
+            assert_eq!(
+                self.absmax.len(),
+                other.absmax.len(),
+                "ActivationStats merge: K mismatch"
+            );
+            for (s, o) in self.absmax.iter_mut().zip(&other.absmax) {
+                if *o > *s {
+                    *s = *o;
+                }
+            }
+            self.sample_count += other.sample_count;
+        }
+    }
+
+    /// Walk a graph after a forward and capture per-input-channel
+    /// activation absmax for every `*_proj.weight` MatMul.
+    ///
+    /// Returns a map `store_idx -> ActivationStats`. Skips MatMuls
+    /// where either the RHS does not match a store param, the LHS
+    /// node lost its `.output` to the executor's intermediate
+    /// cleanup, or the LHS shape is degenerate.
+    fn capture_proj_activation_stats(
+        graph: &atenia_engine::amg::graph::Graph,
+        param_ids: &[usize],
+        param_names: &[String],
+    ) -> HashMap<usize, ActivationStats> {
+        use atenia_engine::amg::nodes::NodeType;
+
+        // node_id -> store_idx (for parameter nodes that came from
+        // `build_llama_with_store`).
+        let mut node_to_store: HashMap<usize, usize> = HashMap::new();
+        for (store_idx, &node_id) in param_ids.iter().enumerate() {
+            node_to_store.insert(node_id, store_idx);
+        }
+
+        let mut stats: HashMap<usize, ActivationStats> = HashMap::new();
+        for node in &graph.nodes {
+            if !matches!(node.node_type, NodeType::MatMul) {
+                continue;
+            }
+            if node.inputs.len() < 2 {
+                continue;
+            }
+            let rhs_id = node.inputs[1];
+            let Some(&store_idx) = node_to_store.get(&rhs_id) else {
+                continue;
+            };
+            if !param_names[store_idx].ends_with("_proj.weight") {
+                continue;
+            }
+            let lhs_id = node.inputs[0];
+            let Some(lhs_t) = graph.nodes[lhs_id].output.as_ref() else {
+                // Intermediate output was consumed by the executor.
+                // Without an engine-side hook we cannot recover it.
+                eprintln!(
+                    "[β-pivot.2] LHS output missing for matmul -> {} (store_idx {})",
+                    param_names[store_idx], store_idx
+                );
+                continue;
+            };
+            let shape = &lhs_t.shape;
+            let Some(&k) = shape.last() else {
+                continue;
+            };
+            if k == 0 || lhs_t.numel() == 0 {
+                continue;
+            }
+            let data = lhs_t.copy_to_cpu_vec();
+            let new_stats = {
+                let mut s = ActivationStats::new(k);
+                s.update_from_flat(&data, k);
+                s
+            };
+            stats
+                .entry(store_idx)
+                .and_modify(|e| e.merge(&new_stats))
+                .or_insert(new_stats);
+        }
+        stats
+    }
+
+    /// Compute calibrated per-K scales for every captured tensor.
+    fn calibrated_scales(
+        captured: &HashMap<usize, ActivationStats>,
+        alpha: f32,
+    ) -> HashMap<usize, Vec<f32>> {
+        let mut out = HashMap::new();
+        for (idx, stats) in captured {
+            let s = atenia_engine::tensor::quantizer::awq_per_row_scales_from_activations(
+                &stats.absmax,
+                alpha,
+            )
+            .expect("scale derivation must succeed on captured stats");
+            out.insert(*idx, s);
+        }
+        out
+    }
+
     /// Replace every `_proj.weight` with its AWQ-perturbed F32
     /// version using `WeightStore::perturb_param_with_awq`. The
     /// runtime sees a plain F32 weight — no new storage variant
@@ -579,6 +720,167 @@ mod beta5_forward {
             count += 1;
         }
         count
+    }
+
+    /// **β-pivot.2 calibration forward**. Builds the graph wired
+    /// to `store` (cloned), runs one forward per calibration
+    /// prompt, and merges per-param activation stats. Returns
+    /// the merged map plus the number of prompts processed.
+    fn run_calibration(
+        store: &WeightStore,
+        config: &LlamaConfig,
+        runtime: &LlamaRuntime,
+    ) -> HashMap<usize, ActivationStats> {
+        // The β.5 harness uses a fixed [1, 4] token vector with
+        // `[1.0, 100.0, 200.0, 300.0]`. For the calibration pass
+        // we run four small synthetic "prompts" — different token
+        // patterns to spread activation magnitudes across more
+        // channels. We deliberately do NOT use real tokenised text
+        // (no tokenizer dependency in this test), so the
+        // calibration is intentionally coarse — the experiment
+        // measures whether *any* real activation signal beats the
+        // weight-norm proxy.
+        let prompts: &[[f32; 4]] = &[
+            [1.0, 100.0, 200.0, 300.0],
+            [50.0, 250.0, 450.0, 650.0],
+            [10.0, 20.0, 30.0, 40.0],
+            [500.0, 600.0, 700.0, 800.0],
+        ];
+
+        let mut merged: HashMap<usize, ActivationStats> = HashMap::new();
+        for prompt in prompts {
+            // Each prompt gets its own graph (the executor
+            // populates node.output; cloning the store lets us
+            // start clean per prompt).
+            let local_store = WeightStore {
+                params: store.params.clone(),
+                names: store.names.clone(),
+            };
+            let mut gb = GraphBuilder::new();
+            let token_input_id = gb.input();
+            let handles = build_llama_with_store(
+                &mut gb,
+                config,
+                runtime,
+                token_input_id,
+                &local_store,
+                None,
+            )
+            .expect("build_llama_with_store");
+            let _ = gb.output(handles.logits_id);
+            let mut graph = gb.build();
+
+            let tokens = Tensor::new_cpu(vec![1, 4], prompt.to_vec());
+            let _ = graph.execute(vec![tokens]);
+
+            let stats = capture_proj_activation_stats(
+                &graph,
+                &handles.param_ids,
+                &handles.param_names,
+            );
+            for (idx, s) in stats {
+                merged.entry(idx).and_modify(|e| e.merge(&s)).or_insert(s);
+            }
+        }
+        merged
+    }
+
+    /// β-pivot.2 headline test: capture real activation absmax
+    /// during a 4-prompt calibration forward, derive per-K scales,
+    /// AWQ-perturb every `_proj.weight`, and compare drift versus
+    /// the F64 fixture. Honest reporting — does not panic on
+    /// ADR-004 FAIL.
+    #[test]
+    #[ignore = "requires TINYLLAMA_SAFETENSORS_PATH; very slow"]
+    fn beta_pivot2_tinyllama_calibrated_awq_reports_adr_004() {
+        let Some((store, names, config, runtime, vocab)) = load_tinyllama_cpu() else {
+            panic!("TINYLLAMA_SAFETENSORS_PATH not set");
+        };
+
+        eprintln!("β-pivot.2 TinyLlama: certified forward (F32 CPU baseline) ...");
+        let (baseline_drift, baseline_matches) = {
+            let baseline_store = WeightStore {
+                params: store.params.clone(),
+                names: store.names.clone(),
+            };
+            forward_and_drift(
+                baseline_store,
+                names.clone(),
+                config.clone(),
+                runtime.clone(),
+                vocab,
+                "tinyllama_reference",
+            )
+        };
+        eprintln!("  certified drift = {:.6}, argmax = {:?}", baseline_drift, baseline_matches);
+
+        eprintln!("β-pivot.2 TinyLlama: running calibration pass ...");
+        let cal_start = std::time::Instant::now();
+        let captured = run_calibration(&store, &config, &runtime);
+        eprintln!(
+            "  captured stats for {} _proj.weight params in {:.1}s",
+            captured.len(),
+            cal_start.elapsed().as_secs_f32()
+        );
+
+        let alpha = env::var("ATENIA_AWQ_ALPHA")
+            .ok()
+            .and_then(|s| s.parse::<f32>().ok())
+            .unwrap_or(0.5);
+
+        let scales_map = calibrated_scales(&captured, alpha);
+        eprintln!(
+            "β-pivot.2 TinyLlama: applying calibrated AWQ (g={}, α={}, prompts=4) ...",
+            GROUP_SIZE, alpha
+        );
+        let mut store_awq = store; // consume baseline
+        let mut converted = 0;
+        for (idx, scales) in &scales_map {
+            store_awq
+                .perturb_param_with_awq_calibrated(*idx, GROUP_SIZE, scales)
+                .expect("perturbation must succeed");
+            converted += 1;
+        }
+        eprintln!("  perturbed {converted} params via calibrated AWQ");
+        assert!(converted >= 100, "expected ≥100 perturbations");
+
+        eprintln!("β-pivot.2 TinyLlama: AWQ-calibrated forward ...");
+        let (awq_drift, awq_matches) = forward_and_drift(
+            store_awq,
+            names,
+            config,
+            runtime,
+            vocab,
+            "tinyllama_reference",
+        );
+        let argmax_count = awq_matches.iter().filter(|m| **m).count();
+
+        eprintln!("\n========================================================");
+        eprintln!("β-pivot.2 TinyLlama 1.1B — calibrated AWQ vs F64 fixture");
+        eprintln!("  group_size           = {GROUP_SIZE}");
+        eprintln!("  alpha                = {alpha}");
+        eprintln!("  calibration prompts  = 4 (synthetic)");
+        eprintln!("  captured tensors     = {}", scales_map.len());
+        eprintln!(
+            "  certified drift      = {:.6}  argmax 4/4 = {}",
+            baseline_drift,
+            baseline_matches.iter().all(|m| *m)
+        );
+        eprintln!(
+            "  calibrated AWQ drift = {:.6}  argmax 4/4 = {}  ADR-004 = {}",
+            awq_drift,
+            argmax_count == 4,
+            if awq_drift < ADR_004_THRESHOLD { "PASS" } else { "FAIL" }
+        );
+        eprintln!("  Reference β.5 outlier k=64    = 1.200 (FAIL)");
+        eprintln!("  Reference β-piv.1 AWQ α=0.5    = 2.478 (FAIL, weight-norm proxy)");
+        eprintln!("========================================================");
+
+        assert!(awq_drift.is_finite(), "AWQ drift must be finite");
+        assert!(
+            baseline_drift < ADR_004_THRESHOLD,
+            "certified baseline must PASS ADR-004"
+        );
     }
 
     /// β-pivot.1 headline test: load TinyLlama 1.1B on CPU, AWQ-

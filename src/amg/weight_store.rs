@@ -459,6 +459,56 @@ impl WeightStore {
         Ok(())
     }
 
+    /// **M10β-pivot.2** — apply an AWQ-style perturbation using
+    /// pre-computed per-K-row scales (typically derived from real
+    /// activation statistics via a calibration pass). Same flow as
+    /// [`Self::perturb_param_with_awq`] but the scales are an input
+    /// instead of being derived from the weight norm.
+    pub fn perturb_param_with_awq_calibrated(
+        &mut self,
+        idx: usize,
+        group_size: usize,
+        scales: &[f32],
+    ) -> Result<(), crate::tensor::quantizer::AwqError> {
+        let param = self
+            .params
+            .get(idx)
+            .unwrap_or_else(|| panic!("perturb_param_with_awq_calibrated: idx {idx} out of range"));
+        let shape = param.shape().to_vec();
+        let name = self.names.get(idx).cloned().unwrap_or_default();
+        let mut f32_buf: Vec<f32> = match param {
+            SharedParam::F32 { arc, .. } => (**arc).clone(),
+            SharedParam::Bf16 { arc, .. } => {
+                let mut out = vec![0.0_f32; arc.len()];
+                crate::simd_kernels::avx2::bf16_decode_bulk(arc, &mut out);
+                out
+            }
+            SharedParam::Cuda { .. } => panic!(
+                "perturb_param_with_awq_calibrated: SharedParam::Cuda not supported \
+                 (CPU-only experimental path)"
+            ),
+            SharedParam::Disk { .. } => panic!(
+                "perturb_param_with_awq_calibrated: SharedParam::Disk not supported \
+                 (ensure_cpu first)"
+            ),
+            SharedParam::CpuInt8Outlier(_) => panic!(
+                "perturb_param_with_awq_calibrated: idx {idx} ({name}) already perturbed"
+            ),
+        };
+
+        crate::tensor::quantizer::apply_awq_perturbation_inplace(
+            &mut f32_buf,
+            &shape,
+            group_size,
+            scales,
+        )?;
+        self.params[idx] = SharedParam::F32 {
+            shape,
+            arc: Arc::new(f32_buf),
+        };
+        Ok(())
+    }
+
     /// Lookup a parameter by index. Index is the value
     /// returned by `insert_*`.
     pub fn get(&self, idx: usize) -> Option<&SharedParam> {
