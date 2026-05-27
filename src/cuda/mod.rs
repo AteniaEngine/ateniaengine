@@ -220,6 +220,20 @@ pub(crate) fn cuda_device_ptr(storage: &crate::tensor::TensorStorage) -> *const 
                  this F32 device pointer accessor."
             )
         }
+        crate::tensor::TensorStorage::CpuInt8Outlier { .. } => {
+            // β.2 storage-only. The CUDA dispatch path for
+            // outlier-decomposed weights lands in β.6 (mixed-
+            // precision GEMM = INT8 base + BF16 outlier
+            // correction); until then the variant only exists
+            // on the CPU side and reaching this accessor is a
+            // bug by construction.
+            unreachable!(
+                "cuda_device_ptr called on CpuInt8Outlier storage — \
+                 β.2 is storage-only. The GPU mixed-precision \
+                 dispatch lands in β.6; transition via ensure_cpu \
+                 first if you genuinely need an F32 device pointer."
+            )
+        }
     }
 }
 
@@ -267,6 +281,16 @@ pub(crate) fn cuda_device_ptr_mut(storage: &crate::tensor::TensorStorage) -> *mu
             unreachable!(
                 "cuda_device_ptr_mut called on CpuInt8 storage — INT8 \
                  weights are read-only after quantisation (M9.1)."
+            )
+        }
+        crate::tensor::TensorStorage::CpuInt8Outlier { .. } => {
+            // β.2 — same read-only contract as CpuInt8, with the
+            // added invariant that mutating in place would also
+            // invalidate the outlier sidecar.
+            unreachable!(
+                "cuda_device_ptr_mut called on CpuInt8Outlier storage — \
+                 β.2 outlier-decomposed weights are read-only by \
+                 construction; mutating would invalidate the sidecar."
             )
         }
     }

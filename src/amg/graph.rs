@@ -1260,6 +1260,13 @@ fn try_cached_matmul_weight(name: &str, tensor: &Tensor) -> Option<Tensor> {
         TensorStorage::CpuBf16(_) | TensorStorage::CpuBf16Shared(_) => {
             Cow::Owned(tensor.copy_to_cpu_vec())
         }
+        TensorStorage::CpuInt8Outlier { .. } => {
+            // β.2 storage-only. Reachable only when a future
+            // β.x integration plugs CpuInt8Outlier into the
+            // MatMul weight cache; today the variant is
+            // produced by tests only.
+            Cow::Owned(tensor.copy_to_cpu_vec())
+        }
         TensorStorage::Cuda(_) => {
             if matmul_trace_enabled() && !crate::apx_is_silent() {
                 eprintln!(
@@ -1354,6 +1361,7 @@ fn tensor_storage_kind(t: &Tensor) -> &'static str {
         TensorStorage::Cuda(_) => "Cuda",
         TensorStorage::Disk(_) => "Disk",
         TensorStorage::CpuInt8 { .. } => "CpuInt8",
+        TensorStorage::CpuInt8Outlier { .. } => "CpuInt8Outlier",
     }
 }
 

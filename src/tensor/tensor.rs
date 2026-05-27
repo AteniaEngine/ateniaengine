@@ -238,6 +238,51 @@ pub enum TensorStorage {
         /// `group_size = K` (one group per column).
         group_size: usize,
     },
+    /// **M10β.2 — INT8 base + dense F32 outlier sidecar.**
+    ///
+    /// Experimental storage representation for Track β of the M9
+    /// INT8 follow-up (`docs/HANDOFF_APX_V20_M9.md` §10). Carries
+    /// the same `(q, scales, shape, group_size)` payload as
+    /// [`Self::CpuInt8`] (so the existing M9 per-group dequant
+    /// arithmetic is reused verbatim), plus two sidecar fields
+    /// that preserve a small set of high-magnitude columns
+    /// exactly:
+    ///
+    ///   - `outlier_cols` — sorted-ascending column indices,
+    ///     length `M ≤ N`.
+    ///   - `outlier_values` — row-major `K × M` dense F32 block;
+    ///     element `(row, j)` lives at `row * M + j` and equals
+    ///     the original F32 value of column `outlier_cols[j]`
+    ///     at that row.
+    ///
+    /// The `q` rows for outlier columns are zeroed at construction
+    /// (their per-group scale gets clamped to `1e-12`), so the
+    /// dequantised base contributes zero to outlier columns and
+    /// the sidecar is the sole source of truth there.
+    /// Reconstruction: dequant the INT8 base into a `[K, N]` F32
+    /// matrix, then splice the sidecar over the outlier slots.
+    ///
+    /// **β.2 scope: storage-only.** Not consumed by the matmul
+    /// dispatcher, not produced by the loader, not visible to the
+    /// tier planner. The only consumers in this commit are the
+    /// `copy_to_cpu_vec` / `ensure_cpu` arms below and a handful
+    /// of unit tests. Every other `TensorStorage::*` match site
+    /// that touches this variant panics with a milestone-tagged
+    /// "not wired yet" message — that is intentional, not an
+    /// oversight; β.3..β.7 will fill those arms one path at a
+    /// time as the integration lands.
+    ///
+    /// `outlier_values` is F32 in β.2 to isolate the numerical
+    /// experiment from any BF16-packing question. A future β.x
+    /// will swap it to BF16 once the numerical contract is locked.
+    CpuInt8Outlier {
+        q: Vec<i8>,
+        scales: Vec<f32>,
+        shape: Vec<usize>,
+        group_size: usize,
+        outlier_cols: Vec<usize>,
+        outlier_values: Vec<f32>,
+    },
 }
 
 /// Decode a `u16` BF16 bit pattern into the corresponding `f32`.
@@ -571,6 +616,10 @@ impl Tensor {
             // the M9.0 dequant kernel; M9.1's `ensure_decoded` falls
             // back through CPU.
             TensorStorage::CpuInt8 { .. } => self.ensure_cpu(),
+            // β.2 — outlier-decomposed INT8 follows the same
+            // CPU-decode path as CpuInt8; β.3+ will add a GPU
+            // dispatch arm that consumes the sidecar in place.
+            TensorStorage::CpuInt8Outlier { .. } => self.ensure_cpu(),
         }
     }
 
@@ -905,6 +954,161 @@ impl Tensor {
         }
     }
 
+    /// **M10β.2** — construct an INT8 + outlier-sidecar tensor.
+    ///
+    /// Storage-only constructor. The β.2 contract is that the
+    /// resulting tensor can be reconstructed to F32 via
+    /// `copy_to_cpu_vec` / `ensure_cpu`; it is **not** wired into
+    /// the runtime matmul dispatcher in this commit.
+    ///
+    /// Validates aggressively in the same panic style as
+    /// [`Self::new_cpu_int8_per_group`] because a malformed sidecar
+    /// would silently corrupt downstream dequantisation.
+    ///
+    /// # Panics
+    ///   - `shape.len() != 2`
+    ///   - `group_size == 0`
+    ///   - `q.len() != K * N`
+    ///   - `scales.len() != ceil(K / group_size) * N`
+    ///   - `outlier_cols` contains a duplicate
+    ///   - `outlier_cols` contains an out-of-range column (`>= N`)
+    ///   - `outlier_values.len() != K * outlier_cols.len()`
+    pub fn new_cpu_int8_outlier(
+        shape: Vec<usize>,
+        q: Vec<i8>,
+        scales: Vec<f32>,
+        group_size: usize,
+        mut outlier_cols: Vec<usize>,
+        outlier_values: Vec<f32>,
+    ) -> Self {
+        assert_eq!(
+            shape.len(),
+            2,
+            "Tensor::new_cpu_int8_outlier: β.2 only supports 2D weights (got rank {}); \
+             higher-rank fallthrough is deferred to β.x.",
+            shape.len()
+        );
+        assert!(
+            group_size > 0,
+            "Tensor::new_cpu_int8_outlier: group_size must be > 0"
+        );
+        let (k_rows, n_cols) = (shape[0], shape[1]);
+        let expected_q = k_rows * n_cols;
+        assert_eq!(
+            q.len(),
+            expected_q,
+            "Tensor::new_cpu_int8_outlier: q.len() = {} does not match K * N = {} (shape = {:?})",
+            q.len(),
+            expected_q,
+            shape,
+        );
+        let num_groups = if k_rows == 0 {
+            0
+        } else {
+            (k_rows + group_size - 1) / group_size
+        };
+        let expected_scales = num_groups * n_cols;
+        assert_eq!(
+            scales.len(),
+            expected_scales,
+            "Tensor::new_cpu_int8_outlier: scales.len() = {} does not match \
+             ceil(K / group_size) * N = ceil({} / {}) * {} = {} (shape = {:?})",
+            scales.len(),
+            k_rows,
+            group_size,
+            n_cols,
+            expected_scales,
+            shape,
+        );
+
+        // Sort outlier_cols ascending and check (a) no duplicate,
+        // (b) no out-of-range index. Sorting in place keeps the
+        // single-source invariant the `copy_to_cpu_vec` arm relies
+        // on (sidecar columns are accessed in `outlier_cols` order).
+        outlier_cols.sort_unstable();
+        for w in outlier_cols.windows(2) {
+            assert!(
+                w[0] != w[1],
+                "Tensor::new_cpu_int8_outlier: outlier_cols contains a duplicate ({})",
+                w[0]
+            );
+        }
+        if let Some(&max) = outlier_cols.last() {
+            assert!(
+                max < n_cols,
+                "Tensor::new_cpu_int8_outlier: outlier column {} is out of range (N = {})",
+                max,
+                n_cols,
+            );
+        }
+
+        let m = outlier_cols.len();
+        let expected_outlier_values = k_rows * m;
+        assert_eq!(
+            outlier_values.len(),
+            expected_outlier_values,
+            "Tensor::new_cpu_int8_outlier: outlier_values.len() = {} does not match \
+             K * M = {} * {} = {} (shape = {:?}, M = {})",
+            outlier_values.len(),
+            k_rows,
+            m,
+            expected_outlier_values,
+            shape,
+            m,
+        );
+
+        let strides = Self::compute_strides(&shape, &Layout::Contiguous);
+        let inner_shape = shape.clone();
+        Self {
+            shape,
+            storage: TensorStorage::CpuInt8Outlier {
+                q,
+                scales,
+                shape: inner_shape,
+                group_size,
+                outlier_cols,
+                outlier_values,
+            },
+            device: Device::CPU,
+            // Reuses `DType::Int8` — the bulk storage is still
+            // i8; the sidecar is metadata about the same
+            // conceptual quantised weight, not a new element
+            // type. Keeping DType pure to byte layout preserves
+            // every existing `dtype.size_in_bytes()` invariant
+            // (RAM cost model in tier_plan.rs, etc.).
+            dtype: DType::Int8,
+            layout: Layout::Contiguous,
+            strides,
+            grad: None,
+            op: None,
+        }
+    }
+
+    /// **M10β.2** — build a [`Tensor`] from a β.1
+    /// [`crate::tensor::quantizer::OutlierDecomposition`] without
+    /// re-validating the payload (the decomposition function
+    /// already enforces the invariants).
+    pub fn from_outlier_decomposition(
+        decomp: crate::tensor::quantizer::OutlierDecomposition,
+    ) -> Self {
+        let crate::tensor::quantizer::OutlierDecomposition {
+            q,
+            scales,
+            shape,
+            group_size,
+            outlier_cols,
+            outlier_values,
+        } = decomp;
+        Self::new_cpu_int8_outlier(
+            shape,
+            q,
+            scales,
+            group_size,
+            outlier_cols,
+            outlier_values,
+        )
+    }
+
     /// Replaces the current storage with raw BF16 `bits` (M4.7.2).
     ///
     /// Mirrors [`Self::set_cpu_data`] for the BF16 path. Used by the
@@ -992,6 +1196,12 @@ impl Tensor {
                  copy_to_cpu_vec() to materialise a fresh dequantised \
                  Vec<f32>, or ensure_cpu() to transition the variant."
             ),
+            TensorStorage::CpuInt8Outlier { .. } => panic!(
+                "Tensor::as_cpu_slice called on a CpuInt8Outlier tensor. \
+                 β.2 storage is decode-on-access like CpuInt8: route through \
+                 copy_to_cpu_vec() to materialise a reconstructed F32 buffer, \
+                 or ensure_cpu() to transition the variant."
+            ),
         }
     }
 
@@ -1039,6 +1249,12 @@ impl Tensor {
                  mutating in place would invalidate the per-channel scales. \
                  Use copy_to_cpu_vec() for read access, or transition via \
                  ensure_cpu() (which dequantises and drops the scales)."
+            ),
+            TensorStorage::CpuInt8Outlier { .. } => panic!(
+                "Tensor::as_cpu_slice_mut called on a CpuInt8Outlier tensor. \
+                 β.2 outlier-decomposed weights are read-only by the same \
+                 contract as CpuInt8. Route through copy_to_cpu_vec() or \
+                 ensure_cpu()."
             ),
         }
     }
@@ -1154,6 +1370,43 @@ impl Tensor {
                     let col = idx % n;
                     let group = row / g;
                     out[idx] = (q[idx] as f32) * scales[group * n + col];
+                }
+                out
+            }
+            // β.2 — reconstruct INT8 base + splice outlier sidecar.
+            // Same per-(group, col) dequant as CpuInt8, followed by
+            // an overwrite pass for the outlier columns. Outlier
+            // columns' `q` rows are zero by construction, so the
+            // dequant would contribute zero; the splice replaces
+            // them with the exact preserved F32 values.
+            TensorStorage::CpuInt8Outlier {
+                q,
+                scales,
+                shape: int8_shape,
+                group_size,
+                outlier_cols,
+                outlier_values,
+            } => {
+                let n = *int8_shape
+                    .last()
+                    .expect("CpuInt8Outlier: shape must be non-empty");
+                let total = q.len();
+                let k_rows = if n == 0 { 0 } else { total / n };
+                let g = *group_size;
+                let mut out = vec![0.0_f32; total];
+                if n > 0 && k_rows > 0 {
+                    for idx in 0..total {
+                        let row = idx / n;
+                        let col = idx % n;
+                        let group = row / g;
+                        out[idx] = (q[idx] as f32) * scales[group * n + col];
+                    }
+                    let m = outlier_cols.len();
+                    for (j, &col) in outlier_cols.iter().enumerate() {
+                        for row in 0..k_rows {
+                            out[row * n + col] = outlier_values[row * m + j];
+                        }
+                    }
                 }
                 out
             }
@@ -1322,6 +1575,44 @@ impl Tensor {
                 self.dtype = DType::F32;
                 Ok(self)
             }
+            // β.2 — INT8+outlier → F32 dequant on transition. Same
+            // arithmetic as the `copy_to_cpu_vec` arm; mutates
+            // storage to Cpu(Vec<f32>) so subsequent ops hit the
+            // fast path. Sidecar and scales are dropped on the
+            // transition — the F32 buffer is now self-describing.
+            TensorStorage::CpuInt8Outlier {
+                q,
+                scales,
+                shape: int8_shape,
+                group_size,
+                outlier_cols,
+                outlier_values,
+            } => {
+                let n = *int8_shape
+                    .last()
+                    .expect("CpuInt8Outlier: shape must be non-empty");
+                let total = q.len();
+                let k_rows = if n == 0 { 0 } else { total / n };
+                let g = *group_size;
+                let mut cpu_vec = vec![0.0_f32; total];
+                if n > 0 && k_rows > 0 {
+                    for idx in 0..total {
+                        let row = idx / n;
+                        let col = idx % n;
+                        let group = row / g;
+                        cpu_vec[idx] = (q[idx] as f32) * scales[group * n + col];
+                    }
+                    let m = outlier_cols.len();
+                    for (j, &col) in outlier_cols.iter().enumerate() {
+                        for row in 0..k_rows {
+                            cpu_vec[row * n + col] = outlier_values[row * m + j];
+                        }
+                    }
+                }
+                self.storage = TensorStorage::Cpu(cpu_vec);
+                self.dtype = DType::F32;
+                Ok(self)
+            }
         }
     }
 
@@ -1360,6 +1651,7 @@ impl Tensor {
                 | TensorStorage::CpuBf16(_)
                 | TensorStorage::CpuBf16Shared(_)
                 | TensorStorage::CpuInt8 { .. }
+                | TensorStorage::CpuInt8Outlier { .. }
         ) {
             // M9.1 — INT8 → Cuda follows the same two-hop pattern as
             // BF16: dequantise to Cpu(Vec<f32>) here, then reuse the
@@ -1389,7 +1681,8 @@ impl Tensor {
             | TensorStorage::CpuBf16Shared(_)
             | TensorStorage::Cuda(_)
             | TensorStorage::Disk(_)
-            | TensorStorage::CpuInt8 { .. } => unreachable!(
+            | TensorStorage::CpuInt8 { .. }
+            | TensorStorage::CpuInt8Outlier { .. } => unreachable!(
                 "ensure_gpu reached a non-Cpu variant after the normalization step; \
                  this is a bug"
             ),
