@@ -283,6 +283,146 @@ two-line replacement experiments.
 
 ---
 
+## 7.quater. β-pivot.3 — real-text AWQ calibration (mixed result)
+
+After β-pivot.2 demonstrated that activation-aware scaling helps
+(synthetic-cal α = 0.3 → drift 0.78, the best magnitude number
+in the investigation), β-pivot.3 replaces the synthetic prompts
+with real natural-language text tokenised via the existing
+`AteniaTokenizer`.
+
+### What β-pivot.3 changes
+
+- New helper `build_real_text_calibration_tokens(seq, model_dir)`
+  in the test harness. Loads `tokenizer.json` from the model
+  directory, encodes 8 hardcoded English sentences with BOS,
+  takes the first `seq = 4` token ids of each, casts to F32 to
+  match the existing token-input convention.
+- `run_calibration` swaps the 4 synthetic sequences for the 8
+  real-text sequences when the tokenizer is reachable; falls
+  back to the synthetic batch otherwise (CI safety).
+- Activation walker, AWQ scale derivation, and perturbation
+  helper are unchanged.
+
+### Calibration prompts
+
+```text
+Hello, how are you?
+The capital of France is Paris.
+Rust is a systems programming language.
+Machine learning models require careful numerical validation.
+Once upon a time there was a small dragon.
+The quick brown fox jumps over the lazy dog.
+Artificial intelligence systems can drift numerically.
+Quantization changes the numerical properties of inference.
+```
+
+8 prompts × first-4-tokens-with-BOS = 32 real-text token
+positions feeding the calibration forward.
+
+### β-pivot.3 results — TinyLlama 1.1B (real-text α sweep)
+
+```
+========================================================
+β-pivot.3 TinyLlama — real-text calibrated AWQ α sweep
+group_size = 128,  prompts = 8 (real text), seq = 4
+--------------------------------------------------------
+α       drift       argmax 4/4    note
+0.20    1.337593       4/4 ✓      argmax preserved
+0.25    0.889217       4/4 ✓      best PASS-PARTIAL with argmax
+0.30    0.925051       0/4 ✗      magnitude drift, argmax broken
+0.40    1.192629       4/4 ✓      argmax preserved
+========================================================
+```
+
+### Comparison against the full investigation
+
+```
+                                           drift    argmax 4/4
+certified F32 baseline                   0.000063     4/4 ✓
+M9 plain INT8 (≡ AWQ α = 0)              1.260771     0/4 ✗
+β.5  outlier k = 64                      1.200260     0/4 ✗
+β.5  outlier k = 256                     1.142564     0/4 ✗
+β-pivot.1 weight-norm AWQ α = 0.5        2.478883     0/4 ✗
+β-pivot.2 synthetic-cal AWQ α = 0.3     *0.782183*    0/4 ✗   ← min magnitude
+β-pivot.3 real-text  AWQ α = 0.25       *0.889217*    4/4 ✓   ← min with argmax intact
+β-pivot.3 real-text  AWQ α = 0.30        0.925051     0/4 ✗
+ADR-004 gate                              < 0.5     argmax-irrelevant
+========================================================
+```
+
+### Honest interpretation
+
+- **Real-text calibration did NOT reduce magnitude drift.**
+  β-pivot.2 synthetic α = 0.3 remains the best magnitude number
+  at 0.78; β-pivot.3 real-text α = 0.25 is 0.89, ~14 % worse.
+- **Real-text calibration DID restore argmax matches.**
+  β-pivot.2 synthetic at every α gave 0/4 argmax; β-pivot.3 at
+  α ∈ {0.20, 0.25, 0.40} gives 4/4 argmax. The synthetic
+  prompts apparently push the BOS-position activations into a
+  regime where the AWQ scale flips the relative ordering of
+  large-logit tokens, even though the absolute magnitudes were
+  closer to truth.
+
+This is a real signal but it splits the metrics: **drift**
+(ADR-004) and **argmax** (generative correctness) diverge under
+the two calibration modes. ADR-004 is the formal gate; argmax
+recovery is what would matter for real generation quality.
+
+### Why drift did not improve
+
+Two probable causes:
+
+1. **`seq = 4` is too short to average out BOS noise.** The
+   first token (BOS) lands the embedding in a distinct
+   region of activation space; with only 3 real-text tokens
+   following, the max-of-max statistic over-weights that
+   transient. The β-pivot.2 synthetic prompts had every
+   position carry "real-magnitude" ids so the BOS bias was
+   not as pronounced relative to the rest.
+2. **8 short prompts may underdetermine per-channel stats.**
+   AWQ literature uses ~128 calibration samples of seq ≥ 512.
+   We are 1–2 orders of magnitude under both axes.
+
+Either or both could be addressed without leaving the AWQ
+family. Neither requires a pivot to GPTQ today.
+
+### Verdict
+
+⚠️ **PASS PARTIAL — continue AWQ refinement. Do NOT pivot to
+GPTQ yet.**
+
+The β-pivot.3 contract rule:
+> 13. Si TinyLlama sigue > 0.9: recomendar GPTQ seriamente.
+
+The best β-pivot.3 number is 0.89, **just under** the 0.9
+threshold. Combined with the argmax 4/4 recovery, this is a
+mixed signal — not strong enough to declare progress, not weak
+enough to fire the GPTQ rule.
+
+Ladder of next experiments, in order of cost-to-confidence:
+
+1. **β-pivot.4 — per-tensor α grid search.** For each
+   `_proj.weight` independently, pick the α that minimises
+   post-perturbation reconstruction loss against the
+   un-perturbed F32 weight. The 0.78 / 0.89 / 1.19 range from
+   the global-α sweep suggests different layers want
+   different α; per-tensor search should close ~10–30 % of
+   the gap. ~1 day of work.
+2. **β-pivot.5 — AWQ + outlier hybrid.** The β.5 outlier
+   carve-out and the β-pivot.2/.3 activation scaling target
+   orthogonal failure modes (high-magnitude weight columns
+   vs. activation-sensitive channels). Stacking should be
+   additive on the modes' independent components. ~½–1 day
+   of harness work (storage already exists).
+3. **β-pivot.6 — longer / more prompts.** Increase
+   `runtime.seq` to 16–32 and add 16–32 more prompts. Forces
+   a graph rebuild (different runtime) but no new code.
+4. **GPTQ fallback.** Only if (1) + (2) + (3) all exhaust
+   without crossing the gate.
+
+---
+
 ## 7.ter. β-pivot.2 — calibrated AWQ (PASS PARTIAL)
 
 After β-pivot.1 falsified the *no-calibration* simplification,

@@ -722,6 +722,61 @@ mod beta5_forward {
         count
     }
 
+    /// **β-pivot.3 real-text calibration prompts.**
+    ///
+    /// Tokenises 8 short natural-language sentences via the
+    /// existing `AteniaTokenizer` (HF byte-exact), takes the first
+    /// `runtime.seq` tokens of each, casts to F32 to fit the
+    /// `Tensor::new_cpu(vec![1, S], f32_data)` token-input
+    /// convention. Returns one `[1, runtime.seq]` Tensor per
+    /// prompt.
+    ///
+    /// The model directory carrying the safetensors also ships
+    /// `tokenizer.json` next to it, so resolving the tokenizer
+    /// path piggybacks on the same `TINYLLAMA_SAFETENSORS_PATH`
+    /// env var the β.5 harness already requires.
+    fn build_real_text_calibration_tokens(
+        seq: usize,
+        model_dir: &std::path::Path,
+    ) -> Result<Vec<Vec<f32>>, String> {
+        use atenia_engine::tokenizer::AteniaTokenizer;
+        let tok = AteniaTokenizer::from_model_dir(model_dir)
+            .map_err(|e| format!("AteniaTokenizer::from_model_dir: {e}"))?;
+        let prompts = [
+            "Hello, how are you?",
+            "The capital of France is Paris.",
+            "Rust is a systems programming language.",
+            "Machine learning models require careful numerical validation.",
+            "Once upon a time there was a small dragon.",
+            "The quick brown fox jumps over the lazy dog.",
+            "Artificial intelligence systems can drift numerically.",
+            "Quantization changes the numerical properties of inference.",
+        ];
+        let mut out: Vec<Vec<f32>> = Vec::with_capacity(prompts.len());
+        for p in &prompts {
+            let ids = tok
+                .encode(p, true) // BOS prepended; matches Llama-family convention
+                .map_err(|e| format!("encode `{p}`: {e}"))?;
+            if ids.is_empty() {
+                continue;
+            }
+            // Take the first `seq` ids; pad with the last id if the
+            // prompt tokenises shorter than `seq` (BOS + short
+            // prompt → unlikely to fall under 4 with these
+            // sentences, but defensive).
+            let mut window: Vec<f32> = ids.iter().take(seq).map(|&x| x as f32).collect();
+            while window.len() < seq {
+                let last = *window.last().unwrap_or(&1.0_f32);
+                window.push(last);
+            }
+            out.push(window);
+        }
+        if out.is_empty() {
+            return Err("no calibration prompts tokenised".into());
+        }
+        Ok(out)
+    }
+
     /// **β-pivot.2 calibration forward**. Builds the graph wired
     /// to `store` (cloned), runs one forward per calibration
     /// prompt, and merges per-param activation stats. Returns
@@ -731,24 +786,48 @@ mod beta5_forward {
         config: &LlamaConfig,
         runtime: &LlamaRuntime,
     ) -> HashMap<usize, ActivationStats> {
-        // The β.5 harness uses a fixed [1, 4] token vector with
-        // `[1.0, 100.0, 200.0, 300.0]`. For the calibration pass
-        // we run four small synthetic "prompts" — different token
-        // patterns to spread activation magnitudes across more
-        // channels. We deliberately do NOT use real tokenised text
-        // (no tokenizer dependency in this test), so the
-        // calibration is intentionally coarse — the experiment
-        // measures whether *any* real activation signal beats the
-        // weight-norm proxy.
-        let prompts: &[[f32; 4]] = &[
-            [1.0, 100.0, 200.0, 300.0],
-            [50.0, 250.0, 450.0, 650.0],
-            [10.0, 20.0, 30.0, 40.0],
-            [500.0, 600.0, 700.0, 800.0],
+        // β.5 / β-pivot.2 used synthetic token ids. β-pivot.3
+        // (the active variant) prefers real tokenised text via
+        // the existing tokenizer; falls back to the synthetic
+        // batch only if the tokenizer is unavailable (e.g. env
+        // var TINYLLAMA_SAFETENSORS_PATH points at a model
+        // directory that no longer has tokenizer.json next to it).
+        let real_tokens: Vec<Vec<f32>> = match env::var("TINYLLAMA_SAFETENSORS_PATH").ok() {
+            Some(path) => match Path::new(&path).parent() {
+                Some(model_dir) => match build_real_text_calibration_tokens(runtime.seq, model_dir) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!(
+                            "[β-pivot.3] real-text calibration unavailable ({e}); falling back \
+                             to β-pivot.2 synthetic prompts"
+                        );
+                        Vec::new()
+                    }
+                },
+                None => Vec::new(),
+            },
+            None => Vec::new(),
+        };
+
+        let synthetic_fallback: Vec<Vec<f32>> = vec![
+            vec![1.0, 100.0, 200.0, 300.0],
+            vec![50.0, 250.0, 450.0, 650.0],
+            vec![10.0, 20.0, 30.0, 40.0],
+            vec![500.0, 600.0, 700.0, 800.0],
         ];
+        let prompts: Vec<Vec<f32>> = if real_tokens.is_empty() {
+            synthetic_fallback
+        } else {
+            eprintln!(
+                "[β-pivot.3] using {} real-text calibration sequences (seq = {})",
+                real_tokens.len(),
+                runtime.seq
+            );
+            real_tokens
+        };
 
         let mut merged: HashMap<usize, ActivationStats> = HashMap::new();
-        for prompt in prompts {
+        for prompt in &prompts {
             // Each prompt gets its own graph (the executor
             // populates node.output; cloning the store lets us
             // start clean per prompt).
@@ -770,7 +849,7 @@ mod beta5_forward {
             let _ = gb.output(handles.logits_id);
             let mut graph = gb.build();
 
-            let tokens = Tensor::new_cpu(vec![1, 4], prompt.to_vec());
+            let tokens = Tensor::new_cpu(vec![1, runtime.seq], prompt.clone());
             let _ = graph.execute(vec![tokens]);
 
             let stats = capture_proj_activation_stats(
