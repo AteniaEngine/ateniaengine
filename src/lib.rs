@@ -89,6 +89,10 @@ pub mod ops;
 pub mod optim;
 pub mod pps;
 pub mod profiler;
+// **AQS-1** — experimental quantisation-policy abstraction. CPU-only,
+// opt-in, no productive integration. See `docs/AQS_ARCHITECTURE_AUDIT.md`
+// and `docs/HANDOFF_AQS_1.md`.
+pub mod quant;
 pub mod simd_fused_kernels;
 pub mod simd_kernels;
 pub mod tensor;
