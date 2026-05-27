@@ -1,8 +1,10 @@
 # HANDOFF — INT8 outlier decomposition (Track β)
 
-**Status:** β.4 PASS — Track β has positive numerical signal at
-the tensor reconstruction level on all four M8.5 fixture models.
-Avancing to β.5 (manifest + store integration) is justified.
+**Status:** β.5 FAIL — outlier decomposition does not satisfy
+ADR-004 strict on the smallest M8.5 fixture model under
+end-to-end forward measurement. Track β stops at β.5; β.6 CUDA
+work is **not** authorised. See §7 for the verdict and §8 for the
+recommended pivot.
 **Predecessor:** M9 INT8 W8A16 (closed as experimental / opt-in;
 failed ADR-004 strict drift gate on 4/4 models under absmax).
 **See also:** `HANDOFF_APX_V20_M9.md` §4 (the M9 drift cliff
@@ -35,10 +37,10 @@ ADR-004 once the path is wired end-to-end.
 | β.1   | CPU outlier-decomposition spike + quantizer API | ✅ | `0d40e3f` |
 | β.2   | `TensorStorage::CpuInt8Outlier` + constructor + reconstruction | ✅ | `1354e7d` |
 | β.3   | CPU MatMul integration (via β.2 ensure_decoded) | ✅ | `7d6dab5` |
-| β.4   | F64-fixture-model per-tensor validation (this milestone) | ✅ | (this commit) |
-| β.5   | Manifest + `WeightStore` integration (end-to-end forward) | TODO | — |
-| β.6   | CUDA mixed-precision kernel (INT8 base + BF16 correction) | TODO | — |
-| β.7   | Docs / release / production routing | TODO | — |
+| β.4   | F64-fixture-model per-tensor validation | ✅ | `c963d39` |
+| β.5   | `SharedParam::CpuInt8Outlier` + end-to-end forward F64 | ⚠️ FAIL | (this commit) |
+| β.6   | CUDA mixed-precision kernel (INT8 base + BF16 correction) | ❌ NOT AUTHORISED | — |
+| β.7   | Docs / release / production routing | ❌ NOT AUTHORISED | — |
 
 ---
 
@@ -183,7 +185,138 @@ investing in β.6 CUDA work.
 
 ---
 
-## 6. Scope confirmations
+## 6. β.5 — end-to-end forward measurement
+
+### What β.5 added
+
+- `SharedParam::CpuInt8Outlier(Arc<Tensor>)` — additive variant
+  on `src/amg/weight_store.rs`, with `to_tensor` / `shape` /
+  `resident_bytes` / `strong_count` arms.
+- `WeightStore::quantize_param_to_outlier(idx, group_size, k)` —
+  opt-in conversion helper. Reads the existing F32 or BF16
+  shared variant, materialises F32, runs
+  `decompose_outliers_topk_by_absmax`, and replaces the slot
+  in place. Cuda / Disk variants panic by contract (β.5 is
+  CPU-only experimental).
+- Heavy F64 forward test `beta5_tinyllama_outlier_forward_reports_adr_004`
+  in `tests/int8_outlier_f64_validation_test.rs`. Loads
+  TinyLlama on a CPU-only `WeightStore` (`kernel_dtype = F32`),
+  records the certified-baseline drift, converts all 154
+  `_proj.weight` parameters to `CpuInt8Outlier`, runs the
+  forward, and prints the ADR-004 verdict.
+- Exhaustiveness arms in legacy tests (`tensor_storage_test.rs`,
+  `tensor_storage_cuda_test.rs`, the four `m3_e_11_*` migration
+  tests, `m5_db_tinyllama_pipeline_test.rs`,
+  `m5_dc_llama2_13b_coherence_test.rs`) — panic / unreachable
+  matchings the existing pattern for variants the legacy tests
+  do not exercise. No behaviour change.
+
+### β.5 results — TinyLlama 1.1B end-to-end (CPU F32 forward, 4 positions)
+
+```
+========================================================
+β.5 TinyLlama 1.1B — full forward F64 comparison
+========================================================
+                              certified           outlier
+group_size                          n/a               128
+outlier_k                           n/a            64 / 256
+drift vs F64                   6.3e-5         1.200 / 1.143
+argmax 4/4                       true               false
+ADR-004 (< 0.5)                  PASS                FAIL
+========================================================
+```
+
+- **Certified baseline** (F32 throughout): drift 6.3e-5, argmax
+  4/4 MATCH, ADR-004 PASS by a ~8000× margin. Confirms the
+  harness, the model, the F32 path and the F64 fixture are all
+  internally consistent.
+- **Outlier path k=64** (the audit's default): drift 1.200,
+  ADR-004 FAIL by 2.4×. Argmax 0/4 MATCH.
+- **Outlier path k=256** (sensitivity probe): drift 1.143,
+  ADR-004 FAIL by 2.3×. Quadrupling the sidecar buys ~5%
+  improvement.
+
+### Why the β.4 projection was wrong
+
+β.4 measured per-tensor max-abs reconstruction error and applied
+the linear cascade approximation
+`end-to-end ≈ envelope · sqrt(num_ops)`. The TinyLlama outlier
+envelope was 1.56e-3 → projected drift ~0.019.
+
+The actual measured drift was **1.20** — roughly **60× the linear
+projection**. The β.4 sentinel SmolLM2 already hinted this could
+happen (its M9 cascade amplified ~22× over the linear projection);
+in TinyLlama (a model β.4 considered "the cleanest case") the
+amplification is even larger.
+
+Root cause analysis: weight-only INT8 with absmax-driven outlier
+removal does not see *which* per-element errors will propagate
+through RMSNorm gain × attention softmax × residual sum
+amplification. The errors that survive into the matmul output
+correlate with activation patterns, not with raw weight outlier
+magnitude. This is the empirical confirmation of the calibration
+gap that motivated GPTQ / AWQ in the first place: they use real
+activations to pick the per-weight scale, not the weight
+statistics in isolation.
+
+---
+
+## 7. Verdict
+
+**STOP Track β before β.6.** The regression rule from the β.5
+spec fires verbatim:
+
+> 11. Si aparece cualquier regresión numérica fuerte:
+>     - STOP
+>     - reportar
+>     - NO continuar hacia CUDA.
+
+Drift 1.20 on the smallest, cleanest β.4 model against a 0.5 gate
+is a strong regression. Investing β.6 CUDA work on a path that
+does not satisfy ADR-004 would be money set on fire.
+
+The β.5 harness itself is **kept** — the `SharedParam` variant,
+the conversion helper and the end-to-end test are correct
+scaffolding that any future calibration-based approach (GPTQ,
+AWQ, SmoothQuant) can reuse. They cost ~600 LOC and unlock
+two-line replacement experiments.
+
+---
+
+## 8. Recommended pivot
+
+In increasing cost / depth:
+
+1. **GPTQ** (Hessian-inverse weight-only calibration). Standard
+   answer for outlier-heavy Llama-class weights. Needs a small
+   calibration set (~128 examples) and one pass of activation
+   recording per model. Drift profile on Llama 7B in the
+   literature: ~0.05 vs F64 on 4-bit, ~0.005 on 8-bit. Cost:
+   ~2 weeks new infrastructure (Hessian inverse op,
+   calibration runner, per-tensor scale optimisation).
+2. **AWQ** (activation-aware weight scaling). Lighter than
+   GPTQ: detects salient channels from activation magnitude
+   statistics, applies a per-channel scaling factor before
+   quantisation. No Hessian. Drift profile is similar to GPTQ
+   in practice and the implementation is shorter (~1 week).
+3. **FFN-only mixed precision** (Option α from the M9
+   handoff). Keep attention proj weights BF16; quantise only
+   `mlp.*_proj.weight`. Halves the cascade depth without any
+   new calibration concept. Cheaper but may still leave
+   SmolLM2 above the gate, and offers half the memory win.
+4. **Accept M9 INT8 as opt-in only.** Stop pursuing strict
+   ADR-004 for INT8 weights; document the M9 drift envelope
+   as the operator-visible cost. The infrastructure already
+   ships at v0.1.0.
+
+The audit's recommendation is **(2) AWQ** as the first
+follow-up: lowest cost-to-confidence ratio, well-trodden
+implementation path (Tencent / MIT-HAN papers + open source).
+If AWQ also fails on SmolLM2, escalate to GPTQ.
+
+---
+
+## 9. Scope confirmations
 
 β.4 touches **none** of:
 

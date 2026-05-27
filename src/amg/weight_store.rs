@@ -91,6 +91,28 @@ pub enum SharedParam {
         shape: Vec<usize>,
         handle: DiskTensorHandle,
     },
+    /// **M10β.5** — experimental, opt-in INT8 + outlier-sidecar
+    /// shared parameter. Wraps the full β.2 [`Tensor`] (whose
+    /// storage is [`TensorStorage::CpuInt8Outlier`]) inside an
+    /// `Arc` so the `to_tensor()` call sites share the heavy
+    /// per-tensor `(q, scales, sidecar)` buffers without
+    /// cloning the inner Vecs.
+    ///
+    /// Reaches `Tensor` via `(*arc).clone()`, which does perform
+    /// an O(numel) clone of the i8 buffer and the sidecar F32s
+    /// (β.2's `TensorStorage::CpuInt8Outlier` is owned, not
+    /// Arc-backed at the variant level). For the β.5 forward-
+    /// validation use case this cost is acceptable: the flag is
+    /// experimental opt-in (`ATENIA_BETA_OUTLIER=1`), the
+    /// measurement runs offline, and the clone is dwarfed by
+    /// the matmul itself. A future β.x can introduce a
+    /// `TensorStorage::CpuInt8OutlierShared` variant to make
+    /// this zero-cost the way `CpuBf16Shared` did for BF16.
+    ///
+    /// `Tensor::ensure_decoded` already routes this variant
+    /// through `Tensor::ensure_cpu` (β.2 wiring), so MatMul
+    /// dispatch consumes the reconstructed F32 transparently.
+    CpuInt8Outlier(Arc<Tensor>),
 }
 
 impl SharedParam {
@@ -104,6 +126,13 @@ impl SharedParam {
             }
             SharedParam::Cuda { shape, gpu } => Tensor::from_cuda_gpu(shape.clone(), gpu.clone()),
             SharedParam::Disk { shape, handle } => Tensor::from_disk(shape.clone(), handle.clone()),
+            // β.5 — clone the inner Tensor. The β.2 storage owns
+            // its Vecs; sharing via Arc at the SharedParam level
+            // amortises the index lookup but not the buffer
+            // clone. Acceptable for the experimental forward
+            // measurement; see the variant doc-comment for the
+            // β.x optimisation path.
+            SharedParam::CpuInt8Outlier(arc) => (**arc).clone(),
         }
     }
 
@@ -113,6 +142,7 @@ impl SharedParam {
             | SharedParam::Bf16 { shape, .. }
             | SharedParam::Cuda { shape, .. }
             | SharedParam::Disk { shape, .. } => shape,
+            SharedParam::CpuInt8Outlier(arc) => arc.shape.as_slice(),
         }
     }
 
@@ -136,6 +166,30 @@ impl SharedParam {
             SharedParam::Bf16 { arc, .. } => arc.len() * 2,
             SharedParam::Cuda { gpu, .. } => gpu.size_bytes(),
             SharedParam::Disk { handle, .. } => handle.numel() * handle.dtype().bytes_per_element(),
+            // β.5 — bytes resident = numel × 1 (INT8 base)
+            //                       + ceil(K/group_size) × N × 4 (F32 scales)
+            //                       + M × 8 (outlier_cols, usize)
+            //                       + K × M × 4 (sidecar F32).
+            // Approximation via the underlying TensorStorage match
+            // keeps the formula single-sourced.
+            SharedParam::CpuInt8Outlier(arc) => {
+                use crate::tensor::TensorStorage;
+                match &arc.storage {
+                    TensorStorage::CpuInt8Outlier {
+                        q,
+                        scales,
+                        outlier_cols,
+                        outlier_values,
+                        ..
+                    } => {
+                        q.len()
+                            + scales.len() * 4
+                            + outlier_cols.len() * std::mem::size_of::<usize>()
+                            + outlier_values.len() * 4
+                    }
+                    _ => 0,
+                }
+            }
         }
     }
 
@@ -157,6 +211,8 @@ impl SharedParam {
             SharedParam::Bf16 { arc, .. } => Arc::strong_count(arc),
             SharedParam::Cuda { .. } => 1,
             SharedParam::Disk { .. } => 1,
+            // β.5 — Arc<Tensor> strong count is meaningful.
+            SharedParam::CpuInt8Outlier(arc) => Arc::strong_count(arc),
         }
     }
 }
@@ -266,6 +322,77 @@ impl WeightStore {
         self.params.push(SharedParam::Disk { shape, handle });
         self.names.push(name.into());
         idx
+    }
+
+    /// **M10β.5** — replace the parameter at `idx` with an
+    /// INT8 + outlier-sidecar version of itself.
+    ///
+    /// The current `SharedParam` is materialised to F32 via
+    /// `to_tensor().copy_to_cpu_vec()` (works for `F32` and
+    /// `Bf16` shared variants; returns an `Err` for any other
+    /// variant since β.5 only supports CPU-resident
+    /// dequantisation). The F32 buffer is then handed to
+    /// [`crate::tensor::quantizer::decompose_outliers_topk_by_absmax`]
+    /// and wrapped into a `SharedParam::CpuInt8Outlier` slot.
+    ///
+    /// This is the **opt-in conversion point** the β.5 forward
+    /// validation harness calls post-load for the
+    /// `_proj.weight` predicate, without rewiring the loader
+    /// itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying `decompose_outliers_topk_by_absmax`
+    /// error verbatim if the parameter shape / `k` / `group_size`
+    /// is invalid for the policy.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx` is out of range, or if the underlying
+    /// `SharedParam` cannot be materialised to F32 (e.g. it is
+    /// already `CpuInt8Outlier` or it lives on `Cuda` / `Disk`
+    /// without a host fallback in this experimental path).
+    pub fn quantize_param_to_outlier(
+        &mut self,
+        idx: usize,
+        group_size: usize,
+        k: usize,
+    ) -> Result<(), crate::tensor::quantizer::OutlierDecompositionError> {
+        let param = self
+            .params
+            .get(idx)
+            .unwrap_or_else(|| panic!("quantize_param_to_outlier: idx {idx} out of range"));
+        let shape = param.shape().to_vec();
+        // CPU-only contract for β.5: the F32 path covers F32 and
+        // Bf16 shared variants (the only ones the loader produces
+        // for non-VRAM-tier weights). For Cuda / Disk variants
+        // the experimental path stays out of scope today.
+        let f32_buf: Vec<f32> = match param {
+            SharedParam::F32 { arc, .. } => (**arc).clone(),
+            SharedParam::Bf16 { arc, .. } => {
+                let mut out = vec![0.0_f32; arc.len()];
+                crate::simd_kernels::avx2::bf16_decode_bulk(arc, &mut out);
+                out
+            }
+            SharedParam::Cuda { .. } => panic!(
+                "quantize_param_to_outlier: SharedParam::Cuda not supported in β.5 \
+                 (the experimental path is CPU-only; rebuild with kernel_dtype = F32)"
+            ),
+            SharedParam::Disk { .. } => panic!(
+                "quantize_param_to_outlier: SharedParam::Disk not supported in β.5 \
+                 (ensure_cpu the parameter first)"
+            ),
+            SharedParam::CpuInt8Outlier(_) => panic!(
+                "quantize_param_to_outlier: idx {idx} is already CpuInt8Outlier"
+            ),
+        };
+
+        let decomp = crate::tensor::quantizer::decompose_outliers_topk_by_absmax(
+            &f32_buf, &shape, group_size, k,
+        )?;
+        let tensor = Tensor::from_outlier_decomposition(decomp);
+        self.params[idx] = SharedParam::CpuInt8Outlier(Arc::new(tensor));
+        Ok(())
     }
 
     /// Lookup a parameter by index. Index is the value

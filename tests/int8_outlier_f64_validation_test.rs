@@ -305,6 +305,361 @@ fn beta4_all_models_per_tensor_reconstruction() {
     }
 }
 
+// ============================================================
+// β.5 — end-to-end forward validation against F64 fixture.
+//
+// This block extends the β.4 harness with the actual ADR-004
+// measurement: load a model into a CPU-resident WeightStore,
+// replace each `_proj.weight` with `SharedParam::CpuInt8Outlier`
+// via `WeightStore::quantize_param_to_outlier`, run the forward,
+// and compare logits versus the F64 fixture used by M8.5.
+//
+// The forward runs on CPU (no CUDA, no BF16 GPU shortcut). The
+// flag `ATENIA_BETA_OUTLIER=1` plus the explicit
+// `kernel_dtype = F32` make the experimental path 100 %
+// opt-in — every other test path is unchanged.
+// ============================================================
+
+#[cfg(test)]
+mod beta5_forward {
+    use std::env;
+    use std::path::Path;
+
+    use atenia_engine::amg::builder::GraphBuilder;
+    use atenia_engine::amg::weight_store::{SharedParam, WeightStore};
+    use atenia_engine::gpu::tier_plan::{TensorMeta, TierPlanInput, plan};
+    use atenia_engine::nn::llama::{
+        LlamaConfig, LlamaRuntime, build_llama, build_llama_with_store, llama_weight_mapper,
+    };
+    use atenia_engine::tensor::{DType, Tensor};
+    use atenia_engine::v17::loader::safetensors_reader::SafetensorsReader;
+
+    const GROUP_SIZE: usize = 128;
+    const OUTLIER_K: usize = 64;
+    const TOKENS: [f32; 4] = [1.0, 100.0, 200.0, 300.0];
+    const ADR_004_THRESHOLD: f64 = 0.5;
+
+    /// Minimal Llama config for TinyLlama 1.1B — copied verbatim
+    /// from `m8_5_full_family_validation_test.rs` so the two
+    /// harnesses agree on what model is being validated.
+    const TINYLLAMA_CONFIG: &str = r#"{
+      "architectures": ["LlamaForCausalLM"],
+      "attention_bias": false,
+      "bos_token_id": 1,
+      "eos_token_id": 2,
+      "hidden_act": "silu",
+      "hidden_size": 2048,
+      "initializer_range": 0.02,
+      "intermediate_size": 5632,
+      "max_position_embeddings": 2048,
+      "model_type": "llama",
+      "num_attention_heads": 32,
+      "num_hidden_layers": 22,
+      "num_key_value_heads": 4,
+      "pretraining_tp": 1,
+      "rms_norm_eps": 1e-05,
+      "rope_scaling": null,
+      "rope_theta": 10000.0,
+      "tie_word_embeddings": false,
+      "torch_dtype": "bfloat16",
+      "transformers_version": "4.35.0",
+      "use_cache": true,
+      "vocab_size": 32000
+    }"#;
+
+    fn load_f64_fixture(rel_dir: &str) -> Vec<f64> {
+        let path = std::path::PathBuf::from("tests/fixtures")
+            .join(rel_dir)
+            .join("expected_logits_f64.json");
+        let s = std::fs::read_to_string(&path)
+            .unwrap_or_else(|_| panic!("F64 fixture missing: {}", path.display()));
+        let json: serde_json::Value = serde_json::from_str(&s).expect("malformed F64 fixture");
+        json["values"]
+            .as_array()
+            .expect("`values` array")
+            .iter()
+            .map(|v| v.as_f64().expect("number"))
+            .collect()
+    }
+
+    /// Load TinyLlama into a CPU-only `WeightStore` (kernel_dtype
+    /// = F32). Returns the store, the param names, the build
+    /// runtime, and the config so the caller can build the
+    /// execution graph and run the forward.
+    fn load_tinyllama_cpu() -> Option<(
+        WeightStore,
+        Vec<String>,
+        LlamaConfig,
+        LlamaRuntime,
+        usize,
+    )> {
+        let path = env::var("TINYLLAMA_SAFETENSORS_PATH").ok()?;
+        if !Path::new(&path).is_file() {
+            eprintln!(
+                "TINYLLAMA_SAFETENSORS_PATH = `{}` but no file exists; skipping",
+                path
+            );
+            return None;
+        }
+
+        let config = LlamaConfig::from_json_str(TINYLLAMA_CONFIG).expect("parse config");
+        let runtime = LlamaRuntime { batch: 1, seq: 4 };
+
+        let mut gb_scratch = GraphBuilder::new();
+        let token_input_id = gb_scratch.input();
+        let handles = build_llama(&mut gb_scratch, &config, &runtime, token_input_id);
+        let _ = gb_scratch.output(handles.logits_id);
+        let mut scratch = gb_scratch.build();
+
+        let reader = SafetensorsReader::open(Path::new(&path)).expect("open safetensors");
+        let mapper = llama_weight_mapper(&config, &handles.param_names, &handles.param_ids)
+            .expect("mapper");
+
+        // CPU-only plan: kernel_dtype = F32 → loader produces
+        // SharedParam::F32 (or shared) variants in the store,
+        // not BF16-in-VRAM. β.5 needs a CPU-resident store so
+        // `quantize_param_to_outlier` can mutate it without
+        // racing the GPU path.
+        let metas: Vec<TensorMeta> = reader
+            .iter()
+            .map(|e| TensorMeta {
+                name: e.name.to_string(),
+                shape: e.shape.to_vec(),
+                dtype: e.dtype,
+            })
+            .collect();
+        let model_total_bytes: u64 = metas
+            .iter()
+            .map(|m| (m.shape.iter().product::<usize>() as u64) * 4)
+            .sum();
+        let plan_input = TierPlanInput {
+            tensors: metas,
+            free_vram_bytes: 0,
+            free_ram_bytes: 32 * 1024 * 1024 * 1024,
+            model_total_bytes,
+            total_ram_bytes: 32 * 1024 * 1024 * 1024,
+            kernel_dtype: DType::F32,
+        };
+        let plan_out = plan(&plan_input);
+
+        let (store, _report) = mapper
+            .load_into_with_residency_plan(
+                &mut scratch,
+                &reader,
+                &plan_out,
+                &handles.param_ids,
+                &handles.param_names,
+            )
+            .expect("load_into_with_residency_plan");
+        drop(scratch);
+        drop(reader);
+
+        Some((store, handles.param_names, config, runtime, 32_000))
+    }
+
+    /// Replace every `_proj.weight` in the store with its
+    /// outlier-decomposed counterpart. Skips parameters that
+    /// already live on Cuda / Disk (β.5 contract: CPU-only).
+    fn convert_proj_weights_to_outlier(
+        store: &mut WeightStore,
+        group_size: usize,
+        k: usize,
+    ) -> usize {
+        let mut count = 0;
+        let mut targets: Vec<usize> = Vec::new();
+        for (i, name) in store.names.iter().enumerate() {
+            if name.ends_with("_proj.weight") {
+                // Only convert the variants we can dequant to F32
+                // without GPU/disk access.
+                if matches!(
+                    store.params[i],
+                    SharedParam::F32 { .. } | SharedParam::Bf16 { .. }
+                ) {
+                    targets.push(i);
+                }
+            }
+        }
+        for idx in targets {
+            store
+                .quantize_param_to_outlier(idx, group_size, k)
+                .expect("quantize_param_to_outlier must succeed on a valid _proj.weight");
+            count += 1;
+        }
+        count
+    }
+
+    fn forward_and_drift(
+        store: WeightStore,
+        param_names: Vec<String>,
+        config: LlamaConfig,
+        runtime: LlamaRuntime,
+        vocab_size: usize,
+        fixture_dir: &str,
+    ) -> (f64, [bool; 4]) {
+        let _ = param_names; // names already in store
+        let mut gb_exec = GraphBuilder::new();
+        let token_input_id = gb_exec.input();
+        let handles_exec = build_llama_with_store(
+            &mut gb_exec,
+            &config,
+            &runtime,
+            token_input_id,
+            &store,
+            None,
+        )
+        .expect("build_llama_with_store");
+        let _ = gb_exec.output(handles_exec.logits_id);
+        let mut graph_for_exec = gb_exec.build();
+
+        let tokens = Tensor::new_cpu(vec![1, 4], TOKENS.to_vec());
+        let outputs = graph_for_exec.execute(vec![tokens]);
+        let logits = outputs[0].as_cpu_slice();
+
+        let f64_ref = load_f64_fixture(fixture_dir);
+        assert_eq!(logits.len(), f64_ref.len());
+
+        let drift: f64 = logits
+            .iter()
+            .zip(f64_ref.iter())
+            .map(|(a, t)| ((*a as f64) - t).abs())
+            .fold(0.0_f64, f64::max);
+
+        let mut matches = [false; 4];
+        for pos in 0..4 {
+            let s = pos * vocab_size;
+            let e = s + vocab_size;
+            let a_pos = &logits[s..e];
+            let f_pos = &f64_ref[s..e];
+            let (a_id, _) = a_pos
+                .iter()
+                .enumerate()
+                .max_by(|(_, x), (_, y)| {
+                    x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .unwrap();
+            let (f_id, _) = f_pos
+                .iter()
+                .enumerate()
+                .max_by(|(_, x), (_, y)| {
+                    x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .unwrap();
+            matches[pos] = a_id == f_id;
+        }
+
+        (drift, matches)
+    }
+
+    /// β.5 headline test: load TinyLlama 1.1B on CPU, convert
+    /// every `_proj.weight` to `SharedParam::CpuInt8Outlier`,
+    /// run the forward, compare the logits versus the F64
+    /// fixture. The certified baseline runs in the same process
+    /// for a same-conditions comparison.
+    ///
+    /// **Honest reporting contract.** The test does **not** panic
+    /// on ADR-004 failure — β.5 is an experimental measurement,
+    /// and a numerical regression here is data we *need* (the
+    /// "STOP and report" branch in the audit). The test asserts
+    /// only on the harness invariants (model loaded, conversion
+    /// applied, forward returned logits of the right shape).
+    /// ADR-004 PASS/FAIL is printed and recorded in
+    /// `docs/HANDOFF_INT8_OUTLIER_BETA.md`.
+    #[test]
+    #[ignore = "requires TINYLLAMA_SAFETENSORS_PATH; very slow (CPU F32 forward)"]
+    fn beta5_tinyllama_outlier_forward_reports_adr_004() {
+        let Some((mut store, names, config, runtime, vocab)) = load_tinyllama_cpu() else {
+            panic!(
+                "TINYLLAMA_SAFETENSORS_PATH not set; rerun with the env var pointing at \
+                 model.safetensors (see docs/MODELS_LAYOUT.md)"
+            );
+        };
+
+        eprintln!(
+            "β.5 TinyLlama: certified forward (F32 CPU baseline) ..."
+        );
+        let baseline_drift;
+        let baseline_matches;
+        {
+            let baseline_store = WeightStore {
+                params: store.params.clone(),
+                names: store.names.clone(),
+            };
+            let (d, m) = forward_and_drift(
+                baseline_store,
+                names.clone(),
+                config.clone(),
+                runtime.clone(),
+                vocab,
+                "tinyllama_reference",
+            );
+            baseline_drift = d;
+            baseline_matches = m;
+        }
+        eprintln!(
+            "  certified drift = {:.6}, argmax matches = {:?}",
+            baseline_drift, baseline_matches
+        );
+
+        let k_under_test = env::var("ATENIA_BETA_OUTLIER_K")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(OUTLIER_K);
+
+        eprintln!(
+            "β.5 TinyLlama: converting _proj.weight params to CpuInt8Outlier (g={}, k={}) ...",
+            GROUP_SIZE, k_under_test
+        );
+        let converted = convert_proj_weights_to_outlier(&mut store, GROUP_SIZE, k_under_test);
+        eprintln!("  converted {converted} params to CpuInt8Outlier");
+        assert!(converted >= 100, "expected ≥100 _proj.weight conversions");
+
+        eprintln!("β.5 TinyLlama: outlier forward (this will take a few minutes) ...");
+        let (outlier_drift, outlier_matches) = forward_and_drift(
+            store,
+            names,
+            config,
+            runtime,
+            vocab,
+            "tinyllama_reference",
+        );
+
+        let argmax_count = outlier_matches.iter().filter(|m| **m).count();
+        let baseline_pass = baseline_drift < ADR_004_THRESHOLD;
+        let outlier_pass = outlier_drift < ADR_004_THRESHOLD;
+
+        eprintln!("\n========================================================");
+        eprintln!("β.5 TinyLlama 1.1B — full forward F64 comparison");
+        eprintln!("  group_size      = {GROUP_SIZE}");
+        eprintln!("  outlier_k       = {k_under_test}");
+        eprintln!(
+            "  certified drift = {:.6}  argmax 4/4 = {}  ADR-004 = {}",
+            baseline_drift,
+            baseline_matches.iter().all(|m| *m),
+            if baseline_pass { "PASS" } else { "FAIL" }
+        );
+        eprintln!(
+            "  outlier   drift = {:.6}  argmax 4/4 = {}  ADR-004 = {}",
+            outlier_drift,
+            argmax_count == 4,
+            if outlier_pass { "PASS" } else { "FAIL" }
+        );
+        eprintln!("  ADR-004 gate    = max_abs_diff < {ADR_004_THRESHOLD}");
+        eprintln!("========================================================");
+
+        // Harness invariants only — the numerical verdict above
+        // is the actual β.5 deliverable, recorded in the
+        // milestone doc.
+        assert!(
+            outlier_drift.is_finite(),
+            "β.5 TinyLlama: outlier drift must be finite"
+        );
+        assert!(
+            baseline_drift < ADR_004_THRESHOLD,
+            "β.5 TinyLlama: certified baseline must pass ADR-004 (harness sanity)"
+        );
+    }
+}
+
 // ----- lightweight CI tests (no real model needed) -----
 
 #[test]

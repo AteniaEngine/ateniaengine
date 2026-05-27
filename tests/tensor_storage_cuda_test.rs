@@ -81,6 +81,9 @@ fn test_ensure_gpu_on_gpu_is_noop() {
         TensorStorage::CpuShared(_) | TensorStorage::CpuBf16Shared(_) => {
             unreachable!("M5.c.2.a Arc-shared variants not exercised by this test")
         }
+        TensorStorage::CpuInt8 { .. } | TensorStorage::CpuInt8Outlier { .. } => {
+            unreachable!("M9 / β.2 quantised variants not exercised by this test")
+        }
     };
 
     t.ensure_gpu()
@@ -93,6 +96,9 @@ fn test_ensure_gpu_on_gpu_is_noop() {
         TensorStorage::Disk(_) => unreachable!("test never places tensor on Disk"),
         TensorStorage::CpuShared(_) | TensorStorage::CpuBf16Shared(_) => {
             unreachable!("M5.c.2.a Arc-shared variants not exercised by this test")
+        }
+        TensorStorage::CpuInt8 { .. } | TensorStorage::CpuInt8Outlier { .. } => {
+            unreachable!("M9 / β.2 quantised variants not exercised by this test")
         }
     };
 

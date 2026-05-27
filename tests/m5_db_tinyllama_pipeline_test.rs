@@ -271,6 +271,9 @@ fn tinyllama_pipeline_load_completes_with_full_param_set() {
             SharedParam::Disk { .. } => {
                 panic!("M5 pipeline must not expose Disk-resident params");
             }
+            SharedParam::CpuInt8Outlier(_) => {
+                panic!("M5 pipeline must not expose CpuInt8Outlier-resident params");
+            }
         }
     }
 }

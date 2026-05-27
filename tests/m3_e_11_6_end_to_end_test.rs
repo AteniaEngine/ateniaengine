@@ -195,6 +195,13 @@ fn count_by_storage(graph: &atenia_engine::amg::graph::Graph) -> (usize, usize, 
                 TensorStorage::CpuBf16Shared(_) => cpu += 1,
                 TensorStorage::Cuda(_) => cuda += 1,
                 TensorStorage::Disk(_) => disk += 1,
+                // β.2 / β.5 quantised variants — count as CPU-
+                // resident (no GPU upload, no disk file). Not
+                // expected to appear in this M3-e migration test
+                // by construction, but the tally must be
+                // exhaustive.
+                TensorStorage::CpuInt8 { .. } => cpu += 1,
+                TensorStorage::CpuInt8Outlier { .. } => cpu += 1,
             }
         }
     }

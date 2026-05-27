@@ -185,6 +185,9 @@ fn llama2_13b_arc_sharing_keeps_resident_under_30_gib() {
             SharedParam::Disk { .. } => {
                 panic!("M5 coherence smoke must not expose Disk-resident params (got '{name}')");
             }
+            SharedParam::CpuInt8Outlier(_) => {
+                panic!("M5 coherence smoke must not expose CpuInt8Outlier params (got '{name}')");
+            }
         };
         assert!(
             count >= 2,

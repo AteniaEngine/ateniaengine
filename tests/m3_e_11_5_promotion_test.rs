@@ -244,6 +244,11 @@ fn param_storage_is(graph: &atenia_engine::amg::graph::Graph, kind: &str) -> boo
                 // residency category for kind-classification.
                 TensorStorage::CpuShared(_) => kind == "Cpu" || kind == "CpuShared",
                 TensorStorage::CpuBf16Shared(_) => kind == "CpuBf16" || kind == "CpuBf16Shared",
+                // M9 / β.2 quantised variants — promotion test
+                // does not exercise them; classify under their
+                // own kinds for completeness.
+                TensorStorage::CpuInt8 { .. } => kind == "CpuInt8",
+                TensorStorage::CpuInt8Outlier { .. } => kind == "CpuInt8Outlier",
             })
             .unwrap_or(false)
     })
