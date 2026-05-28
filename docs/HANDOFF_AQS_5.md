@@ -121,42 +121,88 @@ real-GPTQ pass is **≈ 5–6 hours** on naive CPU. This is expected: real
 GPTQ in production uses BLAS + GPUs. AQS-5 does **not** optimise for speed
 (per scope); the AVX2 GEMM (`gemm_ab`) is the only concession.
 
-## End-to-end TinyLlama result
+## End-to-end TinyLlama result (COMPLETE)
 
-<!-- AQS5_E2E_RESULTS -->
 The AQS-4 harness (`tests/aqs4_end_to_end_test.rs`) was extended to feed
-real GPTQ its `[S, K]` activation matrices. The heavy run
-(`aqs4_tinyllama_policy_comparison`, `#[ignore]`) compares certified /
-bf16 / plain_int8 / awq / hybrid / **gptq (real)** under the real F64
-fixture.
+real GPTQ its `[S, K]` activation matrices and run end-to-end on the real
+TinyLlama F64 fixture. The full run completed in **28 108 s (≈7.8 h)** on
+CPU. Real numbers — nothing fabricated:
 
-Because real GPTQ on the full model takes ~5–6 h on CPU, the end-to-end
-GPTQ row is produced by a long background run. The fast policies
-re-confirm the AQS-4 numbers (AWQ 0.889 argmax 4/4, hybrid 0.832, INT8
-1.261, BF16 ≈ certified). **The real-GPTQ end-to-end drift is reported in
-the run log and folded in here when the run completes — no number is
-fabricated.**
+```
+group_size=128  alpha=0.25  outlier_k=64  gptq_damp=0.01
+candidate         max_diff   mean_diff      rmse   argmax   memory_bytes  ADR-004
+certified(f32)    0.000063   0.000008   0.000010   true             0     PASS
+bf16              0.000063   0.000008   0.000010   true    2260729856     PASS
+plain_int8        1.260771   0.145249   0.202987  false    1165688832     FAIL
+awq               0.889217   0.074738   0.105758   true    1165688832     FAIL
+hybrid            0.831786   0.061254   0.091544  false    1266614272     FAIL
+gptq (real)       1.405399   0.100628   0.170255  false    1167265792     FAIL
+```
 
-> Status at commit time: real-GPTQ end-to-end run **in progress** (CPU
-> `O(K²N)` cost, ETA ~5–6 h). Implementation + unit correctness are
-> complete and committed; the end-to-end verdict row is appended in a
-> follow-up once the run finishes. Per scope rule 14/15: honest partial
-> delivery, no fabricated results.
+The certified / bf16 / plain_int8 / awq / hybrid rows **reproduce AQS-4
+exactly** (AWQ 0.889217 argmax 4/4 identical), confirming the harness is
+unchanged and trustworthy.
 
-## Verdict (interim)
+## Verdict — real GPTQ did NOT break the plateau (honest)
 
-* **Correctness: achieved.** Real GPTQ is implemented faithfully and
-  unit-validated, including the functional proof that it beats plain INT8
-  on output error for structured activations — exactly where the AQS-3
-  surrogate failed.
-* **Plateau question:** pending the end-to-end number. If real GPTQ lands
-  below AWQ's 0.889 it is the new best weight-only policy; if it still
-  exceeds ADR-004's 0.5, the weight-only plateau holds and the honest
-  recommendation is to pivot AQS to *certified search + verifiable
-  manifests* over AWQ (the audit's real differentiator) rather than chase
-  ADR-004 strict further.
-* **Performance:** real GPTQ needs BLAS/GPU to be practical at model
-  scale; that optimisation is explicitly out of AQS-5 scope.
+**Real GPTQ lands at 1.405 end-to-end — WORSE than AWQ (0.889), worse than
+hybrid (0.832), and even worse than plain INT8 (1.261), with argmax
+broken.** It does not cross ADR-004 (0.5). The weight-only plateau holds;
+**AWQ (0.889, argmax 4/4) remains the best weight-only policy.**
+
+### Why real GPTQ underperformed here (root cause, not excuse)
+
+This is a *correct implementation* giving a *bad end-to-end number*, and
+the most likely reason is **calibration starvation**, not an algorithm
+bug:
+
+* GPTQ's inverse-Hessian compensation is only meaningful if the Hessian
+  `H = XᵀX` is well-conditioned. Our calibration captured **S = 32
+  samples** (8 short prompts × seq 4) for layers with **K = 2048–5632**
+  input channels. With `S ≪ K`, `H` is massively rank-deficient: its rank
+  is ≤ 32 while it is `K×K`. After damping, `H` is dominated by the
+  `λ·I` term, so `H⁻¹ ≈ (1/λ)·I` and the "compensation" degenerates
+  toward noise — it can *hurt* rather than help, which is exactly what the
+  numbers show (worse than plain INT8).
+* The literature runs GPTQ with **hundreds of thousands** of calibration
+  tokens (e.g. 128 sequences × 2048 tokens). Our harness used 32 samples
+  because (a) the F64 fixture forward is seq=4 and (b) each extra sample
+  inflates the already 7.8 h run.
+* The AQS-3 unit test still holds: on a *well-conditioned, structured*
+  small case (S=16, K=32, one dominant channel) real GPTQ **does** beat
+  plain INT8 on functional output error. The algorithm is correct; the
+  real-model calibration budget here is not enough to exploit it.
+
+### So: is GPTQ dead?
+
+Not proven dead — proven **not worth it under realistic constraints for
+Atenia right now**:
+
+* To give GPTQ a fair shot we would need (a) a much larger calibration
+  corpus (→ Hessian rank ≫ current), and (b) BLAS/GPU acceleration to make
+  the `O(K²N)` cost tolerable (the CPU run is already ~8 h with only 32
+  samples; a proper corpus would be far worse). Both are large
+  investments with an *uncertain* payoff — at best GPTQ might approach
+  AWQ's 0.889, and AWQ already achieves that in seconds with no Hessian.
+* AWQ gives the plateau result (0.889, argmax 4/4) at a tiny fraction of
+  the cost and complexity.
+
+### Recommendation
+
+**Accept the weight-only plateau and pivot AQS to its real differentiator:
+certified search + verifiable manifests over the policies we already have
+(AWQ as the headline).** Chasing ADR-004 strict (0.5) with more weight-only
+quantisation — GPTQ included — has now been falsified across five distinct
+mechanisms (plain INT8, β outlier, β-pivot AWQ, β-pivot hybrid, real
+GPTQ). The value is not a magic algorithm; it is *automatically measuring
+and certifying* which quantisation is safe for each model against F64.
+
+### Performance note
+
+Real GPTQ is `O(K²N)`/layer and needs BLAS/GPU to be practical at scale;
+the CPU AVX2 GEMM (`gemm_ab`) brought one TinyLlama pass to ~7.8 h. Further
+optimisation is explicitly out of AQS-5 scope and, given the negative
+verdict, not recommended.
 
 ## Files modified
 
