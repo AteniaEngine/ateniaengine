@@ -18,8 +18,13 @@
 //!
 //! See `docs/HANDOFF_AQS_1.md` for the milestone summary.
 
+pub mod evaluator;
 pub mod policy;
 
+pub use evaluator::{
+    evaluate_tensor_policies, evaluate_tensor_policy, EvalError, TensorEvalInput,
+    TensorEvalResult,
+};
 pub use policy::{
     AwqPolicy, Bf16Fallback, CalibrationContext, GptqPolicy, HybridPolicy, PlainInt8,
     PolicyError, QuantizationPolicy,
