@@ -18,10 +18,14 @@
 //!
 //! See `docs/HANDOFF_AQS_1.md` for the milestone summary.
 
+pub mod end_to_end;
 pub mod evaluator;
 pub mod gptq;
 pub mod policy;
 
+pub use end_to_end::{
+    logit_drift_metrics, render_result_table, EndToEndEvalResult, PolicyEvalCandidate,
+};
 pub use evaluator::{
     evaluate_tensor_policies, evaluate_tensor_policy, EvalError, TensorEvalInput,
     TensorEvalResult,

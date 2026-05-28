@@ -558,6 +558,104 @@ impl WeightStore {
         Ok(())
     }
 
+    /// **AQS-4** — apply an arbitrary [`crate::quant::policy::QuantizationPolicy`]
+    /// to the parameter at `idx`, in place.
+    ///
+    /// This is the AQS-1-deferred "minimal delegation": instead of one
+    /// bespoke `perturb_param_with_*` per algorithm, the policy trait is
+    /// the single entry point. Materialises the F32 buffer (F32 / Bf16
+    /// shared variants only — CPU-only contract), runs
+    /// [`crate::quant::policy::QuantizationPolicy::apply_inplace`] with a
+    /// [`crate::quant::policy::CalibrationContext`] built from the
+    /// optional per-K activation absmax, and reinserts the perturbed
+    /// buffer as a fresh `SharedParam::F32`. The runtime sees a plain F32
+    /// weight afterwards — no new storage variant.
+    ///
+    /// Experimental, opt-in, CPU-only. Production paths never call this;
+    /// it exists for the AQS-4 end-to-end evaluation harness. Cuda / Disk
+    /// variants panic (rebuild the store with `kernel_dtype = F32`).
+    pub fn perturb_param_with_policy(
+        &mut self,
+        idx: usize,
+        policy: &dyn crate::quant::policy::QuantizationPolicy,
+        activation_absmax: Option<&[f32]>,
+    ) -> Result<(), crate::quant::policy::PolicyError> {
+        use crate::quant::policy::CalibrationContext;
+
+        let param = self
+            .params
+            .get(idx)
+            .unwrap_or_else(|| panic!("perturb_param_with_policy: idx {idx} out of range"));
+        let shape = param.shape().to_vec();
+        let name = self.names.get(idx).cloned().unwrap_or_default();
+        let mut f32_buf: Vec<f32> = match param {
+            SharedParam::F32 { arc, .. } => (**arc).clone(),
+            SharedParam::Bf16 { arc, .. } => {
+                let mut out = vec![0.0_f32; arc.len()];
+                crate::simd_kernels::avx2::bf16_decode_bulk(arc, &mut out);
+                out
+            }
+            SharedParam::Cuda { .. } => panic!(
+                "perturb_param_with_policy: SharedParam::Cuda not supported \
+                 (AQS-4 experimental path is CPU-only; rebuild with kernel_dtype = F32)"
+            ),
+            SharedParam::Disk { .. } => panic!(
+                "perturb_param_with_policy: SharedParam::Disk not supported (ensure_cpu first)"
+            ),
+            SharedParam::CpuInt8Outlier(_) => panic!(
+                "perturb_param_with_policy: idx {idx} ({name}) already perturbed"
+            ),
+        };
+
+        let cal = CalibrationContext {
+            activation_absmax,
+            corpus_hash: None,
+        };
+        policy.apply_inplace(&mut f32_buf, &shape, &cal)?;
+
+        self.params[idx] = SharedParam::F32 {
+            shape,
+            arc: Arc::new(f32_buf),
+        };
+        Ok(())
+    }
+
+    /// **AQS-4** — apply a single [`crate::quant::policy::QuantizationPolicy`]
+    /// to every `_proj.weight` parameter currently held as F32 / Bf16.
+    ///
+    /// `activation_absmax` maps `store_idx -> per-K activation absmax`
+    /// (typically captured by a calibration pass). Policies that need
+    /// activation stats (AWQ / Hybrid / GPTQ) require an entry per target
+    /// param; a missing entry is passed as `None` and the policy decides
+    /// whether to error. Returns the number of perturbed parameters.
+    ///
+    /// Experimental, opt-in, CPU-only. Skips Cuda / Disk / already-
+    /// perturbed params silently (they are not eligible targets).
+    pub fn perturb_all_proj_with_policy(
+        &mut self,
+        policy: &dyn crate::quant::policy::QuantizationPolicy,
+        activation_absmax: &std::collections::HashMap<usize, Vec<f32>>,
+    ) -> Result<usize, crate::quant::policy::PolicyError> {
+        let mut targets: Vec<usize> = Vec::new();
+        for (i, name) in self.names.iter().enumerate() {
+            if name.ends_with("_proj.weight")
+                && matches!(
+                    self.params[i],
+                    SharedParam::F32 { .. } | SharedParam::Bf16 { .. }
+                )
+            {
+                targets.push(i);
+            }
+        }
+        let mut count = 0;
+        for idx in targets {
+            let act = activation_absmax.get(&idx).map(|v| v.as_slice());
+            self.perturb_param_with_policy(idx, policy, act)?;
+            count += 1;
+        }
+        Ok(count)
+    }
+
     /// Lookup a parameter by index. Index is the value
     /// returned by `insert_*`.
     pub fn get(&self, idx: usize) -> Option<&SharedParam> {
