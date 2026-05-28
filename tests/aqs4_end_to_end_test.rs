@@ -135,24 +135,28 @@ fn bf16_policy_is_endtoend_noop_on_store() {
 }
 
 #[test]
-fn policies_perturb_deterministically_on_store() {
+fn real_gptq_perturbs_store_deterministically() {
+    // K=16 eligible q_proj; build an [S=8, K=16] activation matrix.
     let base = synthetic_store();
-    let act: HashMap<usize, Vec<f32>> =
-        HashMap::from([(0usize, vec![0.5_f32; 16])]);
+    let matrix: Vec<f32> = (0..(8 * 16)).map(|i| ((i % 5) as f32) * 0.2 - 0.4).collect();
+    let mshape = vec![8usize, 16usize];
 
     for run in 0..2 {
         let mut a = WeightStore {
             params: base.params.clone(),
             names: base.names.clone(),
         };
-        a.perturb_all_proj_with_policy(&GptqPolicy::new(8, 0.01), &act)
+        a.perturb_param_with_policy_matrix(0, &GptqPolicy::new(8, 0.01), &matrix, &mshape)
             .unwrap();
         if run == 0 {
-            // store first run for comparison
             DETERMINISM_BUF.with(|b| *b.borrow_mut() = param_f32(&a, 0));
         } else {
             DETERMINISM_BUF.with(|b| {
-                assert_eq!(*b.borrow(), param_f32(&a, 0), "GPTQ must be deterministic");
+                assert_eq!(
+                    *b.borrow(),
+                    param_f32(&a, 0),
+                    "real GPTQ must be deterministic"
+                );
             });
         }
     }
@@ -322,24 +326,42 @@ mod heavy {
         Some((store, handles.param_names, config, runtime, 32_000))
     }
 
-    /// Per-K activation absmax accumulator.
+    /// Full calibration activation accumulator: row-major `[S, K]`
+    /// (samples appended across prompts). `k` is the input dimension.
     #[derive(Clone)]
     struct ActStats {
-        absmax: Vec<f32>,
+        matrix: Vec<f32>,
+        k: usize,
     }
     impl ActStats {
-        fn merge(&mut self, other: &ActStats) {
-            for (s, o) in self.absmax.iter_mut().zip(&other.absmax) {
-                if *o > *s {
-                    *s = *o;
+        fn samples(&self) -> usize {
+            if self.k == 0 {
+                0
+            } else {
+                self.matrix.len() / self.k
+            }
+        }
+        /// Per-K absmax (derived) for AWQ / Hybrid.
+        fn absmax(&self) -> Vec<f32> {
+            let mut out = vec![0.0_f32; self.k];
+            let s = self.samples();
+            for sample in 0..s {
+                let base = sample * self.k;
+                for ki in 0..self.k {
+                    let v = self.matrix[base + ki].abs();
+                    if v > out[ki] {
+                        out[ki] = v;
+                    }
                 }
             }
+            out
         }
     }
 
-    /// Walk a post-forward graph and capture per-input-channel activation
-    /// absmax for every `*_proj.weight` MatMul. Same logic as the
-    /// β-pivot harness.
+    /// Walk a post-forward graph and capture the full per-input-channel
+    /// activation rows for every `*_proj.weight` MatMul. Rows from
+    /// successive prompts are appended, building the `[S, K]` calibration
+    /// matrix real GPTQ needs (AWQ / Hybrid derive absmax from it).
     fn capture_proj_activation_stats(
         graph: &Graph,
         param_ids: &[usize],
@@ -371,21 +393,10 @@ mod heavy {
                 continue;
             }
             let data = lhs_t.copy_to_cpu_vec();
-            let n_samples = data.len() / k;
-            let mut absmax = vec![0.0_f32; k];
-            for s in 0..n_samples {
-                for ki in 0..k {
-                    let v = data[s * k + ki].abs();
-                    if v > absmax[ki] {
-                        absmax[ki] = v;
-                    }
-                }
-            }
-            let new = ActStats { absmax };
             stats
                 .entry(store_idx)
-                .and_modify(|e| e.merge(&new))
-                .or_insert(new);
+                .and_modify(|e| e.matrix.extend_from_slice(&data))
+                .or_insert(ActStats { matrix: data, k });
         }
         stats
     }
@@ -443,12 +454,12 @@ mod heavy {
     }
 
     /// Run the calibration pass over `store` (cloned per prompt) and
-    /// return merged per-idx activation absmax.
+    /// return merged per-idx `ActStats` (full `[S, K]` matrices).
     fn run_calibration(
         store: &WeightStore,
         config: &LlamaConfig,
         runtime: &LlamaRuntime,
-    ) -> HashMap<usize, Vec<f32>> {
+    ) -> HashMap<usize, ActStats> {
         let tokens = match env::var("TINYLLAMA_SAFETENSORS_PATH").ok() {
             Some(p) => match Path::new(&p).parent() {
                 Some(dir) => build_calibration_tokens(runtime.seq, dir),
@@ -475,10 +486,13 @@ mod heavy {
             let stats =
                 capture_proj_activation_stats(&graph, &handles.param_ids, &handles.param_names);
             for (idx, s) in stats {
-                merged.entry(idx).and_modify(|e| e.merge(&s)).or_insert(s);
+                merged
+                    .entry(idx)
+                    .and_modify(|e| e.matrix.extend_from_slice(&s.matrix))
+                    .or_insert(s);
             }
         }
-        merged.into_iter().map(|(k, v)| (k, v.absmax)).collect()
+        merged
     }
 
     /// Run a forward on `store` and return logit-drift metrics vs the F64
@@ -549,10 +563,19 @@ mod heavy {
         let cal_start = std::time::Instant::now();
         let act = run_calibration(&store, &config, &runtime);
         eprintln!(
-            "  captured {} _proj.weight activation vectors in {:.1}s",
+            "  captured {} _proj.weight activation matrices in {:.1}s",
             act.len(),
             cal_start.elapsed().as_secs_f32()
         );
+
+        // Derive the per-K absmax map (AWQ / Hybrid) and the [S, K] matrix
+        // map (real GPTQ) from the captured activations.
+        let absmax_map: HashMap<usize, Vec<f32>> =
+            act.iter().map(|(i, s)| (*i, s.absmax())).collect();
+        let matrix_map: HashMap<usize, (Vec<f32>, Vec<usize>)> = act
+            .iter()
+            .map(|(i, s)| (*i, (s.matrix.clone(), vec![s.samples(), s.k])))
+            .collect();
 
         // (2) Candidates — explicit, ordered. AQS-4 does not select.
         let alpha = env::var("ATENIA_AWQ_ALPHA")
@@ -596,10 +619,19 @@ mod heavy {
                 names: store.names.clone(),
             };
             let mem = policy_memory_total(&s, cand.policy);
-            let converted = s
-                .perturb_all_proj_with_policy(cand.policy, &act)
-                .unwrap_or_else(|e| panic!("perturb `{}` failed: {e}", cand.name));
-            eprintln!("  perturbed {converted} params; mem≈{mem} bytes; forward ...");
+            let cand_start = std::time::Instant::now();
+            // Real GPTQ needs the full [S, K] matrix; the others take the
+            // per-K absmax map (BF16 / INT8 ignore it).
+            let converted = if cand.name == "gptq" {
+                s.perturb_all_proj_with_policy_matrix(cand.policy, &matrix_map)
+            } else {
+                s.perturb_all_proj_with_policy(cand.policy, &absmax_map)
+            }
+            .unwrap_or_else(|e| panic!("perturb `{}` failed: {e}", cand.name));
+            eprintln!(
+                "  perturbed {converted} params in {:.1}s; mem≈{mem} bytes; forward ...",
+                cand_start.elapsed().as_secs_f32()
+            );
             let (max, mean, rmse, argmax) = forward_drift(s, &config, &runtime, vocab);
             results.push(EndToEndEvalResult {
                 candidate_name: cand.name.into(),

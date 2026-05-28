@@ -33,7 +33,11 @@ pub use evaluator::{
 pub use gptq::{
     apply_gptq_reconstruction_inplace, approximate_hessian_diag, GptqConfig, GptqError,
 };
+pub use gptq::{
+    apply_gptq_real_inplace, cholesky_decompose, cholesky_inverse, compute_hessian,
+    GptqRealConfig,
+};
 pub use policy::{
-    AwqPolicy, Bf16Fallback, CalibrationContext, GptqPolicy, HybridPolicy, PlainInt8,
-    PolicyError, QuantizationPolicy,
+    AwqPolicy, Bf16Fallback, CalibrationContext, GptqPolicy, GptqSurrogatePolicy, HybridPolicy,
+    PlainInt8, PolicyError, QuantizationPolicy,
 };

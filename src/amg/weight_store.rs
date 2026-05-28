@@ -609,10 +609,62 @@ impl WeightStore {
 
         let cal = CalibrationContext {
             activation_absmax,
+            activation_matrix: None,
+            activation_shape: None,
             corpus_hash: None,
         };
         policy.apply_inplace(&mut f32_buf, &shape, &cal)?;
 
+        self.params[idx] = SharedParam::F32 {
+            shape,
+            arc: Arc::new(f32_buf),
+        };
+        Ok(())
+    }
+
+    /// **AQS-5** — apply a [`crate::quant::policy::QuantizationPolicy`]
+    /// using a full `[S, K]` calibration activation matrix (required by
+    /// real GPTQ). Same materialise → apply → reinsert-as-F32 flow as
+    /// [`Self::perturb_param_with_policy`], but threads the activation
+    /// matrix into the calibration context. CPU-only, opt-in.
+    pub fn perturb_param_with_policy_matrix(
+        &mut self,
+        idx: usize,
+        policy: &dyn crate::quant::policy::QuantizationPolicy,
+        activation_matrix: &[f32],
+        activation_shape: &[usize],
+    ) -> Result<(), crate::quant::policy::PolicyError> {
+        use crate::quant::policy::CalibrationContext;
+        let param = self
+            .params
+            .get(idx)
+            .unwrap_or_else(|| panic!("perturb_param_with_policy_matrix: idx {idx} out of range"));
+        let shape = param.shape().to_vec();
+        let name = self.names.get(idx).cloned().unwrap_or_default();
+        let mut f32_buf: Vec<f32> = match param {
+            SharedParam::F32 { arc, .. } => (**arc).clone(),
+            SharedParam::Bf16 { arc, .. } => {
+                let mut out = vec![0.0_f32; arc.len()];
+                crate::simd_kernels::avx2::bf16_decode_bulk(arc, &mut out);
+                out
+            }
+            SharedParam::Cuda { .. } => panic!(
+                "perturb_param_with_policy_matrix: SharedParam::Cuda not supported (CPU-only)"
+            ),
+            SharedParam::Disk { .. } => panic!(
+                "perturb_param_with_policy_matrix: SharedParam::Disk not supported"
+            ),
+            SharedParam::CpuInt8Outlier(_) => panic!(
+                "perturb_param_with_policy_matrix: idx {idx} ({name}) already perturbed"
+            ),
+        };
+        let cal = CalibrationContext {
+            activation_absmax: None,
+            activation_matrix: Some(activation_matrix),
+            activation_shape: Some(activation_shape),
+            corpus_hash: None,
+        };
+        policy.apply_inplace(&mut f32_buf, &shape, &cal)?;
         self.params[idx] = SharedParam::F32 {
             shape,
             arc: Arc::new(f32_buf),
@@ -651,6 +703,37 @@ impl WeightStore {
         for idx in targets {
             let act = activation_absmax.get(&idx).map(|v| v.as_slice());
             self.perturb_param_with_policy(idx, policy, act)?;
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    /// **AQS-5** — apply a policy to every eligible `_proj.weight` using
+    /// per-param `[S, K]` activation matrices. `activation` maps
+    /// `store_idx -> (matrix, shape)`. Params without an entry are
+    /// skipped (real GPTQ cannot run without their calibration matrix).
+    /// Returns the number of perturbed parameters.
+    pub fn perturb_all_proj_with_policy_matrix(
+        &mut self,
+        policy: &dyn crate::quant::policy::QuantizationPolicy,
+        activation: &std::collections::HashMap<usize, (Vec<f32>, Vec<usize>)>,
+    ) -> Result<usize, crate::quant::policy::PolicyError> {
+        let mut targets: Vec<usize> = Vec::new();
+        for (i, name) in self.names.iter().enumerate() {
+            if name.ends_with("_proj.weight")
+                && matches!(
+                    self.params[i],
+                    SharedParam::F32 { .. } | SharedParam::Bf16 { .. }
+                )
+                && activation.contains_key(&i)
+            {
+                targets.push(i);
+            }
+        }
+        let mut count = 0;
+        for idx in targets {
+            let (matrix, shape) = activation.get(&idx).unwrap();
+            self.perturb_param_with_policy_matrix(idx, policy, matrix, shape)?;
             count += 1;
         }
         Ok(count)
