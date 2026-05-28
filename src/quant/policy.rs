@@ -109,6 +109,8 @@ pub enum PolicyError {
     OutlierKExceedsColumns { k: usize, n: usize },
     /// `alpha` outside `[0, 1]` or non-finite.
     InvalidAlpha,
+    /// `damp_percent` outside `[0, 1)` or non-finite (GPTQ only).
+    InvalidDampPercent,
     /// The policy needs `CalibrationContext::activation_absmax` but
     /// the caller passed `None`.
     MissingActivationStats,
@@ -136,6 +138,9 @@ impl std::fmt::Display for PolicyError {
             PolicyError::InvalidAlpha => {
                 write!(f, "policy: alpha must be finite in [0, 1]")
             }
+            PolicyError::InvalidDampPercent => {
+                write!(f, "policy: damp_percent must be finite in [0, 1)")
+            }
             PolicyError::MissingActivationStats => write!(
                 f,
                 "policy: this policy requires CalibrationContext::activation_absmax"
@@ -156,6 +161,25 @@ impl From<AwqError> for PolicyError {
         // Map by debug formatting to avoid hard-coupling to AwqError's
         // private variant layout; AQS-1 only needs to surface the message.
         PolicyError::InnerError(format!("{value:?}"))
+    }
+}
+
+impl From<crate::quant::gptq::GptqError> for PolicyError {
+    fn from(value: crate::quant::gptq::GptqError) -> Self {
+        use crate::quant::gptq::GptqError as G;
+        match value {
+            G::NotTwoDimensional { rank } => PolicyError::NotTwoDimensional { rank },
+            G::LengthMismatch { expected, actual } => {
+                PolicyError::LengthMismatch { expected, actual }
+            }
+            G::InvalidGroupSize => PolicyError::InvalidGroupSize,
+            G::InvalidDampPercent => PolicyError::InvalidDampPercent,
+            G::HessianLengthMismatch { expected, actual } => {
+                // Hessian length derives directly from the activation
+                // stats length, so surface it as the activation mismatch.
+                PolicyError::ActivationStatsLengthMismatch { expected, actual }
+            }
+        }
     }
 }
 
@@ -493,20 +517,41 @@ impl QuantizationPolicy for HybridPolicy {
 }
 
 // ============================================================================
-// Policy 5: GptqPolicy (placeholder)
+// Policy 5: GptqPolicy
 // ============================================================================
 
-/// **Placeholder** — GPTQ is the AQS-3 candidate identified by the
-/// β-pivot investigation as the only remaining weight-only path with
-/// a credible shot at ADR-004 strict.
+/// **AQS-3** — simplified, CPU-only GPTQ exposed through the policy
+/// interface. Wraps [`crate::quant::gptq`]: derives a diagonal Hessian
+/// from the calibration activation stats, then performs a
+/// Hessian-regularised scale search + sequential error diffusion.
 ///
-/// AQS-1 only reserves the type so AQS-2's policy registry can refer
-/// to it. Calling [`QuantizationPolicy::apply_inplace`] returns
-/// [`PolicyError::InnerError`] with a `"not yet implemented"` marker.
-/// `memory_bytes` returns the PlainInt8 estimate as a placeholder.
-#[derive(Debug, Clone, Copy, Default)]
+/// Requires [`CalibrationContext::activation_absmax`] (length `K`); the
+/// per-row absmax is treated as a single activation sample, so the
+/// derived Hessian is `h[k] = absmax[k]²`. See the `gptq` module docs for
+/// the algorithm and its explicit limitations (no full Hessian, no
+/// act-order, no packing, not paper-exact).
+#[derive(Debug, Clone, Copy)]
 pub struct GptqPolicy {
     pub group_size: usize,
+    pub damp_percent: f32,
+}
+
+impl Default for GptqPolicy {
+    fn default() -> Self {
+        Self {
+            group_size: 128,
+            damp_percent: 0.01,
+        }
+    }
+}
+
+impl GptqPolicy {
+    pub fn new(group_size: usize, damp_percent: f32) -> Self {
+        Self {
+            group_size,
+            damp_percent,
+        }
+    }
 }
 
 impl QuantizationPolicy for GptqPolicy {
@@ -514,25 +559,44 @@ impl QuantizationPolicy for GptqPolicy {
         "gptq"
     }
 
-    fn validate(&self, _shape: &[usize]) -> Result<(), PolicyError> {
-        Err(PolicyError::InnerError(
-            "GptqPolicy: not yet implemented (AQS-3 milestone)".to_string(),
-        ))
+    fn validate(&self, shape: &[usize]) -> Result<(), PolicyError> {
+        if self.group_size == 0 {
+            return Err(PolicyError::InvalidGroupSize);
+        }
+        if !self.damp_percent.is_finite()
+            || self.damp_percent < 0.0
+            || self.damp_percent >= 1.0
+        {
+            return Err(PolicyError::InvalidDampPercent);
+        }
+        if shape.len() != 2 {
+            return Err(PolicyError::NotTwoDimensional { rank: shape.len() });
+        }
+        Ok(())
     }
 
     fn apply_inplace(
         &self,
-        _weights: &mut [f32],
-        _shape: &[usize],
-        _cal: &CalibrationContext<'_>,
+        weights: &mut [f32],
+        shape: &[usize],
+        cal: &CalibrationContext<'_>,
     ) -> Result<(), PolicyError> {
-        Err(PolicyError::InnerError(
-            "GptqPolicy: not yet implemented (AQS-3 milestone)".to_string(),
-        ))
+        self.validate(shape)?;
+        let (k, _n) = check_shape_2d(shape, weights.len())?;
+        let stats = check_activation_stats(cal, k)?;
+        // Treat the per-row activation absmax as a single calibration
+        // sample -> diagonal Hessian h[k] = absmax[k]^2.
+        let hessian = crate::quant::gptq::approximate_hessian_diag(stats, &[1, k]);
+        let cfg = crate::quant::gptq::GptqConfig {
+            group_size: self.group_size,
+            damp_percent: self.damp_percent,
+        };
+        crate::quant::gptq::apply_gptq_reconstruction_inplace(weights, shape, &hessian, &cfg)?;
+        Ok(())
     }
 
     fn memory_bytes(&self, shape: &[usize]) -> u64 {
-        PlainInt8::new(self.group_size.max(1)).memory_bytes(shape)
+        crate::quant::gptq::gptq_memory_bytes(shape, self.group_size.max(1))
     }
 }
 
@@ -763,16 +827,86 @@ mod tests {
     }
 
     #[test]
-    fn gptq_policy_is_placeholder() {
-        let policy = GptqPolicy::default();
+    fn gptq_policy_requires_activation_stats() {
+        let policy = GptqPolicy::new(8, 0.01);
         let shape = [16, 16];
-        let mut buf = vec![0.0_f32; 256];
-        assert!(policy.validate(&shape).is_err());
-        assert!(
-            policy
-                .apply_inplace(&mut buf, &shape, &CalibrationContext::empty())
-                .is_err()
+        let mut buf = rand_weights(16, 16, 30);
+        let err = policy
+            .apply_inplace(&mut buf, &shape, &CalibrationContext::empty())
+            .unwrap_err();
+        assert_eq!(err, PolicyError::MissingActivationStats);
+    }
+
+    #[test]
+    fn gptq_policy_applies_deterministically() {
+        let policy = GptqPolicy::new(8, 0.01);
+        let shape = [32, 16];
+        let original = rand_weights(32, 16, 31);
+        let act = vec![0.5_f32; 32];
+        let mut a = original.clone();
+        let mut b = original.clone();
+        policy
+            .apply_inplace(&mut a, &shape, &CalibrationContext::with_activations(&act))
+            .unwrap();
+        policy
+            .apply_inplace(&mut b, &shape, &CalibrationContext::with_activations(&act))
+            .unwrap();
+        assert_eq!(a, b, "GPTQ policy must be deterministic");
+        assert_ne!(a, original, "GPTQ policy must perturb the buffer");
+    }
+
+    #[test]
+    fn gptq_policy_produces_finite_output() {
+        let policy = GptqPolicy::new(8, 0.01);
+        let shape = [16, 16];
+        let act: Vec<f32> = (0..16).map(|i| 0.1 + (i as f32) * 0.05).collect();
+        let mut buf = rand_weights(16, 16, 32);
+        policy
+            .apply_inplace(&mut buf, &shape, &CalibrationContext::with_activations(&act))
+            .unwrap();
+        assert!(buf.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn gptq_policy_reports_memory_bytes() {
+        let policy = GptqPolicy::new(16, 0.01);
+        let shape = [64, 64];
+        let bytes = policy.memory_bytes(&shape);
+        // INT8 payload + scales + hessian metadata; lighter than F32.
+        assert!(bytes > 0);
+        assert!(bytes < (64 * 64) as u64 * 4);
+    }
+
+    #[test]
+    fn gptq_policy_rejects_bad_group_size() {
+        assert_eq!(
+            GptqPolicy::new(0, 0.01).validate(&[16, 16]).unwrap_err(),
+            PolicyError::InvalidGroupSize
         );
+    }
+
+    #[test]
+    fn gptq_policy_rejects_bad_damp_percent() {
+        assert_eq!(
+            GptqPolicy::new(8, 1.0).validate(&[16, 16]).unwrap_err(),
+            PolicyError::InvalidDampPercent
+        );
+        assert_eq!(
+            GptqPolicy::new(8, -0.1).validate(&[16, 16]).unwrap_err(),
+            PolicyError::InvalidDampPercent
+        );
+    }
+
+    #[test]
+    fn gptq_policy_reduces_to_identity_on_zero_tensor() {
+        let policy = GptqPolicy::new(8, 0.01);
+        let shape = [16, 16];
+        let act = vec![0.5_f32; 16];
+        let mut buf = vec![0.0_f32; 256];
+        policy
+            .apply_inplace(&mut buf, &shape, &CalibrationContext::with_activations(&act))
+            .unwrap();
+        assert!(buf.iter().all(|&v| v == 0.0));
     }
 
     #[test]
