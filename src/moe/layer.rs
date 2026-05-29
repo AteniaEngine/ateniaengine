@@ -130,6 +130,9 @@ pub enum MoeLayerError {
     SharedExpertMissing { layer_id: usize },
     /// The shared expert was missing one of gate/up/down (by name).
     SharedExpertIncomplete { layer_id: usize },
+    /// **MOE-15** — a layer has BOTH classic per-expert and packed/fused
+    /// expert tensors; the format is ambiguous so assembly refuses.
+    MixedExpertFormat { layer_id: usize },
 }
 
 impl std::fmt::Display for MoeLayerError {
@@ -148,6 +151,10 @@ impl std::fmt::Display for MoeLayerError {
             MoeLayerError::SharedExpertIncomplete { layer_id } => write!(
                 f,
                 "moe-layer: layer {layer_id} shared expert is missing a gate/up/down projection"
+            ),
+            MoeLayerError::MixedExpertFormat { layer_id } => write!(
+                f,
+                "moe-layer: layer {layer_id} has both classic and packed expert tensors (ambiguous)"
             ),
         }
     }
@@ -245,8 +252,26 @@ impl RealMoeLayer {
     {
         config.validate()?;
 
-        // Router + routed experts via the MOE-10 binding.
-        let routed = build_real_layer(map, layer_id, config.experts_per_token, resolve)?;
+        // MOE-15: select the expert format. Classic per-expert is preferred;
+        // packed/fused is used when classic is absent; if BOTH are present
+        // the checkpoint is ambiguous and we refuse rather than guess.
+        let layer_meta = map
+            .layer(layer_id)
+            .ok_or(MoeLayerError::Binding(MoeBindingError::LayerNotFound { layer_id }))?;
+        let has_classic = layer_meta.has_classic_experts();
+        let has_packed = layer_meta.has_packed_experts();
+
+        // Router + routed experts via the appropriate binding.
+        let routed = if has_classic && has_packed {
+            return Err(MoeLayerError::MixedExpertFormat { layer_id });
+        } else if has_classic {
+            build_real_layer(map, layer_id, config.experts_per_token, resolve)?
+        } else if has_packed {
+            super::binding::build_packed_layer(map, layer_id, config.experts_per_token, resolve)?
+        } else {
+            // No experts in either format → surface the classic NoExperts error.
+            build_real_layer(map, layer_id, config.experts_per_token, resolve)?
+        };
 
         // Cross-check resolved topology against the fixture config.
         if routed.num_experts() != config.num_experts {

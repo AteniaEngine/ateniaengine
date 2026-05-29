@@ -121,25 +121,29 @@ impl RealMoeCheckpointValidation {
         let layer = map
             .layer(layer_id)
             .ok_or_else(|| format!("layer {layer_id}: not present in metadata"))?;
-        let num_experts = layer.num_experts();
-        if num_experts == 0 {
-            return Err(format!("layer {layer_id}: no experts"));
-        }
-        // First expert with a gate tensor gives the dimensions.
-        let gate = layer
-            .experts
-            .values()
-            .find_map(|e| e.gate.as_ref())
-            .ok_or_else(|| format!("layer {layer_id}: no expert gate tensor to derive dims"))?;
-        if gate.shape.len() != 2 {
-            return Err(format!(
-                "layer {layer_id}: gate shape {:?} is not 2-D",
-                gate.shape
-            ));
-        }
-        let d_ff = gate.shape[0];
-        let d_model = gate.shape[1];
         let has_shared = !layer.shared.is_empty();
+
+        // MOE-15: classic per-expert preferred; otherwise derive from packed.
+        let (num_experts, d_model, d_ff) = if layer.has_classic_experts() {
+            let gate = layer
+                .experts
+                .values()
+                .find_map(|e| e.gate.as_ref())
+                .ok_or_else(|| format!("layer {layer_id}: no expert gate tensor to derive dims"))?;
+            if gate.shape.len() != 2 {
+                return Err(format!("layer {layer_id}: gate shape {:?} is not 2-D", gate.shape));
+            }
+            (layer.num_experts(), gate.shape[1], gate.shape[0])
+        } else if layer.has_packed_experts() {
+            let gate_up = layer.packed_gate_up.as_ref().unwrap();
+            let down = layer.packed_down.as_ref().unwrap();
+            let dims = super::binding::packed_dims(gate_up, down)
+                .map_err(|e| format!("layer {layer_id}: {e}"))?;
+            (dims.num_experts, dims.d_model, dims.d_ff)
+        } else {
+            return Err(format!("layer {layer_id}: no experts"));
+        };
+
         let k = experts_per_token.clamp(1, num_experts);
         MoeLayerConfig::new(num_experts, k, has_shared, d_model, d_ff)
             .map_err(|e| format!("layer {layer_id}: {e}"))
@@ -163,7 +167,21 @@ impl RealMoeCheckpointValidation {
 
         // --- Pure metadata inspection (always safe). ---
         report.layers_detected = map.layers.len();
-        report.experts_detected = map.layers.values().map(|l| l.num_experts()).sum();
+        // Count classic experts directly; for packed layers infer the expert
+        // count from the gate_up_proj shape (dim 0) so the report is honest.
+        report.experts_detected = map
+            .layers
+            .values()
+            .map(|l| {
+                if l.has_classic_experts() {
+                    l.num_experts()
+                } else if let (Some(gu), Some(dn)) = (&l.packed_gate_up, &l.packed_down) {
+                    super::binding::packed_dims(gu, dn).map(|d| d.num_experts).unwrap_or(0)
+                } else {
+                    0
+                }
+            })
+            .sum();
         report.shared_experts = map
             .layers
             .values()

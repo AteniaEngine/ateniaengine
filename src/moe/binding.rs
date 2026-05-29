@@ -60,6 +60,10 @@ pub enum MoeBindingError {
         expected: usize,
         actual: usize,
     },
+    /// A packed expert tensor was missing (`gate_up_proj` or `down_proj`).
+    MissingPackedTensor { layer_id: usize, which: &'static str },
+    /// A packed tensor's shape was not the expected 3-D layout.
+    PackedBadRank { name: String, rank: usize },
     /// Error bubbled up from constructing/validating the dense executor.
     Dense(MoeDenseError),
 }
@@ -92,6 +96,14 @@ impl std::fmt::Display for MoeBindingError {
             MoeBindingError::DataLengthMismatch { name, expected, actual } => write!(
                 f,
                 "moe-binding: tensor '{name}' data length {actual} != shape product {expected}"
+            ),
+            MoeBindingError::MissingPackedTensor { layer_id, which } => write!(
+                f,
+                "moe-binding: layer {layer_id} missing packed expert tensor '{which}'"
+            ),
+            MoeBindingError::PackedBadRank { name, rank } => write!(
+                f,
+                "moe-binding: packed tensor '{name}' has rank {rank}, expected 3-D"
             ),
             MoeBindingError::Dense(e) => write!(f, "moe-binding: {e}"),
         }
@@ -300,6 +312,159 @@ where
     let w_router = resolve_checked(&router_m.name, &router_m.shape, resolve)?;
 
     MoeDenseLayer::new(d_model, d_ff, w_router, experts, conceptual_top_k).map_err(Into::into)
+}
+
+// ============================================================================
+// MOE-15 — packed/fused expert support
+// ============================================================================
+
+/// Dimensions inferred from a layer's packed expert tensors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PackedExpertDims {
+    pub num_experts: usize,
+    pub d_model: usize,
+    pub d_ff: usize,
+}
+
+/// Infer `(num_experts, d_model, d_ff)` from the packed tensor shapes.
+///
+/// **Assumed layout** (verified against tiny Mixtral / Qwen2-MoE checkpoints):
+/// - `gate_up_proj`: `[num_experts, 2*d_ff, d_model]` (gate+up fused on dim 1)
+/// - `down_proj`:    `[num_experts, d_model, d_ff]`
+///
+/// If the real layout differs, this returns a `ShapeInconsistency` rather
+/// than silently mis-slicing.
+pub fn packed_dims(
+    gate_up: &super::data_plane::MoeTensorEntry,
+    down: &super::data_plane::MoeTensorEntry,
+) -> Result<PackedExpertDims, MoeBindingError> {
+    if gate_up.shape.len() != 3 {
+        return Err(MoeBindingError::PackedBadRank {
+            name: gate_up.name.clone(),
+            rank: gate_up.shape.len(),
+        });
+    }
+    if down.shape.len() != 3 {
+        return Err(MoeBindingError::PackedBadRank {
+            name: down.name.clone(),
+            rank: down.shape.len(),
+        });
+    }
+    let ne = gate_up.shape[0];
+    let two_dff = gate_up.shape[1];
+    let d_model = gate_up.shape[2];
+    if two_dff % 2 != 0 {
+        return Err(MoeBindingError::ShapeInconsistency {
+            detail: format!(
+                "gate_up_proj dim1 ({two_dff}) is not 2*d_ff (must be even); shape {:?}",
+                gate_up.shape
+            ),
+        });
+    }
+    let d_ff = two_dff / 2;
+    // Cross-check down: [num_experts, d_model, d_ff].
+    if down.shape[0] != ne || down.shape[1] != d_model || down.shape[2] != d_ff {
+        return Err(MoeBindingError::ShapeInconsistency {
+            detail: format!(
+                "down_proj {:?} inconsistent with gate_up_proj {:?} \
+                 (expected [{ne}, {d_model}, {d_ff}])",
+                down.shape, gate_up.shape
+            ),
+        });
+    }
+    Ok(PackedExpertDims { num_experts: ne, d_model, d_ff })
+}
+
+/// **MOE-15** — build a single `MoeDenseExpert` for `expert_id` from already
+/// resolved packed tensor data.
+///
+/// `gate_up_data` is the full row-major `gate_up_proj`
+/// (`num_experts * 2*d_ff * d_model`); `down_data` the full `down_proj`
+/// (`num_experts * d_model * d_ff`). For expert `E`:
+/// - gate = `gate_up[E][0 .. d_ff, :]`   (first half on the fused dim)
+/// - up   = `gate_up[E][d_ff .. 2*d_ff, :]`
+/// - down = `down[E]`
+fn build_packed_expert_from_data(
+    gate_up_data: &[f32],
+    down_data: &[f32],
+    dims: PackedExpertDims,
+    expert_id: usize,
+) -> Result<MoeDenseExpert, MoeBindingError> {
+    let PackedExpertDims { num_experts, d_model, d_ff } = dims;
+    let gate_up_per_expert = 2 * d_ff * d_model;
+    let down_per_expert = d_model * d_ff;
+    let half = d_ff * d_model;
+
+    let gu_base = expert_id * gate_up_per_expert;
+    let dn_base = expert_id * down_per_expert;
+    if gu_base + gate_up_per_expert > gate_up_data.len()
+        || dn_base + down_per_expert > down_data.len()
+    {
+        return Err(MoeBindingError::ShapeInconsistency {
+            detail: format!(
+                "packed expert {expert_id} slice out of range (num_experts={num_experts})"
+            ),
+        });
+    }
+    let w_gate = gate_up_data[gu_base..gu_base + half].to_vec();
+    let w_up = gate_up_data[gu_base + half..gu_base + 2 * half].to_vec();
+    let w_down = down_data[dn_base..dn_base + down_per_expert].to_vec();
+    MoeDenseExpert::new(d_model, d_ff, w_gate, w_up, w_down).map_err(Into::into)
+}
+
+/// **MOE-15** — build a runnable `MoeDenseLayer` from a layer's packed
+/// expert tensors. Resolves `gate_up_proj` + `down_proj` once, slices every
+/// expert out, and attaches the router. Same output type as the classic
+/// `build_real_layer`, so the rest of the pipeline is unchanged.
+pub fn build_packed_layer<F>(
+    map: &MoeWeightMap,
+    layer_id: usize,
+    conceptual_top_k: usize,
+    resolve: &F,
+) -> Result<MoeDenseLayer, MoeBindingError>
+where
+    F: Fn(&str) -> Option<Vec<f32>>,
+{
+    let layer = map
+        .layer(layer_id)
+        .ok_or(MoeBindingError::LayerNotFound { layer_id })?;
+    let gate_up = layer
+        .packed_gate_up
+        .as_ref()
+        .ok_or(MoeBindingError::MissingPackedTensor { layer_id, which: "gate_up_proj" })?;
+    let down = layer
+        .packed_down
+        .as_ref()
+        .ok_or(MoeBindingError::MissingPackedTensor { layer_id, which: "down_proj" })?;
+
+    let dims = packed_dims(gate_up, down)?;
+
+    let gate_up_data = resolve_checked(&gate_up.name, &gate_up.shape, resolve)?;
+    let down_data = resolve_checked(&down.name, &down.shape, resolve)?;
+
+    let mut experts = Vec::with_capacity(dims.num_experts);
+    for e in 0..dims.num_experts {
+        experts.push(build_packed_expert_from_data(&gate_up_data, &down_data, dims, e)?);
+    }
+
+    // Router: [num_experts, d_model].
+    let router_m = layer
+        .router
+        .as_ref()
+        .ok_or(MoeBindingError::MissingRouter { layer_id })?;
+    let (router_rows, router_cols) = rows_cols(&router_m.name, &router_m.shape)?;
+    if router_cols != dims.d_model || router_rows != dims.num_experts {
+        return Err(MoeBindingError::ShapeInconsistency {
+            detail: format!(
+                "router shape {:?} != [num_experts={}, d_model={}]",
+                router_m.shape, dims.num_experts, dims.d_model
+            ),
+        });
+    }
+    let w_router = resolve_checked(&router_m.name, &router_m.shape, resolve)?;
+
+    MoeDenseLayer::new(dims.d_model, dims.d_ff, w_router, experts, conceptual_top_k)
+        .map_err(Into::into)
 }
 
 // ============================================================================

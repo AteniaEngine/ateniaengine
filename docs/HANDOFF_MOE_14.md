@@ -177,3 +177,6 @@ verbatim results.
 gate/up/down projections from the 3-D `gate_up_proj` / `down_proj` tensors and
 feed them into the existing `MoeDenseExpert` / `RealMoeLayer` path, without
 disturbing the classic per-expert path that already passes.
+
+> **Update:** the packed-expert limitation was addressed in **MOE-15** — see
+> `docs/HANDOFF_MOE_15.md`. All three checkpoints above now SMOKE PASS.

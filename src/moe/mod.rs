@@ -29,7 +29,10 @@ pub mod sparse;
 pub mod stack;
 pub mod validation;
 
-pub use binding::{build_real_layer, BindingShape, MoeBindingError, RealExpertTensorBinding};
+pub use binding::{
+    build_packed_layer, build_real_layer, packed_dims, BindingShape, MoeBindingError,
+    PackedExpertDims, RealExpertTensorBinding,
+};
 
 pub use smoke::{
     discover_safetensors_files, LocalMoeCheckpoint, MinimalMoeConfig, MoeSmokeError,

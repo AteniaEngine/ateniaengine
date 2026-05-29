@@ -52,6 +52,12 @@ pub enum TensorRole {
     MoeExpertUp,
     MoeExpertDown,
     MoeSharedExpert,
+    /// **MOE-15** — packed/fused gate+up tensor for ALL experts of a layer
+    /// (`mlp.experts.gate_up_proj`, 3-D `[num_experts, 2*d_ff, d_model]`).
+    MoePackedGateUp,
+    /// **MOE-15** — packed/fused down tensor for ALL experts of a layer
+    /// (`mlp.experts.down_proj`, 3-D `[num_experts, d_model, d_ff]`).
+    MoePackedDown,
     Unknown,
 }
 
@@ -65,6 +71,8 @@ impl TensorRole {
                 | TensorRole::MoeExpertUp
                 | TensorRole::MoeExpertDown
                 | TensorRole::MoeSharedExpert
+                | TensorRole::MoePackedGateUp
+                | TensorRole::MoePackedDown
         )
     }
 
@@ -77,7 +85,14 @@ impl TensorRole {
                 | TensorRole::MoeExpertUp
                 | TensorRole::MoeExpertDown
                 | TensorRole::MoeSharedExpert
+                | TensorRole::MoePackedGateUp
+                | TensorRole::MoePackedDown
         )
+    }
+
+    /// Whether this role is a packed/fused expert tensor (MOE-15).
+    pub fn is_moe_packed(&self) -> bool {
+        matches!(self, TensorRole::MoePackedGateUp | TensorRole::MoePackedDown)
     }
 }
 
@@ -129,6 +144,13 @@ pub fn classify_tensor_name(name: &str) -> TensorNameInfo {
 
     let role = if name.contains("shared_expert") {
         TensorRole::MoeSharedExpert
+    } else if name.contains("experts.gate_up_proj") {
+        // MOE-15: packed/fused gate+up for all experts (no per-expert id).
+        TensorRole::MoePackedGateUp
+    } else if name.contains("experts.") && expert_id.is_none() && name.contains("down_proj") {
+        // MOE-15: packed/fused down for all experts (`experts.down_proj`,
+        // no per-expert id — classic down carries an id and is handled below).
+        TensorRole::MoePackedDown
     } else if name.contains(".experts.") || name.contains("block_sparse_moe.experts.") {
         // Expert weight: classify the inner projection.
         if name.contains(".w1.") || name.contains(".gate_proj.") {
@@ -207,7 +229,9 @@ where
             }
             TensorRole::MoeExpertGate
             | TensorRole::MoeExpertUp
-            | TensorRole::MoeExpertDown => {
+            | TensorRole::MoeExpertDown
+            | TensorRole::MoePackedGateUp
+            | TensorRole::MoePackedDown => {
                 det.expert_tensor_count += 1;
                 det.is_moe = true;
             }

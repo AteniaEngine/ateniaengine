@@ -55,15 +55,33 @@ impl ExpertTensors {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MoeLayerMap {
     pub router: Option<MoeTensorEntry>,
-    /// Expert id → its three projections (sorted by expert id).
+    /// Expert id → its three projections (sorted by expert id). Classic
+    /// per-expert format.
     pub experts: BTreeMap<usize, ExpertTensors>,
     /// Shared-expert tensors (Qwen-MoE / DeepSeek), if any.
     pub shared: Vec<MoeTensorEntry>,
+    /// **MOE-15** — packed/fused gate+up tensor (3-D, all experts stacked),
+    /// if the checkpoint uses the packed format.
+    pub packed_gate_up: Option<MoeTensorEntry>,
+    /// **MOE-15** — packed/fused down tensor (3-D, all experts stacked).
+    pub packed_down: Option<MoeTensorEntry>,
 }
 
 impl MoeLayerMap {
+    /// Number of *classic* per-expert experts mapped for this layer.
     pub fn num_experts(&self) -> usize {
         self.experts.len()
+    }
+
+    /// Whether this layer has classic per-expert tensors.
+    pub fn has_classic_experts(&self) -> bool {
+        !self.experts.is_empty()
+    }
+
+    /// **MOE-15** — whether this layer has both packed expert tensors
+    /// (`gate_up_proj` + `down_proj`).
+    pub fn has_packed_experts(&self) -> bool {
+        self.packed_gate_up.is_some() && self.packed_down.is_some()
     }
 }
 
@@ -105,6 +123,8 @@ impl MoeWeightMap {
             match info.role {
                 TensorRole::MoeRouter => layer.router = Some(entry),
                 TensorRole::MoeSharedExpert => layer.shared.push(entry),
+                TensorRole::MoePackedGateUp => layer.packed_gate_up = Some(entry),
+                TensorRole::MoePackedDown => layer.packed_down = Some(entry),
                 TensorRole::MoeExpertGate
                 | TensorRole::MoeExpertUp
                 | TensorRole::MoeExpertDown => {
