@@ -312,6 +312,32 @@ Objetivo: eliminar “random panics” por `unwrap()`/`expect()` en la ruta GPU.
 
 ---
 
+## AQS — Atenia Quantization Search (experimental)
+
+The experimental, CPU-only AQS subsystem (see
+[AQS_OVERVIEW.md](./AQS_OVERVIEW.md)) is covered by **in-`src` unit tests**
+plus one integration suite. As of this writing the full library suite is
+**628 tests** (`cargo test --lib --release -- --list` to recount), of
+which ~93 are AQS:
+
+- `quant::policy::tests` — 21 (policy trait, BF16/INT8/AWQ/Hybrid/GPTQ wrappers).
+- `quant::evaluator::tests` — 10 (per-tensor local drift evaluator).
+- `quant::gptq::tests` — 15 (Hessian, Cholesky, damping, surrogate + real GPTQ).
+- `quant::end_to_end::tests` — 5 (logit-drift metrics, result table).
+- `quant::certification::tests` — 12 (status classification, ranking, manifest draft).
+- `quant::search::tests` — 12 (default grid, factory, search-from-results, local search).
+- `quant::runner::tests` — 10 (callback runner, capabilities, unsupported-skip).
+- `cli::search::tests` — 8 (`atenia search` parsing, rendering, error paths).
+
+**Heavy harness (`#[ignore]`):** `tests/aqs4_end_to_end_test.rs` runs the
+real TinyLlama end-to-end comparison against the F64 fixture. The light
+tests in that file run in CI; the `aqs4_tinyllama_policy_comparison` and
+`aqs9_tinyllama_runner_produces_search_report` tests are `#[ignore]` and
+require `TINYLLAMA_SAFETENSORS_PATH` (the GPTQ-real path is skipped by
+default — it costs ~7.8 h on CPU; opt in with `ATENIA_AQS_RUN_GPTQ_REAL=1`).
+
+---
+
 ## Cómo extender esta guía
 
 Cuando añadas nuevos tests:

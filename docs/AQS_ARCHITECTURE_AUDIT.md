@@ -782,3 +782,51 @@ no manifest, no CUDA, no loader.
 
 *End of audit. No code was modified, no commits made, no branches
 created. This document is the deliverable.*
+
+---
+
+## Post-implementation results (epilogue)
+
+> **Added after AQS-1 → AQS-10 were implemented.** The audit above is the
+> *pre-implementation* plan and is preserved verbatim as a historical
+> record. This epilogue records what actually happened, because parts of
+> the plan (notably the optimism about GPTQ) were tested and came back
+> negative. For the consolidated overview see
+> [AQS_OVERVIEW.md](./AQS_OVERVIEW.md); per-milestone detail is in
+> `docs/HANDOFF_AQS_1.md` … `docs/HANDOFF_AQS_10.md`.
+
+**What shipped.** The full pipeline the audit proposed was built, isolated
+and opt-in: `QuantizationPolicy` (AQS-1) → drift evaluator (AQS-2) →
+end-to-end harness (AQS-4) → certification report + `3.0.0-draft` manifest
+(AQS-6) → search engine (AQS-7) → callback runner (AQS-8) → real-TinyLlama
+wiring (AQS-9) → `atenia search` CLI (AQS-10). GPTQ was implemented both as
+a diagonal surrogate (AQS-3) and as **real blockwise GPTQ** with a full
+`K×K` Hessian, Tikhonov damping, and Cholesky-based inverse-Hessian error
+compensation (AQS-5).
+
+**GPTQ outcome (the audit's key assumption, now falsified).** The audit
+treated GPTQ as the most promising path to ADR-004 strict. Measured
+end-to-end on TinyLlama against the F64 fixture:
+
+- GPTQ **surrogate**: 12.5 drift — far worse than plain INT8.
+- GPTQ **real**: 1.405 drift — still worse than plain INT8 (1.261) and
+  AWQ (0.889), with broken argmax. Most likely cause: calibration
+  starvation (the Hessian was severely rank-deficient with the available
+  calibration set). Real GPTQ also cost ~7.8 h on CPU for one model.
+
+**AWQ outcome.** AWQ (α=0.25) is the best *useful-lossy* policy — 0.889
+drift, argmax-stable, ~1.94× compression — but **above** the ADR-004
+strict gate (0.5), so it is **not certified**.
+
+**Accepted plateau.** Five weight-only mechanisms (plain INT8, β outlier,
+AWQ, hybrid, GPTQ) all fail ADR-004 strict on TinyLlama. **BF16 is the only
+certified policy.** The weight-only plateau is **accepted**: AQS's
+delivered value is the certification / search / reporting layer, not a new
+quantization technique. The runtime's production numeric certification is
+unchanged and remains governed by ADR-004 / ADR-005.
+
+**Risk register accuracy.** The audit's risk discussion flagged "the
+plateau may extend to GPTQ" as a real possibility; that risk materialised.
+The audit's scope safeguards (experimental, opt-in, no productive
+integration) held throughout — no runtime, loader, generation, CUDA,
+tier-planner, or productive-manifest code was touched by any AQS milestone.

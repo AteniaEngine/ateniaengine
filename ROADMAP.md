@@ -82,6 +82,31 @@ APX v20 (Real Model Runtime Integration) is closed end-to-end (M1 → M11); earl
 - **Track α (M9.5 FFN-only).** Investigation already showed this is unlikely to pass ADR-004 in 4/4 models; superseded by M10.3.1.1's per-tensor mechanism (FFN-only fast is now expressible as a per-tensor manifest policy without a milestone).
 - **Track ε (Atenia Long Context Governor, experimental).** Future opt-in layer for long-context efficiency inspired by subquadratic / sparse-attention work, without changing Atenia's certified core. The exact engine remains the default: full attention, ADR-004 / ADR-005 numeric contracts, deterministic generation, and auditable tiering. The experimental layer would start with paged KV cache and content-aware KV block residency (no math change), then optionally add selective attention over KV blocks behind an explicit non-certified flag such as `ATENIA_EXPERIMENTAL_SPARSE_ATTENTION=1`. This is not a shortcut to retrofit SubQ-style architecture into existing Llama-family checkpoints; any approximation must ship with separate metrics, logs, and certification language.
 
+### Research outcome — AQS & the weight-only quantization plateau
+
+The β / β-pivot investigation and the **AQS (Atenia Quantization Search)**
+subsystem (AQS-0 → AQS-10, complete; see
+[docs/AQS_OVERVIEW.md](./docs/AQS_OVERVIEW.md)) closed the quantization
+research question empirically and honestly:
+
+- **Five weight-only mechanisms** — plain INT8, β outlier decomposition,
+  β-pivot AWQ, β-pivot hybrid, and **real GPTQ** (full Hessian + Cholesky
+  error compensation, AQS-5) — were all evaluated end-to-end against the
+  F64 reference on TinyLlama. **None crosses ADR-004 strict (`< 0.5`).**
+- **GPTQ real did not beat AWQ in the evaluated scenario** — it landed at
+  1.405 drift (worse than plain INT8 at 1.261 and AWQ at 0.889), most
+  likely from calibration starvation (rank-deficient Hessian), and cost
+  ~7.8 h on CPU for one model. The Track γ (GPTQ/AWQ) bet was tested and
+  came back negative under these constraints; details in
+  `docs/HANDOFF_AQS_5.md`.
+- **AWQ (α=0.25)** is the best *useful-lossy* option (0.889, argmax-stable,
+  ~1.94× compression) but remains above the strict gate, so it is **not
+  certified**. **BF16 is the only ADR-004-certified policy** on TinyLlama.
+- **Conclusion: the weight-only plateau is accepted.** AQS's delivered
+  value is the **certification + search layer** (classify / rank / draft
+  manifest / `atenia search` CLI), not a new quantization technique. It is
+  experimental, CPU-only, opt-in, and does not change the certified core.
+
 ### Hardware limits discovered (M10.0 + M10.1)
 
 The 7B-class measurements expose a **structural ceiling** of the dev hardware that no kernel-level work bypasses:
@@ -488,7 +513,7 @@ APX v20 closed end-to-end (M1 → M11): real Llama-family inference on commodity
 - **Adapter Toolkit v2** — a declarative layer on top of the v1 adapter system: a model is described by a small YAML/JSON spec, validated and resolved to a `GeneratedAdapter` that delegates to the hand-written v1 adapter. No core, graph-builder or v1-adapter change; no Rust generated at runtime. Commands `atenia load` / `inspect` / `debug`. Full manual: [docs/ADAPTER_TOOLKIT_V2.md](./docs/ADAPTER_TOOLKIT_V2.md).
 - **Command-line interface (CLI-0 → CLI-7)** — a product-grade CLI built as a frontier layer: structured `E-*` errors with a unified exit-code scheme, a logging layer (`--quiet` / `--verbose` / `--debug` / `--trace`, `--log-file`, `--trace-id`), diagnostics (`atenia doctor` / `diagnose` / `capabilities`), an interactive `atenia chat` REPL, a curated `atenia download` (three audited public checkpoints) for the first-model path, and `atenia quickstart` for the first-run UX. No runtime change. Full reference: [docs/CLI.md](./docs/CLI.md).
 
-CI is dual-blocking (CUDA + no-CUDA), and the core no longer depends on model identity. `cargo test --lib` is at 517/517. Per-milestone history and commits live in [MILESTONES.md](./docs/MILESTONES.md); current readiness in [docs/STATUS.md](./docs/STATUS.md).
+CI is dual-blocking (CUDA + no-CUDA), and the core no longer depends on model identity. `cargo test --lib` is at 628/628 (includes the experimental AQS subsystem; see [docs/AQS_OVERVIEW.md](./docs/AQS_OVERVIEW.md)). Per-milestone history and commits live in [MILESTONES.md](./docs/MILESTONES.md); current readiness in [docs/STATUS.md](./docs/STATUS.md).
 
 ---
 

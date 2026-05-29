@@ -143,9 +143,35 @@ The recommended distribution flow: the manifest is a sibling file to `model.safe
 
 The four manifests shipped in this repo (`docs/numcert/`) are reference copies for the M4.6 family. Operators bringing their own checkpoint should generate a fresh manifest using the procedure above. The fixture models double as the regression sentinels for any future change to the kernel chain — if a manifest's drift would change under a kernel update, that is the signal to revisit ADR-004 / ADR-005 with new evidence.
 
+## Relationship to AQS (experimental — not production certification)
+
+**AQS (Atenia Quantization Search)** is a separate, experimental research
+subsystem (see [AQS_OVERVIEW.md](./AQS_OVERVIEW.md)). It produces its own
+artefacts — a **search report** (classifying candidate quantization
+policies as `certified` / `useful_lossy` / `failed` against the ADR-004
+gate) and a **`3.0.0-draft` manifest** — via the `atenia search` CLI.
+
+These AQS outputs are **experimental and must not be confused with the
+production manifests described in this document**:
+
+- The productive numeric certification described here (`schema_version`
+  `1.0.0` / `2.0.0`) is the contract the **runtime** and operators rely on,
+  governed by **ADR-004 / ADR-005**. It is unchanged by AQS.
+- The AQS `3.0.0-draft` manifest is a **draft** — never consumed by the
+  runtime, never a production certificate. The `-draft` suffix is
+  deliberate.
+- AQS confirmed empirically that no weight-only policy (plain INT8, β
+  outlier, AWQ, hybrid, GPTQ) crosses ADR-004 strict on TinyLlama; BF16
+  remains the only certified policy and AWQ is the best *useful-lossy*
+  option. This does not alter any production certification claim.
+
+If/when AQS graduates a manifest format for runtime use, it will go through
+the same ADR process and schema-versioning as the manifests above.
+
 ## Related
 
 - [ADR-004 — F64 reference as default](./decisions/ADR-004-f64-reference-as-default.md)
 - [ADR-005 — Fast mode (BF16-TC) drift envelope](./decisions/ADR-005-fast-mode-bf16-tc-envelope.md)
 - [ROADMAP.md §"Numeric contract strategy"](../ROADMAP.md#numeric-contract-strategy)
+- [AQS_OVERVIEW.md — experimental quantization search](./AQS_OVERVIEW.md)
 - The 4-model F64 fixture: [`tests/m8_5_full_family_validation_test.rs`](../tests/m8_5_full_family_validation_test.rs)

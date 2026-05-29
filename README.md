@@ -217,12 +217,19 @@ Empirical baseline for the demo:
 | `atenia doctor` | Diagnose the host: CPU, RAM, CUDA, build flavour. |
 | `atenia diagnose` | Pre-flight check of a specific model directory. |
 | `atenia capabilities` | List supported families, formats and quants. |
+| `atenia search` | **Experimental (AQS).** Render a quantization certification report + draft manifest from a pre-computed results file. |
 
 `atenia load` / `inspect` / `debug` work with Adapter Toolkit v2
 declarative adapter specs. Full reference — every flag, JSON output,
 exit codes, error system, logging — in [docs/CLI.md](./docs/CLI.md).
 
 All commands share the same execution core and numeric policy.
+
+> **`atenia search` note.** It consumes a results file produced by the
+> AQS end-to-end harness and renders a report + a `3.0.0-draft` manifest.
+> It does **not** load a model or certify arbitrary models, and the draft
+> manifest is never consumed by the runtime. See
+> [docs/AQS_OVERVIEW.md](./docs/AQS_OVERVIEW.md).
 
 ---
 
@@ -361,6 +368,20 @@ reference as default) and
 [`docs/numcert/`](./docs/numcert/); the certificate schema and
 operator verification flow are in
 [docs/CERTIFICATION.md](./docs/CERTIFICATION.md).
+
+---
+
+## Quantization search — AQS (experimental)
+
+**AQS (Atenia Quantization Search)** is an isolated, CPU-only, opt-in
+research subsystem that measures candidate quantization policies
+(BF16 / INT8 / AWQ / Hybrid / GPTQ) against the F64 reference, classifies
+them (`certified` / `useful_lossy` / `failed`), ranks them, and emits a
+**draft** manifest. It is **not** production certification and never runs
+in the default path. On TinyLlama, only BF16 is ADR-004-certified; AWQ
+(α=0.25) is the best *useful-lossy* option; GPTQ — surrogate and real —
+did not beat the weight-only plateau. Full write-up:
+[docs/AQS_OVERVIEW.md](./docs/AQS_OVERVIEW.md).
 
 ---
 
@@ -519,10 +540,11 @@ that lock the contract. Indexed from
 
 ## Reproducing the numbers
 
-The repository ships 503 library `cargo test` functions covering
+The repository ships 628 library `cargo test` functions covering
 tensor operations, graph construction, adapter dispatch, weight
 loading, numeric drift, generation contracts, the Adapter Toolkit
-v2, and the CLI — plus integration suites for the CLI surface:
+v2, the CLI, and the experimental AQS subsystem — plus integration
+suites for the CLI surface:
 
 ```bash
 cargo test --lib -- --test-threads=1

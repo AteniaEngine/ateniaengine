@@ -1474,10 +1474,11 @@ what?" gap before users have to read any docs.
 `chat` / `generate`, benchmarks, hardware probes beyond pointing
 at `doctor`, JSON output, arbitrary HF repos.
 
-**Tests.** `cargo test --lib -- --test-threads=1` → **503 / 503
-PASS**. Five integration suites cover the CLI surface as
-subprocess tests: `cli_errors_test` (9), `cli_logging_test` (11),
-`cli_diagnostics_test` (10), `cli_chat_test` (9), `cli_ux_test`
+**Tests.** At CLI-7 close, `cargo test --lib -- --test-threads=1` →
+**503 / 503 PASS** (the lib suite has since grown to **628** with the
+experimental AQS subsystem). Five integration suites cover the CLI
+surface as subprocess tests: `cli_errors_test` (9), `cli_logging_test`
+(11), `cli_diagnostics_test` (10), `cli_chat_test` (9), `cli_ux_test`
 (8). `cargo test --test tinyllama_config_test` → 15 PASS.
 
 **Conclusion.** The CLI is a complete, tested, product-grade
@@ -1485,6 +1486,43 @@ surface — human errors, consistent exit codes, controllable
 logging, host/model diagnostics, and an interactive chat — built
 without touching the runtime. The full reference is
 `docs/CLI.md`.
+
+---
+
+## AQS — Atenia Quantization Search (AQS-0 → AQS-10)
+
+An isolated, **experimental, CPU-only, opt-in** research subsystem built
+on top of the engine without touching the productive runtime, loaders,
+generation, CUDA, tier planner, or manifests. The full overview (diagram,
+real results, status) is in [AQS_OVERVIEW.md](./AQS_OVERVIEW.md); each
+milestone has an immutable handoff record `docs/HANDOFF_AQS_<n>.md`. This
+block is a one-line index only — it intentionally does not duplicate the
+handoffs.
+
+- **AQS-0** — architecture audit (`docs/AQS_ARCHITECTURE_AUDIT.md`).
+- **AQS-1** — `QuantizationPolicy` trait + calibration context + error model.
+- **AQS-2** — per-tensor local drift evaluator (cheap pre-filter, not certification).
+- **AQS-3** — experimental GPTQ *surrogate* (diagonal Hessian).
+- **AQS-4** — end-to-end TinyLlama harness (real forward vs F64 fixture).
+- **AQS-5** — real blockwise GPTQ (full Hessian, Cholesky error compensation).
+- **AQS-6** — certification report, deterministic ranking, `3.0.0-draft` manifest.
+- **AQS-7** — deterministic search engine (default candidate grid + factory).
+- **AQS-8** — callback-based runner (capabilities + unsupported-skip).
+- **AQS-9** — runner wired to the real TinyLlama harness (GPTQ skipped by default).
+- **AQS-10** — `atenia search` CLI (renders report + manifest from a results file).
+
+**Result (TinyLlama, end-to-end vs F64).** BF16 is the only ADR-004-certified
+policy; AWQ (α=0.25, drift 0.889, argmax-stable) is the best *useful-lossy*
+option but above the strict gate; GPTQ — surrogate (12.5) and real (1.405) —
+failed and did not beat the weight-only plateau. The plateau across five
+weight-only mechanisms is **accepted**; AQS's value is the certification /
+search layer, not a new technique.
+
+**Tests.** ~93 of the 628 lib tests cover AQS (`quant::policy`,
+`quant::evaluator`, `quant::gptq`, `quant::end_to_end`,
+`quant::certification`, `quant::search`, `quant::runner`, `cli::search`),
+plus the `aqs4_end_to_end_test` integration suite (light CI tests + an
+`#[ignore]` real-TinyLlama heavy harness).
 
 ---
 

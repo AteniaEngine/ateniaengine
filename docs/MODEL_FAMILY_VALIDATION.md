@@ -25,6 +25,18 @@ validation", "mastery battery" — is deliberate. The word
 "certified" is reserved for ADR-004 numcert and is **not** claimed
 for the GGUF quants validated functionally.
 
+**Family validation ≠ AQS quantization evaluation.** This document is
+about *which model families load and generate correctly*. It is unrelated
+to **AQS (Atenia Quantization Search)**, the experimental subsystem that
+evaluates *quantization policies* (BF16 / INT8 / AWQ / Hybrid / GPTQ) on a
+model against the F64 reference. AQS is CPU-only, opt-in, experimental, and
+not production certification — see [AQS_OVERVIEW.md](./AQS_OVERVIEW.md).
+
+**Mixture-of-experts remains out of scope.** No MoE execution path exists;
+Mixtral / Mistral-MoE are not supported and fail loud. DeepSeek-R1 distill
+checkpoints are dense Llama/Qwen derivatives (not MoE) and validate under
+their base family.
+
 ## Per-family results
 
 Legend — Result: PASS = loaded and generated coherent text,

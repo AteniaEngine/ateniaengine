@@ -155,6 +155,7 @@ tokenizer, adapter resolution — without generating anything.
 | `inspect` | Auto-detect a model and emit an adapter spec | engineer |
 | `load` | Parse and validate an adapter spec file | engineer |
 | `debug` | Like `load`, with a verbose adapter report | engineer |
+| `search` | **Experimental (AQS).** Render a quantization certification report + draft manifest from a results file | engineer |
 
 Three further subcommands exist but are outside the scope of this
 manual: `run` (the tri-mode killer demo), `probe` (hardware
@@ -517,6 +518,63 @@ declarative adapter layer. For the full ATKv2 manual see
 `load`, `debug` and `inspect` take a **positional** path argument
 (no `--model` flag). They print their report on stdout and exit
 `2` on any spec/adapter error.
+
+### 6.9 `search` (experimental — AQS)
+
+`atenia search` is the command-line front-end for **AQS** (Atenia
+Quantization Search), an experimental, CPU-only, opt-in research
+subsystem. See `docs/AQS_OVERVIEW.md` for the full picture.
+
+```bash
+atenia search --results aqs-results.json --report
+atenia search --results aqs-results.json --report --manifest
+```
+
+It reads a **pre-computed end-to-end results file** (JSON produced by the
+AQS end-to-end harness), classifies each candidate policy against the
+ADR-004 gate (`certified` / `useful_lossy` / `failed`), ranks them
+deterministically, and renders a human report and/or a `3.0.0-draft`
+manifest.
+
+> **It does not run arbitrary model certification.** `atenia search` never
+> loads a model, never runs a forward, and never produces an F64
+> reference. It consumes previously generated evaluation results, and the
+> draft manifest is never consumed by the runtime (production numeric
+> certification is governed by ADR-004 / ADR-005 — see
+> `docs/CERTIFICATION.md`).
+
+Flags:
+
+| Flag | Meaning |
+|------|---------|
+| `--results <FILE>` | Path to the pre-computed AQS end-to-end results JSON. **Required.** |
+| `--report` | Print the human-readable certification table. |
+| `--manifest` | Print the experimental `3.0.0-draft` manifest. |
+| `--include-gptq` | Reserved for a future model-driving path; **inert** on the results-file path (prints a note). |
+
+If `--results` is omitted the command exits `2` with a clear message that
+AQS requires a results file produced by the end-to-end harness. A missing
+file or invalid JSON also exits `2`. When neither `--report` nor
+`--manifest` is given, the report is shown by default.
+
+The results-file schema (each entry mirrors one end-to-end evaluation):
+
+```json
+{
+  "model": "tinyllama-1.1b",
+  "baseline_memory_bytes": 2260729856,
+  "results": [
+    {
+      "candidate_name": "bf16",
+      "max_abs_diff": 0.000063,
+      "mean_abs_diff": 0.000008,
+      "rmse": 0.00001,
+      "argmax_match": true,
+      "memory_bytes": 2260729856
+    }
+  ]
+}
+```
 
 ---
 

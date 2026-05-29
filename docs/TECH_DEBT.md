@@ -228,7 +228,7 @@ Until the integration suite is repaired, the M-milestone validation
 contract is:
 
 ```bash
-cargo test --lib                                    # 183 tests, must be 0 failed
+cargo test --lib                                    # 628 tests, must be 0 failed
 cargo test --test <relevant_test> [--ignored]       # per milestone
 cargo install --path . --force --bin atenia         # smoke install
 atenia probe                                        # safety gate
@@ -236,3 +236,33 @@ atenia run --mode c --model <path> --output json    # smoke generation
 ```
 
 Adding `cargo test --tests` to that list requires the cleanup above.
+
+## AQS (Atenia Quantization Search) — known limitations
+
+AQS (AQS-0 → AQS-10) is **experimental, CPU-only, opt-in** and isolated
+from the productive runtime (see [AQS_OVERVIEW.md](./AQS_OVERVIEW.md)). It
+carries deliberate, documented limitations that are debt rather than bugs:
+
+1. **`atenia search` consumes results files only.** It does not load a
+   model or run a forward; a real model-driving `atenia search --model`
+   would require moving the load + calibrate + forward + F64-compare
+   evaluator into `src` (reusing public engine APIs) — a larger,
+   model-coupled step (see `docs/HANDOFF_AQS_10.md`).
+2. **Arbitrary-model certification is not solved.** End-to-end
+   certification needs a per-model **F64 reference**, which only exists as
+   test fixtures (4 models) generated offline. There is no general path to
+   certify an arbitrary checkpoint from the CLI today.
+3. **F64 reference generation remains expensive** (offline PyTorch
+   double-precision forward per model) — the gating factor for expanding
+   AQS / certification coverage.
+4. **Real GPTQ is costly and currently negative.** Real blockwise GPTQ
+   (AQS-5) is `O(K²·N)` per tensor; one TinyLlama pass took ~7.8 h on CPU
+   (no BLAS/GPU). It also did not beat the weight-only plateau, so further
+   GPTQ optimisation is not recommended without new evidence.
+5. **The `3.0.0-draft` manifest is not a runtime format.** It is never
+   consumed by the runtime; promoting it would require its own ADR + schema
+   versioning alongside the production manifests in `docs/CERTIFICATION.md`.
+6. **Future MoE work may invalidate AQS assumptions.** AQS policies and the
+   end-to-end harness assume dense `[K_in, N_out]` linear weights; a
+   mixture-of-experts path (currently out of scope, no code) would need the
+   policy/evaluator surface revisited.

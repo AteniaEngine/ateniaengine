@@ -53,7 +53,7 @@ locked by regression tests.
   no longer branches on `arch`. The execution core is fully
   family-agnostic for both config and weight mapping.
 - **Determinism.** Greedy generation is reproducible bit-exact (D67 fixture);
-  the lib test suite (503 tests) is green.
+  the lib test suite (628 tests) is green.
 - **CI.** A minimal GitHub Actions workflow runs on push / PR to `main`
   with **two blocking jobs**: a `cuda-toolkit` job (mirrors the
   locally-validated environment; no GPU, device tests auto-skip) running
@@ -85,9 +85,9 @@ locked by regression tests.
   / `#[link]` block gated `#[cfg(atenia_cuda)]` with
   identical-signature `#[cfg(not(atenia_cuda))]` stubs;
   `cuda_available()` is `false` without the backend). The CUDA build is
-  byte-identical (lib 369/369). Enforced by the now-blocking `cpu-only`
-  CI job (CPU-5). Not a multi-vendor compute backend — see *Single
-  vendor* below.
+  byte-identical (full lib suite, currently 628 tests). Enforced by the
+  now-blocking `cpu-only` CI job (CPU-5). Not a multi-vendor compute
+  backend — see *Single vendor* below.
 - **Phi-3.5 GGUF end-to-end (closed).** `Phi-3.5-mini-instruct`
   Q4_K_M GGUF loads and generates coherent text end-to-end. Added on
   the GGUF path: Q5_K block decode, Phi-3 LongRope read from the
@@ -400,8 +400,9 @@ locked by regression tests.
   recommended `doctor` → `download` → `diagnose` → `chat` flow with
   the exact commands; `--download` runs step 2 by reusing the CLI-6
   downloader (no duplication). Plan mode is fully non-interactive
-  and scriptable. **517 / 517** `cargo test --lib`; the CLI surface
-  is covered by seven integration suites (`cli_errors`,
+  and scriptable. **517 / 517** `cargo test --lib` at CLI-7 close (the
+  lib suite is now **628** with the experimental AQS subsystem); the CLI
+  surface is covered by seven integration suites (`cli_errors`,
   `cli_logging`, `cli_diagnostics`, `cli_chat`, `cli_ux`,
   `cli_download`, `cli_quickstart`). Full reference: `docs/CLI.md`.
 - **Local validation battery (post-Adapter-Toolkit-v1).** A
@@ -435,6 +436,16 @@ profile. Operators opt in and accept the profile.
   v2.0.0 (smoke-based, documented drift 0.0–10.19), *not* ADR-004 strict.
   Q4_K_M is aggressive 4-bit quantisation; the drift is intrinsic to the
   format, not an Atenia defect.
+- **AQS — Atenia Quantization Search** (AQS-0 → AQS-10, complete). An
+  isolated, **CPU-only, opt-in, experimental** research subsystem:
+  `QuantizationPolicy` → drift evaluator → end-to-end harness →
+  certification report → `3.0.0-draft` manifest → search engine → runner →
+  `atenia search` CLI. It never runs in the default path, adds no
+  dependency, and produces **draft** output only — it is **not** production
+  certification (that remains ADR-004 / ADR-005). On TinyLlama only BF16 is
+  ADR-004-certified; AWQ (α=0.25) is the best *useful-lossy* option; GPTQ
+  (surrogate and real) did not beat the weight-only plateau. ~93 of the 628
+  lib tests cover AQS. Full write-up: [AQS_OVERVIEW.md](./AQS_OVERVIEW.md).
 
 ## Scaffolding / known limitations
 
