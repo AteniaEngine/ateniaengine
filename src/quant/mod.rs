@@ -23,7 +23,13 @@ pub mod end_to_end;
 pub mod evaluator;
 pub mod gptq;
 pub mod policy;
+pub mod runner;
 pub mod search;
+
+pub use runner::{
+    run_aqs_with_evaluator, AqsEvaluatorCapabilities, AqsRunnerConfig, AqsRunnerError,
+    AqsRunnerErrorRecord, AqsRunnerResult, AqsSkippedCandidate,
+};
 
 pub use certification::{
     AqsCertificationReport, AqsPolicyReport, CertificationStatus, ADR_004_GATE,
