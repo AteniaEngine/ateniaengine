@@ -25,10 +25,13 @@ pub mod fixture;
 pub mod graph_op;
 pub mod layer;
 pub mod sparse;
+pub mod stack;
 
 pub use binding::{build_real_layer, BindingShape, MoeBindingError, RealExpertTensorBinding};
 
 pub use layer::{MoeConfigError, MoeLayerConfig, MoeLayerError, RealMoeLayer};
+
+pub use stack::{MoeStackConfig, MoeStackConfigError, MoeStackError, RealMoeStack};
 
 pub use data_plane::{ExpertTensors, MoeLayerMap, MoeTensorEntry, MoeWeightMap};
 
