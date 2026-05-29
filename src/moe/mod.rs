@@ -17,11 +17,14 @@
 //!
 //! See `docs/MOE_CERTIFICATION_SUBSTRATE.md` for the full analysis.
 
+pub mod data_plane;
 pub mod dense;
 pub mod detect;
 pub mod fixture;
 pub mod graph_op;
 pub mod sparse;
+
+pub use data_plane::{ExpertTensors, MoeLayerMap, MoeTensorEntry, MoeWeightMap};
 
 pub use graph_op::{
     execute_conditional_expert, execute_dynamic_dispatch, execute_sparse_reference,
