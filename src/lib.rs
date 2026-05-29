@@ -93,6 +93,10 @@ pub mod profiler;
 // opt-in, no productive integration. See `docs/AQS_ARCHITECTURE_AUDIT.md`
 // and `docs/HANDOFF_AQS_1.md`.
 pub mod quant;
+// **MOE-1** — experimental MoE certification substrate (metadata + strategy
+// only; no router, no dispatch, no MoE execution, no runtime touch). See
+// `docs/MOE_CERTIFICATION_SUBSTRATE.md`.
+pub mod moe;
 pub mod simd_fused_kernels;
 pub mod simd_kernels;
 pub mod tensor;
