@@ -24,10 +24,13 @@ pub mod detect;
 pub mod fixture;
 pub mod graph_op;
 pub mod layer;
+pub mod numerical;
 pub mod smoke;
 pub mod sparse;
 pub mod stack;
 pub mod validation;
+
+pub use numerical::{MoeNumericalReport, NumericalMetrics, MOE_NUMERICAL_TOLERANCE};
 
 pub use binding::{
     build_packed_layer, build_real_layer, packed_dims, BindingShape, MoeBindingError,
