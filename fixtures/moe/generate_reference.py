@@ -61,22 +61,34 @@ def atenia_expert(x, gate, up, down):
     return down @ h
 
 
-def atenia_moe_block(x, router_w, experts, top_k, shared=None):
-    """Replicate Atenia's RealMoeLayer.forward exactly, in f64."""
+def sigmoid(x):
+    return 1.0 / (1.0 + np.exp(-x))
+
+
+def atenia_moe_block(x, router_w, experts, top_k, shared=None,
+                     renormalize=True, shared_gate=None):
+    """f64 MoE block. `renormalize`/`shared_gate` select the convention:
+    - Atenia default: renormalize=True, shared_gate=None (ungated shared).
+    - HF Qwen:        renormalize=False, shared_gate=[d_model] (sigmoid-gated).
+    """
     logits = router_w @ x                      # [ne]
     w = softmax(logits)                        # over all experts
     # top-k by weight desc, tie -> lower index (matches Atenia).
     order = sorted(range(len(w)), key=lambda i: (-w[i], i))
     idx = sorted(order[:top_k])
     sel = np.array([w[i] for i in idx], dtype=np.float64)
-    sel = sel / sel.sum()                      # renormalise selected
+    if renormalize:
+        sel = sel / sel.sum()
     out = np.zeros_like(x)
     for j, e in enumerate(idx):
         g, u, d = experts[e]
         out = out + sel[j] * atenia_expert(x, g, u, d)
-    if shared is not None:                     # ungated shared expert
+    if shared is not None:
         sg, su, sd = shared
-        out = out + atenia_expert(x, sg, su, sd)
+        s = atenia_expert(x, sg, su, sd)
+        if shared_gate is not None:
+            s = sigmoid(float(shared_gate @ x)) * s
+        out = out + s
     return out
 
 
@@ -153,9 +165,19 @@ def extract_layer0(model, sd, name_prefix):
         _, sd64 = to_f32_f64(sd_)
         shared64 = (sg64, su64, sd64)
 
+    # Shared-expert sigmoid gate (Qwen-MoE): [1, d_model]. Needed for the
+    # MOE-17 HF-convention forward.
+    shared_gate64 = None
+    gate_name = f"{name_prefix}.shared_expert_gate.weight"
+    if gate_name in sd:
+        a32, g64 = to_f32_f64(sd[gate_name])
+        fixture[gate_name] = a32
+        shared_gate64 = g64.reshape(-1)  # [d_model]
+
     dims = dict(num_experts=int(ne), d_model=int(d_model), d_ff=int(d_ff),
-                packed=bool(packed), has_shared=shared64 is not None)
-    return fixture, experts64, r64, shared64, dims
+                packed=bool(packed), has_shared=shared64 is not None,
+                has_shared_gate=shared_gate64 is not None)
+    return fixture, experts64, r64, shared64, shared_gate64, dims
 
 
 def metrics(a, b):
@@ -190,13 +212,20 @@ def main():
         if not any(k.startswith(prefix + ".") for k in sd.keys()):
             prefix = "model.layers.0.block_sparse_moe"
 
-        fixture, experts64, router64, shared64, dims = extract_layer0(model, sd, prefix)
+        fixture, experts64, router64, shared64, shared_gate64, dims = extract_layer0(model, sd, prefix)
         d_model = dims["d_model"]
 
         x32 = (rng.standard_normal(d_model) * 0.5).astype(np.float32)
         x64 = x32.astype(np.float64)
 
+        # Atenia default convention (renormalize + ungated shared).
         atenia_ref = atenia_moe_block(x64, router64, experts64, top_k, shared64)
+        # Atenia under HF convention (no renorm + sigmoid-gated shared) — must
+        # match hf_ref, validating our understanding of the HF block.
+        atenia_hf_ref = atenia_moe_block(
+            x64, router64, experts64, top_k, shared64,
+            renormalize=norm_topk, shared_gate=shared_gate64,
+        )
 
         # HF reference: real transformers block forward in f64.
         block = dict(model.named_modules())[prefix].double()
@@ -224,11 +253,14 @@ def main():
             d_ff=dims["d_ff"],
             packed=dims["packed"],
             has_shared=dims["has_shared"],
+            has_shared_gate=dims["has_shared_gate"],
             norm_topk_prob=norm_topk,
             input=x32.tolist(),
             atenia_ref=atenia_ref.tolist(),
+            atenia_hf_ref=atenia_hf_ref.tolist(),
             hf_ref=hf_ref.tolist(),
             metrics_atenia_ref_vs_hf=metrics(atenia_ref, hf_ref),
+            metrics_atenia_hf_ref_vs_hf=metrics(atenia_hf_ref, hf_ref),
         )
         json.dump(sidecar, open(os.path.join(OUT_DIR, f"{name}_layer0.json"), "w"), indent=2)
         print("  dims:", dims, "top_k", top_k, "norm_topk", norm_topk)

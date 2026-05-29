@@ -178,6 +178,22 @@ impl From<MoeSparseError> for MoeLayerError {
     }
 }
 
+/// **MOE-17** — which execution convention the MoE block follows. Different
+/// model families combine routed + shared experts differently; selecting the
+/// convention lets Atenia match a specific reference implementation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MoeExecutionConvention {
+    /// Atenia's default (also matches Mixtral): the selected top-k softmax
+    /// weights are **renormalised** to sum 1, and the shared expert (if any)
+    /// is added **ungated**.
+    #[default]
+    Atenia,
+    /// HuggingFace Qwen-MoE: the selected top-k softmax weights are **not**
+    /// renormalised (`norm_topk_prob = false`), and the shared expert is
+    /// scaled by `sigmoid(shared_expert_gate · x)`.
+    HuggingFaceQwen,
+}
+
 /// A fully assembled, runnable real MoE layer: router + routed experts +
 /// an optional shared expert + the fixture config.
 #[derive(Debug, Clone)]
@@ -189,6 +205,22 @@ pub struct RealMoeLayer {
     /// Optional shared expert that runs on **every** token and is added to
     /// the routed combine (Qwen-MoE / DeepSeek-MoE convention).
     pub shared: Option<MoeDenseExpert>,
+    /// **MOE-17** — optional shared-expert sigmoid gate weight `[d_model]`
+    /// (Qwen-MoE `shared_expert_gate`). Used only under the
+    /// `HuggingFaceQwen` convention; ignored by the Atenia default.
+    pub shared_gate: Option<Vec<f32>>,
+}
+
+/// Resolve the shared-expert sigmoid gate weight (`shared_expert_gate`) for a
+/// layer, if present. Returned flattened to `[d_model]` (Qwen ships it as
+/// `[1, d_model]`). `None` when the checkpoint has no such tensor.
+fn resolve_shared_gate<F>(map: &MoeWeightMap, layer_id: usize, resolve: &F) -> Option<Vec<f32>>
+where
+    F: Fn(&str) -> Option<Vec<f32>>,
+{
+    let layer = map.layer(layer_id)?;
+    let entry = layer.shared.iter().find(|e| e.name.contains("shared_expert_gate"))?;
+    resolve(&entry.name)
 }
 
 /// Build the shared expert (if present) from a layer's shared tensor set.
@@ -307,7 +339,15 @@ impl RealMoeLayer {
             None
         };
 
-        Ok(Self { config, routed, shared })
+        // MOE-17: capture the optional shared-expert sigmoid gate (used only
+        // under the HuggingFaceQwen convention; the Atenia default ignores it).
+        let shared_gate = if config.has_shared_expert {
+            resolve_shared_gate(map, layer_id, resolve)
+        } else {
+            None
+        };
+
+        Ok(Self { config, routed, shared, shared_gate })
     }
 
     /// Number of routed experts.
@@ -328,20 +368,58 @@ impl RealMoeLayer {
         Ok(out.output)
     }
 
-    /// **Full layer forward**: routed sparse combine, plus the shared expert
-    /// (if present) added on top. CPU-only, single token, single layer.
+    /// **Full layer forward** under Atenia's default convention (renormalise
+    /// + ungated shared). Unchanged behaviour; delegates to
+    /// [`Self::forward_with`]. CPU-only, single token, single layer.
     pub fn forward(&self, x: &[f32]) -> Result<Vec<f32>, MoeLayerError> {
-        let mut out = self.forward_routed(x)?;
+        self.forward_with(x, MoeExecutionConvention::Atenia)
+    }
+
+    /// **MOE-17** — full layer forward under an explicit execution convention.
+    ///
+    /// * `Atenia`: renormalise the selected top-k weights; add the shared
+    ///   expert ungated (the existing default).
+    /// * `HuggingFaceQwen`: do NOT renormalise the selected weights; scale the
+    ///   shared expert by `sigmoid(shared_expert_gate · x)` (falling back to
+    ///   ungated if no gate tensor is present).
+    pub fn forward_with(
+        &self,
+        x: &[f32],
+        convention: MoeExecutionConvention,
+    ) -> Result<Vec<f32>, MoeLayerError> {
+        let renormalize = matches!(convention, MoeExecutionConvention::Atenia);
+        let mut out = self
+            .routed
+            .forward_sparse_with(x, self.config.experts_per_token, renormalize)?
+            .output;
         if let Some(se) = &self.shared {
             let s = se
                 .forward(x)
                 .map_err(|e| MoeLayerError::Binding(MoeBindingError::Dense(e)))?;
+            let scale = match convention {
+                MoeExecutionConvention::Atenia => 1.0_f32,
+                MoeExecutionConvention::HuggingFaceQwen => match &self.shared_gate {
+                    Some(g) => sigmoid_dot(g, x),
+                    None => 1.0,
+                },
+            };
             for d in 0..self.config.d_model {
-                out[d] += s[d];
+                out[d] += scale * s[d];
             }
         }
         Ok(out)
     }
+}
+
+/// `sigmoid(g · x)` computed with f64 accumulation. `g` and `x` must share a
+/// length; extra elements (if `g` is longer) are ignored.
+fn sigmoid_dot(g: &[f32], x: &[f32]) -> f32 {
+    let n = g.len().min(x.len());
+    let mut acc = 0.0_f64;
+    for i in 0..n {
+        acc += (g[i] as f64) * (x[i] as f64);
+    }
+    (1.0 / (1.0 + (-acc).exp())) as f32
 }
 
 // ============================================================================

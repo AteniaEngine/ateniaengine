@@ -130,6 +130,20 @@ pub struct TopKSelection {
 /// Deterministic. Requires `0 < k <= weights.len()`, all weights finite
 /// and non-negative, and a positive selected sum.
 pub fn top_k_routing(weights: &[f32], k: usize) -> Result<TopKSelection, MoeSparseError> {
+    top_k_routing_with(weights, k, true)
+}
+
+/// **MOE-17** — like [`top_k_routing`], but with an explicit `renormalize`
+/// flag. With `renormalize = true` (Atenia / Mixtral convention) the selected
+/// weights are divided by their sum to sum 1. With `renormalize = false`
+/// (HF Qwen-MoE `norm_topk_prob = false`) the **raw** softmax weights at the
+/// selected indices are kept (they sum to < 1). Selection + ordering are
+/// identical in both modes.
+pub fn top_k_routing_with(
+    weights: &[f32],
+    k: usize,
+    renormalize: bool,
+) -> Result<TopKSelection, MoeSparseError> {
     if k == 0 {
         return Err(MoeSparseError::ZeroK);
     }
@@ -164,15 +178,15 @@ pub fn top_k_routing(weights: &[f32], k: usize) -> Result<TopKSelection, MoeSpar
     if sum <= 0.0 {
         return Err(MoeSparseError::SelectedSumNonPositive);
     }
-    let inv = 1.0 / sum;
-    let renorm: Vec<f32> = selected
+    let scale = if renormalize { 1.0 / sum } else { 1.0 };
+    let out_w: Vec<f32> = selected
         .iter()
-        .map(|&i| ((weights[i] as f64) * inv) as f32)
+        .map(|&i| ((weights[i] as f64) * scale) as f32)
         .collect();
 
     Ok(TopKSelection {
         indices: selected,
-        weights: renorm,
+        weights: out_w,
     })
 }
 
@@ -194,8 +208,21 @@ impl MoeDenseLayer {
         input: &[f32],
         k: usize,
     ) -> Result<MoeSparseForwardOutput, MoeSparseError> {
+        self.forward_sparse_with(input, k, true)
+    }
+
+    /// **MOE-17** — sparse forward with an explicit `renormalize` flag for the
+    /// selected top-k weights (see [`top_k_routing_with`]). `renormalize =
+    /// true` is the Atenia/Mixtral convention; `false` is HF Qwen-MoE
+    /// (`norm_topk_prob = false`).
+    pub fn forward_sparse_with(
+        &self,
+        input: &[f32],
+        k: usize,
+        renormalize: bool,
+    ) -> Result<MoeSparseForwardOutput, MoeSparseError> {
         let routing = self.route(input)?;
-        let selection = top_k_routing(&routing.weights, k)?;
+        let selection = top_k_routing_with(&routing.weights, k, renormalize)?;
         let mut output = vec![0.0_f32; self.d_model];
         for (slot, &e) in selection.indices.iter().enumerate() {
             let w = selection.weights[slot];

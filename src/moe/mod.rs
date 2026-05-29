@@ -58,8 +58,11 @@ pub use dense::{
     build_fixture_layer, softmax, MoeDenseError, MoeDenseExpert, MoeDenseLayer, MoeRouterOutput,
 };
 pub use sparse::{
-    combine_selected, top_k_routing, MoeSparseError, MoeSparseForwardOutput, TopKSelection,
+    combine_selected, top_k_routing, top_k_routing_with, MoeSparseError, MoeSparseForwardOutput,
+    TopKSelection,
 };
+
+pub use layer::MoeExecutionConvention;
 
 pub use detect::{
     classify_tensor_name, detect_moe, is_moe_expert_tensor, is_moe_router_tensor,
