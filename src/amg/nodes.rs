@@ -155,6 +155,18 @@ pub enum NodeType {
         d_model: usize,
         num_experts: usize,
     },
+    /// **MOE-7** — experimental dynamic expert dispatch. Inputs:
+    /// `[input_vector, selection]` where `selection` is the `MoeTopK`
+    /// `[idx, w, …]` tensor. Runs **only** the selected experts of the
+    /// registered layer (`crate::moe::execute_dynamic_dispatch`) and
+    /// combines them. Output `[d_model]`. CPU-only, synthetic fixture
+    /// only, NOT production MoE; not differentiable. See
+    /// `docs/HANDOFF_MOE_7.md`.
+    MoeDynamicDispatch {
+        layer_id: u32,
+        d_model: usize,
+        num_experts: usize,
+    },
     Reshape {
         target: Vec<isize>,
     },

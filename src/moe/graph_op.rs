@@ -69,6 +69,71 @@ pub fn execute_sparse_reference(
     Ok(out.output)
 }
 
+/// Output of [`execute_dynamic_dispatch`] — the combined vector plus the
+/// experts that were **actually executed** (proving conditional dispatch:
+/// only the selected experts' `forward` is called).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DynamicDispatchOutput {
+    pub output: Vec<f32>,
+    pub executed_experts: Vec<usize>,
+}
+
+/// **MOE-7** — dynamic expert dispatch: given a registered layer, the
+/// model `input`, and a `selection` tensor `[idx0, w0, idx1, w1, …]`
+/// (from `MoeTopK`), run **only** the selected experts and combine their
+/// outputs by the selected weights.
+///
+/// Unlike MOE-5's `forward_sparse` (which internally selects), this takes
+/// the selection as data and executes exactly the listed experts — the
+/// experts not in the selection are never `forward`-ed. Returns the
+/// combined output and the list of executed expert ids.
+pub fn execute_dynamic_dispatch(
+    layer_id: u32,
+    input: &[f32],
+    selection: &[f32],
+) -> Result<DynamicDispatchOutput, MoeSparseError> {
+    let layer = get_layer(layer_id).ok_or(MoeSparseError::Dense(
+        super::dense::MoeDenseError::NoExperts,
+    ))?;
+    if selection.len() % 2 != 0 {
+        return Err(MoeSparseError::Dense(super::dense::MoeDenseError::DimMismatch {
+            what: "dispatch selection (must be [idx, w, ...])",
+            expected: 0,
+            actual: selection.len() % 2,
+        }));
+    }
+    let pairs = selection.len() / 2;
+    let d_model = layer.d_model;
+    let num_experts = layer.num_experts();
+    let mut output = vec![0.0_f32; d_model];
+    let mut executed = Vec::with_capacity(pairs);
+    for p in 0..pairs {
+        let idx_f = selection[p * 2];
+        let weight = selection[p * 2 + 1];
+        // Decode + validate the expert index.
+        if !idx_f.is_finite() || idx_f < 0.0 {
+            return Err(MoeSparseError::NegativeWeight { index: p * 2 });
+        }
+        let idx = idx_f as usize;
+        if idx >= num_experts {
+            return Err(MoeSparseError::KExceedsExperts {
+                k: idx + 1,
+                num_experts,
+            });
+        }
+        // Conditional execution: only the selected expert runs.
+        let y = layer.experts[idx].forward(input)?;
+        for d in 0..d_model {
+            output[d] += weight * y[d];
+        }
+        executed.push(idx);
+    }
+    Ok(DynamicDispatchOutput {
+        output,
+        executed_experts: executed,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -203,6 +203,24 @@ impl GraphBuilder {
         )
     }
 
+    /// **MOE-7** — experimental dynamic expert dispatch node. Inputs:
+    /// `input_id` (model vector) and `selection_id` (from `moe_topk`).
+    /// Runs only the selected experts of the registered `layer_id` and
+    /// combines them. Output `[d_model]`. Experimental, CPU-only.
+    pub fn moe_dynamic_dispatch(
+        &mut self,
+        input_id: usize,
+        selection_id: usize,
+        layer_id: u32,
+        d_model: usize,
+        num_experts: usize,
+    ) -> usize {
+        self.add_node(
+            NodeType::MoeDynamicDispatch { layer_id, d_model, num_experts },
+            vec![input_id, selection_id],
+        )
+    }
+
     /// Softmax along last dimension.
     pub fn softmax(&mut self, x_id: usize) -> usize {
         self.add_node(NodeType::Softmax, vec![x_id])

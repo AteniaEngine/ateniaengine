@@ -1692,6 +1692,7 @@ impl Graph {
                 NodeType::MoeRouterSoftmax => in_len == 1,
                 NodeType::MoeTopK { .. } => in_len == 1,
                 NodeType::MoeSparseCombine { .. } => in_len == 2,
+                NodeType::MoeDynamicDispatch { .. } => in_len == 2,
                 NodeType::IndexSelect => in_len == 2,
                 NodeType::Linear => in_len == 2 || in_len == 3,
                 NodeType::Activation(_) => in_len == 1,
@@ -5496,6 +5497,37 @@ impl Graph {
                     )
                     .expect("MoeSparseCombine: combine failed (shape mismatch)");
                     let out = crate::tensor::Tensor::new_cpu(vec![combined.len()], combined);
+                    self.nodes[node_id].set_output(out);
+                }
+            }
+            // **MOE-7** — experimental dynamic expert dispatch. Inputs:
+            // [input_vector, selection]. Runs ONLY the selected experts of
+            // the registered layer and combines them. CPU-only, synthetic
+            // fixture only, inference-only (no backward).
+            NodeType::MoeDynamicDispatch { layer_id, d_model: _, num_experts: _ } => {
+                let inputs = self.nodes[node_id].inputs.clone();
+                if inputs.len() != 2 {
+                    return;
+                }
+                let x_opt = self.nodes[inputs[0]].output.as_ref().cloned();
+                let sel_opt = self.nodes[inputs[1]].output.as_ref().cloned();
+                if let (Some(mut x), Some(mut sel)) = (x_opt, sel_opt) {
+                    x.ensure_cpu()
+                        .expect("MoeDynamicDispatch: input → Cpu materialisation failed");
+                    sel.ensure_cpu()
+                        .expect("MoeDynamicDispatch: selection → Cpu materialisation failed");
+                    let result = crate::moe::execute_dynamic_dispatch(
+                        layer_id,
+                        x.as_cpu_slice(),
+                        sel.as_cpu_slice(),
+                    )
+                    .expect(
+                        "MoeDynamicDispatch: dispatch failed (unknown layer_id or bad selection)",
+                    );
+                    let out = crate::tensor::Tensor::new_cpu(
+                        vec![result.output.len()],
+                        result.output,
+                    );
                     self.nodes[node_id].set_output(out);
                 }
             }
