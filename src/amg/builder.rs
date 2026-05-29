@@ -174,6 +174,35 @@ impl GraphBuilder {
         self.add_node(NodeType::MoeSparseReference { layer_id, k }, vec![x_id])
     }
 
+    /// **MOE-6** — primitive router-softmax node. `logits_id` → routing
+    /// weights (stable softmax). Experimental, CPU-only.
+    pub fn moe_router_softmax(&mut self, logits_id: usize) -> usize {
+        self.add_node(NodeType::MoeRouterSoftmax, vec![logits_id])
+    }
+
+    /// **MOE-6** — primitive top-k node. `weights_id` → flat
+    /// `[idx, w, …]` selection of length `2k`. Experimental, CPU-only.
+    pub fn moe_topk(&mut self, weights_id: usize, k: usize) -> usize {
+        self.add_node(NodeType::MoeTopK { k }, vec![weights_id])
+    }
+
+    /// **MOE-6** — primitive sparse-combine node. Inputs:
+    /// `selection_id` (from `moe_topk`) and `expert_outputs_id`
+    /// (concatenated `[num_experts * d_model]`). Output `[d_model]`.
+    /// Experimental, CPU-only.
+    pub fn moe_sparse_combine(
+        &mut self,
+        selection_id: usize,
+        expert_outputs_id: usize,
+        d_model: usize,
+        num_experts: usize,
+    ) -> usize {
+        self.add_node(
+            NodeType::MoeSparseCombine { d_model, num_experts },
+            vec![selection_id, expert_outputs_id],
+        )
+    }
+
     /// Softmax along last dimension.
     pub fn softmax(&mut self, x_id: usize) -> usize {
         self.add_node(NodeType::Softmax, vec![x_id])

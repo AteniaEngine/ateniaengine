@@ -29,7 +29,7 @@ pub use dense::{
     build_fixture_layer, softmax, MoeDenseError, MoeDenseExpert, MoeDenseLayer, MoeRouterOutput,
 };
 pub use sparse::{
-    top_k_routing, MoeSparseError, MoeSparseForwardOutput, TopKSelection,
+    combine_selected, top_k_routing, MoeSparseError, MoeSparseForwardOutput, TopKSelection,
 };
 
 pub use detect::{

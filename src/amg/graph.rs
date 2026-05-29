@@ -1688,6 +1688,10 @@ impl Graph {
                 // MOE-5: experimental fused sparse-MoE reference op takes
                 // the single token-vector input.
                 NodeType::MoeSparseReference { .. } => in_len == 1,
+                // MOE-6 primitives.
+                NodeType::MoeRouterSoftmax => in_len == 1,
+                NodeType::MoeTopK { .. } => in_len == 1,
+                NodeType::MoeSparseCombine { .. } => in_len == 2,
                 NodeType::IndexSelect => in_len == 2,
                 NodeType::Linear => in_len == 2 || in_len == 3,
                 NodeType::Activation(_) => in_len == 1,
@@ -5419,6 +5423,80 @@ impl Graph {
                     let out = crate::tensor::Tensor::new_cpu(vec![out_vec.len()], out_vec);
                     self.nodes[node_id].set_output(out);
                     // No backward: experimental inference-only op.
+                }
+            }
+            // **MOE-6** — primitive: stable softmax over router logits.
+            NodeType::MoeRouterSoftmax => {
+                let inputs = self.nodes[node_id].inputs.clone();
+                if inputs.len() != 1 {
+                    return;
+                }
+                if let Some(mut x) = self.nodes[inputs[0]].output.as_ref().cloned() {
+                    x.ensure_cpu()
+                        .expect("MoeRouterSoftmax: input → Cpu materialisation failed");
+                    let w = crate::moe::softmax(x.as_cpu_slice());
+                    let out = crate::tensor::Tensor::new_cpu(vec![w.len()], w);
+                    self.nodes[node_id].set_output(out);
+                }
+            }
+            // **MOE-6** — primitive: top-k selection. Output is a flat
+            // `[idx0, w0, idx1, w1, …]` tensor (indices as f32) of length 2k.
+            NodeType::MoeTopK { k } => {
+                let inputs = self.nodes[node_id].inputs.clone();
+                if inputs.len() != 1 {
+                    return;
+                }
+                if let Some(mut x) = self.nodes[inputs[0]].output.as_ref().cloned() {
+                    x.ensure_cpu()
+                        .expect("MoeTopK: input → Cpu materialisation failed");
+                    let sel = crate::moe::top_k_routing(x.as_cpu_slice(), k)
+                        .expect("MoeTopK: top-k selection failed (bad k or invalid weights)");
+                    let mut flat = Vec::with_capacity(sel.indices.len() * 2);
+                    for (i, &idx) in sel.indices.iter().enumerate() {
+                        flat.push(idx as f32);
+                        flat.push(sel.weights[i]);
+                    }
+                    let out = crate::tensor::Tensor::new_cpu(vec![flat.len()], flat);
+                    self.nodes[node_id].set_output(out);
+                }
+            }
+            // **MOE-6** — primitive: combine selected expert outputs.
+            // inputs = [selection (from MoeTopK), expert_outputs concat].
+            NodeType::MoeSparseCombine { d_model, num_experts } => {
+                let inputs = self.nodes[node_id].inputs.clone();
+                if inputs.len() != 2 {
+                    return;
+                }
+                let sel_opt = self.nodes[inputs[0]].output.as_ref().cloned();
+                let outs_opt = self.nodes[inputs[1]].output.as_ref().cloned();
+                if let (Some(mut sel), Some(mut outs)) = (sel_opt, outs_opt) {
+                    sel.ensure_cpu()
+                        .expect("MoeSparseCombine: selection → Cpu failed");
+                    outs.ensure_cpu()
+                        .expect("MoeSparseCombine: expert_outputs → Cpu failed");
+                    let sel_slice = sel.as_cpu_slice();
+                    // Decode the flat [idx, w, …] selection.
+                    let pairs = sel_slice.len() / 2;
+                    let mut indices = Vec::with_capacity(pairs);
+                    let mut weights = Vec::with_capacity(pairs);
+                    for p in 0..pairs {
+                        let idx = sel_slice[p * 2] as usize;
+                        debug_assert!(
+                            idx < num_experts,
+                            "MoeSparseCombine: selected idx {idx} >= num_experts {num_experts}"
+                        );
+                        indices.push(idx);
+                        weights.push(sel_slice[p * 2 + 1]);
+                    }
+                    let combined = crate::moe::combine_selected(
+                        &indices,
+                        &weights,
+                        outs.as_cpu_slice(),
+                        d_model,
+                    )
+                    .expect("MoeSparseCombine: combine failed (shape mismatch)");
+                    let out = crate::tensor::Tensor::new_cpu(vec![combined.len()], combined);
+                    self.nodes[node_id].set_output(out);
                 }
             }
             NodeType::Softmax => {

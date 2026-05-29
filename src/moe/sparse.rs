@@ -78,6 +78,43 @@ impl From<MoeDenseError> for MoeSparseError {
     }
 }
 
+/// **MOE-6** — combine selected expert outputs into one vector:
+/// `Σ_i weights[i] · expert_outputs[indices[i] * d_model .. +d_model]`.
+///
+/// `expert_outputs` is the concatenation of every expert's output
+/// (`num_experts * d_model`). Pure; used by the `MoeSparseCombine` graph
+/// op and unit-tested directly.
+pub fn combine_selected(
+    indices: &[usize],
+    weights: &[f32],
+    expert_outputs: &[f32],
+    d_model: usize,
+) -> Result<Vec<f32>, MoeSparseError> {
+    if indices.len() != weights.len() {
+        return Err(MoeSparseError::Dense(MoeDenseError::DimMismatch {
+            what: "combine indices/weights",
+            expected: indices.len(),
+            actual: weights.len(),
+        }));
+    }
+    let mut out = vec![0.0_f32; d_model];
+    for (slot, &e) in indices.iter().enumerate() {
+        let base = e * d_model;
+        if base + d_model > expert_outputs.len() {
+            return Err(MoeSparseError::Dense(MoeDenseError::DimMismatch {
+                what: "combine expert_outputs",
+                expected: base + d_model,
+                actual: expert_outputs.len(),
+            }));
+        }
+        let w = weights[slot];
+        for d in 0..d_model {
+            out[d] += w * expert_outputs[base + d];
+        }
+    }
+    Ok(out)
+}
+
 /// Result of a top-k selection over routing weights. `indices` are sorted
 /// ascending; `weights[i]` is the **renormalised** weight for
 /// `indices[i]` (the selected weights sum to 1).

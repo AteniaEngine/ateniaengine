@@ -132,6 +132,29 @@ pub enum NodeType {
         layer_id: u32,
         k: u32,
     },
+    /// **MOE-6** — experimental primitive: stable softmax over router
+    /// logits. Input: router logits `[N]`. Output: routing weights `[N]`
+    /// (sum ≈ 1). Delegates to `crate::moe::softmax`. CPU-only, not
+    /// differentiable. See `docs/HANDOFF_MOE_6.md`.
+    MoeRouterSoftmax,
+    /// **MOE-6** — experimental primitive: top-k expert selection over
+    /// routing weights. Input: routing weights `[N]`. Output: a flat
+    /// `[idx0, w0, idx1, w1, …]` tensor of length `2k` (expert indices
+    /// encoded as `f32`; weights renormalised to sum 1). Delegates to
+    /// `crate::moe::top_k_routing`. CPU-only, not differentiable.
+    MoeTopK {
+        k: usize,
+    },
+    /// **MOE-6** — experimental primitive: combine selected expert
+    /// outputs. Inputs: `[selection, expert_outputs]` where `selection`
+    /// is the `MoeTopK` `[idx, w, …]` tensor and `expert_outputs` is the
+    /// concatenation of every expert's output `[num_experts * d_model]`.
+    /// Output: `Σ wᵢ · expert_outputs[idxᵢ]` of length `d_model`. CPU-only,
+    /// not differentiable.
+    MoeSparseCombine {
+        d_model: usize,
+        num_experts: usize,
+    },
     Reshape {
         target: Vec<isize>,
     },
