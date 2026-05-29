@@ -107,6 +107,11 @@ fn build_inference_context(
             "shape mismatch for '{}': expected {:?}, got {:?}",
             tensor_name, expected, actual
         )),
+        // MOE-2: forced exhaustiveness arm. Route the fail-loud MoE error
+        // through the existing LoadFailed variant (no behaviour change —
+        // MoE execution is unimplemented, so this path simply surfaces the
+        // explanation). See `src/moe` + `docs/HANDOFF_MOE_2.md`.
+        LoaderError::MoeUnsupported(msg) => InferenceError::LoadFailed(msg),
     })?;
 
     let contract = make_default_contract();

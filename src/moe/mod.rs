@@ -17,8 +17,13 @@
 //!
 //! See `docs/MOE_CERTIFICATION_SUBSTRATE.md` for the full analysis.
 
+pub mod detect;
 pub mod fixture;
 
+pub use detect::{
+    classify_tensor_name, detect_moe, is_moe_expert_tensor, is_moe_router_tensor,
+    unsupported_message, MoeDetection, TensorNameInfo, TensorRole,
+};
 pub use fixture::{
     f64_reference_weight_bytes, recommend_strategy, FixtureMoESpec, FixtureSpecError,
     MoECertificationStrategy,

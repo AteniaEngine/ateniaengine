@@ -38,6 +38,13 @@ pub enum LoaderError {
         expected: Vec<usize>,
         actual: Vec<usize>,
     },
+    /// **MOE-2** — the checkpoint contains Mixture-of-Experts tensors
+    /// (router + per-expert weights), but Atenia does not implement MoE
+    /// execution yet. Loading it as a dense model would silently drop the
+    /// expert weights and produce a broken model, so the loader fails loud
+    /// instead. The inner string is the human-facing explanation built by
+    /// [`crate::moe::unsupported_message`].
+    MoeUnsupported(String),
 }
 
 /// **M12.4 H5** — operator-readable rendering. Before this, the only
@@ -71,6 +78,7 @@ impl std::fmt::Display for LoaderError {
                 f,
                 "shape mismatch for tensor '{tensor_name}': expected {expected:?}, got {actual:?}"
             ),
+            LoaderError::MoeUnsupported(s) => write!(f, "{s}"),
         }
     }
 }

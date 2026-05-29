@@ -617,6 +617,17 @@ impl WeightMapper {
     ) -> Result<ShardLoadOutcome, LoaderError> {
         let mut outcome = ShardLoadOutcome::default();
 
+        // **MOE-2 fail-loud guard.** A MoE checkpoint's expert tensors are
+        // not in the dense mapping and would otherwise be silently skipped
+        // below, yielding a broken half-dense model. Detect MoE expert
+        // tensors and refuse to load instead. Dense checkpoints (no
+        // `experts.` / `block_sparse_moe` / `shared_expert` names) are
+        // unaffected.
+        let moe = crate::moe::detect_moe(reader.iter().map(|e| e.name));
+        if moe.is_moe {
+            return Err(LoaderError::MoeUnsupported(crate::moe::unsupported_message(&moe)));
+        }
+
         for entry in reader.iter() {
             let Some(mapping) = self.mapping.get(entry.name) else {
                 outcome.skipped.push(entry.name.to_string());
@@ -1114,6 +1125,12 @@ impl WeightMapper {
         satisfied_names: &mut std::collections::HashSet<String>,
     ) -> Result<ShardLoadOutcome, LoaderError> {
         let mut outcome = ShardLoadOutcome::default();
+
+        // **MOE-2 fail-loud guard** — see the residency-plan loader above.
+        let moe = crate::moe::detect_moe(reader.iter().map(|e| e.name));
+        if moe.is_moe {
+            return Err(LoaderError::MoeUnsupported(crate::moe::unsupported_message(&moe)));
+        }
 
         for entry in reader.iter() {
             let Some(mapping) = self.mapping.get(entry.name) else {
