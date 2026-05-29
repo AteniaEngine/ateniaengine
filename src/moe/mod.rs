@@ -24,11 +24,16 @@ pub mod detect;
 pub mod fixture;
 pub mod graph_op;
 pub mod layer;
+pub mod smoke;
 pub mod sparse;
 pub mod stack;
 pub mod validation;
 
 pub use binding::{build_real_layer, BindingShape, MoeBindingError, RealExpertTensorBinding};
+
+pub use smoke::{
+    discover_safetensors_files, LocalMoeCheckpoint, MinimalMoeConfig, MoeSmokeError,
+};
 
 pub use validation::{RealMoeCheckpointValidation, ValidationReport};
 
