@@ -26,8 +26,11 @@ pub mod graph_op;
 pub mod layer;
 pub mod sparse;
 pub mod stack;
+pub mod validation;
 
 pub use binding::{build_real_layer, BindingShape, MoeBindingError, RealExpertTensorBinding};
+
+pub use validation::{RealMoeCheckpointValidation, ValidationReport};
 
 pub use layer::{MoeConfigError, MoeLayerConfig, MoeLayerError, RealMoeLayer};
 
