@@ -121,6 +121,17 @@ pub enum NodeType {
         perm: Vec<usize>,
     },
     IndexSelect,
+    /// **MOE-5** — experimental fused sparse-MoE reference op (CPU-only,
+    /// synthetic fixture only, NOT production MoE). Carries only `Eq`-safe
+    /// ids: `layer_id` indexes the experimental layer registry in
+    /// [`crate::moe::graph_op`], `k` is the top-k expert count. The forward
+    /// delegates to `MoeDenseLayer::forward_sparse` (MOE-4). Takes one
+    /// input (the token vector). Not differentiable (no backward). See
+    /// `docs/HANDOFF_MOE_5.md`.
+    MoeSparseReference {
+        layer_id: u32,
+        k: u32,
+    },
     Reshape {
         target: Vec<isize>,
     },

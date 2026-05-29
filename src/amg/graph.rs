@@ -1685,6 +1685,9 @@ impl Graph {
                 | NodeType::RoPE { .. }
                 | NodeType::LogSoftmax
                 | NodeType::Output => in_len == 1,
+                // MOE-5: experimental fused sparse-MoE reference op takes
+                // the single token-vector input.
+                NodeType::MoeSparseReference { .. } => in_len == 1,
                 NodeType::IndexSelect => in_len == 2,
                 NodeType::Linear => in_len == 2 || in_len == 3,
                 NodeType::Activation(_) => in_len == 1,
@@ -5389,6 +5392,33 @@ impl Graph {
                             }),
                         });
                     }
+                }
+            }
+            // **MOE-5** — experimental fused sparse-MoE reference op.
+            // CPU-only, synthetic fixture only (registry-backed), NOT a
+            // production MoE path. Forward delegates to the certified
+            // `MoeDenseLayer::forward_sparse` (MOE-4). Inference-only: no
+            // backward op is recorded (the op is not differentiable here).
+            NodeType::MoeSparseReference { layer_id, k } => {
+                let inputs = self.nodes[node_id].inputs.clone();
+                if inputs.len() != 1 {
+                    // Inconsistent graph (artificial trace tests): skip.
+                    return;
+                }
+                let x_opt = self.nodes[inputs[0]].output.as_ref();
+                if let Some(mut x) = x_opt.cloned() {
+                    x.ensure_cpu()
+                        .expect("MoeSparseReference: input → Cpu materialisation failed");
+                    let x_slice = x.as_cpu_slice();
+                    let out_vec = crate::moe::graph_op::execute_sparse_reference(
+                        layer_id,
+                        x_slice,
+                        k as usize,
+                    )
+                    .expect("MoeSparseReference: sparse forward failed (unknown layer_id or bad k)");
+                    let out = crate::tensor::Tensor::new_cpu(vec![out_vec.len()], out_vec);
+                    self.nodes[node_id].set_output(out);
+                    // No backward: experimental inference-only op.
                 }
             }
             NodeType::Softmax => {

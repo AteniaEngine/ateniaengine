@@ -165,6 +165,15 @@ impl GraphBuilder {
         self.add_node(NodeType::Activation(ActType::GELU), vec![x_id])
     }
 
+    /// **MOE-5** — experimental fused sparse-MoE reference node. `x_id` is
+    /// the token-vector input; `layer_id` indexes a synthetic layer
+    /// previously registered via [`crate::moe::register_layer`]; `k` is the
+    /// top-k expert count. CPU-only, synthetic fixture only — not a
+    /// production MoE path.
+    pub fn moe_sparse_reference(&mut self, x_id: usize, layer_id: u32, k: u32) -> usize {
+        self.add_node(NodeType::MoeSparseReference { layer_id, k }, vec![x_id])
+    }
+
     /// Softmax along last dimension.
     pub fn softmax(&mut self, x_id: usize) -> usize {
         self.add_node(NodeType::Softmax, vec![x_id])

@@ -20,7 +20,10 @@
 pub mod dense;
 pub mod detect;
 pub mod fixture;
+pub mod graph_op;
 pub mod sparse;
+
+pub use graph_op::{execute_sparse_reference, get_layer, register_layer};
 
 pub use dense::{
     build_fixture_layer, softmax, MoeDenseError, MoeDenseExpert, MoeDenseLayer, MoeRouterOutput,
