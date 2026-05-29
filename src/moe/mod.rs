@@ -17,12 +17,15 @@
 //!
 //! See `docs/MOE_CERTIFICATION_SUBSTRATE.md` for the full analysis.
 
+pub mod binding;
 pub mod data_plane;
 pub mod dense;
 pub mod detect;
 pub mod fixture;
 pub mod graph_op;
 pub mod sparse;
+
+pub use binding::{build_real_layer, BindingShape, MoeBindingError, RealExpertTensorBinding};
 
 pub use data_plane::{ExpertTensors, MoeLayerMap, MoeTensorEntry, MoeWeightMap};
 
