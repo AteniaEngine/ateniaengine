@@ -208,6 +208,93 @@ fn result_table_renders_all_candidates() {
 }
 
 // ============================================================================
+// AQS-9 light wiring tests — runner + default grid + fake evaluator.
+// No model: confirms the runner/grid/capabilities/skip plumbing the heavy
+// test relies on, deterministically and in milliseconds.
+// ============================================================================
+
+mod aqs9_light {
+    use atenia_engine::quant::end_to_end::EndToEndEvalResult;
+    use atenia_engine::quant::runner::{
+        run_aqs_with_evaluator, AqsEvaluatorCapabilities, AqsRunnerConfig,
+    };
+    use atenia_engine::quant::search::{AqsCandidateSpec, AqsPolicyKind, AqsSearchConfig};
+
+    const BASE: Option<u64> = Some(2_260_729_856);
+
+    /// Real consolidated TinyLlama numbers, keyed by policy family — the
+    /// fake evaluator returns these so the light test mirrors what the
+    /// heavy test produces, without a model.
+    fn fake_eval(spec: &AqsCandidateSpec) -> EndToEndEvalResult {
+        let (max, argmax, mem) = match spec.kind {
+            AqsPolicyKind::Bf16 => (0.000063_f32, true, 2_260_729_856_u64),
+            AqsPolicyKind::PlainInt8 { .. } => (1.260771, false, 1_165_688_832),
+            AqsPolicyKind::Awq { .. } => (0.889217, true, 1_165_688_832),
+            AqsPolicyKind::Hybrid { .. } => (0.831786, false, 1_266_614_272),
+            AqsPolicyKind::Gptq { .. } => (1.405399, false, 1_167_265_792),
+        };
+        EndToEndEvalResult {
+            candidate_name: spec.name.clone(),
+            max_abs_diff: max,
+            mean_abs_diff: max * 0.1,
+            rmse: max * 0.15,
+            argmax_match: argmax,
+            memory_bytes: mem,
+        }
+    }
+
+    /// Default AQS-9 capabilities: absmax yes, matrix no → GPTQ skipped.
+    fn default_caps() -> AqsEvaluatorCapabilities {
+        AqsEvaluatorCapabilities {
+            activation_absmax: true,
+            activation_matrix: false,
+        }
+    }
+
+    #[test]
+    fn runner_default_skips_gptq_and_certifies_bf16() {
+        let cfg = AqsRunnerConfig::new(AqsSearchConfig::with_default_grid("tinyllama", BASE));
+        let out = run_aqs_with_evaluator(cfg, default_caps(), |s| Ok(fake_eval(s)));
+        // GPTQ skipped (needs matrix; capability off), no panic.
+        assert!(out.skipped.iter().any(|s| s.candidate_name.starts_with("gptq")));
+        assert_eq!(out.skipped.len(), 1);
+        // bf16 certified, awq useful lossy, recommendation = bf16.
+        assert_eq!(out.search_result.best_certified(), Some("bf16"));
+        assert!(out.search_result.best_useful_lossy().unwrap().starts_with("awq"));
+        assert_eq!(out.search_result.recommended_policy(), Some("bf16"));
+    }
+
+    #[test]
+    fn runner_manifest_from_output_is_draft() {
+        let cfg = AqsRunnerConfig::new(AqsSearchConfig::with_default_grid("tinyllama-1.1b", BASE));
+        let out = run_aqs_with_evaluator(cfg, default_caps(), |s| Ok(fake_eval(s)));
+        let m = out.search_result.manifest_draft();
+        assert!(m.contains("schema_version: \"3.0.0-draft\""));
+        assert!(m.contains("certified_policy: bf16"));
+        // AWQ never certified.
+        assert!(m.contains("policy: awq") || m.contains("policy: awq_g128"));
+    }
+
+    #[test]
+    fn runner_with_matrix_capability_evaluates_gptq() {
+        // Opt-in: matrix capability on → GPTQ is evaluated (not skipped).
+        let cfg = AqsRunnerConfig::new(AqsSearchConfig::with_default_grid("tinyllama", BASE));
+        let out = run_aqs_with_evaluator(cfg, AqsEvaluatorCapabilities::all(), |s| {
+            Ok(fake_eval(s))
+        });
+        assert!(out.skipped.is_empty());
+        assert_eq!(out.evaluated.len(), 7);
+        // gptq present but failed (argmax false) — never certified.
+        let gptq = out
+            .evaluated
+            .iter()
+            .find(|n| n.starts_with("gptq"))
+            .expect("gptq evaluated");
+        assert!(out.search_result.report.policy(gptq).is_some());
+    }
+}
+
+// ============================================================================
 // Heavy harness — real TinyLlama forward vs F64 fixture.
 // ============================================================================
 
@@ -661,6 +748,132 @@ mod heavy {
         );
         for r in &results {
             assert!(r.max_abs_diff.is_finite(), "{} drift must be finite", r.candidate_name);
+        }
+    }
+
+    // ====================================================================
+    // AQS-9 — the runner wired to the real TinyLlama evaluator.
+    //
+    // Single entry point: AqsRunnerConfig (default grid) → real evaluator
+    // callback → AQS-7 search → AQS-6 certification/manifest. GPTQ real is
+    // SKIPPED by default (its calibration matrix capability is off unless
+    // ATENIA_AQS_RUN_GPTQ_REAL=1, which would add ~7.8 h).
+    // ====================================================================
+
+    use atenia_engine::quant::runner::{
+        run_aqs_with_evaluator, AqsEvaluatorCapabilities, AqsRunnerConfig, AqsRunnerError,
+    };
+    use atenia_engine::quant::search::{AqsCandidateSpec, AqsSearchConfig};
+
+    #[test]
+    #[ignore = "requires TINYLLAMA_SAFETENSORS_PATH; slow (CPU F32 forward, GPTQ skipped by default)"]
+    fn aqs9_tinyllama_runner_produces_search_report() {
+        let Some((store, _names, config, runtime, vocab)) = load_tinyllama_cpu() else {
+            panic!("TINYLLAMA_SAFETENSORS_PATH not set");
+        };
+
+        // Whether to evaluate real GPTQ (≈7.8 h). Off by default.
+        let run_gptq_real = env::var("ATENIA_AQS_RUN_GPTQ_REAL").ok().as_deref() == Some("1");
+        let caps = AqsEvaluatorCapabilities {
+            activation_absmax: true,
+            activation_matrix: run_gptq_real,
+        };
+        eprintln!(
+            "[AQS-9] runner caps: absmax=true matrix={} (set ATENIA_AQS_RUN_GPTQ_REAL=1 for GPTQ real, ~7.8h)",
+            run_gptq_real
+        );
+
+        // One shared calibration pass, reused by every candidate.
+        eprintln!("[AQS-9] calibration pass ...");
+        let act = run_calibration(&store, &config, &runtime);
+        let absmax_map: HashMap<usize, Vec<f32>> =
+            act.iter().map(|(i, s)| (*i, s.absmax())).collect();
+        let matrix_map: HashMap<usize, (Vec<f32>, Vec<usize>)> = act
+            .iter()
+            .map(|(i, s)| (*i, (s.matrix.clone(), vec![s.samples(), s.k])))
+            .collect();
+        eprintln!("  captured {} activation matrices", act.len());
+
+        // Baseline memory for compression ratios: the BF16 footprint over
+        // eligible proj weights (Bf16Fallback reports 2 bytes/elem).
+        let baseline_mem = {
+            let bf16 = atenia_engine::quant::policy::Bf16Fallback;
+            policy_memory_total(&store, &bf16)
+        };
+
+        let search = AqsSearchConfig::with_default_grid("tinyllama-1.1b", Some(baseline_mem));
+        let runner_cfg = AqsRunnerConfig::new(search);
+
+        // Real evaluator callback: build the policy from the candidate,
+        // perturb a fresh store clone, run the forward, return the result.
+        let store_ref = &store;
+        let config_ref = &config;
+        let runtime_ref = &runtime;
+        let absmax_ref = &absmax_map;
+        let matrix_ref = &matrix_map;
+        let evaluator = |spec: &AqsCandidateSpec| -> Result<EndToEndEvalResult, AqsRunnerError> {
+            eprintln!("[AQS-9] evaluating `{}` ...", spec.name);
+            let policy = spec.build_policy();
+            let mut s = WeightStore {
+                params: store_ref.params.clone(),
+                names: store_ref.names.clone(),
+            };
+            let mem = policy_memory_total(&s, policy.as_ref());
+            let perturb = if spec.kind.needs_activation_matrix() {
+                s.perturb_all_proj_with_policy_matrix(policy.as_ref(), matrix_ref)
+            } else {
+                s.perturb_all_proj_with_policy(policy.as_ref(), absmax_ref)
+            };
+            perturb.map_err(|e| AqsRunnerError::EvaluationFailed(format!("{e}")))?;
+            let (max, mean, rmse, argmax) =
+                forward_drift(s, config_ref, runtime_ref, vocab);
+            Ok(EndToEndEvalResult {
+                candidate_name: spec.name.clone(),
+                max_abs_diff: max,
+                mean_abs_diff: mean,
+                rmse,
+                argmax_match: argmax,
+                memory_bytes: mem,
+            })
+        };
+
+        let out = run_aqs_with_evaluator(runner_cfg, caps, evaluator);
+
+        eprintln!("\n==================== AQS-9 runner search report ====================");
+        eprint!("{}", out.search_result.human_report());
+        eprintln!("-------------------- manifest draft --------------------");
+        eprint!("{}", out.search_result.manifest_draft());
+        eprintln!("--------------------------------------------------------");
+        eprintln!("evaluated: {:?}", out.evaluated);
+        eprintln!("skipped  : {:?}", out.skipped);
+        eprintln!("errors   : {:?}", out.errors);
+        eprintln!("====================================================================");
+
+        // Expected outcome (per the consolidated TinyLlama results).
+        assert_eq!(out.search_result.best_certified(), Some("bf16"));
+        assert_eq!(out.search_result.recommended_policy(), Some("bf16"));
+        let lossy = out
+            .search_result
+            .best_useful_lossy()
+            .expect("a useful-lossy candidate");
+        assert!(lossy.starts_with("awq"), "best useful lossy should be an AWQ variant, got {lossy}");
+        // AWQ must NOT be certified.
+        use atenia_engine::quant::certification::CertificationStatus;
+        assert_ne!(
+            out.search_result.report.policy(lossy).unwrap().status,
+            CertificationStatus::Adr004Certified
+        );
+        // Manifest draft is a draft.
+        assert!(out
+            .search_result
+            .manifest_draft()
+            .contains("schema_version: \"3.0.0-draft\""));
+        // GPTQ skipped unless explicitly enabled.
+        if !run_gptq_real {
+            assert!(
+                out.skipped.iter().any(|s| s.candidate_name.starts_with("gptq")),
+                "GPTQ real must be skipped by default"
+            );
         }
     }
 }
