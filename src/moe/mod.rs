@@ -23,9 +23,12 @@ pub mod dense;
 pub mod detect;
 pub mod fixture;
 pub mod graph_op;
+pub mod layer;
 pub mod sparse;
 
 pub use binding::{build_real_layer, BindingShape, MoeBindingError, RealExpertTensorBinding};
+
+pub use layer::{MoeConfigError, MoeLayerConfig, MoeLayerError, RealMoeLayer};
 
 pub use data_plane::{ExpertTensors, MoeLayerMap, MoeTensorEntry, MoeWeightMap};
 
