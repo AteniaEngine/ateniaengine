@@ -1693,6 +1693,7 @@ impl Graph {
                 NodeType::MoeTopK { .. } => in_len == 1,
                 NodeType::MoeSparseCombine { .. } => in_len == 2,
                 NodeType::MoeDynamicDispatch { .. } => in_len == 2,
+                NodeType::ConditionalExpert { .. } => in_len == 2,
                 NodeType::IndexSelect => in_len == 2,
                 NodeType::Linear => in_len == 2 || in_len == 3,
                 NodeType::Activation(_) => in_len == 1,
@@ -5528,6 +5529,35 @@ impl Graph {
                         vec![result.output.len()],
                         result.output,
                     );
+                    self.nodes[node_id].set_output(out);
+                }
+            }
+            // **MOE-8** — conditional expert node. Inputs:
+            // [input_vector, selection]. If this expert is selected, runs
+            // it (scaled by routing weight); otherwise skips the forward
+            // and outputs zeros. The scheduler drives one such node per
+            // expert; gating happens here, inside the executed step.
+            NodeType::ConditionalExpert { layer_id, expert_id, d_model } => {
+                let inputs = self.nodes[node_id].inputs.clone();
+                if inputs.len() != 2 {
+                    return;
+                }
+                let x_opt = self.nodes[inputs[0]].output.as_ref().cloned();
+                let sel_opt = self.nodes[inputs[1]].output.as_ref().cloned();
+                if let (Some(mut x), Some(mut sel)) = (x_opt, sel_opt) {
+                    x.ensure_cpu()
+                        .expect("ConditionalExpert: input → Cpu materialisation failed");
+                    sel.ensure_cpu()
+                        .expect("ConditionalExpert: selection → Cpu materialisation failed");
+                    let (contrib, _executed) = crate::moe::execute_conditional_expert(
+                        layer_id,
+                        expert_id,
+                        x.as_cpu_slice(),
+                        sel.as_cpu_slice(),
+                    )
+                    .expect("ConditionalExpert: failed (unknown layer or expert_id out of range)");
+                    let _ = d_model;
+                    let out = crate::tensor::Tensor::new_cpu(vec![contrib.len()], contrib);
                     self.nodes[node_id].set_output(out);
                 }
             }

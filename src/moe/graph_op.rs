@@ -134,6 +134,57 @@ pub fn execute_dynamic_dispatch(
     })
 }
 
+/// Look up the routing weight assigned to `expert_id` in a flat
+/// `[idx0, w0, idx1, w1, …]` selection tensor. Returns `Some(weight)` if
+/// the expert is selected, `None` otherwise.
+pub fn expert_weight_in_selection(selection: &[f32], expert_id: u32) -> Option<f32> {
+    let pairs = selection.len() / 2;
+    for p in 0..pairs {
+        if selection[p * 2] as u32 == expert_id {
+            return Some(selection[p * 2 + 1]);
+        }
+    }
+    None
+}
+
+/// **MOE-8** — conditional execution of a single expert. If `expert_id`
+/// appears in `selection`, the expert's `forward` runs and the result is
+/// scaled by its routing weight (`executed = true`). If it is **not**
+/// selected, the expert's `forward` is **never called** — a zero vector
+/// of length `d_model` is returned (`executed = false`). This is the
+/// gating primitive the scheduler drives, one node per expert.
+///
+/// Returns `(contribution[d_model], executed)`.
+pub fn execute_conditional_expert(
+    layer_id: u32,
+    expert_id: u32,
+    input: &[f32],
+    selection: &[f32],
+) -> Result<(Vec<f32>, bool), MoeSparseError> {
+    let layer = get_layer(layer_id).ok_or(MoeSparseError::Dense(
+        super::dense::MoeDenseError::NoExperts,
+    ))?;
+    let d_model = layer.d_model;
+    if (expert_id as usize) >= layer.num_experts() {
+        return Err(MoeSparseError::KExceedsExperts {
+            k: expert_id as usize + 1,
+            num_experts: layer.num_experts(),
+        });
+    }
+    match expert_weight_in_selection(selection, expert_id) {
+        Some(weight) => {
+            // Selected → actually run the expert.
+            let y = layer.experts[expert_id as usize].forward(input)?;
+            let scaled: Vec<f32> = y.into_iter().map(|v| v * weight).collect();
+            Ok((scaled, true))
+        }
+        None => {
+            // Not selected → skip the forward entirely; contribute zeros.
+            Ok((vec![0.0_f32; d_model], false))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -24,8 +24,8 @@ pub mod graph_op;
 pub mod sparse;
 
 pub use graph_op::{
-    execute_dynamic_dispatch, execute_sparse_reference, get_layer, register_layer,
-    DynamicDispatchOutput,
+    execute_conditional_expert, execute_dynamic_dispatch, execute_sparse_reference,
+    expert_weight_in_selection, get_layer, register_layer, DynamicDispatchOutput,
 };
 
 pub use dense::{

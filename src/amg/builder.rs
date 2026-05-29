@@ -221,6 +221,24 @@ impl GraphBuilder {
         )
     }
 
+    /// **MOE-8** — experimental conditional-expert node. Inputs:
+    /// `input_id` (model vector) and `selection_id` (from `moe_topk`).
+    /// Runs expert `expert_id` only if it is selected; outputs its
+    /// weighted contribution (or zeros). Experimental, CPU-only.
+    pub fn moe_conditional_expert(
+        &mut self,
+        input_id: usize,
+        selection_id: usize,
+        layer_id: u32,
+        expert_id: u32,
+        d_model: usize,
+    ) -> usize {
+        self.add_node(
+            NodeType::ConditionalExpert { layer_id, expert_id, d_model },
+            vec![input_id, selection_id],
+        )
+    }
+
     /// Softmax along last dimension.
     pub fn softmax(&mut self, x_id: usize) -> usize {
         self.add_node(NodeType::Softmax, vec![x_id])

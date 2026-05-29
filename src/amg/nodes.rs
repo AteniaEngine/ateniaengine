@@ -167,6 +167,18 @@ pub enum NodeType {
         d_model: usize,
         num_experts: usize,
     },
+    /// **MOE-8** — experimental conditional expert node (scheduler-aware
+    /// gating). Inputs: `[input_vector, selection]`. If `expert_id` is in
+    /// the `MoeTopK` selection, runs that expert and scales by its routing
+    /// weight; otherwise the expert's `forward` is skipped and a zero
+    /// contribution `[d_model]` is returned. One node per expert; a sum of
+    /// all expert nodes reconstructs the MoE output. CPU-only, synthetic
+    /// fixture only, not differentiable. See `docs/HANDOFF_MOE_8.md`.
+    ConditionalExpert {
+        layer_id: u32,
+        expert_id: u32,
+        d_model: usize,
+    },
     Reshape {
         target: Vec<isize>,
     },
