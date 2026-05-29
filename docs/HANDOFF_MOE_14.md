@@ -128,3 +128,52 @@ Local validation: `cargo test --lib --release -- --test-threads=1` →
 
 No loader load-path, Adapter Toolkit, CLI, generation, CUDA, ROCm, Metal,
 tier-planner, or graph changes. Fail-loud preserved.
+
+---
+
+## Real Local Smoke Runs (append-only, post-MOE-14)
+
+After MOE-14 landed, the opt-in smoke harness was run **manually, out of CI**
+against three real, tiny MoE checkpoints downloaded into a local directory
+(no model committed to the repo, no automatic download in CI). These are the
+verbatim results.
+
+| Checkpoint | Expert format | Result | Notes |
+|---|---|---|---|
+| `hf-internal-testing/tiny-random-Qwen2MoeForCausalLM` | packed/fused | **forward INCOMPLETE** | MoE detected (2 layers, shared experts); `config.json` parsed (experts=4, per_tok=2, hidden=64); `experts_detected=0`, `forward_pass_ok=false`, errors: "layer N: no experts" |
+| `hf-internal-testing/tiny-random-MixtralForCausalLM` | packed/fused | **forward INCOMPLETE** | same cause; experts stored as packed 3-D tensors the per-expert binding does not recognise |
+| `katuni4ka/tiny-random-qwen1.5-moe` | classic per-expert | **SMOKE PASS** | 4 layers, 32 experts, 4 shared experts, `d_model=32`, `forward_pass_ok=true` |
+
+### Expert formats observed
+
+- **Classic per-expert** (works today): one tensor per `(expert, projection)`:
+  - `model.layers.{L}.mlp.experts.{E}.gate_proj.weight`  `[d_ff, d_model]`
+  - `model.layers.{L}.mlp.experts.{E}.up_proj.weight`    `[d_ff, d_model]`
+  - `model.layers.{L}.mlp.experts.{E}.down_proj.weight`  `[d_model, d_ff]`
+- **Packed/fused** (detected but NOT yet assembled): all experts stacked into
+  3-D tensors, gate+up fused:
+  - `model.layers.{L}.mlp.experts.gate_up_proj`  e.g. `[num_experts, 2*d_ff, d_model]`
+  - `model.layers.{L}.mlp.experts.down_proj`     e.g. `[num_experts, d_model, d_ff]`
+  (observed on a tiny Mixtral as `gate_up_proj [4, 256, 64]`, `down_proj [4, 64, 128]`).
+
+### What this means
+
+- The classic per-expert path works against a **real** checkpoint end-to-end
+  (metadata → derived config → stack → finite forward).
+- Modern small MoE checkpoints from recent `transformers` versions use the
+  **packed/fused** expert representation. Atenia **detects** them as MoE
+  (the MOE-2 guard still fires) but **cannot assemble** them yet — the report
+  honestly records `forward INCOMPLETE` with a clear "no experts" error and
+  does not panic.
+- A `SMOKE PASS` means "the experimental MoE path read this checkpoint,
+  assembled a stack, and ran a finite forward". It does **NOT** mean full MoE
+  model support, numerical certification, or production readiness.
+- The **productive loader fail-loud is unchanged** — every one of these
+  checkpoints still refuses to load as a model through the normal path.
+
+### Conclusion
+
+**MOE-15 should target packed/fused experts**: extract per-expert
+gate/up/down projections from the 3-D `gate_up_proj` / `down_proj` tensors and
+feed them into the existing `MoeDenseExpert` / `RealMoeLayer` path, without
+disturbing the classic per-expert path that already passes.
