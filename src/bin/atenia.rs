@@ -278,6 +278,20 @@ enum Command {
     /// atenia quickstart --model tinyllama
     /// ```
     Quickstart(QuickstartArgs),
+
+    /// **AQS-10** — render an AQS certification report + manifest
+    /// draft from a pre-computed end-to-end results file.
+    ///
+    /// Experimental. This command does NOT load a model or run a
+    /// forward — AQS end-to-end certification needs a per-model F64
+    /// reference that only the end-to-end harness can produce. Feed it
+    /// that harness output:
+    ///
+    /// ```text
+    /// atenia search --results aqs-results.json --report
+    /// atenia search --results aqs-results.json --report --manifest
+    /// ```
+    Search(SearchArgs),
 }
 
 #[derive(clap::Args)]
@@ -505,6 +519,28 @@ struct QuickstartArgs {
     no_suggest: bool,
 }
 
+/// Arguments for `search` — the AQS-10 certification front-end.
+#[derive(clap::Args)]
+struct SearchArgs {
+    /// Path to a pre-computed AQS end-to-end results JSON file
+    /// (produced by the AQS end-to-end harness). Required.
+    #[arg(long, value_name = "FILE")]
+    results: Option<PathBuf>,
+
+    /// Print the human-readable certification report table.
+    #[arg(long)]
+    report: bool,
+
+    /// Print the experimental `3.0.0-draft` manifest.
+    #[arg(long)]
+    manifest: bool,
+
+    /// Reserved: opt into real GPTQ on a future model-driving path.
+    /// No effect on the results-file path.
+    #[arg(long)]
+    include_gptq: bool,
+}
+
 /// Arguments for `chat` — the interactive REPL.
 #[derive(clap::Args)]
 struct ChatArgs {
@@ -651,6 +687,14 @@ fn main() {
                     no_suggest: args.no_suggest,
                 },
             )
+        }
+        Command::Search(args) => {
+            atenia_engine::cli::search::run_search(atenia_engine::cli::search::SearchArgs {
+                results: args.results,
+                report: args.report,
+                manifest: args.manifest,
+                include_gptq: args.include_gptq,
+            })
         }
     });
 

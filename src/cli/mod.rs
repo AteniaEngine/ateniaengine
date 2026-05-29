@@ -22,6 +22,7 @@ pub mod error;
 pub mod exit;
 pub mod logging;
 pub mod quickstart;
+pub mod search;
 
 pub use error::CliError;
 pub use exit::CliExit;
