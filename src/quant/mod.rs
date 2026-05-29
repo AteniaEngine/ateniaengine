@@ -23,9 +23,15 @@ pub mod end_to_end;
 pub mod evaluator;
 pub mod gptq;
 pub mod policy;
+pub mod search;
 
 pub use certification::{
     AqsCertificationReport, AqsPolicyReport, CertificationStatus, ADR_004_GATE,
+};
+pub use search::{
+    default_candidate_grid, policy_for_kind, search_from_end_to_end_results,
+    search_tensor_local, AqsCandidateSpec, AqsLocalTensorRanking, AqsPolicyKind,
+    AqsSearchConfig, AqsSearchResult,
 };
 pub use end_to_end::{
     logit_drift_metrics, render_result_table, EndToEndEvalResult, PolicyEvalCandidate,
