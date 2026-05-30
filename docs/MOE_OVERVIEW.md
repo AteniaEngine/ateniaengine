@@ -199,3 +199,18 @@ and integration, not more infrastructure**:
 
 Until those land, MoE remains **experimental and CPU-only**, and the
 productive loader continues to fail loud.
+
+## Full transformer path audit (MOE-FULL-1)
+
+`docs/MOE_FULL_PATH_AUDIT.md` maps what it takes for a MoE family to run the
+*exact same full path* a dense family runs today. Key findings: ~70% of the
+dense full-path stack (tokenizer, embeddings, attention, norms, residuals,
+lm_head, generation, KV cache, graph executor, WeightStore) is **reusable
+as-is**; the gaps are concentrated in 4 areas — MoE family adapter, MoE config
+fields, MoE-block-as-graph bridge, and loader opt-in/fail-loud lift. The dense
+path is **graph-based** (`src/nn/llama/builder.rs`) while the certified MoE
+block is **imperative** (`src/moe/`), so the pivotal design choice is how the
+MoE block enters the graph. Recommended first full-path family: **Mixtral** (a
+dense Mistral decoder + one MoE FFN). Proposed incremental roadmap:
+MOE-FULL-2 (config) → 3 (adapter, gated load) → 4 (MoE graph op) → 5 (one
+decoder layer) → 6 (full tiny Mixtral + generation) → 7 (large-MoE residency).
