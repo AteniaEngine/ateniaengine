@@ -266,3 +266,33 @@ carries deliberate, documented limitations that are debt rather than bugs:
    end-to-end harness assume dense `[K_in, N_out]` linear weights; a
    mixture-of-experts path (currently out of scope, no code) would need the
    policy/evaluator surface revisited.
+
+## MoE Production Blockers
+
+The MoE experimental track (MOE-0 → MOE-18, closed MOE-19) built a complete
+CPU-only, opt-in compute + data plane in `src/moe/` and validated tiny real
+checkpoints to ~1e-10 HuggingFace parity, but **MoE is not production**: the
+productive loader still fails loud and nothing is wired into
+runtime/Adapter-Toolkit/CLI. The exact blockers to lift before any MoE family
+can ship (full list + evidence in `docs/MOE_OVERVIEW.md`):
+
+1. **Adapter Toolkit MoE spec** — no MoE family/tensor descriptors exist
+   (experts, top-k, shared-expert, packed-vs-classic, `norm_topk_prob`). ATK is
+   untouched by MOE-0..19 by design.
+2. **Loader opt-in / fail-loud lift** — the productive loader refuses MoE
+   (`LoaderError::MoeUnsupported`); a validated, gated path is needed to carry
+   MoE weights instead.
+3. **Full transformer path** — only the MoE block executes today; attention,
+   norms, embeddings, lm_head, KV cache, and multi-token decode around the MoE
+   layer are absent.
+4. **Config parsing** — convention/topology is inferred from tensor-name
+   metadata only (MOE-18); real `config.json` parsing must confirm/override it.
+5. **Large-model memory strategy** — the harness materialises all experts in
+   f32, so only small checkpoints are feasible; real MoE (14B–47B+) needs
+   streaming / tiering.
+6. **Certification for real full-family models** — ADR-004 full-F64 reference is
+   infeasible at MoE scale; needs the MOE-1 partial/sub-reference methodology
+   (`docs/MOE_CERTIFICATION_SUBSTRATE.md`).
+
+Until these land, MoE stays experimental and CPU-only, and the productive
+loader continues to fail loud on MoE checkpoints.

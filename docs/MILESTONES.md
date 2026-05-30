@@ -1526,6 +1526,32 @@ plus the `aqs4_end_to_end_test` integration suite (light CI tests + an
 
 ---
 
+## MoE — Mixture-of-Experts experimental track (MOE-0 → MOE-18, closed MOE-19)
+
+A self-contained, **CPU-only, opt-in, experimental** MoE compute + data plane
+in `src/moe/`. Index only — full detail in `docs/MOE_OVERVIEW.md` and the
+per-milestone `docs/HANDOFF_MOE_2.md` … `HANDOFF_MOE_18.md`.
+
+- **MOE-0..2** — architecture audit; certification substrate
+  (`docs/MOE_CERTIFICATION_SUBSTRATE.md`); tensor detection + loader fail-loud.
+- **MOE-3..8** — dense oracle; sparse reference (top-k, 1e-5 vs oracle); fused
+  + primitive graph ops; dynamic dispatch; conditional expert subgraphs.
+- **MOE-9..12** — real metadata plane; real tensor binding; real layer
+  assembly (router + experts + optional shared); multi-layer real stack.
+- **MOE-13..14** — checkpoint validation harness; opt-in `#[ignore]` real
+  local smoke harness.
+- **MOE-15** — packed/fused expert support (3-D `gate_up_proj`/`down_proj`).
+- **MOE-16..18** — numerical equivalence (f64 reference, ~1e-10); HF
+  convention parity (`norm_topk_prob`, sigmoid-gated shared expert); automatic
+  convention selection.
+
+**Result.** Three tiny **real** checkpoints (Qwen1.5-MoE, Qwen2-MoE, Mixtral)
+run end-to-end with ~1e-10 HuggingFace numerical parity. The **productive
+loader still fails loud** on MoE; MoE is **not** integrated into the
+loader/runtime/Adapter Toolkit/CLI and **no MoE family is production-supported**.
+98 MoE integration tests across 15 files; the track is closed pending family
+certification (not more infrastructure).
+
 ## Beyond v20
 
 The roadmap horizons (v21/M12 production hardening → v22 Intel iGPU → v23 AMD

@@ -6,6 +6,30 @@ This roadmap communicates scope and priority, not calendar commitments. Versions
 
 ---
 
+## MoE Experimental Track Result (MOE-0 → MOE-18, closed MOE-19)
+
+The Mixture-of-Experts experimental track is **complete**. See
+[docs/MOE_OVERVIEW.md](./docs/MOE_OVERVIEW.md) for the full consolidation.
+
+- **Experimental track complete.** A full CPU-only, opt-in MoE compute + data
+  plane lives in `src/moe/`: detection + fail-loud, classic and packed/fused
+  expert binding, sparse execution, graph ops, real layer/stack assembly,
+  validation + smoke harnesses, numerical metrics, and HF convention parity
+  with automatic selection.
+- **Real tiny checkpoints validated.** Qwen1.5-MoE, Qwen2-MoE and Mixtral tiny
+  real checkpoints run end-to-end; numerical parity with HuggingFace is
+  ~1e-10 on the layer-0 MoE block (argmax-matching).
+- **Production support NOT yet enabled.** MoE is not wired into the productive
+  loader/runtime/Adapter Toolkit/CLI; the loader still **fails loud** on MoE
+  checkpoints. No MoE family is production-supported.
+- **Next phase = certification, not infrastructure.** The remaining work is
+  family certification + integration (Adapter Toolkit MoE spec, fail-loud lift
+  behind a validated path, full transformer path, config parsing, large-model
+  memory strategy), not more experimental plumbing. The exact blocker list is
+  in `docs/MOE_OVERVIEW.md`.
+
+---
+
 ## Product vision
 
 > **Atenia runs any model on any modest hardware, as fast as the best engines, with correctness certified and audited per checkpoint.**

@@ -215,3 +215,22 @@ claim:
   per-family validation sections.
 - `docs/ADAPTER_TOOLKIT_V2.md` — the declarative adapter toolkit
   built on top of the validated v1 family adapters.
+
+## MoE families — experimental validation only (not product-certified)
+
+The Mixture-of-Experts experimental track (MOE-0 → MOE-18, closed MOE-19)
+validated **tiny** MoE checkpoints through an isolated, CPU-only, opt-in path —
+this is **not** family mastery and **not** product certification.
+
+- **Validated experimentally** (layer-0 MoE block, ~1e-10 HuggingFace
+  numerical parity, argmax-matching):
+  - `katuni4ka/tiny-random-qwen1.5-moe` (classic per-expert + shared expert)
+  - `hf-internal-testing/tiny-random-Qwen2MoeForCausalLM` (packed experts)
+  - `hf-internal-testing/tiny-random-MixtralForCausalLM` (packed experts)
+- **Not product-certified.** These are tiny random-weight test checkpoints, not
+  real full models. No end-to-end generation, no full transformer path, no
+  numcert manifest. The productive loader still **fails loud** on MoE.
+- **Future certification candidates.** Qwen1.5-MoE-A2.7B / Qwen2-MoE and
+  Mixtral 8x7B are the natural first targets once the Adapter Toolkit MoE spec,
+  full transformer path, and a large-model memory strategy land. See
+  `docs/MOE_OVERVIEW.md` for the exact production-blocker list.

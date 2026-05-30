@@ -53,7 +53,7 @@ locked by regression tests.
   no longer branches on `arch`. The execution core is fully
   family-agnostic for both config and weight mapping.
 - **Determinism.** Greedy generation is reproducible bit-exact (D67 fixture);
-  the lib test suite (628 tests) is green.
+  the lib test suite (726 tests passing, 1 ignored) is green.
 - **CI.** A minimal GitHub Actions workflow runs on push / PR to `main`
   with **two blocking jobs**: a `cuda-toolkit` job (mirrors the
   locally-validated environment; no GPU, device tests auto-skip) running
@@ -85,7 +85,7 @@ locked by regression tests.
   / `#[link]` block gated `#[cfg(atenia_cuda)]` with
   identical-signature `#[cfg(not(atenia_cuda))]` stubs;
   `cuda_available()` is `false` without the backend). The CUDA build is
-  byte-identical (full lib suite, currently 628 tests). Enforced by the
+  byte-identical (full lib suite, currently 726 tests + 1 ignored). Enforced by the
   now-blocking `cpu-only` CI job (CPU-5). Not a multi-vendor compute
   backend — see *Single vendor* below.
 - **Phi-3.5 GGUF end-to-end (closed).** `Phi-3.5-mini-instruct`
@@ -446,6 +446,17 @@ profile. Operators opt in and accept the profile.
   ADR-004-certified; AWQ (α=0.25) is the best *useful-lossy* option; GPTQ
   (surrogate and real) did not beat the weight-only plateau. ~93 of the 628
   lib tests cover AQS. Full write-up: [AQS_OVERVIEW.md](./AQS_OVERVIEW.md).
+- **MoE — Mixture-of-Experts experimental track** (MOE-0 → MOE-18, closed
+  MOE-19). An isolated, **CPU-only, opt-in, experimental** compute + data plane
+  in `src/moe/`: detect + fail-loud, classic and packed/fused expert binding,
+  sparse execution, graph ops, real layer/stack assembly, validation + smoke
+  harnesses, numerical metrics, and HF convention parity with automatic
+  selection. Three tiny **real** checkpoints (Qwen1.5-MoE, Qwen2-MoE, Mixtral)
+  run end-to-end; numerical parity with HuggingFace is ~1e-10 on the layer-0
+  MoE block. The **productive loader still fails loud** on MoE checkpoints —
+  MoE is **not** wired into the loader/runtime/Adapter Toolkit/CLI and **no MoE
+  family is production-supported**. Full write-up:
+  [MOE_OVERVIEW.md](./MOE_OVERVIEW.md).
 
 ## Scaffolding / known limitations
 

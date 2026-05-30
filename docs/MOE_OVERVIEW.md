@@ -1,0 +1,184 @@
+# MoE Overview — Experimental Track (MOE-0 → MOE-18)
+
+This document consolidates Atenia's Mixture-of-Experts (MoE) work and **closes
+the experimental track** (MOE-19). It is the single entry point for "what MoE
+is in Atenia today, what is proven, and what blocks production".
+
+> **One-sentence status.** Atenia has a complete, numerically-validated,
+> **experimental, CPU-only, opt-in** MoE compute + data plane that runs and
+> matches HuggingFace on tiny real checkpoints — but MoE is **not** wired into
+> the productive loader/runtime, and the productive loader still **fails loud**
+> on MoE checkpoints. No MoE family is production-supported.
+
+## Architecture
+
+All MoE code lives in `src/moe/` and is reachable only by tests / explicit
+opt-in callers. The productive loader, runtime, graph scheduler, Adapter
+Toolkit, CLI and generation paths are untouched.
+
+```
+                checkpoint (safetensors, real or fixture)
+                          │  (name, shape) listing
+                          ▼
+   detect.rs ── classify tensor names ──► fail-loud guard (loader refuses MoE)
+                          │
+                          ▼
+   data_plane.rs ── MoeWeightMap (router / experts / shared / packed) metadata
+                          │
+                          ▼
+   binding.rs ── resolve real bytes ──► MoeDenseExpert
+                 (classic per-expert  OR  packed/fused gate_up+down)
+                          │
+                          ▼
+   layer.rs ── RealMoeLayer (router + routed experts + optional shared)
+                 forward / forward_with(convention) / forward_auto
+                          │
+                          ▼
+   stack.rs ── RealMoeStack (sequential multi-layer composition)
+                          │
+                          ▼
+   validation.rs / smoke.rs / numerical.rs
+       metadata→config→stack→forward + metrics vs reference
+```
+
+Supporting modules: `dense.rs` (dense oracle + SwiGLU expert), `sparse.rs`
+(top-k routing + sparse forward, renormalise flag), `fixture.rs` (MOE-1
+certification substrate), `graph_op.rs` (fused/primitive/dynamic/conditional
+graph ops over a process-global registry), `convention.rs` (auto convention
+selection).
+
+## Milestone index (MOE-0 → MOE-18)
+
+| # | Milestone | Outcome |
+|---|---|---|
+| MOE-0 | Architecture audit | Data plane ~ready; compute plane was the blocker |
+| MOE-1 | Certification substrate | `FixtureMoESpec`, F64-strategy model (`docs/MOE_CERTIFICATION_SUBSTRATE.md`) |
+| MOE-2 | Detect + fail-loud | `detect_moe` + `LoaderError::MoeUnsupported` (loader refuses MoE) |
+| MOE-3 | Dense oracle | All-experts reference forward (`MoeDenseLayer`) |
+| MOE-4 | Sparse reference | top-k + renormalise, pinned to the dense oracle (1e-5) |
+| MOE-5 | Fused graph op | `NodeType::MoeSparseReference` + layer registry |
+| MOE-6 | Primitive graph ops | router softmax / top-k / combine nodes |
+| MOE-7 | Dynamic dispatch | execute only selected experts |
+| MOE-8 | Conditional subgraphs | per-expert conditional execution |
+| MOE-9 | Real metadata plane | `MoeWeightMap` from real `(name, shape)` |
+| MOE-10 | Real tensor binding | real bytes → `MoeDenseExpert`, real sparse forward |
+| MOE-11 | Real layer assembly | router + experts + optional shared expert |
+| MOE-12 | Multi-layer stack | sequential `RealMoeStack` |
+| MOE-13 | Checkpoint validation harness | metadata→config→stack→forward→report |
+| MOE-14 | Opt-in real local smoke | `#[ignore]` env-gated smoke against a local checkpoint |
+| MOE-15 | Packed expert support | 3-D `gate_up_proj`/`down_proj` split into per-expert |
+| MOE-16 | Numerical equivalence | f64 reference metrics (`max_abs_diff`/rmse/argmax) |
+| MOE-17 | HF convention parity | `norm_topk_prob` + sigmoid-gated shared expert (opt-in) |
+| MOE-18 | Automatic convention selection | resolve convention from `shared_expert_gate` signal |
+
+Per-milestone detail: `docs/HANDOFF_MOE_2.md` … `docs/HANDOFF_MOE_18.md`.
+
+## Real results
+
+Three tiny **real** MoE checkpoints (downloaded locally, not committed; only
+extracted layer-0 reference fixtures are committed) run end-to-end through the
+experimental path:
+
+| Checkpoint | Expert format | Shared expert | Smoke (MOE-14) |
+|---|---|---|---|
+| `katuni4ka/tiny-random-qwen1.5-moe` | classic per-expert | yes (+gate) | SMOKE PASS |
+| `hf-internal-testing/tiny-random-Qwen2MoeForCausalLM` | packed/fused | yes (+gate) | SMOKE PASS (after MOE-15) |
+| `hf-internal-testing/tiny-random-MixtralForCausalLM` | packed/fused | no | SMOKE PASS (after MOE-15) |
+
+"SMOKE PASS" = the experimental path discovered the shards, built a
+`MoeWeightMap`, assembled a stack, and ran a finite forward. It does **not**
+mean full-model support.
+
+## Numerical results (MOE-16/17/18)
+
+Layer-0 MoE block, Atenia vs an f64 reference, argmax matched in all cases:
+
+| Model | vs Atenia-op f64 (primary) | vs HuggingFace f64 (parity) |
+|---|---|---|
+| qwen15_moe | 5.8e-11 | 2.9e-11 (HF convention) |
+| qwen2_moe | 8.7e-11 | 5.8e-11 (HF convention) |
+| mixtral | 1.2e-10 | 1.2e-10 (Atenia convention) |
+
+`forward_auto` (MOE-18) reproduces these by resolving the convention from the
+`shared_expert_gate` metadata signal — no caller input, no math change.
+
+## Supported formats
+
+- **Classic per-expert**: `…experts.{E}.{gate,up,down}_proj.weight` (Qwen-MoE)
+  and `…block_sparse_moe.experts.{E}.{w1,w3,w2}.weight` (Mixtral classic).
+- **Packed/fused**: `…experts.gate_up_proj` (3-D `[ne, 2*d_ff, d_model]`, gate
+  first half / up second) + `…experts.down_proj` (3-D `[ne, d_model, d_ff]`).
+
+## Supported conventions
+
+- **Atenia / Mixtral**: renormalise top-k weights to sum 1; shared expert (if
+  any) added ungated. Default.
+- **HuggingFace Qwen**: no renormalisation (`norm_topk_prob = false`); shared
+  expert scaled by `sigmoid(shared_expert_gate · x)`. Opt-in / auto-resolved.
+
+## Limits (what is explicitly NOT done)
+
+- **No production MoE support** for any family. The experimental path is the
+  only way MoE executes.
+- **Fail-loud still active**: the productive loader refuses every MoE
+  checkpoint (`LoaderError::MoeUnsupported`); MOE-1..18 never lifted it.
+- **No Adapter Toolkit integration**, **no CLI integration**, **no
+  generation** wiring.
+- **No full transformer path**: only the MoE block is executed — no attention,
+  norms, embeddings, lm_head, KV cache, or multi-token decode.
+- **No config.json parsing** in the productive sense (convention is inferred
+  from tensor-name metadata only).
+- **No large-model execution**: the harness materialises all experts in f32,
+  so only small checkpoints are feasible today.
+
+## Production readiness
+
+| Area | Status | Evidence | Blocker to production |
+|---|---|---|---|
+| Tensor detection | ✅ Done | `detect.rs`, `moe_loader_failloud_test.rs` | — |
+| Data plane | ✅ Done | `data_plane.rs`, `moe_data_plane_test.rs` | — |
+| Expert binding (classic + packed) | ✅ Done (experimental) | `binding.rs`, `moe_real_binding_test.rs`, `moe_packed_experts_test.rs` | not on productive load path |
+| Sparse execution | ✅ Done (experimental) | `sparse.rs`, `moe_real_layer_test.rs` | not wired to runtime |
+| Graph ops | ✅ Done (experimental) | `graph_op.rs`, `moe_graph_op_test.rs`, `moe_primitive_ops_test.rs` | uses process-global registry, not the scheduler |
+| Conditional dispatch | ✅ Done (experimental) | `moe_dynamic_dispatch_test.rs`, `moe_conditional_expert_test.rs` | not wired to runtime |
+| Packed experts | ✅ Done (experimental) | MOE-15, `moe_packed_experts_test.rs` | layout assumed (gate-first), not config-confirmed |
+| HF parity | ✅ Validated | MOE-16/17, `moe_numerical_equivalence_test.rs`, `moe_hf_convention_test.rs` | tiny checkpoints only |
+| Convention selection | ✅ Done (experimental) | MOE-18, `moe_auto_convention_test.rs` | name-heuristic, not config-validated |
+| Adapter Toolkit | ❌ Not integrated | — | **BLOCKER**: ATK has no MoE family/tensor spec |
+| Product loader | ❌ Fail-loud | `weight_mapper.rs` guard | **BLOCKER**: must lift fail-loud behind a validated, opt-in path |
+| CLI | ❌ Not integrated | — | **BLOCKER**: no MoE entry point |
+| Full transformer | ❌ Not implemented | only MoE block runs | **BLOCKER**: no attention/norms/embeddings/KV cache around the MoE layer |
+| Certification (real full models) | ❌ Not done | tiny smoke only | **BLOCKER**: ADR-004 F64 reference infeasible for full MoE (`docs/MOE_CERTIFICATION_SUBSTRATE.md`) |
+
+## Production blockers (exact list)
+
+1. **Adapter Toolkit MoE spec** — family/tensor descriptors for Qwen-MoE /
+   Mixtral / DeepSeek-MoE (config: experts, top-k, shared-expert, packed-vs-
+   classic, `norm_topk_prob`).
+2. **Loader opt-in / fail-loud lift** — a validated, gated path that lets the
+   productive loader carry MoE weights instead of refusing them.
+3. **Full transformer path** — attention + norms + embeddings + lm_head +
+   KV cache around the MoE layer; multi-token decode.
+4. **Config parsing** — real `config.json` topology to confirm/override the
+   tensor-name convention heuristic.
+5. **Large-model memory strategy** — the current harness materialises all
+   experts in f32; real MoE (14B–47B+) needs streaming / tiering.
+6. **Certification for real full-family models** — an ADR-004-compatible
+   reference strategy for full MoE checkpoints (full F64 is infeasible at
+   scale; needs the partial/sub-reference methodology from MOE-1).
+
+## Minimal experimental → production plan
+
+The experimental infrastructure is complete; the next phase is **certification
+and integration, not more infrastructure**:
+
+1. Define the Adapter Toolkit MoE family/tensor spec (blocker 1).
+2. Wire the MoE block into the full transformer path behind an opt-in flag
+   (blocker 3) and lift fail-loud only for that validated path (blocker 2).
+3. Parse config to drive convention + topology (blocker 4).
+4. Certify one real small-but-full MoE end-to-end with the MOE-1 partial-F64
+   strategy (blocker 6), then add a memory/tiering strategy for larger ones
+   (blocker 5).
+
+Until those land, MoE remains **experimental and CPU-only**, and the
+productive loader continues to fail loud.
