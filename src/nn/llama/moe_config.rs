@@ -30,7 +30,7 @@ use serde_json::Value;
 /// Normalized MoE configuration parsed from a `config.json`. Every routed/
 /// expert field is optional and tolerant of absence — a dense model produces
 /// an all-empty `MoeConfig` (`is_moe() == false`).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct MoeConfig {
     /// Number of routed experts (normalized from `num_experts` /
     /// `num_local_experts` / `n_routed_experts`).
