@@ -178,10 +178,14 @@ an otherwise proven decoder.
 No massive rewrites. Each step is independently testable and keeps fail-loud
 active until the very end.
 
-- **MOE-FULL-2 — MoE config fields (parse-only).** Extend `LlamaConfig` (or a
-  sidecar) to parse `num_local_experts`/`num_experts`, `num_experts_per_tok`,
-  shared-expert presence, `norm_topk_prob`. No execution change; unit-tested
-  against the tiny Mixtral/Qwen configs. Fail-loud unchanged.
+- **MOE-FULL-2 — MoE config fields (parse-only). ✅ DONE** (see
+  `docs/HANDOFF_MOE_FULL_2.md`). Implemented as a decoupled sidecar
+  `src/nn/llama/moe_config.rs::MoeConfig` (NOT folded into `LlamaConfig`, so
+  dense parsing is untouched). Normalizes `num_experts`/`num_local_experts`/
+  `n_routed_experts`, `num_experts_per_tok(en)`, shared-expert presence,
+  `norm_topk_prob`, expert FFN sizes. 12 unit tests; Mixtral / Qwen2-MoE /
+  Qwen3-MoE / DeepSeek configs detected, dense stays non-MoE. Inert: no
+  productive path consumes it; fail-loud unchanged.
 
 - **MOE-FULL-3 — Mixtral adapter + tensor spec (load-only, gated).** Add a
   Mixtral family adapter + `FamilyTensorSpec` for `block_sparse_moe` /
