@@ -14,6 +14,8 @@
 pub mod builder;
 pub mod builder_shared;
 pub mod config;
+/// **MOE-FULL-2** — parse-only MoE config fields (inert; no productive use).
+pub mod moe_config;
 pub mod gemma2;
 pub mod gemma3;
 pub mod generator;

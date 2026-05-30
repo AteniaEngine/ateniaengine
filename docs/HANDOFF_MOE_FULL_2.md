@@ -79,14 +79,14 @@ the default loader keeps failing loud until MOE-FULL-6.
 
 ## Tests
 
-`src/nn/llama/moe_config.rs` — 12 unit tests: dense stays non-MoE (Qwen +
+`src/nn/llama/moe_config.rs` — 11 unit tests: dense stays non-MoE (Qwen +
 Mistral), Mixtral/Qwen2-MoE/Qwen3-MoE/DeepSeek detection, experts-per-token +
-num-experts + expert-intermediate-size alias normalization, `norm_topk_prob`
-parsing, shared-expert fields, missing fields safe, top-k clamp, invalid JSON
-errors.
+num-experts + expert-intermediate-size alias normalization (which also covers
+`norm_topk_prob` and shared-expert field parsing in the family-detection
+tests), missing fields safe, top-k clamp, invalid JSON errors.
 
 Local validation: `cargo test --lib --release -- --test-threads=1` →
-**739 passed / 0 failed / 1 ignored** (was 727; +12). MoE config suite: 12/12.
+**738 passed / 0 failed / 1 ignored** (was 727; +11). MoE config suite: 11/11.
 
 ## Files modified
 
