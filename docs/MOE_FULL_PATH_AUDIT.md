@@ -183,16 +183,21 @@ active until the very end.
   `src/nn/llama/moe_config.rs::MoeConfig` (NOT folded into `LlamaConfig`, so
   dense parsing is untouched). Normalizes `num_experts`/`num_local_experts`/
   `n_routed_experts`, `num_experts_per_tok(en)`, shared-expert presence,
-  `norm_topk_prob`, expert FFN sizes. 12 unit tests; Mixtral / Qwen2-MoE /
+  `norm_topk_prob`, expert FFN sizes. 11 unit tests; Mixtral / Qwen2-MoE /
   Qwen3-MoE / DeepSeek configs detected, dense stays non-MoE. Inert: no
   productive path consumes it; fail-loud unchanged.
 
-- **MOE-FULL-3 — Mixtral adapter + tensor spec (load-only, gated).** Add a
-  Mixtral family adapter + `FamilyTensorSpec` for `block_sparse_moe` /
-  `experts.{E}.w1/w3/w2` / packed names, behind an explicit opt-in flag. The
-  loader can *map* MoE tensors into a store without refusing — but only under
-  the flag; default still fails loud. Verified by loading tiny Mixtral weights
-  into a `WeightStore` and checking shapes.
+- **MOE-FULL-3 — Mixtral adapter + tensor spec (load-only). ✅ DONE** (see
+  `docs/HANDOFF_MOE_FULL_3.md`). Implemented as a metadata-only adapter in the
+  experimental sandbox `src/moe/mixtral_adapter.rs` (NOT the productive
+  `src/model_adapters/` registry, so it cannot enable execution and fail-loud
+  stays active). `MixtralAdapter::detect_family` + `recognize` build
+  `MixtralMetadata` (layout packed/classic, tensor spec, expert count) from a
+  `(name, shape)` listing, reusing `detect` / `data_plane` / `binding` /
+  `MoeConfig`. 6 unit tests; both real Mixtral layouts recognized, dense
+  unaffected, missing-router errors loud. No weight bytes loaded, no graph.
+  (Note: deferred the `WeightStore`-load step to MOE-FULL-4/5; this milestone
+  is recognition + tensor spec only, which is the load-only contract.)
 
 - **MOE-FULL-4 — MoE block as a graph op.** Expose the certified `RealMoeLayer`
   forward as a single AMG node (a graph custom-op wrapping the imperative

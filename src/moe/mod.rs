@@ -25,6 +25,8 @@ pub mod detect;
 pub mod fixture;
 pub mod graph_op;
 pub mod layer;
+/// **MOE-FULL-3** — experimental Mixtral family adapter (load-only metadata).
+pub mod mixtral_adapter;
 pub mod numerical;
 pub mod smoke;
 pub mod sparse;
@@ -43,6 +45,10 @@ pub use smoke::{
 };
 
 pub use validation::{RealMoeCheckpointValidation, ValidationReport};
+
+pub use mixtral_adapter::{
+    MixtralAdapter, MixtralAdapterError, MixtralExpertLayout, MixtralMetadata, MixtralTensorSpec,
+};
 
 pub use layer::{MoeConfigError, MoeLayerConfig, MoeLayerError, RealMoeLayer};
 
