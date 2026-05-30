@@ -236,6 +236,16 @@ this is **not** family mastery and **not** product certification.
   no-shared, both `norm_topk_prob` modes and both router namings. **Not**
   product-certified (no real full model, no full transformer, fail-loud still
   active).
+- **Mixtral family — partially certified (experimental)** via
+  **MIXTRAL-CERT-1** (`docs/HANDOFF_MIXTRAL_CERT_1.md`): two real Mixtral
+  checkpoints certified for MoE-block numerical parity with HuggingFace under
+  the Atenia convention — `tiny-random-Mixtral` (packed, 4 experts, 1.164e-10,
+  committed CI fixture) and `TitanML/tiny-mixtral` (classic
+  `block_sparse_moe.w1/w3/w2`, 8 experts, d_model 1024, 1.49e-8, local-only —
+  ~352 MB fixture too large to commit). Both on-disk Mixtral layouts validated
+  end-to-end on real data; no `src/` changes needed. **Not** product-certified
+  (no Mixtral-8x7B, no full transformer, fail-loud active). No MoE GGUF support
+  (gap → MIXTRAL-GGUF-1).
 - **Not product-certified.** These are tiny random-weight test checkpoints, not
   real full models. No end-to-end generation, no full transformer path, no
   numcert manifest. The productive loader still **fails loud** on MoE.

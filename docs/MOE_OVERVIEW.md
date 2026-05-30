@@ -93,6 +93,15 @@ HuggingFace ~1e-10 across classic + packed experts, shared / no-shared, both
 `norm_topk_prob` modes, both router namings (`mlp.gate` and Qwen3's
 `mlp.router`). Not product-certified; fail-loud still active.
 
+**Mixtral family certification** (`docs/HANDOFF_MIXTRAL_CERT_1.md`,
+MIXTRAL-CERT-1): two real Mixtral checkpoints **partially certified
+(experimental)** under the Atenia convention — `tiny-random-Mixtral` (packed,
+4 experts, 1.164e-10, committed) and `TitanML/tiny-mixtral` (classic
+`block_sparse_moe.w1/w3/w2`, 8 experts, d_model 1024, 1.49e-8, local-only;
+~352 MB fixture too large to commit). Both on-disk Mixtral layouts validated
+end-to-end on real data; no `src/` changes were needed. Not product-certified
+(no Mixtral-8x7B); fail-loud still active. No MoE GGUF support.
+
 "SMOKE PASS" = the experimental path discovered the shards, built a
 `MoeWeightMap`, assembled a stack, and ran a finite forward. It does **not**
 mean full-model support.

@@ -41,6 +41,7 @@ MODELS = {
     "mixtral": r"D:\models\tiny-mixtral",
     # Appended last so existing fixtures' shared RNG draws are unchanged.
     "qwen3_moe": r"D:\models\tiny-qwen3moe",
+    "mixtral_titanml": r"D:\models\tiny-mixtral-titanml",
 }
 
 OUT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -130,19 +131,28 @@ def extract_layer0(model, sd, name_prefix):
             d = dn64[e]
             experts64.append((g, u, d))
     else:
-        # classic per-expert
-        # find d_ff from expert 0 gate
-        g0 = sd[f"{name_prefix}.experts.0.gate_proj.weight"]
-        d_ff = g0.shape[0]
+        # classic per-expert. Two name schemes:
+        #  - Qwen-MoE: gate_proj / up_proj / down_proj
+        #  - Mixtral:  w1 (gate) / w3 (up) / w2 (down)
+        mixtral_classic = f"{name_prefix}.experts.0.w1.weight" in sd
+        if mixtral_classic:
+            names_for = lambda e: (
+                f"{name_prefix}.experts.{e}.w1.weight",
+                f"{name_prefix}.experts.{e}.w3.weight",
+                f"{name_prefix}.experts.{e}.w2.weight",
+            )
+        else:
+            names_for = lambda e: (
+                f"{name_prefix}.experts.{e}.gate_proj.weight",
+                f"{name_prefix}.experts.{e}.up_proj.weight",
+                f"{name_prefix}.experts.{e}.down_proj.weight",
+            )
+        gn0, _, _ = names_for(0)
+        d_ff = sd[gn0].shape[0]
         for e in range(ne):
-            g = sd[f"{name_prefix}.experts.{e}.gate_proj.weight"]
-            u = sd[f"{name_prefix}.experts.{e}.up_proj.weight"]
-            d = sd[f"{name_prefix}.experts.{e}.down_proj.weight"]
-            for nm, t in [
-                (f"{name_prefix}.experts.{e}.gate_proj.weight", g),
-                (f"{name_prefix}.experts.{e}.up_proj.weight", u),
-                (f"{name_prefix}.experts.{e}.down_proj.weight", d),
-            ]:
+            gn, un, dn = names_for(e)
+            g, u, d = sd[gn], sd[un], sd[dn]
+            for nm, t in [(gn, g), (un, u), (dn, d)]:
                 a32, _ = to_f32_f64(t)
                 fixture[nm] = a32
             _, g64 = to_f32_f64(g)
@@ -257,6 +267,7 @@ def main():
                 "qwen2_moe": "hf-internal-testing/tiny-random-Qwen2MoeForCausalLM",
                 "qwen3_moe": "hf-internal-testing/tiny-random-Qwen3MoeForCausalLM",
                 "mixtral": "hf-internal-testing/tiny-random-MixtralForCausalLM",
+                "mixtral_titanml": "TitanML/tiny-mixtral",
             }[name],
             tensor_prefix=prefix,
             num_experts=dims["num_experts"],
