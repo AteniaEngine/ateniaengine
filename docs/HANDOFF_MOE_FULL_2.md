@@ -90,7 +90,7 @@ Local validation: `cargo test --lib --release -- --test-threads=1` →
 
 ## Files modified
 
-* `src/nn/llama/moe_config.rs` — new (parse-only `MoeConfig` + 12 tests).
+* `src/nn/llama/moe_config.rs` — new (parse-only `MoeConfig` + 11 tests).
 * `src/nn/llama/mod.rs` — `pub mod moe_config;`.
 * `docs/HANDOFF_MOE_FULL_2.md` — this file.
 * `docs/MOE_FULL_PATH_AUDIT.md` — progress note.
