@@ -375,6 +375,26 @@ impl RealMoeLayer {
         self.forward_with(x, MoeExecutionConvention::Atenia)
     }
 
+    /// **MOE-18** — the execution convention inferred for this layer from its
+    /// captured metadata: `HuggingFaceQwen` when a shared-expert sigmoid gate
+    /// is present (Qwen-MoE), else `Atenia` (the default; also Mixtral). Uses
+    /// only metadata already captured at assembly — no config parsing.
+    pub fn resolve_convention(&self) -> MoeExecutionConvention {
+        if self.shared_gate.is_some() {
+            MoeExecutionConvention::HuggingFaceQwen
+        } else {
+            MoeExecutionConvention::Atenia
+        }
+    }
+
+    /// **MOE-18** — full layer forward under the **automatically resolved**
+    /// convention ([`Self::resolve_convention`]). Equivalent to
+    /// `forward_with(x, self.resolve_convention())`; the explicit
+    /// [`Self::forward_with`] remains available for callers that want control.
+    pub fn forward_auto(&self, x: &[f32]) -> Result<Vec<f32>, MoeLayerError> {
+        self.forward_with(x, self.resolve_convention())
+    }
+
     /// **MOE-17** — full layer forward under an explicit execution convention.
     ///
     /// * `Atenia`: renormalise the selected top-k weights; add the shared

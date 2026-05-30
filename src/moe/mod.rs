@@ -18,6 +18,7 @@
 //! See `docs/MOE_CERTIFICATION_SUBSTRATE.md` for the full analysis.
 
 pub mod binding;
+pub mod convention;
 pub mod data_plane;
 pub mod dense;
 pub mod detect;
@@ -63,6 +64,8 @@ pub use sparse::{
 };
 
 pub use layer::MoeExecutionConvention;
+
+pub use convention::MoeConventionResolver;
 
 pub use detect::{
     classify_tensor_name, detect_moe, is_moe_expert_tensor, is_moe_router_tensor,
