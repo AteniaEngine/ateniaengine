@@ -135,6 +135,8 @@ pub fn is_moe_expert_tensor(name: &str) -> bool {
 pub fn is_moe_router_tensor(name: &str) -> bool {
     name.contains("block_sparse_moe.gate.")
         || (name.contains(".mlp.gate.") && !name.contains("gate_proj"))
+        // Qwen3-MoE names the router `…mlp.router.weight` (not `mlp.gate`).
+        || name.contains(".mlp.router.")
 }
 
 /// Classify a single tensor name into a [`TensorNameInfo`].
@@ -268,6 +270,16 @@ pub fn unsupported_message(det: &MoeDetection) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn qwen3_moe_router_is_detected() {
+        // Qwen3-MoE names the router `mlp.router.weight` (not `mlp.gate`).
+        let n = "model.layers.0.mlp.router.weight";
+        assert!(is_moe_router_tensor(n));
+        assert_eq!(classify_tensor_name(n).role, TensorRole::MoeRouter);
+        // A dense SwiGLU gate projection must NOT be mistaken for a router.
+        assert!(!is_moe_router_tensor("model.layers.0.mlp.gate_proj.weight"));
+    }
 
     #[test]
     fn detects_mixtral_expert_tensor_names() {

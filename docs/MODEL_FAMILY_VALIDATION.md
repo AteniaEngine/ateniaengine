@@ -226,7 +226,16 @@ this is **not** family mastery and **not** product certification.
   numerical parity, argmax-matching):
   - `katuni4ka/tiny-random-qwen1.5-moe` (classic per-expert + shared expert)
   - `hf-internal-testing/tiny-random-Qwen2MoeForCausalLM` (packed experts)
+  - `hf-internal-testing/tiny-random-Qwen3MoeForCausalLM` (packed experts, no
+    shared, `mlp.router` naming — QWEN-MOE-CERT-1)
   - `hf-internal-testing/tiny-random-MixtralForCausalLM` (packed experts)
+- **Qwen-MoE family — partially certified (experimental)** via
+  **QWEN-MOE-CERT-1** (`docs/HANDOFF_QWEN_MOE_CERT_1.md`): Qwen1.5-MoE,
+  Qwen2-MoE and Qwen3-MoE tiny checkpoints certified for MoE-block numerical
+  parity with HuggingFace (~1e-10) across classic + packed experts, shared /
+  no-shared, both `norm_topk_prob` modes and both router namings. **Not**
+  product-certified (no real full model, no full transformer, fail-loud still
+  active).
 - **Not product-certified.** These are tiny random-weight test checkpoints, not
   real full models. No end-to-end generation, no full transformer path, no
   numcert manifest. The productive loader still **fails loud** on MoE.

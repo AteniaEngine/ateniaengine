@@ -83,7 +83,15 @@ experimental path:
 |---|---|---|---|
 | `katuni4ka/tiny-random-qwen1.5-moe` | classic per-expert | yes (+gate) | SMOKE PASS |
 | `hf-internal-testing/tiny-random-Qwen2MoeForCausalLM` | packed/fused | yes (+gate) | SMOKE PASS (after MOE-15) |
+| `hf-internal-testing/tiny-random-Qwen3MoeForCausalLM` | packed/fused | no | SMOKE PASS (after QWEN-MOE-CERT-1 router fix) |
 | `hf-internal-testing/tiny-random-MixtralForCausalLM` | packed/fused | no | SMOKE PASS (after MOE-15) |
+
+**Qwen-MoE family certification** (`docs/HANDOFF_QWEN_MOE_CERT_1.md`,
+QWEN-MOE-CERT-1): Qwen1.5-MoE, Qwen2-MoE and Qwen3-MoE tiny checkpoints are
+**partially certified (experimental)** — MoE-block numerical parity with
+HuggingFace ~1e-10 across classic + packed experts, shared / no-shared, both
+`norm_topk_prob` modes, both router namings (`mlp.gate` and Qwen3's
+`mlp.router`). Not product-certified; fail-loud still active.
 
 "SMOKE PASS" = the experimental path discovered the shards, built a
 `MoeWeightMap`, assembled a stack, and ran a finite forward. It does **not**

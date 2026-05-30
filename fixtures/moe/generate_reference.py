@@ -39,6 +39,8 @@ MODELS = {
     "qwen15_moe": r"D:\models\tiny-qwen15moe",
     "qwen2_moe": r"D:\models\tiny-qwen2moe",
     "mixtral": r"D:\models\tiny-mixtral",
+    # Appended last so existing fixtures' shared RNG draws are unchanged.
+    "qwen3_moe": r"D:\models\tiny-qwen3moe",
 }
 
 OUT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -215,6 +217,15 @@ def main():
         fixture, experts64, router64, shared64, shared_gate64, dims = extract_layer0(model, sd, prefix)
         d_model = dims["d_model"]
 
+        # Qwen3-MoE stores the router on disk as `mlp.router.weight`; HF's
+        # state_dict renames it to `mlp.gate.weight`. Write the fixture under
+        # the real on-disk name so the Rust test exercises Qwen3-MoE router
+        # naming (and the MoE router-detection fix).
+        if name == "qwen3_moe":
+            gk = f"{prefix}.gate.weight"
+            if gk in fixture:
+                fixture[f"{prefix}.router.weight"] = fixture.pop(gk)
+
         x32 = (rng.standard_normal(d_model) * 0.5).astype(np.float32)
         x64 = x32.astype(np.float64)
 
@@ -244,6 +255,7 @@ def main():
             source_repo={
                 "qwen15_moe": "katuni4ka/tiny-random-qwen1.5-moe",
                 "qwen2_moe": "hf-internal-testing/tiny-random-Qwen2MoeForCausalLM",
+                "qwen3_moe": "hf-internal-testing/tiny-random-Qwen3MoeForCausalLM",
                 "mixtral": "hf-internal-testing/tiny-random-MixtralForCausalLM",
             }[name],
             tensor_prefix=prefix,
