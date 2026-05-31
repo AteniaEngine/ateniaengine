@@ -61,7 +61,7 @@ fn run_through_graph(layer_id: u32, input: &[f32], d_model: usize) -> Vec<f32> {
     gb.output(moe_id);
     let mut graph = gb.build();
     let t = Tensor::new_cpu(vec![d_model], input.to_vec());
-    let outputs = graph.execute(vec![t]).expect("graph exec");
+    let outputs = graph.execute(vec![t]);
     outputs[0].as_cpu_slice().to_vec()
 }
 
