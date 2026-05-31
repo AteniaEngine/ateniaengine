@@ -57,8 +57,9 @@ pub use stack::{MoeStackConfig, MoeStackConfigError, MoeStackError, RealMoeStack
 pub use data_plane::{ExpertTensors, MoeLayerMap, MoeTensorEntry, MoeWeightMap};
 
 pub use graph_op::{
-    execute_conditional_expert, execute_dynamic_dispatch, execute_sparse_reference,
-    expert_weight_in_selection, get_layer, register_layer, DynamicDispatchOutput,
+    execute_conditional_expert, execute_dynamic_dispatch, execute_real_moe_layer,
+    execute_real_moe_layer_with, execute_sparse_reference, expert_weight_in_selection,
+    get_layer, get_real_moe_layer, register_layer, register_real_moe_layer, DynamicDispatchOutput,
 };
 
 pub use dense::{

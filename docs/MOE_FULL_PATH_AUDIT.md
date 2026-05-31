@@ -199,11 +199,15 @@ active until the very end.
   (Note: deferred the `WeightStore`-load step to MOE-FULL-4/5; this milestone
   is recognition + tensor spec only, which is the load-only contract.)
 
-- **MOE-FULL-4 — MoE block as a graph op.** Expose the certified `RealMoeLayer`
-  forward as a single AMG node (a graph custom-op wrapping the imperative
-  block, reading experts from the store), validated to match `src/moe/` within
-  1e-5 inside a one-layer graph. This is the substrate bridge; no full model
-  yet.
+- **MOE-FULL-4 — MoE block as a graph op. ✅ DONE** (see
+  `docs/HANDOFF_MOE_FULL_4.md`). Added `NodeType::MoeRealLayerReference
+  { layer_id }` — a single AMG node wrapping the certified imperative
+  `RealMoeLayer` (forward_auto) via a process-global registry in
+  `src/moe/graph_op.rs`. Validated `input → MoeRealLayerReference → output` in a
+  real `Graph` against `RealMoeLayer::forward_auto` (<1e-5) and the MOE-16 HF
+  reference (argmax-match, <0.5), using the committed real Mixtral layer-0
+  fixture. 2 unit + 7 integration tests; lib suite 746 passed / 1 ignored.
+  Substrate bridge done; no full model, no fail-loud lift.
 
 - **MOE-FULL-5 — One Mixtral decoder layer, full surround.** Build one real
   decoder layer = dense attention/norms/residuals (reused) + the MOE-FULL-4
