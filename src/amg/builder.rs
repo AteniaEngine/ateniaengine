@@ -174,6 +174,16 @@ impl GraphBuilder {
         self.add_node(NodeType::MoeSparseReference { layer_id, k }, vec![x_id])
     }
 
+    /// **MOE-FULL-4** — experimental fused real-MoE-layer node. `x_id` is the
+    /// token-vector input `[d_model]`; `layer_id` indexes a `RealMoeLayer`
+    /// previously registered via [`crate::moe::register_real_moe_layer`]. The
+    /// forward runs the whole MoE layer (router + experts + optional shared)
+    /// via `RealMoeLayer::forward_auto`. Output `[d_model]`. CPU-only,
+    /// registry-backed — not a production MoE path.
+    pub fn moe_real_layer_reference(&mut self, x_id: usize, layer_id: u32) -> usize {
+        self.add_node(NodeType::MoeRealLayerReference { layer_id }, vec![x_id])
+    }
+
     /// **MOE-6** — primitive router-softmax node. `logits_id` → routing
     /// weights (stable softmax). Experimental, CPU-only.
     pub fn moe_router_softmax(&mut self, logits_id: usize) -> usize {
