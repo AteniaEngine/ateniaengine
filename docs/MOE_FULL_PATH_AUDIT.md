@@ -209,10 +209,15 @@ active until the very end.
   fixture. 2 unit + 7 integration tests; lib suite 746 passed / 1 ignored.
   Substrate bridge done; no full model, no fail-loud lift.
 
-- **MOE-FULL-5 — One Mixtral decoder layer, full surround.** Build one real
-  decoder layer = dense attention/norms/residuals (reused) + the MOE-FULL-4
-  MoE block, in the graph, and compare to a HF single-layer reference. Proves
-  attention+MoE compose correctly.
+- **MOE-FULL-5 — One decoder layer, MoE composition. ✅ DONE** (see
+  `docs/HANDOFF_MOE_FULL_5.md`). `src/moe/decoder_layer.rs` composes norm +
+  self-attention + residual + `MoeRealLayerReference` + residual in the AMG
+  graph from existing primitives (no new op), with the real Mixtral layer-0
+  fixture supplying the MoE sub-block. Validated vs an imperative reference
+  within 1e-5 (4 unit + 6 integration tests; lib 750). **Single token,
+  single-head** (softmax over one score = 1.0, so the score scale is moot) —
+  it proves attention+residual+MoE *compose*; multi-token attention (RoPE/GQA/
+  causal mask/KV cache) + HF single-layer logit comparison are MOE-FULL-6.
 
 - **MOE-FULL-6 — Full tiny Mixtral forward + generation.** Stack all layers,
   add embeddings + lm_head + KV cache + the existing generation loop; greedy-

@@ -20,6 +20,7 @@
 pub mod binding;
 pub mod convention;
 pub mod data_plane;
+pub mod decoder_layer;
 pub mod dense;
 pub mod detect;
 pub mod fixture;
@@ -48,6 +49,11 @@ pub use validation::{RealMoeCheckpointValidation, ValidationReport};
 
 pub use mixtral_adapter::{
     MixtralAdapter, MixtralAdapterError, MixtralExpertLayout, MixtralMetadata, MixtralTensorSpec,
+};
+
+pub use decoder_layer::{
+    build_experimental_decoder_layer, decoder_layer_reference, register_and_build_decoder_layer,
+    ExpAttnWeights,
 };
 
 pub use layer::{MoeConfigError, MoeLayerConfig, MoeLayerError, RealMoeLayer};
