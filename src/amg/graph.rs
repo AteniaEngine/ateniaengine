@@ -1694,6 +1694,9 @@ impl Graph {
                 NodeType::MoeSparseCombine { .. } => in_len == 2,
                 NodeType::MoeDynamicDispatch { .. } => in_len == 2,
                 NodeType::ConditionalExpert { .. } => in_len == 2,
+                // MOE-FULL-4: real MoE layer fused op takes the single
+                // token-vector input.
+                NodeType::MoeRealLayerReference { .. } => in_len == 1,
                 NodeType::IndexSelect => in_len == 2,
                 NodeType::Linear => in_len == 2 || in_len == 3,
                 NodeType::Activation(_) => in_len == 1,
@@ -5559,6 +5562,29 @@ impl Graph {
                     let _ = d_model;
                     let out = crate::tensor::Tensor::new_cpu(vec![contrib.len()], contrib);
                     self.nodes[node_id].set_output(out);
+                }
+            }
+            // **MOE-FULL-4** — experimental fused op: run a whole real MoE
+            // layer (router + routed + optional shared, MOE-11) as one node.
+            // CPU-only, registry-backed, NOT a production path. Forward
+            // delegates to the certified `RealMoeLayer::forward_auto`
+            // (MOE-18 convention auto-resolution). Inference-only: no backward.
+            NodeType::MoeRealLayerReference { layer_id } => {
+                let inputs = self.nodes[node_id].inputs.clone();
+                if inputs.len() != 1 {
+                    // Inconsistent graph (artificial trace tests): skip.
+                    return;
+                }
+                let x_opt = self.nodes[inputs[0]].output.as_ref();
+                if let Some(mut x) = x_opt.cloned() {
+                    x.ensure_cpu()
+                        .expect("MoeRealLayerReference: input → Cpu materialisation failed");
+                    let x_slice = x.as_cpu_slice();
+                    let out_vec = crate::moe::graph_op::execute_real_moe_layer(layer_id, x_slice)
+                        .expect("MoeRealLayerReference: forward failed (unknown layer_id or bad input dim)");
+                    let out = crate::tensor::Tensor::new_cpu(vec![out_vec.len()], out_vec);
+                    self.nodes[node_id].set_output(out);
+                    // No backward: experimental inference-only op.
                 }
             }
             NodeType::Softmax => {

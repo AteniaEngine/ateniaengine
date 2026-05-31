@@ -179,6 +179,18 @@ pub enum NodeType {
         expert_id: u32,
         d_model: usize,
     },
+    /// **MOE-FULL-4** — experimental fused op that runs a whole real MoE layer
+    /// (router + routed experts + optional shared expert, MOE-11) as a single
+    /// graph node. Carries only the `Eq`-safe `layer_id`, which indexes the
+    /// real-MoE-layer registry in [`crate::moe::graph_op`]; the `RealMoeLayer`
+    /// (f32 weights, not `Eq`) lives there. Takes one input (the token vector
+    /// `[d_model]`); the forward delegates to `RealMoeLayer::forward_auto`
+    /// (auto-resolved convention, MOE-18) and outputs `[d_model]`. CPU-only,
+    /// registry-backed, NOT production MoE; not differentiable. See
+    /// `docs/HANDOFF_MOE_FULL_4.md`.
+    MoeRealLayerReference {
+        layer_id: u32,
+    },
     Reshape {
         target: Vec<isize>,
     },
