@@ -88,6 +88,17 @@ locked by regression tests.
   ~94 GB real weights (disk-tierable on NVMe but slow), and (2) a sharded-loader
   task for the MoE path (real Mixtral is multi-shard; current MoE loader is
   single-file). See [HANDOFF_RUNTIME_MOE_1.md](./HANDOFF_RUNTIME_MOE_1.md).
+- **Small real MoE (RUNTIME-MOE-2) — BLOCKED.** Audited the smallest real MoEs
+  for a real-weight load: **Qwen1.5-MoE-A2.7B(-Chat)** (`Qwen2MoeForCausalLM`,
+  supported) is **8-shard / 28.6 GB / ~57 GB as f32** and **Phi-mini-MoE**
+  (`PhiMoEForCausalLM`) is an **unsupported architecture** + 4-shard. The MoE
+  loader is **single-file + f32-into-RAM** (`MoeRuntime::load_from_dir` picks the
+  first `.safetensors`; `ExpertTier::Ram` hardcoded, no disk spill), so no
+  supported-family real MoE fits on the 32 GB host. Deferred without downloading
+  (avoiding a guaranteed-fail 28.6 GB fetch). Unblock = a scoped **engine**
+  milestone: (1) sharded safetensors loading in the MoE path, (2) disk-tier /
+  bf16 residency — then validate Qwen1.5-MoE-A2.7B. See
+  [HANDOFF_RUNTIME_MOE_2.md](./HANDOFF_RUNTIME_MOE_2.md).
 - **Loaders.** Single-file and sharded HuggingFace safetensors; GGUF
   (F16 / Q8_0 / Q4_K_M / Q5_K / Q6_K). BF16 parameter storage (50 % RAM saving),
   BF16 KV cache (default on), RAM↔NVMe spill with chunked streaming.
