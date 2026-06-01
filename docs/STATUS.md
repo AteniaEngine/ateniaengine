@@ -63,6 +63,21 @@ locked by regression tests.
   wired for this family), so it is GREEN **behaviourally** but lacks the
   Llama/Qwen numerical-certification bar. See
   [HANDOFF_RUNTIME_REAL_3.md](./HANDOFF_RUNTIME_REAL_3.md).
+- **Phi-3 end-to-end (RUNTIME-REAL-4).** Re-confirmed on a real ~7.6 GB sharded
+  Phi-3.5-Mini-Instruct HF checkpoint (`Phi3ForCausalLM`: fused QKV split,
+  fused gate_up split, LongRoPE; MHA), RTX 4070: loads 195 tensors / 2 shards
+  (~8.99 GiB resident, VRAM 32 / RAM 163) in ~138 s, generates coherent +
+  factually-correct text ("…is Paris."), deterministic, bad-input intact; phi3
+  unit suite 23/23 (fused split + LongRoPE); certified↔fast bit-identical
+  (numcert). Same caveat as Gemma 2: **no f64 reference** (numcert null), so
+  GREEN **behaviourally** only. See
+  [HANDOFF_RUNTIME_REAL_4.md](./HANDOFF_RUNTIME_REAL_4.md).
+- **Dense breadth campaign — closed.** Four structurally-distinct families
+  validated end-to-end on real checkpoints (RUNTIME-REAL-1..4): **Llama**
+  (f64 0.076) · **Qwen2.5** (f64 0.000335) · **Gemma 2** (behavioural) ·
+  **Phi-3** (behavioural). Remaining gaps (f64 pipeline for Gemma/Phi,
+  throughput, larger variants) are tracked as separate milestones, not new
+  breadth validation.
 - **Loaders.** Single-file and sharded HuggingFace safetensors; GGUF
   (F16 / Q8_0 / Q4_K_M / Q5_K / Q6_K). BF16 parameter storage (50 % RAM saving),
   BF16 KV cache (default on), RAM↔NVMe spill with chunked streaming.
