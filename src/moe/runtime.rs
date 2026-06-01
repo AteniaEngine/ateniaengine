@@ -1,58 +1,54 @@
-//! **MOE-FULL-10** — controlled productive Mixtral runtime (opt-in).
+//! **MOE-FULL-10 / MOE-FULL-11** — controlled productive MoE runtime (opt-in).
 //!
-//! The first **productive** MoE path in Atenia: load a real tiny Mixtral
-//! checkpoint and generate to EOS, reusing the certified MoE components
-//! (family recognition, adapter validation, GQA tiling, residency + expert
-//! cache, the prefill/KV-cache/decode generation loop). It is gated behind an
-//! explicit opt-in (`ATENIA_EXPERIMENTAL_MOE=1`):
+//! The productive MoE entry in Atenia: load a real tiny MoE checkpoint and
+//! generate to EOS, reusing the certified components (family recognition,
+//! adapter validation, GQA tiling, optional Q/K/V attention bias, residency +
+//! expert cache, the prefill/KV-cache/decode loop). Gated behind an explicit
+//! opt-in (`ATENIA_EXPERIMENTAL_MOE=1`).
 //!
-//! ```text
-//!   ATENIA_EXPERIMENTAL_MOE=1  +  Mixtral checkpoint
-//!        │
-//!        ▼
-//!   classify_family → MixtralAdapter::recognize → validate config
-//!        │  per layer: RealMoeLayer::assemble + gqa::to_mha_kv
-//!        ▼
-//!   ResidentExpertLayer (RAM) + ExpertCache   (wired & self-validated)
-//!        │
-//!        ▼
-//!   generate_greedy_tiny_eos  →  tokens … EOS
-//! ```
+//! ## Enabled families (controlled, opt-in)
 //!
-//! ## What this is / is NOT
+//! * **Mixtral** — standard attention (no bias), no shared expert. Full
+//!   end-to-end HF parity (MOE-FULL-10).
+//! * **Qwen-MoE** — standard attention **with Q/K/V bias**, packed experts +
+//!   **shared expert** (sigmoid-gated), `norm_topk_prob = false`. Full
+//!   end-to-end HF parity (MOE-FULL-11).
 //!
-//! * It **is** a controlled, explicit, opt-in productive entry for **Mixtral
-//!   only**. Without the opt-in it refuses (controlled fail-loud), exactly like
-//!   before. The dense loader's fail-loud guard is **unchanged** — it never
-//!   loads MoE; this is a *separate* runtime the opt-in selects.
-//! * It does **not** declare general MoE support, enable Qwen-MoE / DeepSeek-MoE,
-//!   touch the CLI, use a VRAM tier, quantise, batch, or optimise. Correctness
-//!   first. The generation MoE block runs through the certified RAM path
-//!   (bit-identical to the residency RAM tier, proven MOE-FULL-8/9); the
-//!   residency+cache layers are constructed and self-validated here as the
-//!   wired storage backend.
+//! ## Not enabled for generation
+//!
+//! * **DeepSeek-MoE** — uses **MLA** (multi-head latent attention:
+//!   `kv_a_proj_with_mqa` / `kv_b_proj`), a different attention architecture
+//!   not modelled here. The runtime refuses it; the DeepSeek **MoE block** is
+//!   certified separately vs HF (`tests/moe_deepseek_block_test.rs`). Adding
+//!   MLA is out of scope (would be a new architecture).
+//!
+//! Without the opt-in the runtime refuses; the dense loader's fail-loud guard
+//! is **unchanged** and still refuses MoE. No CLI / VRAM / batching / quant.
 
 use std::path::Path;
 
 use serde_json::Value;
 
-use super::full_forward::{TinyDecoderWeights, TinyMixtralConfig, TinyMixtralWeights};
+use super::family::{classify_family, experimental_moe_enabled, validate_family_config, MoeFamily};
+use super::full_forward::{QkvBias, TinyDecoderWeights, TinyMixtralConfig, TinyMixtralWeights};
 use super::generate::generate_greedy_tiny_eos;
 use super::gqa::to_mha_kv;
 use super::layer::{MoeLayerConfig, RealMoeLayer};
 use super::mixtral_adapter::MixtralAdapter;
 use super::residency::{ExpertCache, ExpertTier, ResidentExpertLayer};
-use super::family::{classify_family, experimental_moe_enabled, validate_family_config, MoeFamily};
 use crate::nn::llama::moe_config::MoeConfig;
 use crate::v17::loader::safetensors_reader::SafetensorsReader;
 
-/// Errors from the controlled Mixtral runtime.
+/// Errors from the controlled MoE runtime.
 #[derive(Debug)]
-pub enum MixtralRuntimeError {
+pub enum MoeRuntimeError {
     /// The opt-in flag is not set; the experimental path refuses (fail-loud).
     OptInDisabled,
-    /// The checkpoint is not a recognised Mixtral checkpoint.
-    NotMixtral,
+    /// Not a MoE checkpoint at all.
+    NotMoe,
+    /// A recognised MoE family that is **not enabled for generation** here
+    /// (e.g. DeepSeek-MoE / MLA). Carries an explanation.
+    UnsupportedFamily(String),
     /// `config.json` could not be read / parsed, or a required field is missing.
     Config(String),
     /// Safetensors read / tensor assembly error.
@@ -64,23 +60,26 @@ pub enum MixtralRuntimeError {
     ResidencyMismatch { layer: usize, max_abs_diff: f32 },
 }
 
-impl std::fmt::Display for MixtralRuntimeError {
+impl std::fmt::Display for MoeRuntimeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            MixtralRuntimeError::OptInDisabled => write!(
+            MoeRuntimeError::OptInDisabled => write!(
                 f,
                 "moe-runtime: experimental MoE is opt-in; set ATENIA_EXPERIMENTAL_MOE=1 to enable \
-                 the controlled Mixtral runtime (the dense loader still refuses MoE)"
+                 the controlled MoE runtime (the dense loader still refuses MoE)"
             ),
-            MixtralRuntimeError::NotMixtral => {
-                write!(f, "moe-runtime: checkpoint is not a recognised Mixtral MoE checkpoint")
+            MoeRuntimeError::NotMoe => {
+                write!(f, "moe-runtime: checkpoint is not a recognised MoE checkpoint")
             }
-            MixtralRuntimeError::Config(m) => write!(f, "moe-runtime: config error: {m}"),
-            MixtralRuntimeError::Load(m) => write!(f, "moe-runtime: load error: {m}"),
-            MixtralRuntimeError::ConfigInconsistent(notes) => {
+            MoeRuntimeError::UnsupportedFamily(m) => {
+                write!(f, "moe-runtime: family not enabled for generation: {m}")
+            }
+            MoeRuntimeError::Config(m) => write!(f, "moe-runtime: config error: {m}"),
+            MoeRuntimeError::Load(m) => write!(f, "moe-runtime: load error: {m}"),
+            MoeRuntimeError::ConfigInconsistent(notes) => {
                 write!(f, "moe-runtime: config inconsistent with tensors: {}", notes.join("; "))
             }
-            MixtralRuntimeError::ResidencyMismatch { layer, max_abs_diff } => write!(
+            MoeRuntimeError::ResidencyMismatch { layer, max_abs_diff } => write!(
                 f,
                 "moe-runtime: residency self-check failed at layer {layer} (max_abs_diff={max_abs_diff:.3e})"
             ),
@@ -88,13 +87,27 @@ impl std::fmt::Display for MixtralRuntimeError {
     }
 }
 
-impl std::error::Error for MixtralRuntimeError {}
+impl std::error::Error for MoeRuntimeError {}
 
-fn cfg_u(v: &Value, key: &str) -> Result<usize, MixtralRuntimeError> {
+/// Back-compat aliases (MOE-FULL-10 named these `Mixtral*`).
+pub type MixtralRuntime = MoeRuntime;
+pub type MixtralRuntimeError = MoeRuntimeError;
+
+fn cfg_u(v: &Value, key: &str) -> Result<usize, MoeRuntimeError> {
     v.get(key)
         .and_then(Value::as_u64)
         .map(|n| n as usize)
-        .ok_or_else(|| MixtralRuntimeError::Config(format!("missing/invalid '{key}'")))
+        .ok_or_else(|| MoeRuntimeError::Config(format!("missing/invalid '{key}'")))
+}
+
+/// Read the first present `usize` among `keys` (family-divergent field names).
+fn cfg_u_any(v: &Value, keys: &[&str]) -> Result<usize, MoeRuntimeError> {
+    for k in keys {
+        if let Some(n) = v.get(*k).and_then(Value::as_u64) {
+            return Ok(n as usize);
+        }
+    }
+    Err(MoeRuntimeError::Config(format!("missing/invalid any of {keys:?}")))
 }
 
 /// Parse `eos_token_id` from a HF config: a single int or an array of ints.
@@ -106,9 +119,10 @@ fn parse_eos(v: &Value) -> Vec<u32> {
     }
 }
 
-/// The loaded, ready-to-generate controlled Mixtral runtime.
+/// The loaded, ready-to-generate controlled MoE runtime.
 #[derive(Debug)]
-pub struct MixtralRuntime {
+pub struct MoeRuntime {
+    family: MoeFamily,
     weights: TinyMixtralWeights,
     eos_token_ids: Vec<u32>,
     /// Per-layer residency-backed expert storage (RAM tier) — the wired,
@@ -118,27 +132,28 @@ pub struct MixtralRuntime {
     caches: Vec<ExpertCache>,
 }
 
-impl MixtralRuntime {
-    /// Load a controlled Mixtral runtime from a HF `config.json` and a
-    /// safetensors weights file. **Refuses unless `ATENIA_EXPERIMENTAL_MOE=1`.**
+impl MoeRuntime {
+    /// Load a controlled MoE runtime from a HF `config.json` and a safetensors
+    /// weights file. **Refuses unless `ATENIA_EXPERIMENTAL_MOE=1`.** Enables
+    /// **Mixtral** and **Qwen-MoE**; refuses DeepSeek-MoE (MLA) and dense.
     ///
-    /// Reuses the certified pipeline: family recognition → adapter validation →
-    /// config cross-check → per-layer `RealMoeLayer::assemble` + GQA K/V tiling
-    /// → residency + expert cache (self-validated). No dense-loader change.
+    /// Reuses the certified pipeline: family recognition → (Mixtral) adapter
+    /// validation → config cross-check → per-layer `RealMoeLayer::assemble` +
+    /// GQA K/V (and bias) tiling → residency + expert cache (self-validated).
     pub fn load_from_files(
         config_path: &Path,
         weights_path: &Path,
-    ) -> Result<Self, MixtralRuntimeError> {
+    ) -> Result<Self, MoeRuntimeError> {
         // 1. Controlled opt-in gate. Without it, fail loud exactly as before.
         if !experimental_moe_enabled() {
-            return Err(MixtralRuntimeError::OptInDisabled);
+            return Err(MoeRuntimeError::OptInDisabled);
         }
 
         // 2. Parse config.json.
         let text = std::fs::read_to_string(config_path)
-            .map_err(|e| MixtralRuntimeError::Config(format!("read {config_path:?}: {e}")))?;
+            .map_err(|e| MoeRuntimeError::Config(format!("read {config_path:?}: {e}")))?;
         let v: Value = serde_json::from_str(&text)
-            .map_err(|e| MixtralRuntimeError::Config(format!("parse json: {e}")))?;
+            .map_err(|e| MoeRuntimeError::Config(format!("parse json: {e}")))?;
         let vocab = cfg_u(&v, "vocab_size")?;
         let hidden = cfg_u(&v, "hidden_size")?;
         let n_layers = cfg_u(&v, "num_hidden_layers")?;
@@ -149,43 +164,64 @@ impl MixtralRuntime {
             .and_then(Value::as_u64)
             .map(|n| n as usize)
             .unwrap_or(hidden / n_heads.max(1));
-        let d_ff = cfg_u(&v, "intermediate_size")?;
-        let n_experts = cfg_u(&v, "num_local_experts")?;
+        let n_experts = cfg_u_any(&v, &["num_local_experts", "num_experts"])?;
         let topk = cfg_u(&v, "num_experts_per_tok")?;
         let rope_theta = v.get("rope_theta").and_then(Value::as_f64).unwrap_or(10000.0) as u32;
         let rms_eps = v.get("rms_norm_eps").and_then(Value::as_f64).unwrap_or(1e-5) as f32;
         let eos_token_ids = parse_eos(&v);
 
-        // 3. Open the checkpoint and recognise the family.
+        // 3. Open the checkpoint and recognise + gate the family.
         let reader = SafetensorsReader::open(weights_path)
-            .map_err(|e| MixtralRuntimeError::Load(format!("open {weights_path:?}: {e:?}")))?;
+            .map_err(|e| MoeRuntimeError::Load(format!("open {weights_path:?}: {e:?}")))?;
         let names: Vec<String> = reader.iter().map(|e| e.name.to_string()).collect();
-        if classify_family(names.iter().map(|s| s.as_str())) != Some(MoeFamily::Mixtral) {
-            return Err(MixtralRuntimeError::NotMixtral);
+        let family = match classify_family(names.iter().map(|s| s.as_str())) {
+            Some(f) => f,
+            None => return Err(MoeRuntimeError::NotMoe),
+        };
+        // DeepSeek-MoE (MLA) is recognised by `family` only when it carries
+        // Qwen-style markers; MLA checkpoints carry `kv_a_proj_with_mqa` and
+        // have no `k_proj`/`v_proj` → refuse generation explicitly.
+        let has_mla = names.iter().any(|n| n.contains("kv_a_proj_with_mqa"));
+        if has_mla {
+            return Err(MoeRuntimeError::UnsupportedFamily(
+                "DeepSeek-MoE uses MLA attention (kv_a_proj_with_mqa); not modelled by the \
+                 experimental runtime. Its MoE block is certified separately."
+                    .into(),
+            ));
         }
 
-        // 4. Adapter validation (load-only metadata) + config cross-check.
+        // Per-family parameters (the only family-divergent knobs).
+        let (has_shared, attn_has_bias) = match family {
+            MoeFamily::Mixtral => (false, false),
+            MoeFamily::QwenMoe => (true, true),
+        };
+        // Routed-expert FFN size: Qwen uses `moe_intermediate_size`.
+        let d_ff = cfg_u_any(&v, &["moe_intermediate_size", "intermediate_size"])?;
+
+        // 4. Adapter validation (Mixtral) + config cross-check (all families).
         let moe_cfg = MoeConfig::from_json_str(&text)
-            .map_err(|e| MixtralRuntimeError::Config(format!("moe config: {e}")))?;
-        let tensors: Vec<(&str, Vec<usize>)> =
-            reader.iter().map(|e| (e.name, e.shape.to_vec())).collect();
-        MixtralAdapter::recognize(tensors.iter().map(|(n, s)| (*n, s.clone())), &moe_cfg)
-            .map_err(|e| MixtralRuntimeError::Load(format!("mixtral adapter: {e}")))?;
+            .map_err(|e| MoeRuntimeError::Config(format!("moe config: {e}")))?;
+        if family == MoeFamily::Mixtral {
+            let tensors: Vec<(&str, Vec<usize>)> =
+                reader.iter().map(|e| (e.name, e.shape.to_vec())).collect();
+            MixtralAdapter::recognize(tensors.iter().map(|(n, s)| (*n, s.clone())), &moe_cfg)
+                .map_err(|e| MoeRuntimeError::Load(format!("mixtral adapter: {e}")))?;
+        }
         let validation = validate_family_config(names.iter().map(|s| s.as_str()), &moe_cfg);
         if !validation.consistent {
-            return Err(MixtralRuntimeError::ConfigInconsistent(validation.notes));
+            return Err(MoeRuntimeError::ConfigInconsistent(validation.notes));
         }
 
-        // 5. Assemble per-layer weights (certified) + GQA K/V tiling.
+        // 5. Assemble per-layer weights (certified) + GQA tiling + optional bias.
         let map = super::data_plane::MoeWeightMap::from_tensors(
             reader.iter().map(|e| (e.name, e.shape.to_vec())),
         );
         let resolve = |name: &str| reader.get(name).and_then(|e| e.to_vec_f32().ok());
-        let get = |name: &str| -> Result<Vec<f32>, MixtralRuntimeError> {
+        let get = |name: &str| -> Result<Vec<f32>, MoeRuntimeError> {
             reader
                 .get(name)
                 .and_then(|e| e.to_vec_f32().ok())
-                .ok_or_else(|| MixtralRuntimeError::Load(format!("missing tensor {name}")))
+                .ok_or_else(|| MoeRuntimeError::Load(format!("missing tensor {name}")))
         };
 
         let mut layers: Vec<TinyDecoderWeights> = Vec::with_capacity(n_layers);
@@ -194,23 +230,36 @@ impl MixtralRuntime {
 
         for l in 0..n_layers {
             let p = format!("model.layers.{l}");
-            let layer_cfg = MoeLayerConfig::new(n_experts, topk, false, hidden, d_ff)
-                .map_err(|e| MixtralRuntimeError::Load(format!("layer cfg: {e}")))?;
+            let layer_cfg = MoeLayerConfig::new(n_experts, topk, has_shared, hidden, d_ff)
+                .map_err(|e| MoeRuntimeError::Load(format!("layer cfg: {e}")))?;
             let moe = RealMoeLayer::assemble(&map, l, layer_cfg, &resolve)
-                .map_err(|e| MixtralRuntimeError::Load(format!("assemble layer {l}: {e}")))?;
+                .map_err(|e| MoeRuntimeError::Load(format!("assemble layer {l}: {e}")))?;
 
             // Residency + cache wiring (RAM tier), self-validated below.
             let resident = ResidentExpertLayer::from_real_layer(&moe, ExpertTier::Ram)
-                .map_err(|e| MixtralRuntimeError::Load(format!("residency layer {l}: {e}")))?;
+                .map_err(|e| MoeRuntimeError::Load(format!("residency layer {l}: {e}")))?;
             Self::self_validate_residency(l, &moe, &resident)?;
             residency.push(resident);
             caches.push(ExpertCache::new(n_experts));
 
             // GQA: tile K/V to MHA shape so the certified MHA graph is reused.
             let w_k = to_mha_kv(&get(&format!("{p}.self_attn.k_proj.weight"))?, n_kv_heads, n_heads, head_dim, hidden)
-                .map_err(|e| MixtralRuntimeError::Load(format!("k tile layer {l}: {e}")))?;
+                .map_err(|e| MoeRuntimeError::Load(format!("k tile layer {l}: {e}")))?;
             let w_v = to_mha_kv(&get(&format!("{p}.self_attn.v_proj.weight"))?, n_kv_heads, n_heads, head_dim, hidden)
-                .map_err(|e| MixtralRuntimeError::Load(format!("v tile layer {l}: {e}")))?;
+                .map_err(|e| MoeRuntimeError::Load(format!("v tile layer {l}: {e}")))?;
+
+            // Optional Q/K/V bias (Qwen-MoE). K/V bias tiled to MHA like the
+            // weights; Q bias is already full `[n_heads*head_dim]`.
+            let attn_bias = if attn_has_bias {
+                let qb = get(&format!("{p}.self_attn.q_proj.bias"))?;
+                let kb = to_mha_kv(&get(&format!("{p}.self_attn.k_proj.bias"))?, n_kv_heads, n_heads, head_dim, 1)
+                    .map_err(|e| MoeRuntimeError::Load(format!("k bias tile layer {l}: {e}")))?;
+                let vb = to_mha_kv(&get(&format!("{p}.self_attn.v_proj.bias"))?, n_kv_heads, n_heads, head_dim, 1)
+                    .map_err(|e| MoeRuntimeError::Load(format!("v bias tile layer {l}: {e}")))?;
+                Some(QkvBias { q: qb, k: kb, v: vb })
+            } else {
+                None
+            };
 
             layers.push(TinyDecoderWeights {
                 input_ln: get(&format!("{p}.input_layernorm.weight"))?,
@@ -219,6 +268,7 @@ impl MixtralRuntime {
                 w_v,
                 w_o: get(&format!("{p}.self_attn.o_proj.weight"))?,
                 post_ln: get(&format!("{p}.post_attention_layernorm.weight"))?,
+                attn_bias,
                 moe,
             });
         }
@@ -239,7 +289,7 @@ impl MixtralRuntime {
             rms_eps,
         };
 
-        Ok(Self { weights, eos_token_ids, residency, caches })
+        Ok(Self { family, weights, eos_token_ids, residency, caches })
     }
 
     /// Self-check that the residency+cache path reproduces the certified MoE
@@ -248,9 +298,8 @@ impl MixtralRuntime {
         layer: usize,
         moe: &RealMoeLayer,
         resident: &ResidentExpertLayer,
-    ) -> Result<(), MixtralRuntimeError> {
+    ) -> Result<(), MoeRuntimeError> {
         let dm = moe.config.d_model;
-        // Deterministic probe vector.
         let mut state = (layer as u64).wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(1);
         let probe: Vec<f32> = (0..dm)
             .map(|_| {
@@ -263,19 +312,24 @@ impl MixtralRuntime {
         let mut cache = ExpertCache::new(moe.num_experts());
         let (got, _) = resident
             .forward_cached(&mut cache, &probe)
-            .map_err(|e| MixtralRuntimeError::Load(format!("residency probe: {e}")))?;
+            .map_err(|e| MoeRuntimeError::Load(format!("residency probe: {e}")))?;
         let want = moe
             .forward_auto(&probe)
-            .map_err(|e| MixtralRuntimeError::Load(format!("block probe: {e}")))?;
+            .map_err(|e| MoeRuntimeError::Load(format!("block probe: {e}")))?;
         let max_abs = got
             .iter()
             .zip(want.iter())
             .map(|(a, b)| (a - b).abs())
             .fold(0.0_f32, f32::max);
         if max_abs > 1e-5 {
-            return Err(MixtralRuntimeError::ResidencyMismatch { layer, max_abs_diff: max_abs });
+            return Err(MoeRuntimeError::ResidencyMismatch { layer, max_abs_diff: max_abs });
         }
         Ok(())
+    }
+
+    /// The recognised family.
+    pub fn family(&self) -> MoeFamily {
+        self.family
     }
 
     /// The EOS token ids parsed from the checkpoint config.
@@ -288,8 +342,7 @@ impl MixtralRuntime {
         self.weights.config.num_hidden_layers
     }
 
-    /// Residency-backed expert storage (RAM tier) per layer — the wired,
-    /// self-validated backend. Exposed for inspection/telemetry.
+    /// Residency-backed expert storage (RAM tier) per layer.
     pub fn residency(&self) -> &[ResidentExpertLayer] {
         &self.residency
     }
@@ -301,16 +354,31 @@ impl MixtralRuntime {
 
     /// **Generate** greedily from `prompt`, stopping at EOS or after
     /// `max_new_tokens`. Reuses the certified prefill + KV-cache + decode loop.
-    /// Returns the generated token ids (the emitted EOS token, if any, is
-    /// included). Deterministic.
     pub fn generate(&self, prompt: &[u32], max_new_tokens: usize) -> Vec<u32> {
         generate_greedy_tiny_eos(&self.weights, prompt, max_new_tokens, &self.eos_token_ids).tokens
+    }
+
+    /// Full-sequence forward logits `[seq * vocab]` for `tokens` (the certified
+    /// MOE-FULL-6 graph). Exposed so callers can validate end-to-end HF parity
+    /// through the productive runtime (not a test helper).
+    pub fn forward_logits(&self, tokens: &[u32]) -> Vec<f32> {
+        use crate::amg::builder::GraphBuilder;
+        use crate::tensor::Tensor;
+        let seq = tokens.len();
+        let mut gb = GraphBuilder::new();
+        let tok = gb.input();
+        let logits = super::full_forward::build_tiny_mixtral_graph(&mut gb, tok, seq, self.weights.clone());
+        gb.output(logits);
+        let mut g = gb.build();
+        let t = Tensor::new_cpu(vec![1, seq], tokens.iter().map(|&x| x as f32).collect());
+        g.execute(vec![t])[0].as_cpu_slice().to_vec()
     }
 }
 
 // ============================================================================
-// Tests (the real-checkpoint end-to-end run is in
-// tests/moe_mixtral_runtime_test.rs; here we cover the opt-in gate).
+// Tests (the real-checkpoint end-to-end runs are in
+// tests/moe_mixtral_runtime_test.rs and tests/moe_qwen_runtime_test.rs;
+// here we cover the opt-in gate).
 // ============================================================================
 
 #[cfg(test)]
@@ -318,21 +386,16 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    /// Without the opt-in, loading must refuse (controlled fail-loud). This is
-    /// safe regardless of env because we assert the *disabled* branch only when
-    /// the flag is unset.
     #[test]
     fn opt_in_disabled_refuses() {
         if experimental_moe_enabled() {
-            // The CI/dev shell has the flag set; skip (the enabled path is
-            // covered by the integration test).
             return;
         }
-        let err = MixtralRuntime::load_from_files(
+        let err = MoeRuntime::load_from_files(
             &PathBuf::from("/nonexistent/config.json"),
             &PathBuf::from("/nonexistent/model.safetensors"),
         )
         .unwrap_err();
-        assert!(matches!(err, MixtralRuntimeError::OptInDisabled));
+        assert!(matches!(err, MoeRuntimeError::OptInDisabled));
     }
 }

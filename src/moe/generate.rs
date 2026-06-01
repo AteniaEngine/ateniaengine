@@ -45,7 +45,7 @@ use crate::amg::builder::GraphBuilder;
 use crate::amg::graph::Graph;
 use crate::tensor::Tensor;
 
-use super::full_forward::TinyMixtralWeights;
+use super::full_forward::{add_proj_bias, TinyMixtralWeights};
 use super::graph_op::register_real_moe_layer;
 
 /// Per-layer KV cache wiring for a decode-step graph: the two cache parameter
@@ -118,9 +118,17 @@ pub fn build_tiny_mixtral_prefill(
         let wo = gb.parameter(Tensor::new_cpu(vec![hidden, hidden], lw.w_o));
 
         let h_flat = gb.reshape(h, vec![si, hi]);
-        let q_flat = gb.matmul_rhs_transposed(h_flat, wq);
-        let k_flat = gb.matmul_rhs_transposed(h_flat, wk);
-        let v_flat = gb.matmul_rhs_transposed(h_flat, wv);
+        let q_flat0 = gb.matmul_rhs_transposed(h_flat, wq);
+        let k_flat0 = gb.matmul_rhs_transposed(h_flat, wk);
+        let v_flat0 = gb.matmul_rhs_transposed(h_flat, wv);
+        let (q_flat, k_flat, v_flat) = match &lw.attn_bias {
+            Some(b) => (
+                add_proj_bias(gb, q_flat0, &b.q, hidden, inv_sqrt),
+                add_proj_bias(gb, k_flat0, &b.k, hidden, 1.0),
+                add_proj_bias(gb, v_flat0, &b.v, hidden, 1.0),
+            ),
+            None => (q_flat0, k_flat0, v_flat0),
+        };
 
         let mh = vec![1, si, n_heads as isize, head_dim as isize];
         let q = gb.reshape(q_flat, mh.clone());
@@ -213,9 +221,17 @@ pub fn build_tiny_mixtral_decode(
         let wo = gb.parameter(Tensor::new_cpu(vec![hidden, hidden], lw.w_o));
 
         let h_flat = gb.reshape(h, vec![1, hi]);
-        let q_flat = gb.matmul_rhs_transposed(h_flat, wq); // [1, hidden]
-        let k_flat = gb.matmul_rhs_transposed(h_flat, wk);
-        let v_flat = gb.matmul_rhs_transposed(h_flat, wv);
+        let q_flat0 = gb.matmul_rhs_transposed(h_flat, wq); // [1, hidden]
+        let k_flat0 = gb.matmul_rhs_transposed(h_flat, wk);
+        let v_flat0 = gb.matmul_rhs_transposed(h_flat, wv);
+        let (q_flat, k_flat, v_flat) = match &lw.attn_bias {
+            Some(b) => (
+                add_proj_bias(gb, q_flat0, &b.q, hidden, inv_sqrt),
+                add_proj_bias(gb, k_flat0, &b.k, hidden, 1.0),
+                add_proj_bias(gb, v_flat0, &b.v, hidden, 1.0),
+            ),
+            None => (q_flat0, k_flat0, v_flat0),
+        };
 
         let mh = vec![1, 1, nh, hd];
         let q = gb.reshape(q_flat, mh.clone());
@@ -441,6 +457,7 @@ mod tests {
                     w_v: seeded(l as u64 * 10 + 4, hidden * hidden),
                     w_o: seeded(l as u64 * 10 + 5, hidden * hidden),
                     post_ln: seeded(l as u64 * 10 + 6, hidden),
+                    attn_bias: None,
                     moe,
                 }
             })

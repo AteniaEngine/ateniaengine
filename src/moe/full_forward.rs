@@ -51,6 +51,17 @@ pub struct TinyMixtralConfig {
     pub rope_theta: u32,
 }
 
+/// **MOE-FULL-11** — optional Q/K/V attention biases (Qwen-MoE has them;
+/// Mixtral does not). Each vector is length `hidden` (`n_heads * head_dim`);
+/// the K/V biases must already be tiled to MHA shape (via `gqa::to_mha_kv`)
+/// when the model uses GQA, exactly like the K/V weights.
+#[derive(Debug, Clone)]
+pub struct QkvBias {
+    pub q: Vec<f32>,
+    pub k: Vec<f32>,
+    pub v: Vec<f32>,
+}
+
 /// Per-layer dense weights (attention + norms). Row-major HF layout
 /// `[out, in]` for the projections; γ vectors length `hidden`.
 #[derive(Debug, Clone)]
@@ -61,7 +72,26 @@ pub struct TinyDecoderWeights {
     pub w_v: Vec<f32>,
     pub w_o: Vec<f32>,
     pub post_ln: Vec<f32>,
+    /// **MOE-FULL-11** — optional Q/K/V biases (`None` = Mixtral / MHA-no-bias,
+    /// byte-identical to MOE-FULL-6). `Some` adds them post-projection.
+    pub attn_bias: Option<QkvBias>,
     pub moe: RealMoeLayer,
+}
+
+/// Add a `[1, hidden]` bias to a `[seq, hidden]` (or `[1, hidden]`) projection,
+/// optionally pre-scaled (the Q bias absorbs the `1/sqrt(head_dim)` score scale
+/// the same way `w_q` does). No-op-free: only called when a bias is present.
+pub(crate) fn add_proj_bias(
+    gb: &mut GraphBuilder,
+    flat: usize,
+    bias: &[f32],
+    hidden: usize,
+    scale: f32,
+) -> usize {
+    let data: Vec<f32> =
+        if scale == 1.0 { bias.to_vec() } else { bias.iter().map(|v| v * scale).collect() };
+    let bp = gb.parameter(Tensor::new_cpu(vec![1, hidden], data));
+    gb.broadcast_add(flat, bp)
 }
 
 /// All weights of the tiny MoE transformer.
@@ -123,9 +153,19 @@ pub fn build_tiny_mixtral_graph(
         let wo = gb.parameter(Tensor::new_cpu(vec![hidden, hidden], lw.w_o));
 
         let h_flat = gb.reshape(h, vec![si, hi]);
-        let q_flat = gb.matmul_rhs_transposed(h_flat, wq); // [seq, hidden]
-        let k_flat = gb.matmul_rhs_transposed(h_flat, wk);
-        let v_flat = gb.matmul_rhs_transposed(h_flat, wv);
+        let q_flat0 = gb.matmul_rhs_transposed(h_flat, wq); // [seq, hidden]
+        let k_flat0 = gb.matmul_rhs_transposed(h_flat, wk);
+        let v_flat0 = gb.matmul_rhs_transposed(h_flat, wv);
+        // MOE-FULL-11: optional Q/K/V biases (Qwen-MoE). Q bias absorbs the
+        // 1/sqrt(head_dim) score scale (mirrors the pre-scaled w_q).
+        let (q_flat, k_flat, v_flat) = match &lw.attn_bias {
+            Some(b) => (
+                add_proj_bias(gb, q_flat0, &b.q, hidden, inv_sqrt),
+                add_proj_bias(gb, k_flat0, &b.k, hidden, 1.0),
+                add_proj_bias(gb, v_flat0, &b.v, hidden, 1.0),
+            ),
+            None => (q_flat0, k_flat0, v_flat0),
+        };
 
         // 3. multi-head reshape [1, seq, n_heads, head_dim]
         let mh = vec![1, si, n_heads as isize, head_dim as isize];
@@ -247,6 +287,7 @@ mod tests {
                     w_v: seeded(l as u64 * 10 + 4, hidden * hidden),
                     w_o: seeded(l as u64 * 10 + 5, hidden * hidden),
                     post_ln: seeded(l as u64 * 10 + 6, hidden),
+                    attn_bias: None,
                     moe,
                 }
             })

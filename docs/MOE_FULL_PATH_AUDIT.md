@@ -278,11 +278,24 @@ active until the very end.
   (`[22,25,29] → [17,20]` stop on eos=20), deterministic, dense unaffected.
   1 unit + 3 integration tests.
 
-- **MOE-FULL-11 — General support (remaining).** Qwen-MoE / DeepSeek-MoE
-  productive enablement, VRAM expert tier, routing the decode hot path through
-  residency+cache (perf), CLI integration, real large-checkpoint certification.
+- **MOE-FULL-11 — Qwen-MoE runtime + DeepSeek-MoE block certification. ✅ DONE**
+  (see `docs/HANDOFF_MOE_FULL_11.md`). (1) **Qwen-MoE end-to-end**: the runtime
+  (now `MoeRuntime`, family-aware) loads a real tiny Qwen2-MoE (GQA, **Q/K/V
+  attention bias** added to the graph, packed experts, **shared expert** with
+  sigmoid gate, `norm_topk_prob=false`) and generates to EOS behind the opt-in —
+  full HF f64 parity **max_abs_diff 5.960e-08**. (2) **DeepSeek-MoE**: uses MLA
+  attention (out of scope) → end-to-end **not** enabled (refused with a clear
+  message); its **MoE block** is certified vs HF (`RealMoeLayer::forward_auto`,
+  **max_abs_diff 2.196e-04**, simple-routing reference). (3) **Mixtral
+  extended**: full-sequence runtime logits vs HF **7.451e-08**. (4) **Robustness**:
+  wrong family / invalid config / missing tensors / expert-count mismatch / MLA
+  → specific errors. ~no new dense-loader change. 5 + 17 tests.
 
-DeepSeek-MoE and MoE-GGUF are explicitly **after** this line.
+- **MOE-FULL-12 — Remaining.** DeepSeek MLA attention (new architecture), VRAM
+  expert tier, decode hot-path through residency+cache (perf), CLI, real
+  large-checkpoint certification.
+
+MoE-GGUF is explicitly **after** this line.
 
 ---
 

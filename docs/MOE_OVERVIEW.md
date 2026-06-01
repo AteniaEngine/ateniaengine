@@ -173,7 +173,9 @@ Layer-0 MoE block, Atenia vs an f64 reference, argmax matched in all cases:
 | Expert cache (LRU/prefetch/reuse) | ✅ Done (experimental) | MOE-FULL-9, `residency.rs::ExpertCache` | not on productive path |
 | Family recognition (Mixtral/Qwen-MoE) | ✅ Done (metadata) | MOE-FULL-9, `family.rs`, `moe_family_loader_test.rs` | recognise + validate only, no load |
 | Loader (family-aware fail-loud) | ⚠️ Fail-loud (prepared) | MOE-FULL-9, loader emits "Family: …, Productive support not enabled" | dense loader still refuses MoE (by design) |
-| Controlled Mixtral runtime (opt-in) | ✅ Done (experimental, Mixtral-only) | MOE-FULL-10, `runtime.rs`, `moe_mixtral_runtime_test.rs` (load→generate→EOS behind `ATENIA_EXPERIMENTAL_MOE=1`) | Mixtral only; no Qwen-MoE/DeepSeek/VRAM/CLI |
+| Controlled MoE runtime (opt-in) | ✅ Done (experimental, Mixtral + Qwen-MoE) | MOE-FULL-10/11, `runtime.rs` (`MoeRuntime`), `moe_mixtral_runtime_test.rs` / `moe_qwen_runtime_test.rs` (load→generate→EOS behind `ATENIA_EXPERIMENTAL_MOE=1`; Qwen full HF parity 5.960e-08) | Mixtral + Qwen-MoE only; no DeepSeek end-to-end (MLA); no VRAM/CLI |
+| Qwen-MoE attention bias | ✅ Done (experimental) | MOE-FULL-11, `full_forward.rs::QkvBias` | tiny fixture |
+| DeepSeek-MoE block | ✅ Certified (block only) | MOE-FULL-11, `moe_deepseek_block_test.rs` (2.196e-04 vs HF) | no end-to-end (MLA attention out of scope) |
 | Adapter Toolkit | ❌ Not integrated | — | **BLOCKER**: ATK has no MoE family/tensor spec |
 | Product loader | ❌ Fail-loud | `weight_mapper.rs` guard | **BLOCKER**: must lift fail-loud behind a validated, opt-in path |
 | CLI | ❌ Not integrated | — | **BLOCKER**: no MoE entry point |

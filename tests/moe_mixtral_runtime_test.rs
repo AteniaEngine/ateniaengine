@@ -10,7 +10,9 @@
 
 use std::path::PathBuf;
 
-use atenia_engine::moe::{classify_family, MixtralRuntime, MixtralRuntimeError, MoeFamily};
+use atenia_engine::moe::{
+    classify_family, MixtralRuntime, MixtralRuntimeError, MoeFamily, NumericalMetrics,
+};
 
 fn fixture_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures").join("moe")
@@ -65,6 +67,31 @@ fn controlled_mixtral_load_generate_eos() {
     // Determinism.
     let out2 = rt.generate(&prompt, 8);
     assert_eq!(out, out2, "controlled generation must be deterministic");
+}
+
+/// **MOE-FULL-11** — extended Mixtral validation: the productive runtime's
+/// full-sequence forward logits match the HuggingFace f64 reference (not just
+/// the greedy ids). Ties the runtime to the MOE-FULL-6 logit certification.
+#[test]
+fn mixtral_runtime_forward_matches_hf() {
+    unsafe {
+        std::env::set_var("ATENIA_EXPERIMENTAL_MOE", "1");
+    }
+    let rt = MixtralRuntime::load_from_files(&config_path(), &weights_path()).unwrap();
+
+    let j: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(fixture_dir().join("full_mixtral.json")).unwrap(),
+    )
+    .unwrap();
+    let ids: Vec<u32> =
+        j["input_ids"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as u32).collect();
+    let hf: Vec<f32> =
+        j["hf_logits"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap() as f32).collect();
+
+    let got = rt.forward_logits(&ids);
+    let m = NumericalMetrics::compute(&got, &hf).unwrap();
+    eprintln!("MIXTRAL RUNTIME forward vs HF: max_abs_diff={:.3e}", m.max_abs_diff);
+    assert!(m.max_abs_diff < 1e-3, "Mixtral runtime forward must match HF: {m:?}");
 }
 
 /// Dense checkpoints are unaffected — not classified as any MoE family.

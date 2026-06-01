@@ -32,15 +32,23 @@ evaluates *quantization policies* (BF16 / INT8 / AWQ / Hybrid / GPTQ) on a
 model against the F64 reference. AQS is CPU-only, opt-in, experimental, and
 not production certification — see [AQS_OVERVIEW.md](./AQS_OVERVIEW.md).
 
-**Mixture-of-experts: general support remains out of scope; one controlled
-experimental path exists.** The **dense loader still fails loud** on any MoE
-checkpoint. As of **MOE-FULL-10** a single controlled, opt-in productive path
-exists — `moe::runtime::MixtralRuntime` loads a real tiny **Mixtral** checkpoint
-and generates to EOS **only when `ATENIA_EXPERIMENTAL_MOE=1`** (without it, it
-refuses). This is **not** general MoE support: Qwen-MoE / DeepSeek-MoE / Mixtral
-8x7B are not enabled, there is no CLI entry, and it is not product-certified.
-DeepSeek-R1 distill checkpoints are dense Llama/Qwen derivatives (not MoE) and
-validate under their base family.
+**Mixture-of-experts: general support remains out of scope; a controlled
+experimental path exists for two families.** The **dense loader still fails
+loud** on any MoE checkpoint. As of **MOE-FULL-11** a controlled, opt-in
+productive runtime (`moe::runtime::MoeRuntime`) loads real tiny checkpoints and
+generates to EOS **only when `ATENIA_EXPERIMENTAL_MOE=1`** (without it, it
+refuses) for:
+- **Mixtral** — full HF f64 parity (7.451e-08), generate→EOS.
+- **Qwen-MoE** — full HF f64 parity (5.960e-08) incl. GQA, Q/K/V attention bias,
+  packed experts, shared expert (sigmoid gate), `norm_topk_prob=false`;
+  generate→EOS.
+
+**DeepSeek-MoE** is recognised and its **MoE block** is certified vs HF
+(2.196e-04), but **end-to-end generation is not enabled** — it uses MLA
+attention (a different architecture, out of scope). This is **not** general MoE
+support: no other families, no Mixtral/Qwen 8x-scale, no CLI entry, not
+product-certified. DeepSeek-R1 distill checkpoints are dense Llama/Qwen
+derivatives (not MoE) and validate under their base family.
 
 ## Per-family results
 

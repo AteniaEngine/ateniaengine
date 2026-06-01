@@ -99,7 +99,7 @@ pub use family::{
     classify_family, experimental_moe_enabled, moe_failloud_report, validate_family_config,
     FamilyConfigValidation, MoeFamily, MoeFamilyDescriptor, EXPERIMENTAL_MOE_ENV,
 };
-pub use runtime::{MixtralRuntime, MixtralRuntimeError};
+pub use runtime::{MixtralRuntime, MixtralRuntimeError, MoeRuntime, MoeRuntimeError};
 pub use fixture::{
     f64_reference_weight_bytes, recommend_strategy, FixtureMoESpec, FixtureSpecError,
     MoECertificationStrategy,

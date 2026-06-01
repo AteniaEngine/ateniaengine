@@ -77,6 +77,7 @@ fn load_weights() -> (TinyMixtralWeights, usize, Vec<f32>, Vec<f32>) {
                 w_v: get(&format!("{p}.self_attn.v_proj.weight")),
                 w_o: get(&format!("{p}.self_attn.o_proj.weight")),
                 post_ln: get(&format!("{p}.post_attention_layernorm.weight")),
+                attn_bias: None,
                 moe,
             }
         })
