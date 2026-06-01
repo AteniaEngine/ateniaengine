@@ -25,6 +25,8 @@ pub mod dense;
 pub mod detect;
 pub mod fixture;
 pub mod full_forward;
+/// **MOE-FULL-7** — experimental MoE generation (prefill + KV cache + decode).
+pub mod generate;
 pub mod graph_op;
 pub mod layer;
 /// **MOE-FULL-3** — experimental Mixtral family adapter (load-only metadata).

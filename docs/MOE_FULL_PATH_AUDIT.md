@@ -229,13 +229,22 @@ active until the very end.
   GQA** (fixture `n_kv == n_heads`); `1/√d` absorbed by pre-scaling `w_q`.
   3 unit + 7 integration tests; lib 753.
 
-- **MOE-FULL-7 — Generation + GQA + large-MoE residency (remaining).** KV cache
-  + decode loop, GQA, productive integration + fail-loud lift, experts via the
-  tiered WeightStore. This is what remains for real generation.
+- **MOE-FULL-7 — Generation: prefill + KV cache + incremental decode. ✅ DONE**
+  (see `docs/HANDOFF_MOE_FULL_7.md`). `src/moe/generate.rs` adds a prefill graph
+  that seeds a per-layer KV cache and an incremental decode graph (`seq=1`,
+  `rope_with_offset(cached_len)`, `concat(cache, new)` over the seq axis, single-
+  query attention with no mask), driven by a greedy loop that harvests
+  K_full/V_full and re-injects them via `Graph::overwrite_parameter`. No new
+  graph op. Locked two ways: **prefill+decode == full recompute** (the
+  MOE-FULL-6 graph is the oracle) and an offline HF f64 **greedy** reference
+  (`fixtures/moe/full_mixtral_gen.json`): generated ids match exactly,
+  per-step logits **max_abs_diff 4.470e-08**. 3 unit + 5 integration tests.
 
-- **MOE-FULL-7 — Memory/residency for large MoE.** Route experts through the
-  tiered `WeightStore` (don't materialise all in f32) so a real small-but-full
-  MoE fits. Only after correctness is proven.
+- **MOE-FULL-8 — GQA + large-MoE residency + productive integration
+  (remaining).** GQA (load-time K/V tile or graph repeat-kv), route experts
+  through the tiered `WeightStore` (don't materialise all in f32), a Mixtral
+  family adapter on the productive load path + an explicit fail-loud lift. Only
+  after correctness is proven.
 
 DeepSeek-MoE and MoE-GGUF are explicitly **after** this line.
 
