@@ -35,6 +35,14 @@ locked by regression tests.
 - **Public CLI.** `atenia generate`, `atenia run`, `atenia probe` are stable
   across the M4.9 → M11 series and documented in [CLI.md](./CLI.md).
   `cargo install --path .` produces a working binary on Windows and Linux.
+- **Real end-to-end (RUNTIME-REAL-1).** Re-confirmed on a real 2.2 GB
+  TinyLlama-1.1B HF checkpoint, RTX 4070: loads (201 params, ~4.46 GiB
+  resident, VRAM/RAM tiered) in ~13 s and greedily generates coherent,
+  factually-correct text ("The capital of France is" → "Paris."), deterministic
+  vs the committed fixture, EOS + bad-input handling intact. Certified vs f64
+  (max_abs_diff 0.076, argmax 4/4). See
+  [HANDOFF_RUNTIME_REAL_1.md](./HANDOFF_RUNTIME_REAL_1.md). Dense Llama-family
+  text generation is **GREEN**.
 - **Loaders.** Single-file and sharded HuggingFace safetensors; GGUF
   (F16 / Q8_0 / Q4_K_M / Q5_K / Q6_K). BF16 parameter storage (50 % RAM saving),
   BF16 KV cache (default on), RAM↔NVMe spill with chunked streaming.

@@ -254,25 +254,33 @@ fn tinyllama_pipeline_load_completes_with_full_param_set() {
     // mirroring `tinyllama_builder_test::build_full_*`.
     assert_eq!(pipe.store.len(), 201);
 
-    // Every parameter must be on F32 (default) or BF16 path
-    // — no Cuda / Disk leaked through extract_from_graph.
-    // Cuda / Disk variants were added in M6 (tier-planner residency)
-    // and are valid in *some* pipelines, but this M5 smoke goes
-    // through the legacy CPU loader path — neither tier should
-    // appear here. Explicit arms (rather than a wildcard) preserve
-    // the original assertion: regress if either tier leaks in.
+    // Residency tiers a parameter may legitimately land on after
+    // `from_model_dir`:
+    //
+    //   - `F32` / `Bf16`  — host-resident (CPU-only hosts, or tensors
+    //     the tier planner keeps in RAM).
+    //   - `Cuda`          — VRAM-resident. The default `from_model_dir`
+    //     path runs the M6 tier planner; on a CUDA host with a GPU it
+    //     legitimately uploads GPU-eligible tensors to VRAM as
+    //     `SharedParam::Cuda` (RUNTIME-REAL-1: TinyLlama places 154 of
+    //     201 tensors here on an RTX 4070). This is correct, not a leak.
+    //   - `Disk`          — NVMe-tiered when VRAM+RAM budgets are
+    //     exceeded (large models / constrained hosts).
+    //
+    // The original M5 assertion predated the tier planner and rejected
+    // `Cuda`/`Disk`; that premise no longer holds once M6 residency is
+    // active in the default path. What must still NEVER appear here is
+    // `CpuInt8Outlier`: this dense FP pipeline does no int8-outlier
+    // quantisation, so that variant leaking in is a real regression.
     use atenia_engine::amg::weight_store::SharedParam;
     for p in &pipe.store.params {
         match p {
-            SharedParam::F32 { .. } | SharedParam::Bf16 { .. } => {}
-            SharedParam::Cuda { .. } => {
-                panic!("M5 pipeline must not expose Cuda-resident params");
-            }
-            SharedParam::Disk { .. } => {
-                panic!("M5 pipeline must not expose Disk-resident params");
-            }
+            SharedParam::F32 { .. }
+            | SharedParam::Bf16 { .. }
+            | SharedParam::Cuda { .. }
+            | SharedParam::Disk { .. } => {}
             SharedParam::CpuInt8Outlier(_) => {
-                panic!("M5 pipeline must not expose CpuInt8Outlier-resident params");
+                panic!("dense TinyLlama pipeline must not expose CpuInt8Outlier-resident params");
             }
         }
     }
