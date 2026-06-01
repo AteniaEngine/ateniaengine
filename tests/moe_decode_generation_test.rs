@@ -10,7 +10,9 @@
 
 use std::path::PathBuf;
 
-use atenia_engine::moe::full_forward::{TinyDecoderWeights, TinyMixtralConfig, TinyMixtralWeights};
+use atenia_engine::moe::full_forward::{
+    MoeBlock, TinyDecoderWeights, TinyMixtralConfig, TinyMixtralWeights,
+};
 use atenia_engine::moe::generate::generate_greedy_tiny;
 use atenia_engine::moe::{detect_moe, MoeLayerConfig, MoeWeightMap, RealMoeLayer};
 use atenia_engine::v17::loader::safetensors_reader::SafetensorsReader;
@@ -56,7 +58,7 @@ fn load_weights() -> TinyMixtralWeights {
                 w_o: get(&format!("{p}.self_attn.o_proj.weight")),
                 post_ln: get(&format!("{p}.post_attention_layernorm.weight")),
                 attn_bias: None,
-                moe,
+                moe: MoeBlock::Owned(moe),
             }
         })
         .collect();

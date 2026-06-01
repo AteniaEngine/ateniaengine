@@ -108,6 +108,18 @@ locked by regression tests.
   every weight as f32 in RAM (~57 GB for Qwen1.5-MoE > 32 GB) — is **still
   open** and needs a separate bf16/disk-backed-residency engine milestone. See
   [HANDOFF_MOE_PROD_1.md](./HANDOFF_MOE_PROD_1.md).
+- **Disk-backed MoE expert residency (MOE-PROD-2) — done.** The **second**
+  RUNTIME-MOE-2 blocker (experts held as f32 in RAM) is removed:
+  `ATENIA_MOE_EXPERT_TIER=disk` streams each graph-MoE layer's experts onto NVMe
+  during load (peak RAM ~one layer, not the whole model) and runs them through
+  the certified `ResidentExpertLayer`. Disk-tier output is **bit-for-bit
+  identical** to RAM (`max_abs_diff == 0.0`, `tests/moe_residency_tier_test.rs`);
+  the RAM default is byte-identical to before. Estimate: Qwen1.5-MoE-A2.7B drops
+  from ~57 GB f32 RAM to ~3 GB steady (experts ~28.6 GB on NVMe) → **fits** the
+  32 GB host. Both engine blockers are now gone; reopening RUNTIME-MOE-2 is an
+  environment step (download + run). Caveats: disk-tier generation is slow (no
+  per-token expert cache yet); DeepSeek/MLA not tiered. See
+  [HANDOFF_MOE_PROD_2.md](./HANDOFF_MOE_PROD_2.md).
 - **Loaders.** Single-file and sharded HuggingFace safetensors; GGUF
   (F16 / Q8_0 / Q4_K_M / Q5_K / Q6_K). BF16 parameter storage (50 % RAM saving),
   BF16 KV cache (default on), RAM↔NVMe spill with chunked streaming.

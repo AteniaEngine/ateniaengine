@@ -24,6 +24,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use super::dense::MoeDenseLayer;
 use super::layer::{MoeExecutionConvention, MoeLayerError, RealMoeLayer};
+use super::residency::ResidentExpertLayer;
 use super::sparse::MoeSparseError;
 
 /// Process-global registry of synthetic MoE layers, indexed by the
@@ -198,28 +199,62 @@ pub fn execute_conditional_expert(
 // production path; real MoE checkpoints still fail loud (MOE-2).
 // ============================================================================
 
-/// Process-global registry of real MoE layers, indexed by the `layer_id`
-/// carried in `NodeType::MoeRealLayerReference`.
-fn real_registry() -> &'static Mutex<Vec<Arc<RealMoeLayer>>> {
-    static REG: OnceLock<Mutex<Vec<Arc<RealMoeLayer>>>> = OnceLock::new();
+/// A registered MoE layer behind the `MoeRealLayerReference` node. Either the
+/// RAM-f32 [`RealMoeLayer`] (default, fixtures) or — **MOE-PROD-2** — a
+/// tier-able [`ResidentExpertLayer`] whose experts live in bf16-RAM or on NVMe.
+/// `ResidentExpertLayer::forward` is **certified bit-identical** to
+/// `RealMoeLayer::forward_auto` (MOE-FULL-8), so the node output is unchanged.
+enum RegisteredMoe {
+    Real(Arc<RealMoeLayer>),
+    Resident(Arc<ResidentExpertLayer>),
+}
+
+/// Process-global registry of MoE layers, indexed by the `layer_id`
+/// carried in `NodeType::MoeRealLayerReference`. A single registry keeps ids
+/// unique across the `Real`/`Resident` variants.
+fn real_registry() -> &'static Mutex<Vec<RegisteredMoe>> {
+    static REG: OnceLock<Mutex<Vec<RegisteredMoe>>> = OnceLock::new();
     REG.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-/// Register a real MoE layer and return its `layer_id` for wiring a
-/// `MoeRealLayerReference` node. Registry only grows; ids stable per process.
+/// Register a real (RAM-f32) MoE layer and return its `layer_id`. Registry only
+/// grows; ids stable per process.
 pub fn register_real_moe_layer(layer: RealMoeLayer) -> u32 {
     let mut reg = real_registry().lock().expect("real moe registry poisoned");
-    reg.push(Arc::new(layer));
+    reg.push(RegisteredMoe::Real(Arc::new(layer)));
     (reg.len() - 1) as u32
 }
 
-/// Fetch a registered real MoE layer by id (clones the `Arc`).
+/// **MOE-PROD-2** — register a tier-able resident MoE layer (experts in
+/// bf16-RAM or on NVMe) and return its `layer_id`. The node forward delegates
+/// to the certified `ResidentExpertLayer::forward`.
+pub fn register_resident_moe_layer(layer: Arc<ResidentExpertLayer>) -> u32 {
+    let mut reg = real_registry().lock().expect("real moe registry poisoned");
+    reg.push(RegisteredMoe::Resident(layer));
+    (reg.len() - 1) as u32
+}
+
+/// Fetch a registered **real** (RAM-f32) MoE layer by id (clones the `Arc`).
+/// Returns `None` for resident-tier entries (use [`execute_real_moe_layer`]).
 pub fn get_real_moe_layer(layer_id: u32) -> Option<Arc<RealMoeLayer>> {
-    real_registry()
-        .lock()
-        .expect("real moe registry poisoned")
-        .get(layer_id as usize)
-        .cloned()
+    match real_registry().lock().expect("real moe registry poisoned").get(layer_id as usize) {
+        Some(RegisteredMoe::Real(l)) => Some(Arc::clone(l)),
+        _ => None,
+    }
+}
+
+/// Run one `[d_model]` row through a registered layer, dispatching on its tier.
+/// `Real` → `forward_auto`; `Resident` → certified-equal `forward` (drops the
+/// residency telemetry). Errors if the id is unknown.
+fn execute_moe_row(layer_id: u32, row: &[f32]) -> Result<Vec<f32>, MoeLayerError> {
+    let reg = real_registry().lock().expect("real moe registry poisoned");
+    match reg.get(layer_id as usize) {
+        Some(RegisteredMoe::Real(l)) => l.forward_auto(row),
+        Some(RegisteredMoe::Resident(l)) => l.forward(row).map(|(out, _info)| out),
+        None => Err(MoeLayerError::Binding(super::binding::MoeBindingError::LayerNotFound {
+            layer_id: layer_id as usize,
+        })),
+    }
 }
 
 /// Execute a registered real MoE layer on `input` using its **auto-resolved
@@ -232,19 +267,26 @@ pub fn get_real_moe_layer(layer_id: u32) -> Option<Arc<RealMoeLayer>> {
 /// row** (the MoE block is position-wise). The single-token case is bit-
 /// identical to before. Errors if the id is unknown or a row forward fails.
 pub fn execute_real_moe_layer(layer_id: u32, input: &[f32]) -> Result<Vec<f32>, MoeLayerError> {
-    let layer = get_real_moe_layer(layer_id)
-        .ok_or(MoeLayerError::Binding(super::binding::MoeBindingError::LayerNotFound {
-            layer_id: layer_id as usize,
-        }))?;
-    let d_model = layer.config.d_model;
-    // Single token, or a shape forward_auto will reject — delegate directly.
+    let d_model = {
+        let reg = real_registry().lock().expect("real moe registry poisoned");
+        match reg.get(layer_id as usize) {
+            Some(RegisteredMoe::Real(l)) => l.config.d_model,
+            Some(RegisteredMoe::Resident(l)) => l.config.d_model,
+            None => {
+                return Err(MoeLayerError::Binding(
+                    super::binding::MoeBindingError::LayerNotFound { layer_id: layer_id as usize },
+                ));
+            }
+        }
+    };
+    // Single token, or a shape the forward will reject — delegate directly.
     if input.len() == d_model || d_model == 0 || input.len() % d_model != 0 {
-        return layer.forward_auto(input);
+        return execute_moe_row(layer_id, input);
     }
     // MOE-FULL-6: multi-token — apply the position-wise MoE per row.
     let mut out = Vec::with_capacity(input.len());
     for chunk in input.chunks(d_model) {
-        out.extend(layer.forward_auto(chunk)?);
+        out.extend(execute_moe_row(layer_id, chunk)?);
     }
     Ok(out)
 }

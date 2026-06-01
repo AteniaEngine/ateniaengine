@@ -46,7 +46,8 @@ use crate::amg::graph::Graph;
 use crate::tensor::Tensor;
 
 use super::full_forward::{add_proj_bias, TinyMixtralWeights};
-use super::graph_op::register_real_moe_layer;
+#[cfg(test)]
+use super::full_forward::MoeBlock;
 
 /// Per-layer KV cache wiring for a decode-step graph: the two cache parameter
 /// slots that the runtime patches before the forward, and the two post-concat
@@ -160,7 +161,7 @@ pub fn build_tiny_mixtral_prefill(
         let h2_n = gb.rms_norm(x1, w.rms_eps);
         let h2 = gb.broadcast_mul(h2_n, g2);
 
-        let moe_id = register_real_moe_layer(lw.moe);
+        let moe_id = lw.moe.into_layer_id();
         let h2_flat = gb.reshape(h2, vec![(seq * hidden) as isize]);
         let moe_out = gb.moe_real_layer_reference(h2_flat, moe_id);
         let moe_3d = gb.reshape(moe_out, vec![1, si, hi]);
@@ -271,7 +272,7 @@ pub fn build_tiny_mixtral_decode(
         let h2_n = gb.rms_norm(x1, w.rms_eps);
         let h2 = gb.broadcast_mul(h2_n, g2);
 
-        let moe_id = register_real_moe_layer(lw.moe);
+        let moe_id = lw.moe.into_layer_id();
         let h2_flat = gb.reshape(h2, vec![hi]);
         let moe_out = gb.moe_real_layer_reference(h2_flat, moe_id);
         let moe_3d = gb.reshape(moe_out, vec![1, 1, hi]);
@@ -458,7 +459,7 @@ mod tests {
                     w_o: seeded(l as u64 * 10 + 5, hidden * hidden),
                     post_ln: seeded(l as u64 * 10 + 6, hidden),
                     attn_bias: None,
-                    moe,
+                    moe: MoeBlock::Owned(moe),
                 }
             })
             .collect();

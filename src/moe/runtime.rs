@@ -27,11 +27,14 @@
 
 use std::cell::RefCell;
 use std::path::Path;
+use std::sync::Arc;
 
 use serde_json::Value;
 
 use super::family::{classify_family, experimental_moe_enabled, validate_family_config, MoeFamily};
-use super::full_forward::{QkvBias, TinyDecoderWeights, TinyMixtralConfig, TinyMixtralWeights};
+use super::full_forward::{
+    MoeBlock, QkvBias, TinyDecoderWeights, TinyMixtralConfig, TinyMixtralWeights,
+};
 use super::generate::generate_greedy_tiny_eos;
 use super::gqa::to_mha_kv;
 use super::layer::{MoeLayerConfig, RealMoeLayer};
@@ -99,6 +102,17 @@ impl std::error::Error for MoeRuntimeError {}
 /// Back-compat aliases (MOE-FULL-10 named these `Mixtral*`).
 pub type MixtralRuntime = MoeRuntime;
 pub type MixtralRuntimeError = MoeRuntimeError;
+
+/// **MOE-PROD-2** — expert residency tier for the graph MoE families, from
+/// `ATENIA_MOE_EXPERT_TIER` (`disk` → NVMe-backed experts; anything else /
+/// unset → RAM-f32, the byte-identical default). Lets a large real MoE
+/// (e.g. Qwen1.5-MoE-A2.7B) load without holding all experts as f32 in RAM.
+fn expert_tier_from_env() -> ExpertTier {
+    match std::env::var("ATENIA_MOE_EXPERT_TIER").as_deref() {
+        Ok("disk") => ExpertTier::Disk,
+        _ => ExpertTier::Ram,
+    }
+}
 
 /// **MOE-PROD-1** — weight source for the MoE loader: a **single**
 /// `model.safetensors`, or a **sharded** checkpoint described by
@@ -234,9 +248,12 @@ pub struct MoeRuntime {
     backend: Backend,
     num_layers: usize,
     eos_token_ids: Vec<u32>,
-    /// Per-layer residency-backed expert storage (RAM tier) — the wired,
-    /// self-validated storage backend (bit-identical to the generation block).
-    residency: Vec<ResidentExpertLayer>,
+    /// Per-layer residency-backed expert storage — the wired, self-validated
+    /// storage backend (bit-identical to the generation block). RAM-f32 by
+    /// default; NVMe-backed (~0 host RAM) under `ATENIA_MOE_EXPERT_TIER=disk`
+    /// (MOE-PROD-2). `Arc` so the graph MoE node and this field can share the
+    /// same disk-backed layer without a second copy.
+    residency: Vec<Arc<ResidentExpertLayer>>,
     /// Per-layer expert LRU cache (MOE-FULL-9), available to the runtime.
     caches: Vec<ExpertCache>,
 }
@@ -334,33 +351,80 @@ impl MoeRuntime {
         }
 
         // 5. Assemble per-layer MoE + residency + cache (COMMON to all families).
+        //
+        // **MOE-PROD-2** — expert residency tier. Default `Ram` (RAM-f32),
+        // byte-identical to before; `ATENIA_MOE_EXPERT_TIER=disk` streams each
+        // layer's experts onto NVMe and frees the f32 copies before the next
+        // layer assembles, so peak load RAM is ~one layer (not the whole model).
+        // The graph families (Mixtral / Qwen-MoE) carry the tier into the MoE
+        // graph node via `MoeBlock`; DeepSeek's MLA forward consumes the
+        // `RealMoeLayer` imperatively, so it stays RAM-f32 (tier change is a
+        // follow-up). `ResidentExpertLayer::forward` is certified bit-identical
+        // to `RealMoeLayer::forward_auto` (MOE-FULL-8), so outputs are unchanged.
+        let expert_tier = if family == MoeFamily::DeepSeekMoe {
+            ExpertTier::Ram
+        } else {
+            expert_tier_from_env()
+        };
         let map = super::data_plane::MoeWeightMap::from_tensors(
             metas.iter().map(|(n, s)| (n.as_str(), s.clone())),
         );
         let resolve = |name: &str| source.get_f32(name);
-        let mut residency: Vec<ResidentExpertLayer> = Vec::with_capacity(n_layers);
+        let mut residency: Vec<Arc<ResidentExpertLayer>> = Vec::with_capacity(n_layers);
         let mut caches: Vec<ExpertCache> = Vec::with_capacity(n_layers);
-        let mut moes: Vec<RealMoeLayer> = Vec::with_capacity(n_layers);
+        let mut moe_blocks: Vec<MoeBlock> = Vec::with_capacity(n_layers);
+        let mut deepseek_moes: Vec<RealMoeLayer> = Vec::with_capacity(n_layers);
         for l in 0..n_layers {
             let layer_cfg = MoeLayerConfig::new(n_experts, topk, has_shared, hidden, d_ff)
                 .map_err(|e| MoeRuntimeError::Load(format!("layer cfg: {e}")))?;
             let moe = RealMoeLayer::assemble(&map, l, layer_cfg, &resolve)
                 .map_err(|e| MoeRuntimeError::Load(format!("assemble layer {l}: {e}")))?;
-            let resident = ResidentExpertLayer::from_real_layer(&moe, ExpertTier::Ram)
+            // Always certify the resident path reproduces the block (transient
+            // RAM resident, dropped after the check for the Disk tier).
+            let resident_ram = ResidentExpertLayer::from_real_layer(&moe, ExpertTier::Ram)
                 .map_err(|e| MoeRuntimeError::Load(format!("residency layer {l}: {e}")))?;
-            Self::self_validate_residency(l, &moe, &resident)?;
-            residency.push(resident);
+            Self::self_validate_residency(l, &moe, &resident_ram)?;
             caches.push(ExpertCache::new(n_experts));
-            moes.push(moe);
+
+            if family == MoeFamily::DeepSeekMoe {
+                residency.push(Arc::new(resident_ram));
+                deepseek_moes.push(moe);
+            } else {
+                match expert_tier {
+                    ExpertTier::Ram => {
+                        residency.push(Arc::new(resident_ram));
+                        moe_blocks.push(MoeBlock::Owned(moe));
+                    }
+                    ExpertTier::Disk => {
+                        let resident_disk = Arc::new(
+                            ResidentExpertLayer::from_real_layer(&moe, ExpertTier::Disk).map_err(
+                                |e| MoeRuntimeError::Load(format!("disk residency layer {l}: {e}")),
+                            )?,
+                        );
+                        // Free the f32 copies before the next layer assembles.
+                        drop(moe);
+                        drop(resident_ram);
+                        let block = MoeBlock::registered(Arc::clone(&resident_disk));
+                        residency.push(resident_disk);
+                        moe_blocks.push(block);
+                    }
+                }
+            }
         }
 
         // 6. Family-specific attention weights → backend.
         let backend = match family {
-            MoeFamily::DeepSeekMoe => {
-                Backend::Mla(build_deepseek(&v, source, vocab, hidden, n_layers, rms_eps, moes)?)
-            }
+            MoeFamily::DeepSeekMoe => Backend::Mla(build_deepseek(
+                &v,
+                source,
+                vocab,
+                hidden,
+                n_layers,
+                rms_eps,
+                deepseek_moes,
+            )?),
             _ => Backend::Graph(build_graph(
-                &v, source, family, vocab, hidden, n_layers, rms_eps, moes,
+                &v, source, family, vocab, hidden, n_layers, rms_eps, moe_blocks,
             )?),
         };
 
@@ -418,7 +482,7 @@ impl MoeRuntime {
     }
 
     /// Residency-backed expert storage (RAM tier) per layer.
-    pub fn residency(&self) -> &[ResidentExpertLayer] {
+    pub fn residency(&self) -> &[Arc<ResidentExpertLayer>] {
         &self.residency
     }
 
@@ -486,7 +550,7 @@ fn build_graph(
     hidden: usize,
     n_layers: usize,
     rms_eps: f32,
-    moes: Vec<RealMoeLayer>,
+    moe_blocks: Vec<MoeBlock>,
 ) -> Result<TinyMixtralWeights, MoeRuntimeError> {
     let n_heads = cfg_u(v, "num_attention_heads")?;
     let n_kv_heads = cfg_u(v, "num_key_value_heads")?;
@@ -504,7 +568,7 @@ fn build_graph(
     };
 
     let mut layers: Vec<TinyDecoderWeights> = Vec::with_capacity(n_layers);
-    for (l, moe) in moes.into_iter().enumerate() {
+    for (l, moe_block) in moe_blocks.into_iter().enumerate() {
         let p = format!("model.layers.{l}");
         let w_k = to_mha_kv(&get(&format!("{p}.self_attn.k_proj.weight"))?, n_kv_heads, n_heads, head_dim, hidden)
             .map_err(|e| MoeRuntimeError::Load(format!("k tile layer {l}: {e}")))?;
@@ -528,7 +592,7 @@ fn build_graph(
             w_o: get(&format!("{p}.self_attn.o_proj.weight"))?,
             post_ln: get(&format!("{p}.post_attention_layernorm.weight"))?,
             attn_bias,
-            moe,
+            moe: moe_block,
         });
     }
     Ok(TinyMixtralWeights {

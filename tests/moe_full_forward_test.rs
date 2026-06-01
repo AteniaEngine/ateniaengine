@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use atenia_engine::amg::builder::GraphBuilder;
 use atenia_engine::moe::full_forward::{
-    build_tiny_mixtral_graph, TinyDecoderWeights, TinyMixtralConfig, TinyMixtralWeights,
+    build_tiny_mixtral_graph, MoeBlock, TinyDecoderWeights, TinyMixtralConfig, TinyMixtralWeights,
 };
 use atenia_engine::moe::{
     detect_moe, MoeLayerConfig, MoeWeightMap, NumericalMetrics, RealMoeLayer,
@@ -78,7 +78,7 @@ fn load_weights() -> (TinyMixtralWeights, usize, Vec<f32>, Vec<f32>) {
                 w_o: get(&format!("{p}.self_attn.o_proj.weight")),
                 post_ln: get(&format!("{p}.post_attention_layernorm.weight")),
                 attn_bias: None,
-                moe,
+                moe: MoeBlock::Owned(moe),
             }
         })
         .collect();

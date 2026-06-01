@@ -39,6 +39,40 @@ use crate::tensor::Tensor;
 
 use super::graph_op::register_real_moe_layer;
 use super::layer::RealMoeLayer;
+use super::residency::ResidentExpertLayer;
+use std::sync::Arc;
+
+/// **MOE-PROD-2** — how a layer's MoE block is held for the graph backend:
+///
+/// * `Owned` — a RAM-f32 [`RealMoeLayer`], registered per forward. The default
+///   (every existing fixture / test): byte-identical to MOE-FULL-6.
+/// * `Registered` — a pre-registered, tier-able [`ResidentExpertLayer`]
+///   (experts in bf16-RAM or on NVMe) referenced by its registry `layer_id`.
+///   Registered **once** at load so cloning `TinyMixtralWeights` per forward
+///   costs a `u32`, not the expert weights, and the experts never have to be
+///   f32-resident in RAM. `ResidentExpertLayer::forward` is certified
+///   bit-identical to `RealMoeLayer::forward_auto` (MOE-FULL-8).
+#[derive(Debug, Clone)]
+pub enum MoeBlock {
+    Owned(RealMoeLayer),
+    Registered(u32),
+}
+
+impl MoeBlock {
+    /// Pre-register a resident layer once and wrap its id.
+    pub fn registered(layer: Arc<ResidentExpertLayer>) -> Self {
+        MoeBlock::Registered(super::graph_op::register_resident_moe_layer(layer))
+    }
+
+    /// Resolve to a graph `layer_id`: `Owned` registers (consuming) on demand;
+    /// `Registered` returns the existing id.
+    pub(crate) fn into_layer_id(self) -> u32 {
+        match self {
+            MoeBlock::Owned(m) => register_real_moe_layer(m),
+            MoeBlock::Registered(id) => id,
+        }
+    }
+}
 
 /// Tiny Mixtral hyperparameters (MHA, no GQA).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,7 +109,9 @@ pub struct TinyDecoderWeights {
     /// **MOE-FULL-11** — optional Q/K/V biases (`None` = Mixtral / MHA-no-bias,
     /// byte-identical to MOE-FULL-6). `Some` adds them post-projection.
     pub attn_bias: Option<QkvBias>,
-    pub moe: RealMoeLayer,
+    /// **MOE-PROD-2** — the MoE block, either RAM-f32 `Owned` (default) or a
+    /// pre-registered tier-able `Registered` resident layer.
+    pub moe: MoeBlock,
 }
 
 /// Add a `[1, hidden]` bias to a `[seq, hidden]` (or `[1, hidden]`) projection,
@@ -207,7 +243,7 @@ pub fn build_tiny_mixtral_graph(
 
         // 14. MoE block, position-wise: flatten [1,seq,hidden] → [seq*hidden],
         //     one MoE node applies the layer per row (MOE-FULL-6), reshape back.
-        let moe_id = register_real_moe_layer(lw.moe);
+        let moe_id = lw.moe.into_layer_id();
         let h2_flat = gb.reshape(h2, vec![(seq * hidden) as isize]);
         let moe_out = gb.moe_real_layer_reference(h2_flat, moe_id);
         let moe_3d = gb.reshape(moe_out, vec![1, si, hi]);
@@ -288,7 +324,7 @@ mod tests {
                     w_o: seeded(l as u64 * 10 + 5, hidden * hidden),
                     post_ln: seeded(l as u64 * 10 + 6, hidden),
                     attn_bias: None,
-                    moe,
+                    moe: MoeBlock::Owned(moe),
                 }
             })
             .collect();

@@ -153,6 +153,21 @@ Layer-0 MoE block, Atenia vs an f64 reference, argmax matched in all cases:
   RAM (385× saving vs full materialisation) with bit-identical output. Still
   experimental/CPU+NVMe/test-only; not on the productive load path.
 
+## MOE-PROD-2 — disk-backed MoE expert residency (engine)
+
+`ATENIA_MOE_EXPERT_TIER=disk` makes the graph-MoE families (Mixtral / Qwen-MoE)
+**stream** each layer's experts onto NVMe at load (peak RAM ~one layer) and run
+them through the certified `ResidentExpertLayer` (bit-identical to
+`RealMoeLayer::forward_auto`). The MoE node registry dispatches `Real`
+(RAM-f32, default) vs `Resident` (tiered); `TinyDecoderWeights.moe` is a
+`MoeBlock { Owned | Registered }`. Disk-tier output is **bit-for-bit identical**
+to RAM (`tests/moe_residency_tier_test.rs`, `max_abs_diff == 0.0`); the RAM
+default is byte-identical to before. Estimate: Qwen1.5-MoE-A2.7B ~57 GB f32 RAM →
+~3 GB steady (experts on NVMe), so it **fits** the 32 GB host. Both engine
+blockers for real small-MoE loading (shards + RAM) are now removed. Caveats:
+disk-tier generation is slow (no per-token expert cache in the node path yet);
+DeepSeek/MLA stays RAM-f32. See `HANDOFF_MOE_PROD_2.md`.
+
 ## MOE-PROD-1 — sharded MoE loading (engine)
 
 The controlled MoE runtime now loads **sharded** checkpoints
