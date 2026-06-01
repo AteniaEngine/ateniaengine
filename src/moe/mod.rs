@@ -32,6 +32,8 @@ pub mod layer;
 /// **MOE-FULL-3** — experimental Mixtral family adapter (load-only metadata).
 pub mod mixtral_adapter;
 pub mod numerical;
+/// **MOE-FULL-8** — experimental tiered expert residency (RAM / NVMe).
+pub mod residency;
 pub mod smoke;
 pub mod sparse;
 pub mod stack;

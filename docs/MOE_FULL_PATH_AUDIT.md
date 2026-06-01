@@ -240,11 +240,21 @@ active until the very end.
   (`fixtures/moe/full_mixtral_gen.json`): generated ids match exactly,
   per-step logits **max_abs_diff 4.470e-08**. 3 unit + 5 integration tests.
 
-- **MOE-FULL-8 — GQA + large-MoE residency + productive integration
-  (remaining).** GQA (load-time K/V tile or graph repeat-kv), route experts
-  through the tiered `WeightStore` (don't materialise all in f32), a Mixtral
-  family adapter on the productive load path + an explicit fail-loud lift. Only
-  after correctness is proven.
+- **MOE-FULL-8 — Large-MoE expert residency. ✅ DONE** (see
+  `docs/HANDOFF_MOE_FULL_8.md`). `src/moe/residency.rs` places expert weights
+  in Atenia's real residency tiers (`SharedParam` F32/RAM or `Disk`/NVMe via
+  `disk_tier`) and resolves only the router-selected top-k experts per token,
+  reusing the certified `route` + `top_k_routing_with` + SwiGLU + combine. No
+  WeightStore/loader/runtime change (it *consumes* the infra). Output is bit-
+  identical to `RealMoeLayer::forward_auto` (RAM and NVMe tiers). Evidence: a
+  128-expert layer on NVMe holds ~router-only bytes in host RAM (**385× saving**
+  vs full materialisation), only top-k materialised per forward. 6 unit + 4
+  integration tests.
+
+- **MOE-FULL-9 — GQA + productive integration (remaining).** GQA (load-time
+  K/V tile or graph repeat-kv), a Mixtral family adapter on the productive load
+  path + an explicit fail-loud lift, config-driven topology, VRAM expert tier.
+  Only after correctness is proven.
 
 DeepSeek-MoE and MoE-GGUF are explicitly **after** this line.
 

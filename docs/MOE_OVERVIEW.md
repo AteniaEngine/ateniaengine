@@ -145,8 +145,13 @@ Layer-0 MoE block, Atenia vs an f64 reference, argmax matched in all cases:
   norms, embeddings, lm_head, KV cache, or multi-token decode.
 - **No config.json parsing** in the productive sense (convention is inferred
   from tensor-name metadata only).
-- **No large-model execution**: the harness materialises all experts in f32,
-  so only small checkpoints are feasible today.
+- **Large-model residency (experimental mitigation, MOE-FULL-8)**: the legacy
+  harness materialises all experts in f32. `src/moe/residency.rs` now places
+  expert weights in Atenia's real residency tiers (`SharedParam` F32/RAM or
+  `Disk`/NVMe) and resolves only the **router-selected top-k** experts per
+  token. Demonstrated: a 128-expert layer on NVMe holds ~router-only bytes in
+  RAM (385× saving vs full materialisation) with bit-identical output. Still
+  experimental/CPU+NVMe/test-only; not on the productive load path.
 
 ## Production readiness
 
@@ -161,6 +166,9 @@ Layer-0 MoE block, Atenia vs an f64 reference, argmax matched in all cases:
 | Packed experts | ✅ Done (experimental) | MOE-15, `moe_packed_experts_test.rs` | layout assumed (gate-first), not config-confirmed |
 | HF parity | ✅ Validated | MOE-16/17, `moe_numerical_equivalence_test.rs`, `moe_hf_convention_test.rs` | tiny checkpoints only |
 | Convention selection | ✅ Done (experimental) | MOE-18, `moe_auto_convention_test.rs` | name-heuristic, not config-validated |
+| Full transformer forward | ✅ Done (experimental) | MOE-FULL-6, `moe_full_forward_test.rs` (7.451e-08 vs HF) | tiny fixture, MHA-no-GQA |
+| Generation (prefill+KV cache+decode) | ✅ Done (experimental) | MOE-FULL-7, `moe_decode_generation_test.rs` (4.470e-08 vs HF greedy) | greedy-only, tiny fixture |
+| Expert residency (RAM/NVMe tiers) | ✅ Done (experimental) | MOE-FULL-8, `residency.rs`, `moe_residency_test.rs` (385× saving, top-k only) | CPU+NVMe, not on productive load path |
 | Adapter Toolkit | ❌ Not integrated | — | **BLOCKER**: ATK has no MoE family/tensor spec |
 | Product loader | ❌ Fail-loud | `weight_mapper.rs` guard | **BLOCKER**: must lift fail-loud behind a validated, opt-in path |
 | CLI | ❌ Not integrated | — | **BLOCKER**: no MoE entry point |
