@@ -78,6 +78,16 @@ locked by regression tests.
   **Phi-3** (behavioural). Remaining gaps (f64 pipeline for Gemma/Phi,
   throughput, larger variants) are tracked as separate milestones, not new
   breadth validation.
+- **Real MoE generation (RUNTIME-MOE-1) — BLOCKED.** Attempted real Mixtral
+  end-to-end; the real Mixtral-8x7B weights are **not present** locally
+  (`models/Mixtral-8x7B-v0.1/` is a config+tokenizer stub; the only mixtral
+  weights in-tree are the synthetic MOE-FULL fixtures). MoE runtime/routing
+  stays **topology-certified** (MOE-FULL-15: `mixtral_scale` 1.639e-07,
+  `mixtral_layer0` 1.164e-10, scope `certified_scaled`) but **no real-weight run
+  exists**. Real Mixtral is **experimental / BLOCKED** pending: (1) provisioning
+  ~94 GB real weights (disk-tierable on NVMe but slow), and (2) a sharded-loader
+  task for the MoE path (real Mixtral is multi-shard; current MoE loader is
+  single-file). See [HANDOFF_RUNTIME_MOE_1.md](./HANDOFF_RUNTIME_MOE_1.md).
 - **Loaders.** Single-file and sharded HuggingFace safetensors; GGUF
   (F16 / Q8_0 / Q4_K_M / Q5_K / Q6_K). BF16 parameter storage (50 % RAM saving),
   BF16 KV cache (default on), RAM↔NVMe spill with chunked streaming.
