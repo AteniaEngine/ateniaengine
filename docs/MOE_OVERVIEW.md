@@ -169,6 +169,10 @@ Layer-0 MoE block, Atenia vs an f64 reference, argmax matched in all cases:
 | Full transformer forward | ✅ Done (experimental) | MOE-FULL-6, `moe_full_forward_test.rs` (7.451e-08 vs HF) | tiny fixture, MHA-no-GQA |
 | Generation (prefill+KV cache+decode) | ✅ Done (experimental) | MOE-FULL-7, `moe_decode_generation_test.rs` (4.470e-08 vs HF greedy) | greedy-only, tiny fixture |
 | Expert residency (RAM/NVMe tiers) | ✅ Done (experimental) | MOE-FULL-8, `residency.rs`, `moe_residency_test.rs` (385× saving, top-k only) | CPU+NVMe, not on productive load path |
+| GQA (grouped-query attention) | ✅ Done (experimental) | MOE-FULL-9, `gqa.rs`, `moe_gqa_test.rs` (5.960e-08 vs HF, n_kv≠n_heads) | tiny fixture |
+| Expert cache (LRU/prefetch/reuse) | ✅ Done (experimental) | MOE-FULL-9, `residency.rs::ExpertCache` | not on productive path |
+| Family recognition (Mixtral/Qwen-MoE) | ✅ Done (metadata) | MOE-FULL-9, `family.rs`, `moe_family_loader_test.rs` | recognise + validate only, no load |
+| Loader (family-aware fail-loud) | ⚠️ Fail-loud (prepared) | MOE-FULL-9, loader emits "Family: …, Productive support not enabled" | **BLOCKER**: still refuses MoE; activation is MOE-FULL-10 |
 | Adapter Toolkit | ❌ Not integrated | — | **BLOCKER**: ATK has no MoE family/tensor spec |
 | Product loader | ❌ Fail-loud | `weight_mapper.rs` guard | **BLOCKER**: must lift fail-loud behind a validated, opt-in path |
 | CLI | ❌ Not integrated | — | **BLOCKER**: no MoE entry point |

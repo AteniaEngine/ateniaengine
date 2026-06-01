@@ -23,10 +23,14 @@ pub mod data_plane;
 pub mod decoder_layer;
 pub mod dense;
 pub mod detect;
+/// **MOE-FULL-9** — MoE family recognition + loader fail-loud preparation.
+pub mod family;
 pub mod fixture;
 pub mod full_forward;
 /// **MOE-FULL-7** — experimental MoE generation (prefill + KV cache + decode).
 pub mod generate;
+/// **MOE-FULL-9** — Grouped-Query Attention via load-time K/V weight tiling.
+pub mod gqa;
 pub mod graph_op;
 pub mod layer;
 /// **MOE-FULL-3** — experimental Mixtral family adapter (load-only metadata).
@@ -88,6 +92,10 @@ pub use convention::MoeConventionResolver;
 pub use detect::{
     classify_tensor_name, detect_moe, is_moe_expert_tensor, is_moe_router_tensor,
     unsupported_message, MoeDetection, TensorNameInfo, TensorRole,
+};
+pub use family::{
+    classify_family, moe_failloud_report, validate_family_config, FamilyConfigValidation,
+    MoeFamily, MoeFamilyDescriptor,
 };
 pub use fixture::{
     f64_reference_weight_bytes, recommend_strategy, FixtureMoESpec, FixtureSpecError,

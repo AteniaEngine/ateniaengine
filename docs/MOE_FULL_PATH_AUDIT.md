@@ -251,10 +251,24 @@ active until the very end.
   vs full materialisation), only top-k materialised per forward. 6 unit + 4
   integration tests.
 
-- **MOE-FULL-9 — GQA + productive integration (remaining).** GQA (load-time
-  K/V tile or graph repeat-kv), a Mixtral family adapter on the productive load
-  path + an explicit fail-loud lift, config-driven topology, VRAM expert tier.
-  Only after correctness is proven.
+- **MOE-FULL-9 — GQA + expert cache + controlled productive preparation. ✅ DONE**
+  (see `docs/HANDOFF_MOE_FULL_9.md`). (1) **GQA** via load-time K/V weight
+  tiling (`src/moe/gqa.rs::tile_kv_weight`, replicates HF `repeat_kv`): the
+  certified MHA graph is reused unchanged; validated on a real GQA Mixtral
+  (n_heads=4, n_kv=2) at **max_abs_diff 5.960e-08** vs HF f64. (2) **Expert
+  cache** (`residency.rs::ExpertCache`): LRU + prefetch + reuse over the
+  MOE-FULL-8 tiers, so repeated routing is served from RAM (no constant NVMe
+  reads); bit-identical to the uncached forward. (3) **Family recognition**
+  (`src/moe/family.rs`): Mixtral / Qwen-MoE classification + config validation
+  (metadata/wiring only, no load activation). (4) **Loader preparation**: the
+  fail-loud guard now emits a family-aware report ("MoE detected / Family:
+  Mixtral / Productive support not enabled") yet **still returns
+  `MoeUnsupported`** — fail-loud unchanged. 18 unit + 7 integration tests.
+
+- **MOE-FULL-10 — Activation (remaining).** Lift fail-loud behind an explicit
+  opt-in, wire the residency+cache MoE block into the productive runtime/decode
+  path, VRAM expert tier, real-checkpoint certification. Only after the controlled
+  preparation above is reviewed.
 
 DeepSeek-MoE and MoE-GGUF are explicitly **after** this line.
 

@@ -49,6 +49,7 @@
 //!   them — `SharedParam` already has the `Cuda` arm — but they are out of
 //!   this milestone's scope.
 
+use std::collections::HashMap;
 use std::io;
 
 use crate::amg::weight_store::SharedParam;
@@ -282,6 +283,207 @@ impl ResidentExpertLayer {
     }
 }
 
+// ============================================================================
+// **MOE-FULL-9** — expert LRU cache (avoid constant NVMe reads).
+//
+// On-demand residency (MOE-FULL-8) re-reads an expert from its tier on every
+// forward that routes to it. For the NVMe tier that is an I/O hit per token.
+// The `ExpertCache` keeps recently-resolved experts materialised in RAM under
+// a bounded LRU budget, so repeated routing (the common case — a handful of
+// experts dominate) is served from RAM. Supports prefetch (warm specific
+// experts) and reuse (a cache hit skips the NVMe read entirely).
+// ============================================================================
+
+/// Cache instrumentation. `misses` equals the number of tier reads
+/// (NVMe/RAM resolutions) actually performed; `hits` are served from cache.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CacheStats {
+    /// Lookups served from the cache (no tier read).
+    pub hits: usize,
+    /// Lookups that required a tier read (NVMe/RAM resolution).
+    pub misses: usize,
+    /// Entries evicted under the LRU budget.
+    pub evictions: usize,
+    /// Experts loaded by an explicit `prefetch` call.
+    pub prefetched: usize,
+    /// Total weight bytes read from the tier (misses + prefetch).
+    pub tier_bytes_read: usize,
+}
+
+/// Bounded LRU cache of materialised experts, keyed by routed-expert index.
+/// Capacity 0 disables caching (every lookup is a miss). Owned by the caller
+/// and threaded across forwards so residency is amortised over a generation.
+#[derive(Debug)]
+pub struct ExpertCache {
+    capacity: usize,
+    clock: u64,
+    entries: HashMap<usize, (MoeDenseExpert, u64)>,
+    stats: CacheStats,
+}
+
+impl ExpertCache {
+    /// New cache holding at most `capacity` experts (0 = no caching).
+    pub fn new(capacity: usize) -> Self {
+        Self { capacity, clock: 0, entries: HashMap::new(), stats: CacheStats::default() }
+    }
+
+    /// Current resident entry count.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+    /// Cumulative statistics.
+    pub fn stats(&self) -> CacheStats {
+        self.stats
+    }
+    /// Whether expert `idx` is currently resident.
+    pub fn contains(&self, idx: usize) -> bool {
+        self.entries.contains_key(&idx)
+    }
+    /// Host-RAM bytes the cached experts occupy.
+    pub fn resident_bytes(&self) -> usize {
+        self.entries
+            .values()
+            .map(|(e, _)| (e.w_gate.len() + e.w_up.len() + e.w_down.len()) * 4)
+            .sum()
+    }
+
+    fn bump(&mut self) -> u64 {
+        self.clock += 1;
+        self.clock
+    }
+
+    /// Evict the least-recently-used entry if over budget.
+    fn evict_if_needed(&mut self) {
+        while self.capacity > 0 && self.entries.len() > self.capacity {
+            if let Some((&lru, _)) =
+                self.entries.iter().min_by_key(|(_, (_, used))| *used).map(|(k, v)| (k, v))
+            {
+                self.entries.remove(&lru);
+                self.stats.evictions += 1;
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// Insert (or refresh) a materialised expert. Used by `prefetch` and the
+    /// miss path. Counts neither hit nor miss by itself.
+    fn put(&mut self, idx: usize, expert: MoeDenseExpert) {
+        let t = self.bump();
+        self.entries.insert(idx, (expert, t));
+        // Capacity 0 means "do not retain": drop immediately after use.
+        self.evict_if_needed();
+    }
+}
+
+impl ResidentExpertLayer {
+    /// Resolve expert `idx` through `cache`: a hit reuses the RAM copy (no tier
+    /// read), a miss reads the tier, records the cost, and caches the result
+    /// (subject to the LRU budget). Returns an owned `MoeDenseExpert` clone for
+    /// the forward to consume (cheap relative to the tier read it avoids).
+    fn resolve_cached(
+        &self,
+        cache: &mut ExpertCache,
+        idx: usize,
+    ) -> Result<MoeDenseExpert, MoeLayerError> {
+        if let Some((expert, used)) = cache.entries.get_mut(&idx) {
+            cache.clock += 1;
+            *used = cache.clock;
+            cache.stats.hits += 1;
+            return Ok(expert.clone());
+        }
+        let (expert, bytes) = self.experts[idx]
+            .resolve()
+            .map_err(|e| MoeLayerError::Binding(super::binding::MoeBindingError::Dense(e)))?;
+        cache.stats.misses += 1;
+        cache.stats.tier_bytes_read += bytes;
+        if cache.capacity > 0 {
+            cache.put(idx, expert.clone());
+        }
+        Ok(expert)
+    }
+
+    /// Warm `cache` with the given routed experts (e.g. the hot set identified
+    /// by profiling). Each prefetched expert is read once from its tier and
+    /// retained under the LRU budget. Idempotent for already-resident experts.
+    pub fn prefetch(
+        &self,
+        cache: &mut ExpertCache,
+        indices: &[usize],
+    ) -> Result<(), MoeLayerError> {
+        for &idx in indices {
+            if idx >= self.experts.len() || cache.contains(idx) {
+                continue;
+            }
+            let (expert, bytes) = self.experts[idx]
+                .resolve()
+                .map_err(|e| MoeLayerError::Binding(super::binding::MoeBindingError::Dense(e)))?;
+            cache.stats.prefetched += 1;
+            cache.stats.tier_bytes_read += bytes;
+            cache.put(idx, expert);
+        }
+        Ok(())
+    }
+
+    /// Like [`Self::forward`], but routed experts are resolved through `cache`
+    /// (LRU + prefetch + reuse). Bit-identical output to [`Self::forward`];
+    /// the only difference is that repeated experts are served from RAM
+    /// instead of re-read from the tier. The `cache` accumulates stats across
+    /// calls — thread it through a whole generation to amortise residency.
+    pub fn forward_cached(
+        &self,
+        cache: &mut ExpertCache,
+        x: &[f32],
+    ) -> Result<(Vec<f32>, ResidencyInfo), MoeLayerError> {
+        let weights =
+            router_softmax(&self.w_router, self.config.num_experts, self.config.d_model, x)?;
+        let renormalize = matches!(self.convention, MoeExecutionConvention::Atenia);
+        let selection = top_k_routing_with(&weights, self.config.experts_per_token, renormalize)
+            .map_err(MoeLayerError::Sparse)?;
+
+        let mut out = vec![0.0_f32; self.config.d_model];
+        let mut materialized_bytes = 0usize;
+        for (slot, &e) in selection.indices.iter().enumerate() {
+            let before = cache.stats.tier_bytes_read;
+            let expert = self.resolve_cached(cache, e)?;
+            materialized_bytes += cache.stats.tier_bytes_read - before;
+            let y = expert
+                .forward(x)
+                .map_err(|err| MoeLayerError::Binding(super::binding::MoeBindingError::Dense(err)))?;
+            let w = selection.weights[slot];
+            for d in 0..self.config.d_model {
+                out[d] += w * y[d];
+            }
+        }
+
+        // Shared expert (Mixtral has none) — resolved directly each token.
+        if let Some(se) = &self.shared {
+            let (expert, bytes) = se
+                .resolve()
+                .map_err(|err| MoeLayerError::Binding(super::binding::MoeBindingError::Dense(err)))?;
+            materialized_bytes += bytes;
+            let s = expert
+                .forward(x)
+                .map_err(|err| MoeLayerError::Binding(super::binding::MoeBindingError::Dense(err)))?;
+            let scale = match self.convention {
+                MoeExecutionConvention::Atenia => 1.0_f32,
+                MoeExecutionConvention::HuggingFaceQwen => match &self.shared_gate {
+                    Some(g) => sigmoid_dot(g, x),
+                    None => 1.0,
+                },
+            };
+            for d in 0..self.config.d_model {
+                out[d] += scale * s[d];
+            }
+        }
+
+        Ok((out, ResidencyInfo { materialized_experts: selection.indices, materialized_bytes }))
+    }
+}
+
 /// Router softmax: `softmax(W_router · x)`, identical to
 /// [`MoeDenseLayer::route`]. f64 accumulation.
 fn router_softmax(
@@ -439,5 +641,87 @@ mod tests {
         assert_eq!(a, b, "RAM forward deterministic");
         assert_eq!(a, c, "RAM and NVMe tiers agree bit-for-bit");
         assert_eq!(ai.materialized_experts, ci.materialized_experts);
+    }
+
+    // ---- MOE-FULL-9: expert cache ----
+
+    #[test]
+    fn cached_forward_matches_uncached() {
+        let real = build_real(8, 8, 16);
+        let res = ResidentExpertLayer::from_real_layer(&real, ExpertTier::Disk).unwrap();
+        let mut cache = ExpertCache::new(4);
+        for s in 0..6u64 {
+            let x = seeded(500 + s, 8);
+            let (cached, _) = res.forward_cached(&mut cache, &x).unwrap();
+            let (plain, _) = res.forward(&x).unwrap();
+            assert_eq!(cached, plain, "cached forward must equal uncached (seed {s})");
+        }
+    }
+
+    #[test]
+    fn cache_reuse_avoids_tier_reads() {
+        // The SAME token routed twice: the second forward must be all hits
+        // (zero new tier reads).
+        let real = build_real(8, 8, 16);
+        let res = ResidentExpertLayer::from_real_layer(&real, ExpertTier::Disk).unwrap();
+        let mut cache = ExpertCache::new(8);
+        let x = seeded(77, 8);
+
+        let (_, _) = res.forward_cached(&mut cache, &x).unwrap();
+        let after_first = cache.stats();
+        assert_eq!(after_first.misses, 2, "first forward reads top-k=2 experts");
+        assert_eq!(after_first.hits, 0);
+
+        let (_, _) = res.forward_cached(&mut cache, &x).unwrap();
+        let after_second = cache.stats();
+        assert_eq!(after_second.misses, 2, "no NEW tier reads on the repeat");
+        assert_eq!(after_second.hits, 2, "the repeat is served from cache");
+    }
+
+    #[test]
+    fn prefetch_warms_cache_to_zero_misses() {
+        let real = build_real(6, 8, 16);
+        let res = ResidentExpertLayer::from_real_layer(&real, ExpertTier::Disk).unwrap();
+        let mut cache = ExpertCache::new(6);
+        // Prefetch ALL experts → subsequent forwards never touch the tier.
+        res.prefetch(&mut cache, &[0, 1, 2, 3, 4, 5]).unwrap();
+        assert_eq!(cache.stats().prefetched, 6);
+        assert_eq!(cache.len(), 6);
+        for s in 0..5u64 {
+            let x = seeded(900 + s, 8);
+            let (_, _) = res.forward_cached(&mut cache, &x).unwrap();
+        }
+        let st = cache.stats();
+        assert_eq!(st.misses, 0, "prefetched cache must serve every forward (0 misses)");
+        assert!(st.hits >= 10);
+    }
+
+    #[test]
+    fn lru_evicts_under_budget() {
+        // Capacity 1: each new distinct expert evicts the previous.
+        let real = build_real(8, 8, 16);
+        let res = ResidentExpertLayer::from_real_layer(&real, ExpertTier::Disk).unwrap();
+        let mut cache = ExpertCache::new(1);
+        for s in 0..6u64 {
+            let x = seeded(1234 + s * 7, 8);
+            let _ = res.forward_cached(&mut cache, &x).unwrap();
+        }
+        // Never exceeds the budget; evictions happened.
+        assert!(cache.len() <= 1);
+        assert!(cache.stats().evictions > 0, "capacity-1 cache must evict");
+    }
+
+    #[test]
+    fn capacity_zero_disables_caching() {
+        let real = build_real(4, 8, 16);
+        let res = ResidentExpertLayer::from_real_layer(&real, ExpertTier::Disk).unwrap();
+        let mut cache = ExpertCache::new(0);
+        let x = seeded(55, 8);
+        let _ = res.forward_cached(&mut cache, &x).unwrap();
+        let _ = res.forward_cached(&mut cache, &x).unwrap();
+        // Every lookup is a miss; nothing retained.
+        assert_eq!(cache.len(), 0);
+        assert_eq!(cache.stats().hits, 0);
+        assert_eq!(cache.stats().misses, 4);
     }
 }

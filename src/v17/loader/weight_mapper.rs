@@ -625,7 +625,12 @@ impl WeightMapper {
         // unaffected.
         let moe = crate::moe::detect_moe(reader.iter().map(|e| e.name));
         if moe.is_moe {
-            return Err(LoaderError::MoeUnsupported(crate::moe::unsupported_message(&moe)));
+            // **MOE-FULL-9** — still fail loud, but with a family-aware report
+            // (detect → identify family → name it) instead of the generic
+            // message. The fail-loud guard is unchanged: MoE never loads here.
+            return Err(LoaderError::MoeUnsupported(
+                crate::moe::moe_failloud_report(reader.iter().map(|e| e.name)),
+            ));
         }
 
         for entry in reader.iter() {
@@ -1129,7 +1134,12 @@ impl WeightMapper {
         // **MOE-2 fail-loud guard** — see the residency-plan loader above.
         let moe = crate::moe::detect_moe(reader.iter().map(|e| e.name));
         if moe.is_moe {
-            return Err(LoaderError::MoeUnsupported(crate::moe::unsupported_message(&moe)));
+            // **MOE-FULL-9** — still fail loud, but with a family-aware report
+            // (detect → identify family → name it) instead of the generic
+            // message. The fail-loud guard is unchanged: MoE never loads here.
+            return Err(LoaderError::MoeUnsupported(
+                crate::moe::moe_failloud_report(reader.iter().map(|e| e.name)),
+            ));
         }
 
         for entry in reader.iter() {
