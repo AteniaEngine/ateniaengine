@@ -394,3 +394,17 @@ an otherwise-proven decoder, making it the lowest-risk first full path.
 - **Audit only.** No `src/` changes, no behaviour change, no fail-loud lift,
   no CI change, no CUDA/generation/Adapter-Toolkit modification. Docs-only.
 - Fail-loud remains active; no MoE family is production-supported.
+
+---
+
+## Update — MOE-PROD-1 (sharded MoE loading)
+
+The MoE controlled runtime now loads **sharded** checkpoints
+(`model.safetensors.index.json` + multiple shards) via `MoeWeightSource`
+(`Single` | `Sharded`), bit-for-bit identical to single-file
+(`tests/moe_sharded_loader_test.rs`, `max_abs_diff == 0.0`). This unblocks the
+**sharding** dimension of real-MoE loading. The **f32-in-RAM** footprint (the
+compute backend holds every weight as f32; ~57 GB for Qwen1.5-MoE-A2.7B) is
+**still open** and is the remaining blocker for real small-MoE validation on a
+32 GB host — a future bf16/disk-residency engine milestone. See
+`HANDOFF_MOE_PROD_1.md`.

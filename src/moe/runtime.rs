@@ -25,6 +25,7 @@
 //! Without the opt-in the runtime refuses; the dense loader's fail-loud guard
 //! is **unchanged** and still refuses MoE. No CLI / VRAM / batching / quant.
 
+use std::cell::RefCell;
 use std::path::Path;
 
 use serde_json::Value;
@@ -39,6 +40,7 @@ use super::mla::{DeepseekConfig, DeepseekLayer, DeepseekWeights};
 use super::residency::{ExpertCache, ExpertTier, ResidentExpertLayer};
 use crate::nn::llama::moe_config::MoeConfig;
 use crate::v17::loader::safetensors_reader::SafetensorsReader;
+use crate::v17::loader::shard_index::ShardIndex;
 
 /// Generation backend: the AMG graph (Mixtral/Qwen MHA) or the imperative MLA
 /// forward (DeepSeek).
@@ -98,6 +100,107 @@ impl std::error::Error for MoeRuntimeError {}
 pub type MixtralRuntime = MoeRuntime;
 pub type MixtralRuntimeError = MoeRuntimeError;
 
+/// **MOE-PROD-1** — weight source for the MoE loader: a **single**
+/// `model.safetensors`, or a **sharded** checkpoint described by
+/// `model.safetensors.index.json` (real Mixtral / Qwen-MoE / DeepSeek-MoE are
+/// all multi-shard).
+///
+/// Exposes exactly the two operations the MoE assembly path needs — tensor
+/// metadata (`name`, `shape`) and a by-name `f32` resolver — so the rest of
+/// `load_from_files` / `build_graph` / `build_deepseek` is identical for both
+/// layouts and decodes bytes the same way (`TensorEntry::to_vec_f32`,
+/// lossless BF16→F32). It does **not** change residency: like the single-file
+/// path, decoded tensors still land in RAM as f32 in the compute backend (the
+/// f32-footprint reduction is a separate, larger task — see HANDOFF_MOE_PROD_1).
+///
+/// The sharded arm keeps a **single open shard** cached so consecutive
+/// by-name lookups (which are layer-ordered and shard-local in HF checkpoints)
+/// don't re-read a multi-GB shard per tensor — peak loader RAM is ~one shard,
+/// not all shards at once.
+enum MoeWeightSource {
+    Single(SafetensorsReader),
+    Sharded {
+        index: ShardIndex,
+        /// `(shard_filename, reader)` for the most-recently-touched shard.
+        cache: RefCell<Option<(String, SafetensorsReader)>>,
+    },
+}
+
+impl MoeWeightSource {
+    /// Open from a model **directory**: sharded when
+    /// `model.safetensors.index.json` is present, otherwise the first
+    /// `*.safetensors` in the directory (single-file, back-compat).
+    fn open_dir(dir: &Path) -> Result<Self, MoeRuntimeError> {
+        let index_path = dir.join("model.safetensors.index.json");
+        if index_path.exists() {
+            let index = ShardIndex::from_file(&index_path).map_err(|e| {
+                MoeRuntimeError::Load(format!("shard index {index_path:?}: {e:?}"))
+            })?;
+            return Ok(MoeWeightSource::Sharded { index, cache: RefCell::new(None) });
+        }
+        let st = std::fs::read_dir(dir)
+            .map_err(|e| MoeRuntimeError::Load(format!("read_dir {dir:?}: {e}")))?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .find(|p| p.extension().and_then(|x| x.to_str()) == Some("safetensors"))
+            .ok_or_else(|| {
+                MoeRuntimeError::Load(format!(
+                    "no model.safetensors.index.json and no .safetensors in {dir:?}"
+                ))
+            })?;
+        Self::open_file(&st)
+    }
+
+    /// Open a single `*.safetensors` file.
+    fn open_file(path: &Path) -> Result<Self, MoeRuntimeError> {
+        let reader = SafetensorsReader::open(path)
+            .map_err(|e| MoeRuntimeError::Load(format!("open {path:?}: {e:?}")))?;
+        Ok(MoeWeightSource::Single(reader))
+    }
+
+    /// All tensors as `(name, shape)` — drives family classification, config
+    /// cross-checks, the adapter recognizer, and the `MoeWeightMap`.
+    fn tensor_metas(&self) -> Result<Vec<(String, Vec<usize>)>, MoeRuntimeError> {
+        match self {
+            MoeWeightSource::Single(r) => {
+                Ok(r.iter().map(|e| (e.name.to_string(), e.shape.to_vec())).collect())
+            }
+            MoeWeightSource::Sharded { index, .. } => {
+                let mut out = Vec::with_capacity(index.weight_map.len());
+                for shard in index.shard_filenames() {
+                    let path = index.shard_path(&shard);
+                    let r = SafetensorsReader::open(&path).map_err(|e| {
+                        MoeRuntimeError::Load(format!("open shard {path:?}: {e:?}"))
+                    })?;
+                    for e in r.iter() {
+                        out.push((e.name.to_string(), e.shape.to_vec()));
+                    }
+                }
+                Ok(out)
+            }
+        }
+    }
+
+    /// Resolve one tensor by name to an owned `Vec<f32>` (lossless BF16/F16/F32
+    /// decode). `None` if the tensor is absent or its shard cannot be read.
+    fn get_f32(&self, name: &str) -> Option<Vec<f32>> {
+        match self {
+            MoeWeightSource::Single(r) => r.get(name).and_then(|e| e.to_vec_f32().ok()),
+            MoeWeightSource::Sharded { index, cache } => {
+                let shard = index.weight_map.get(name)?;
+                let mut cached = cache.borrow_mut();
+                let need_reopen = cached.as_ref().map(|(s, _)| s != shard).unwrap_or(true);
+                if need_reopen {
+                    let path = index.shard_path(shard);
+                    let r = SafetensorsReader::open(&path).ok()?;
+                    *cached = Some((shard.clone(), r));
+                }
+                let (_, r) = cached.as_ref()?;
+                r.get(name).and_then(|e| e.to_vec_f32().ok())
+            }
+        }
+    }
+}
+
 fn cfg_u(v: &Value, key: &str) -> Result<usize, MoeRuntimeError> {
     v.get(key)
         .and_then(Value::as_u64)
@@ -150,15 +253,49 @@ impl MoeRuntime {
         config_path: &Path,
         weights_path: &Path,
     ) -> Result<Self, MoeRuntimeError> {
+        // Controlled opt-in gate FIRST — fail loud before any filesystem I/O,
+        // so the runtime refuses regardless of the paths when the flag is unset.
+        if !experimental_moe_enabled() {
+            return Err(MoeRuntimeError::OptInDisabled);
+        }
+        let text = std::fs::read_to_string(config_path)
+            .map_err(|e| MoeRuntimeError::Config(format!("read {config_path:?}: {e}")))?;
+        let source = MoeWeightSource::open_file(weights_path)?;
+        Self::load_core(&text, &source)
+    }
+
+    /// **MOE-FULL-14 / MOE-PROD-1** — load from a model **directory**: finds
+    /// `config.json` and either `model.safetensors.index.json` (**sharded**) or
+    /// the first `*.safetensors` (**single-file**). CLI-friendly wrapper. Same
+    /// opt-in gate.
+    pub fn load_from_dir(dir: &Path) -> Result<Self, MoeRuntimeError> {
+        // Controlled opt-in gate FIRST — fail loud before any filesystem I/O.
+        if !experimental_moe_enabled() {
+            return Err(MoeRuntimeError::OptInDisabled);
+        }
+        let config = dir.join("config.json");
+        if !config.exists() {
+            return Err(MoeRuntimeError::Config(format!("no config.json in {dir:?}")));
+        }
+        let text = std::fs::read_to_string(&config)
+            .map_err(|e| MoeRuntimeError::Config(format!("read {config:?}: {e}")))?;
+        let source = MoeWeightSource::open_dir(dir)?;
+        Self::load_core(&text, &source)
+    }
+
+    /// Core MoE assembly: opt-in gate → config → family recognition → adapter
+    /// + config cross-check → per-layer MoE + residency → family backend.
+    /// Shared by the single-file and sharded entry points; the only difference
+    /// between them is the [`MoeWeightSource`], which decodes tensor bytes
+    /// identically (so single-file and sharded loads are bit-for-bit equal).
+    fn load_core(config_text: &str, source: &MoeWeightSource) -> Result<Self, MoeRuntimeError> {
         // 1. Controlled opt-in gate. Without it, fail loud exactly as before.
         if !experimental_moe_enabled() {
             return Err(MoeRuntimeError::OptInDisabled);
         }
 
         // 2. Parse config.json.
-        let text = std::fs::read_to_string(config_path)
-            .map_err(|e| MoeRuntimeError::Config(format!("read {config_path:?}: {e}")))?;
-        let v: Value = serde_json::from_str(&text)
+        let v: Value = serde_json::from_str(config_text)
             .map_err(|e| MoeRuntimeError::Config(format!("parse json: {e}")))?;
         let vocab = cfg_u(&v, "vocab_size")?;
         let hidden = cfg_u(&v, "hidden_size")?;
@@ -168,10 +305,9 @@ impl MoeRuntime {
         let rms_eps = v.get("rms_norm_eps").and_then(Value::as_f64).unwrap_or(1e-5) as f32;
         let eos_token_ids = parse_eos(&v);
 
-        // 3. Open the checkpoint and recognise the family.
-        let reader = SafetensorsReader::open(weights_path)
-            .map_err(|e| MoeRuntimeError::Load(format!("open {weights_path:?}: {e:?}")))?;
-        let names: Vec<String> = reader.iter().map(|e| e.name.to_string()).collect();
+        // 3. Resolve tensor metadata (single-file or sharded) and recognise family.
+        let metas = source.tensor_metas()?;
+        let names: Vec<String> = metas.iter().map(|(n, _)| n.clone()).collect();
         let family = match classify_family(names.iter().map(|s| s.as_str())) {
             Some(f) => f,
             None => return Err(MoeRuntimeError::NotMoe),
@@ -186,12 +322,10 @@ impl MoeRuntime {
         };
 
         // 4. Adapter validation (Mixtral) + config cross-check (all families).
-        let moe_cfg = MoeConfig::from_json_str(&text)
+        let moe_cfg = MoeConfig::from_json_str(config_text)
             .map_err(|e| MoeRuntimeError::Config(format!("moe config: {e}")))?;
         if family == MoeFamily::Mixtral {
-            let tensors: Vec<(&str, Vec<usize>)> =
-                reader.iter().map(|e| (e.name, e.shape.to_vec())).collect();
-            MixtralAdapter::recognize(tensors.iter().map(|(n, s)| (*n, s.clone())), &moe_cfg)
+            MixtralAdapter::recognize(metas.iter().map(|(n, s)| (n.as_str(), s.clone())), &moe_cfg)
                 .map_err(|e| MoeRuntimeError::Load(format!("mixtral adapter: {e}")))?;
         }
         let validation = validate_family_config(names.iter().map(|s| s.as_str()), &moe_cfg);
@@ -201,9 +335,9 @@ impl MoeRuntime {
 
         // 5. Assemble per-layer MoE + residency + cache (COMMON to all families).
         let map = super::data_plane::MoeWeightMap::from_tensors(
-            reader.iter().map(|e| (e.name, e.shape.to_vec())),
+            metas.iter().map(|(n, s)| (n.as_str(), s.clone())),
         );
-        let resolve = |name: &str| reader.get(name).and_then(|e| e.to_vec_f32().ok());
+        let resolve = |name: &str| source.get_f32(name);
         let mut residency: Vec<ResidentExpertLayer> = Vec::with_capacity(n_layers);
         let mut caches: Vec<ExpertCache> = Vec::with_capacity(n_layers);
         let mut moes: Vec<RealMoeLayer> = Vec::with_capacity(n_layers);
@@ -223,30 +357,14 @@ impl MoeRuntime {
         // 6. Family-specific attention weights → backend.
         let backend = match family {
             MoeFamily::DeepSeekMoe => {
-                Backend::Mla(build_deepseek(&v, &reader, vocab, hidden, n_layers, rms_eps, moes)?)
+                Backend::Mla(build_deepseek(&v, source, vocab, hidden, n_layers, rms_eps, moes)?)
             }
             _ => Backend::Graph(build_graph(
-                &v, &reader, family, vocab, hidden, n_layers, rms_eps, moes,
+                &v, source, family, vocab, hidden, n_layers, rms_eps, moes,
             )?),
         };
 
         Ok(Self { family, backend, num_layers: n_layers, eos_token_ids, residency, caches })
-    }
-
-    /// **MOE-FULL-14** — load from a model **directory**: finds `config.json`
-    /// and the first `*.safetensors` inside `dir`. CLI-friendly wrapper over
-    /// [`Self::load_from_files`]. Same opt-in gate.
-    pub fn load_from_dir(dir: &Path) -> Result<Self, MoeRuntimeError> {
-        let config = dir.join("config.json");
-        if !config.exists() {
-            return Err(MoeRuntimeError::Config(format!("no config.json in {dir:?}")));
-        }
-        let st = std::fs::read_dir(dir)
-            .map_err(|e| MoeRuntimeError::Load(format!("read_dir {dir:?}: {e}")))?
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .find(|p| p.extension().and_then(|x| x.to_str()) == Some("safetensors"))
-            .ok_or_else(|| MoeRuntimeError::Load(format!("no .safetensors in {dir:?}")))?;
-        Self::load_from_files(&config, &st)
     }
 
     /// Self-check that the residency+cache path reproduces the certified MoE
@@ -362,7 +480,7 @@ impl MoeRuntime {
 #[allow(clippy::too_many_arguments)]
 fn build_graph(
     v: &Value,
-    reader: &SafetensorsReader,
+    source: &MoeWeightSource,
     family: MoeFamily,
     vocab: usize,
     hidden: usize,
@@ -380,9 +498,8 @@ fn build_graph(
     let rope_theta = v.get("rope_theta").and_then(Value::as_f64).unwrap_or(10000.0) as u32;
     let attn_has_bias = family == MoeFamily::QwenMoe;
     let get = |name: &str| -> Result<Vec<f32>, MoeRuntimeError> {
-        reader
-            .get(name)
-            .and_then(|e| e.to_vec_f32().ok())
+        source
+            .get_f32(name)
             .ok_or_else(|| MoeRuntimeError::Load(format!("missing tensor {name}")))
     };
 
@@ -435,7 +552,7 @@ fn build_graph(
 #[allow(clippy::too_many_arguments)]
 fn build_deepseek(
     v: &Value,
-    reader: &SafetensorsReader,
+    source: &MoeWeightSource,
     vocab: usize,
     hidden: usize,
     n_layers: usize,
@@ -453,9 +570,8 @@ fn build_deepseek(
     // a mismatched config field like kv_lora_rank) fails with a clear error
     // instead of a silent out-of-range panic inside the imperative forward.
     let checked = |name: &str, expected: usize| -> Result<Vec<f32>, MoeRuntimeError> {
-        let v = reader
-            .get(name)
-            .and_then(|e| e.to_vec_f32().ok())
+        let v = source
+            .get_f32(name)
             .ok_or_else(|| MoeRuntimeError::Load(format!("missing tensor {name}")))?;
         if v.len() != expected {
             return Err(MoeRuntimeError::Load(format!(
@@ -487,9 +603,8 @@ fn build_deepseek(
         });
     }
     let get = |name: &str| -> Result<Vec<f32>, MoeRuntimeError> {
-        reader
-            .get(name)
-            .and_then(|e| e.to_vec_f32().ok())
+        source
+            .get_f32(name)
             .ok_or_else(|| MoeRuntimeError::Load(format!("missing tensor {name}")))
     };
     Ok(DeepseekWeights {

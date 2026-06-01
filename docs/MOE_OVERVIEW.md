@@ -153,6 +153,22 @@ Layer-0 MoE block, Atenia vs an f64 reference, argmax matched in all cases:
   RAM (385× saving vs full materialisation) with bit-identical output. Still
   experimental/CPU+NVMe/test-only; not on the productive load path.
 
+## MOE-PROD-1 — sharded MoE loading (engine)
+
+The controlled MoE runtime now loads **sharded** checkpoints
+(`model.safetensors.index.json` + multiple `model-NNNNN-of-NNNNN.safetensors`),
+not just single-file. A new `MoeWeightSource` (`Single` | `Sharded`) backs
+`load_from_dir`/`load_from_files`; `load_core`, `build_graph`, and
+`build_deepseek` consume it. A sharded load is **bit-for-bit identical** to the
+single-file load (`tests/moe_sharded_loader_test.rs`, `max_abs_diff == 0.0`),
+with clear errors for missing shard / missing tensor / corrupt index. The opt-in
+gate still fires before any I/O.
+
+**Still open (the second RUNTIME-MOE-2 blocker):** the compute backend holds
+every weight as f32 in RAM (~57 GB for Qwen1.5-MoE-A2.7B > 32 GB), so real small
+MoEs still need a bf16/disk-backed-residency milestone before they load on a
+32 GB host. See `HANDOFF_MOE_PROD_1.md`.
+
 ## Production readiness
 
 | Area | Status | Evidence | Blocker to production |

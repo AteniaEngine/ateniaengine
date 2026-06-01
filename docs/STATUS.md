@@ -99,6 +99,15 @@ locked by regression tests.
   milestone: (1) sharded safetensors loading in the MoE path, (2) disk-tier /
   bf16 residency — then validate Qwen1.5-MoE-A2.7B. See
   [HANDOFF_RUNTIME_MOE_2.md](./HANDOFF_RUNTIME_MOE_2.md).
+- **Sharded MoE loading (MOE-PROD-1) — done.** The MoE runtime now loads
+  **sharded** checkpoints (`model.safetensors.index.json` + multiple shards) via
+  a new `MoeWeightSource` (single-file **or** sharded), proven **bit-for-bit
+  identical** to single-file (`max_abs_diff == 0.0`) with clear errors for
+  missing shard / missing tensor / corrupt index. This removes the **first** of
+  the two RUNTIME-MOE-2 blockers. The **second** — the compute backend holding
+  every weight as f32 in RAM (~57 GB for Qwen1.5-MoE > 32 GB) — is **still
+  open** and needs a separate bf16/disk-backed-residency engine milestone. See
+  [HANDOFF_MOE_PROD_1.md](./HANDOFF_MOE_PROD_1.md).
 - **Loaders.** Single-file and sharded HuggingFace safetensors; GGUF
   (F16 / Q8_0 / Q4_K_M / Q5_K / Q6_K). BF16 parameter storage (50 % RAM saving),
   BF16 KV cache (default on), RAM↔NVMe spill with chunked streaming.
