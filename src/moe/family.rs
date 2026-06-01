@@ -29,6 +29,18 @@ use crate::nn::llama::moe_config::MoeConfig;
 
 use super::detect::detect_moe;
 
+/// Environment flag that opts in to the experimental controlled MoE path
+/// (MOE-FULL-10). When **unset**, every MoE path fails loud exactly as before.
+pub const EXPERIMENTAL_MOE_ENV: &str = "ATENIA_EXPERIMENTAL_MOE";
+
+/// Whether the experimental controlled MoE path is opted in
+/// (`ATENIA_EXPERIMENTAL_MOE=1`). This gates **only** the dedicated
+/// experimental Mixtral runtime ([`crate::moe::runtime`]); it does **not**
+/// lift the dense loader's fail-loud guard, which always refuses MoE.
+pub fn experimental_moe_enabled() -> bool {
+    std::env::var(EXPERIMENTAL_MOE_ENV).as_deref() == Ok("1")
+}
+
 /// A recognised MoE family. Metadata only — recognising a family does **not**
 /// enable loading it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -236,12 +248,24 @@ where
         .implied_expert_count()
         .map(|n| n.to_string())
         .unwrap_or_else(|| "unknown".to_string());
+    // MOE-FULL-10: a controlled Mixtral runtime exists behind an opt-in. The
+    // dense loader still refuses MoE (it cannot execute experts); the opt-in
+    // only enables the dedicated `moe::runtime::MixtralRuntime` entry.
+    let opt_in_hint = if family == "Mixtral" {
+        format!(
+            " A controlled experimental Mixtral runtime is available via \
+             moe::runtime::MixtralRuntime when {EXPERIMENTAL_MOE_ENV}=1 (opt-in); \
+             the dense loader still refuses MoE."
+        )
+    } else {
+        String::new()
+    };
     format!(
         "MoE detected\n\
          Family: {family} (experts={experts}, router_tensors={}, expert_tensors={}, shared_expert_tensors={})\n\
          Productive support not enabled (the experimental MoE path is opt-in / test-only; \
-         see docs/MOE_OVERVIEW.md and docs/HANDOFF_MOE_FULL_9.md). Loading this checkpoint \
-         as dense would silently drop the expert weights and produce a broken model.",
+         see docs/MOE_OVERVIEW.md and docs/HANDOFF_MOE_FULL_10.md). Loading this checkpoint \
+         as dense would silently drop the expert weights and produce a broken model.{opt_in_hint}",
         det.router_tensor_count, det.expert_tensor_count, det.shared_expert_tensor_count,
     )
 }

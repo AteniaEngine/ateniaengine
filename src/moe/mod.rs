@@ -38,6 +38,8 @@ pub mod mixtral_adapter;
 pub mod numerical;
 /// **MOE-FULL-8** — experimental tiered expert residency (RAM / NVMe).
 pub mod residency;
+/// **MOE-FULL-10** — controlled productive Mixtral runtime (opt-in).
+pub mod runtime;
 pub mod smoke;
 pub mod sparse;
 pub mod stack;
@@ -94,9 +96,10 @@ pub use detect::{
     unsupported_message, MoeDetection, TensorNameInfo, TensorRole,
 };
 pub use family::{
-    classify_family, moe_failloud_report, validate_family_config, FamilyConfigValidation,
-    MoeFamily, MoeFamilyDescriptor,
+    classify_family, experimental_moe_enabled, moe_failloud_report, validate_family_config,
+    FamilyConfigValidation, MoeFamily, MoeFamilyDescriptor, EXPERIMENTAL_MOE_ENV,
 };
+pub use runtime::{MixtralRuntime, MixtralRuntimeError};
 pub use fixture::{
     f64_reference_weight_bytes, recommend_strategy, FixtureMoESpec, FixtureSpecError,
     MoECertificationStrategy,

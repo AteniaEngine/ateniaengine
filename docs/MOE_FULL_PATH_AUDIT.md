@@ -265,10 +265,22 @@ active until the very end.
   Mixtral / Productive support not enabled") yet **still returns
   `MoeUnsupported`** — fail-loud unchanged. 18 unit + 7 integration tests.
 
-- **MOE-FULL-10 — Activation (remaining).** Lift fail-loud behind an explicit
-  opt-in, wire the residency+cache MoE block into the productive runtime/decode
-  path, VRAM expert tier, real-checkpoint certification. Only after the controlled
-  preparation above is reviewed.
+- **MOE-FULL-10 — Controlled productive Mixtral runtime. ✅ DONE** (see
+  `docs/HANDOFF_MOE_FULL_10.md`). `src/moe/runtime.rs::MixtralRuntime` is the
+  first **productive** MoE entry: behind the `ATENIA_EXPERIMENTAL_MOE=1` opt-in
+  it loads a real tiny Mixtral checkpoint (HF `config.json` + safetensors) and
+  generates to EOS, reusing the certified pipeline (family recognition →
+  Mixtral adapter validation → config cross-check → `RealMoeLayer::assemble` +
+  GQA K/V tiling → residency + expert cache, self-validated → the prefill/KV-
+  cache/decode loop with EOS stopping). Without the opt-in it refuses
+  (controlled fail-loud); the **dense loader's fail-loud guard is unchanged**.
+  Only **Mixtral** is enabled. Validated end-to-end: `load → generate → EOS`
+  (`[22,25,29] → [17,20]` stop on eos=20), deterministic, dense unaffected.
+  1 unit + 3 integration tests.
+
+- **MOE-FULL-11 — General support (remaining).** Qwen-MoE / DeepSeek-MoE
+  productive enablement, VRAM expert tier, routing the decode hot path through
+  residency+cache (perf), CLI integration, real large-checkpoint certification.
 
 DeepSeek-MoE and MoE-GGUF are explicitly **after** this line.
 

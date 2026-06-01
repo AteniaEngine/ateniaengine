@@ -304,8 +304,24 @@ pub fn generate_greedy_tiny(
     prompt: &[u32],
     max_new_tokens: usize,
 ) -> GreedyGeneration {
+    // No EOS stopping (MOE-FULL-7 behaviour) — generate exactly `max_new_tokens`.
+    generate_greedy_tiny_eos(w, prompt, max_new_tokens, &[])
+}
+
+/// **MOE-FULL-10** — like [`generate_greedy_tiny`] but stops early when a
+/// generated token is in `eos_token_ids` (the emitted EOS token is included in
+/// the returned `tokens`). With an empty `eos_token_ids` this is bit-identical
+/// to [`generate_greedy_tiny`] (generates exactly `max_new_tokens`). Used by the
+/// productive Mixtral runtime so `load → generate → EOS` terminates naturally.
+pub fn generate_greedy_tiny_eos(
+    w: &TinyMixtralWeights,
+    prompt: &[u32],
+    max_new_tokens: usize,
+    eos_token_ids: &[u32],
+) -> GreedyGeneration {
     assert!(!prompt.is_empty(), "generate_greedy_tiny: empty prompt");
     assert!(max_new_tokens >= 1, "generate_greedy_tiny: max_new_tokens must be >= 1");
+    let is_eos = |t: u32| eos_token_ids.contains(&t);
     let vocab = w.config.vocab_size;
     let prompt_len = prompt.len();
 
@@ -328,6 +344,11 @@ pub fn generate_greedy_tiny(
     let mut tokens = vec![first];
     let mut step_logits = vec![first_row];
     let mut next = first;
+
+    // EOS on the very first generated token → stop immediately.
+    if is_eos(first) {
+        return GreedyGeneration { tokens, step_logits };
+    }
 
     // ---- Decode loop ----
     for step in 0..(max_new_tokens - 1) {
@@ -355,6 +376,11 @@ pub fn generate_greedy_tiny(
 
         tokens.push(next);
         step_logits.push(ld);
+
+        // EOS → stop (the emitted EOS token is kept in `tokens`).
+        if is_eos(next) {
+            break;
+        }
     }
 
     GreedyGeneration { tokens, step_logits }

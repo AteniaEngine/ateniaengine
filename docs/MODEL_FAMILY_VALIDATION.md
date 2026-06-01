@@ -32,10 +32,15 @@ evaluates *quantization policies* (BF16 / INT8 / AWQ / Hybrid / GPTQ) on a
 model against the F64 reference. AQS is CPU-only, opt-in, experimental, and
 not production certification — see [AQS_OVERVIEW.md](./AQS_OVERVIEW.md).
 
-**Mixture-of-experts remains out of scope.** No MoE execution path exists;
-Mixtral / Mistral-MoE are not supported and fail loud. DeepSeek-R1 distill
-checkpoints are dense Llama/Qwen derivatives (not MoE) and validate under
-their base family.
+**Mixture-of-experts: general support remains out of scope; one controlled
+experimental path exists.** The **dense loader still fails loud** on any MoE
+checkpoint. As of **MOE-FULL-10** a single controlled, opt-in productive path
+exists — `moe::runtime::MixtralRuntime` loads a real tiny **Mixtral** checkpoint
+and generates to EOS **only when `ATENIA_EXPERIMENTAL_MOE=1`** (without it, it
+refuses). This is **not** general MoE support: Qwen-MoE / DeepSeek-MoE / Mixtral
+8x7B are not enabled, there is no CLI entry, and it is not product-certified.
+DeepSeek-R1 distill checkpoints are dense Llama/Qwen derivatives (not MoE) and
+validate under their base family.
 
 ## Per-family results
 

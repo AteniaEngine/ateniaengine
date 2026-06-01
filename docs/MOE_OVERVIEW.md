@@ -172,7 +172,8 @@ Layer-0 MoE block, Atenia vs an f64 reference, argmax matched in all cases:
 | GQA (grouped-query attention) | ✅ Done (experimental) | MOE-FULL-9, `gqa.rs`, `moe_gqa_test.rs` (5.960e-08 vs HF, n_kv≠n_heads) | tiny fixture |
 | Expert cache (LRU/prefetch/reuse) | ✅ Done (experimental) | MOE-FULL-9, `residency.rs::ExpertCache` | not on productive path |
 | Family recognition (Mixtral/Qwen-MoE) | ✅ Done (metadata) | MOE-FULL-9, `family.rs`, `moe_family_loader_test.rs` | recognise + validate only, no load |
-| Loader (family-aware fail-loud) | ⚠️ Fail-loud (prepared) | MOE-FULL-9, loader emits "Family: …, Productive support not enabled" | **BLOCKER**: still refuses MoE; activation is MOE-FULL-10 |
+| Loader (family-aware fail-loud) | ⚠️ Fail-loud (prepared) | MOE-FULL-9, loader emits "Family: …, Productive support not enabled" | dense loader still refuses MoE (by design) |
+| Controlled Mixtral runtime (opt-in) | ✅ Done (experimental, Mixtral-only) | MOE-FULL-10, `runtime.rs`, `moe_mixtral_runtime_test.rs` (load→generate→EOS behind `ATENIA_EXPERIMENTAL_MOE=1`) | Mixtral only; no Qwen-MoE/DeepSeek/VRAM/CLI |
 | Adapter Toolkit | ❌ Not integrated | — | **BLOCKER**: ATK has no MoE family/tensor spec |
 | Product loader | ❌ Fail-loud | `weight_mapper.rs` guard | **BLOCKER**: must lift fail-loud behind a validated, opt-in path |
 | CLI | ❌ Not integrated | — | **BLOCKER**: no MoE entry point |
