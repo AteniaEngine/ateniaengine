@@ -43,6 +43,15 @@ locked by regression tests.
   (max_abs_diff 0.076, argmax 4/4). See
   [HANDOFF_RUNTIME_REAL_1.md](./HANDOFF_RUNTIME_REAL_1.md). Dense Llama-family
   text generation is **GREEN**.
+- **Non-Llama end-to-end (RUNTIME-REAL-2).** Re-confirmed on a real 2.88 GB
+  Qwen2.5-1.5B-Instruct HF checkpoint (`Qwen2ForCausalLM`,
+  `llama-2-with-qkv-bias`: tied embeddings + QKV bias + 151936 vocab + θ=1e6),
+  RTX 4070: loads 338 tensors (~2.87 GiB resident, VRAM/RAM tiered) in ~12 s,
+  generates coherent + factually-correct text ("…is Paris."), deterministic,
+  EOS + bad-input intact. Matches f64 to **0.000335** (argmax 4/4 — tighter than
+  PyTorch BF16's own 1.53). See
+  [HANDOFF_RUNTIME_REAL_2.md](./HANDOFF_RUNTIME_REAL_2.md). Qwen2.5 dense text
+  generation is **GREEN**.
 - **Loaders.** Single-file and sharded HuggingFace safetensors; GGUF
   (F16 / Q8_0 / Q4_K_M / Q5_K / Q6_K). BF16 parameter storage (50 % RAM saving),
   BF16 KV cache (default on), RAM↔NVMe spill with chunked streaming.
