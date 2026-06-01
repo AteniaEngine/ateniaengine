@@ -432,27 +432,50 @@ fn build_deepseek(
     let qk_rope_head_dim = cfg_u(v, "qk_rope_head_dim")?;
     let v_head_dim = cfg_u(v, "v_head_dim")?;
     let rope_theta = v.get("rope_theta").and_then(Value::as_f64).unwrap_or(10000.0) as f32;
-    let get = |name: &str| -> Result<Vec<f32>, MoeRuntimeError> {
-        reader
+    let qk_head_dim = qk_nope_head_dim + qk_rope_head_dim;
+    // Validate tensor lengths against the config so a corrupt MLA checkpoint (or
+    // a mismatched config field like kv_lora_rank) fails with a clear error
+    // instead of a silent out-of-range panic inside the imperative forward.
+    let checked = |name: &str, expected: usize| -> Result<Vec<f32>, MoeRuntimeError> {
+        let v = reader
             .get(name)
             .and_then(|e| e.to_vec_f32().ok())
-            .ok_or_else(|| MoeRuntimeError::Load(format!("missing tensor {name}")))
+            .ok_or_else(|| MoeRuntimeError::Load(format!("missing tensor {name}")))?;
+        if v.len() != expected {
+            return Err(MoeRuntimeError::Load(format!(
+                "tensor {name}: expected {expected} elements (from config), got {}",
+                v.len()
+            )));
+        }
+        Ok(v)
     };
 
     let mut layers: Vec<DeepseekLayer> = Vec::with_capacity(n_layers);
     for (l, moe) in moes.into_iter().enumerate() {
         let p = format!("model.layers.{l}");
         layers.push(DeepseekLayer {
-            input_ln: get(&format!("{p}.input_layernorm.weight"))?,
-            w_q: get(&format!("{p}.self_attn.q_proj.weight"))?,
-            w_kv_a: get(&format!("{p}.self_attn.kv_a_proj_with_mqa.weight"))?,
-            kv_a_ln: get(&format!("{p}.self_attn.kv_a_layernorm.weight"))?,
-            w_kv_b: get(&format!("{p}.self_attn.kv_b_proj.weight"))?,
-            w_o: get(&format!("{p}.self_attn.o_proj.weight"))?,
-            post_ln: get(&format!("{p}.post_attention_layernorm.weight"))?,
+            input_ln: checked(&format!("{p}.input_layernorm.weight"), hidden)?,
+            w_q: checked(&format!("{p}.self_attn.q_proj.weight"), n_heads * qk_head_dim * hidden)?,
+            w_kv_a: checked(
+                &format!("{p}.self_attn.kv_a_proj_with_mqa.weight"),
+                (kv_lora_rank + qk_rope_head_dim) * hidden,
+            )?,
+            kv_a_ln: checked(&format!("{p}.self_attn.kv_a_layernorm.weight"), kv_lora_rank)?,
+            w_kv_b: checked(
+                &format!("{p}.self_attn.kv_b_proj.weight"),
+                n_heads * (qk_nope_head_dim + v_head_dim) * kv_lora_rank,
+            )?,
+            w_o: checked(&format!("{p}.self_attn.o_proj.weight"), hidden * n_heads * v_head_dim)?,
+            post_ln: checked(&format!("{p}.post_attention_layernorm.weight"), hidden)?,
             moe,
         });
     }
+    let get = |name: &str| -> Result<Vec<f32>, MoeRuntimeError> {
+        reader
+            .get(name)
+            .and_then(|e| e.to_vec_f32().ok())
+            .ok_or_else(|| MoeRuntimeError::Load(format!("missing tensor {name}")))
+    };
     Ok(DeepseekWeights {
         config: DeepseekConfig {
             vocab_size: vocab,

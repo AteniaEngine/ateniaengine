@@ -177,6 +177,7 @@ Layer-0 MoE block, Atenia vs an f64 reference, argmax matched in all cases:
 | Qwen-MoE attention bias | ✅ Done (experimental) | MOE-FULL-11, `full_forward.rs::QkvBias` | tiny fixture |
 | DeepSeek-MoE (MLA) end-to-end | ✅ Done (experimental, opt-in) | MOE-FULL-12, `mla.rs`, `moe_deepseek_runtime_test.rs` (MLA attn 9.999e-06, full-forward 1.475e-03 vs HF, greedy exact) | imperative MLA, no Q-LoRA/YaRN, no VRAM/CLI |
 | MLA attention | ✅ Done (experimental) | MOE-FULL-12, `mla.rs` (low-rank KV + interleaved RoPE) | tiny fixture, no latent KV cache |
+| Certification matrix | ✅ Done | MOE-FULL-13, `moe_certification_test.rs`; **official matrix in `docs/HANDOFF_MOE_FULL_13.md`** | Mixtral ×3 layouts (packed/classic/GQA), Qwen-MoE ×1, DeepSeek ×1+block; tiny fixtures only |
 | Adapter Toolkit | ❌ Not integrated | — | **BLOCKER**: ATK has no MoE family/tensor spec |
 | Product loader | ❌ Fail-loud | `weight_mapper.rs` guard | **BLOCKER**: must lift fail-loud behind a validated, opt-in path |
 | CLI | ❌ Not integrated | — | **BLOCKER**: no MoE entry point |

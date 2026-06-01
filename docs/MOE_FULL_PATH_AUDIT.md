@@ -304,9 +304,19 @@ active until the very end.
   the MoE block; argmax matches), **greedy ids exact** (`[14,9]` stop on eos=9),
   deterministic. Mixtral + Qwen unchanged. 3 unit + 4 integration tests.
 
-- **MOE-FULL-13 — Remaining.** Q-LoRA / YaRN-scaled RoPE, VRAM expert tier,
-  decode hot-path through residency+cache (perf), latent KV cache (MLA memory
-  win), CLI, real large-checkpoint certification.
+- **MOE-FULL-13 — Production certification campaign. ✅ DONE** (see
+  `docs/HANDOFF_MOE_FULL_13.md`, which holds the **official MoE certification
+  matrix**). Expanded Mixtral end-to-end runtime coverage to **three real
+  on-disk layouts** — packed-MHA (`full_mixtral`, 7.451e-08), classic
+  `w1/w3/w2` (`mixtral_classic`, 7.451e-08), packed-GQA (`gqa_mixtral`,
+  5.960e-08) — all generate→EOS. Added MLA tensor-shape validation (no silent
+  panics) + robustness tests (corrupt router / MLA shape → clear errors). No new
+  architecture / graph ops / families. Strategic review of what remains to drop
+  the "experimental" label is in the handoff.
+
+- **MOE-FULL-14 — Remaining.** Large-checkpoint certification (Mixtral-8x7B,
+  etc.), Qwen3-MoE (QK-norm), DeepSeek Q-LoRA + YaRN, productive load path + CLI,
+  numcert manifest, VRAM tier, latent KV cache.
 
 MoE-GGUF is explicitly **after** this line.
 

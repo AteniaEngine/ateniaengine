@@ -37,8 +37,11 @@ experimental path exists for three families.** The **dense loader still fails
 loud** on any MoE checkpoint. As of **MOE-FULL-12** a controlled, opt-in
 productive runtime (`moe::runtime::MoeRuntime`) loads real tiny checkpoints and
 generates to EOS **only when `ATENIA_EXPERIMENTAL_MOE=1`** (without it, it
-refuses) for:
-- **Mixtral** — full HF f64 parity (7.451e-08), generate→EOS.
+refuses). The **official MoE certification matrix** (per-checkpoint status +
+drift) lives in `docs/HANDOFF_MOE_FULL_13.md`. Summary:
+- **Mixtral** — full HF f64 parity across **three real on-disk layouts**:
+  packed-MHA (7.451e-08), classic `w1/w3/w2`-MHA (7.451e-08), packed-GQA
+  (5.960e-08); generate→EOS.
 - **Qwen-MoE** — full HF f64 parity (5.960e-08) incl. GQA, Q/K/V attention bias,
   packed experts, shared expert (sigmoid gate), `norm_topk_prob=false`;
   generate→EOS.
