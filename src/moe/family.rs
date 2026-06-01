@@ -51,6 +51,10 @@ pub enum MoeFamily {
     /// Qwen-MoE (`mlp.experts.{e}.gate_proj/...`, `mlp.gate` / `mlp.router`),
     /// usually with a sigmoid-gated shared expert.
     QwenMoe,
+    /// DeepSeek-MoE (`kv_a_proj_with_mqa` MLA attention, `mlp.shared_experts.*`
+    /// plural shared expert, packed routed experts). MLA distinguishes it from
+    /// Qwen-MoE.
+    DeepSeekMoe,
 }
 
 impl MoeFamily {
@@ -59,6 +63,7 @@ impl MoeFamily {
         match self {
             MoeFamily::Mixtral => "Mixtral",
             MoeFamily::QwenMoe => "Qwen-MoE",
+            MoeFamily::DeepSeekMoe => "DeepSeek-MoE",
         }
     }
 }
@@ -96,6 +101,13 @@ impl MoeFamily {
                 has_shared_expert: true,
                 renormalizes_topk: false,
             },
+            MoeFamily::DeepSeekMoe => MoeFamilyDescriptor {
+                family: self,
+                router_naming: "mlp.gate",
+                expert_layout: "packed mlp.experts.gate_up_proj/down_proj (+ mlp.shared_experts.*); MLA attention",
+                has_shared_expert: true,
+                renormalizes_topk: true,
+            },
         }
     }
 }
@@ -124,6 +136,7 @@ where
     let mut has_mlp_router = false;
     let mut has_qwen_classic_expert = false;
     let mut has_packed = false;
+    let mut has_deepseek = false;
     for n in &owned {
         if n.contains("block_sparse_moe") {
             has_block_sparse = true;
@@ -142,9 +155,15 @@ where
         if n.contains("mlp.experts.gate_up_proj") {
             has_packed = true;
         }
+        // DeepSeek: MLA (`kv_a_proj_with_mqa`) or the plural `shared_experts`.
+        if n.contains("kv_a_proj_with_mqa") || n.contains(".shared_experts.") {
+            has_deepseek = true;
+        }
     }
 
-    if has_block_sparse {
+    if has_deepseek {
+        Some(MoeFamily::DeepSeekMoe)
+    } else if has_block_sparse {
         Some(MoeFamily::Mixtral)
     } else if has_shared || has_mlp_router || has_qwen_classic_expert {
         Some(MoeFamily::QwenMoe)

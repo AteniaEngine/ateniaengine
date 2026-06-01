@@ -33,8 +33,8 @@ model against the F64 reference. AQS is CPU-only, opt-in, experimental, and
 not production certification — see [AQS_OVERVIEW.md](./AQS_OVERVIEW.md).
 
 **Mixture-of-experts: general support remains out of scope; a controlled
-experimental path exists for two families.** The **dense loader still fails
-loud** on any MoE checkpoint. As of **MOE-FULL-11** a controlled, opt-in
+experimental path exists for three families.** The **dense loader still fails
+loud** on any MoE checkpoint. As of **MOE-FULL-12** a controlled, opt-in
 productive runtime (`moe::runtime::MoeRuntime`) loads real tiny checkpoints and
 generates to EOS **only when `ATENIA_EXPERIMENTAL_MOE=1`** (without it, it
 refuses) for:
@@ -42,12 +42,14 @@ refuses) for:
 - **Qwen-MoE** — full HF f64 parity (5.960e-08) incl. GQA, Q/K/V attention bias,
   packed experts, shared expert (sigmoid gate), `norm_topk_prob=false`;
   generate→EOS.
+- **DeepSeek-MoE (MLA)** — imperative MLA attention (low-rank KV, decoupled
+  interleaved RoPE): MLA attention 9.999e-06 vs HF, full-forward 1.475e-03
+  (f32-vs-f64, MoE-block-dominated; greedy ids exact), generate→EOS. No Q-LoRA /
+  YaRN-scaled RoPE.
 
-**DeepSeek-MoE** is recognised and its **MoE block** is certified vs HF
-(2.196e-04), but **end-to-end generation is not enabled** — it uses MLA
-attention (a different architecture, out of scope). This is **not** general MoE
-support: no other families, no Mixtral/Qwen 8x-scale, no CLI entry, not
-product-certified. DeepSeek-R1 distill checkpoints are dense Llama/Qwen
+This is **not** general MoE support: no other families, no Mixtral/Qwen/DeepSeek
+8x-scale, no CLI entry, not product-certified. DeepSeek-R1 distill checkpoints
+are dense Llama/Qwen
 derivatives (not MoE) and validate under their base family.
 
 ## Per-family results

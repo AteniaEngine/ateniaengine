@@ -33,6 +33,8 @@ pub mod generate;
 pub mod gqa;
 pub mod graph_op;
 pub mod layer;
+/// **MOE-FULL-12** — DeepSeek-V2 MLA attention + imperative DeepSeek forward.
+pub mod mla;
 /// **MOE-FULL-3** — experimental Mixtral family adapter (load-only metadata).
 pub mod mixtral_adapter;
 pub mod numerical;

@@ -291,9 +291,22 @@ active until the very end.
   wrong family / invalid config / missing tensors / expert-count mismatch / MLA
   → specific errors. ~no new dense-loader change. 5 + 17 tests.
 
-- **MOE-FULL-12 — Remaining.** DeepSeek MLA attention (new architecture), VRAM
-  expert tier, decode hot-path through residency+cache (perf), CLI, real
-  large-checkpoint certification.
+- **MOE-FULL-12 — DeepSeek-MoE MLA end-to-end. ✅ DONE** (see
+  `docs/HANDOFF_MOE_FULL_12.md`). Implemented **MLA** (multi-head latent
+  attention: low-rank KV via `kv_a_proj_with_mqa`/`kv_a_layernorm`/`kv_b_proj`,
+  decoupled **interleaved (GPT-J) RoPE**, asymmetric qk/v head dims, shared
+  `k_pe`) **imperatively** (`src/moe/mla.rs`, f64 accumulation, correctness-
+  first), reusing the certified MoE block. `MoeRuntime` gained a dual backend
+  (graph for Mixtral/Qwen; MLA for DeepSeek) + the `MoeFamily::DeepSeekMoe`
+  family. Behind the opt-in, a real tiny DeepSeek-V2 loads, generates to EOS,
+  with a KV-cache decode loop. Validated vs HF f64: **MLA attention layer 0
+  max_abs_diff 9.999e-06**, **full-forward 1.475e-03** (f32-vs-f64, dominated by
+  the MoE block; argmax matches), **greedy ids exact** (`[14,9]` stop on eos=9),
+  deterministic. Mixtral + Qwen unchanged. 3 unit + 4 integration tests.
+
+- **MOE-FULL-13 — Remaining.** Q-LoRA / YaRN-scaled RoPE, VRAM expert tier,
+  decode hot-path through residency+cache (perf), latent KV cache (MLA memory
+  win), CLI, real large-checkpoint certification.
 
 MoE-GGUF is explicitly **after** this line.
 

@@ -31,13 +31,11 @@ fn sidecar() -> serde_json::Value {
 }
 
 #[test]
-fn deepseek_block_classifies_as_qwen_style_moe_family() {
-    // DeepSeek shares the Qwen-style MoE markers (shared_experts, mlp.gate);
-    // it is recognised as a MoE family (the MLA attention is what differs).
+fn deepseek_block_classifies_as_deepseek_family() {
+    // DeepSeek is recognised by its plural `shared_experts` marker (MOE-FULL-12).
     let reader = SafetensorsReader::open(&fixture_dir().join("deepseek_block.safetensors")).unwrap();
     let names: Vec<String> = reader.iter().map(|e| e.name.to_string()).collect();
-    // Recognised as a MoE family (Qwen-style markers: shared_experts + mlp.gate).
-    assert_eq!(classify_family(names.iter().map(|s| s.as_str())), Some(MoeFamily::QwenMoe));
+    assert_eq!(classify_family(names.iter().map(|s| s.as_str())), Some(MoeFamily::DeepSeekMoe));
 }
 
 #[test]

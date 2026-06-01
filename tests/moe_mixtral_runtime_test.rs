@@ -10,9 +10,7 @@
 
 use std::path::PathBuf;
 
-use atenia_engine::moe::{
-    classify_family, MixtralRuntime, MixtralRuntimeError, MoeFamily, NumericalMetrics,
-};
+use atenia_engine::moe::{classify_family, MixtralRuntime, MoeFamily, NumericalMetrics};
 
 fn fixture_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures").join("moe")
@@ -25,22 +23,13 @@ fn weights_path() -> PathBuf {
     fixture_dir().join("full_mixtral.safetensors")
 }
 
-/// End-to-end controlled path. One test owns the env var across both the
-/// disabled and enabled branches so it cannot race sibling tests.
+/// End-to-end controlled path: load → generate → EOS → deterministic. The
+/// opt-in-disabled refusal is covered by the lib unit test `opt_in_disabled_refuses`
+/// (in a process where no test sets the env var); here every test only *sets*
+/// the flag, so sibling tests in this binary never race on it.
 #[test]
 fn controlled_mixtral_load_generate_eos() {
-    // (a) Without the opt-in, the runtime refuses (fail-loud preserved).
-    unsafe {
-        std::env::remove_var("ATENIA_EXPERIMENTAL_MOE");
-    }
-    let err = MixtralRuntime::load_from_files(&config_path(), &weights_path()).unwrap_err();
-    assert!(
-        matches!(err, MixtralRuntimeError::OptInDisabled),
-        "without opt-in the runtime must refuse (got {err:?})"
-    );
-
-    // (b) With the opt-in, it loads and generates.
-    // SAFETY: this test owns the flag; no sibling test reads it.
+    // SAFETY: all tests in this file only set (never unset) the opt-in flag.
     unsafe {
         std::env::set_var("ATENIA_EXPERIMENTAL_MOE", "1");
     }

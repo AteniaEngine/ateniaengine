@@ -97,7 +97,10 @@ fn dense_checkpoint_refused_as_not_moe() {
 }
 
 #[test]
-fn mla_checkpoint_refused_unsupported_family() {
+fn malformed_deepseek_mla_reports_clear_error() {
+    // A DeepSeek (MLA) checkpoint is now recognised (MOE-FULL-12), but this one
+    // is incomplete (shared expert missing up/down; config lacks MLA fields) →
+    // a clear structural error (not OptIn/NotMoe), not a silent success.
     opt_in();
     let w = tmp("mla.safetensors");
     write_st(&w, &[
@@ -113,7 +116,15 @@ fn mla_checkpoint_refused_unsupported_family() {
     let c = tmp("mla_config.json");
     std::fs::write(&c, mixtral_config_json(4)).unwrap();
     let err = MoeRuntime::load_from_files(&c, &w).unwrap_err();
-    assert!(matches!(err, MoeRuntimeError::UnsupportedFamily(_)), "got {err:?}");
+    assert!(
+        matches!(
+            err,
+            MoeRuntimeError::Load(_)
+                | MoeRuntimeError::Config(_)
+                | MoeRuntimeError::ConfigInconsistent(_)
+        ),
+        "expected a clear structural error, got {err:?}"
+    );
 }
 
 #[test]

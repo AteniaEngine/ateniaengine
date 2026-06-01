@@ -35,9 +35,20 @@ use super::generate::generate_greedy_tiny_eos;
 use super::gqa::to_mha_kv;
 use super::layer::{MoeLayerConfig, RealMoeLayer};
 use super::mixtral_adapter::MixtralAdapter;
+use super::mla::{DeepseekConfig, DeepseekLayer, DeepseekWeights};
 use super::residency::{ExpertCache, ExpertTier, ResidentExpertLayer};
 use crate::nn::llama::moe_config::MoeConfig;
 use crate::v17::loader::safetensors_reader::SafetensorsReader;
+
+/// Generation backend: the AMG graph (Mixtral/Qwen MHA) or the imperative MLA
+/// forward (DeepSeek).
+#[derive(Debug)]
+enum Backend {
+    /// Mixtral / Qwen-MoE — the certified MHA(+bias) graph generation loop.
+    Graph(TinyMixtralWeights),
+    /// DeepSeek-MoE — the imperative MLA forward (MOE-FULL-12).
+    Mla(DeepseekWeights),
+}
 
 /// Errors from the controlled MoE runtime.
 #[derive(Debug)]
@@ -46,9 +57,6 @@ pub enum MoeRuntimeError {
     OptInDisabled,
     /// Not a MoE checkpoint at all.
     NotMoe,
-    /// A recognised MoE family that is **not enabled for generation** here
-    /// (e.g. DeepSeek-MoE / MLA). Carries an explanation.
-    UnsupportedFamily(String),
     /// `config.json` could not be read / parsed, or a required field is missing.
     Config(String),
     /// Safetensors read / tensor assembly error.
@@ -70,9 +78,6 @@ impl std::fmt::Display for MoeRuntimeError {
             ),
             MoeRuntimeError::NotMoe => {
                 write!(f, "moe-runtime: checkpoint is not a recognised MoE checkpoint")
-            }
-            MoeRuntimeError::UnsupportedFamily(m) => {
-                write!(f, "moe-runtime: family not enabled for generation: {m}")
             }
             MoeRuntimeError::Config(m) => write!(f, "moe-runtime: config error: {m}"),
             MoeRuntimeError::Load(m) => write!(f, "moe-runtime: load error: {m}"),
@@ -123,7 +128,8 @@ fn parse_eos(v: &Value) -> Vec<u32> {
 #[derive(Debug)]
 pub struct MoeRuntime {
     family: MoeFamily,
-    weights: TinyMixtralWeights,
+    backend: Backend,
+    num_layers: usize,
     eos_token_ids: Vec<u32>,
     /// Per-layer residency-backed expert storage (RAM tier) — the wired,
     /// self-validated storage backend (bit-identical to the generation block).
@@ -157,20 +163,12 @@ impl MoeRuntime {
         let vocab = cfg_u(&v, "vocab_size")?;
         let hidden = cfg_u(&v, "hidden_size")?;
         let n_layers = cfg_u(&v, "num_hidden_layers")?;
-        let n_heads = cfg_u(&v, "num_attention_heads")?;
-        let n_kv_heads = cfg_u(&v, "num_key_value_heads")?;
-        let head_dim = v
-            .get("head_dim")
-            .and_then(Value::as_u64)
-            .map(|n| n as usize)
-            .unwrap_or(hidden / n_heads.max(1));
-        let n_experts = cfg_u_any(&v, &["num_local_experts", "num_experts"])?;
+        let n_experts = cfg_u_any(&v, &["num_local_experts", "num_experts", "n_routed_experts"])?;
         let topk = cfg_u(&v, "num_experts_per_tok")?;
-        let rope_theta = v.get("rope_theta").and_then(Value::as_f64).unwrap_or(10000.0) as u32;
         let rms_eps = v.get("rms_norm_eps").and_then(Value::as_f64).unwrap_or(1e-5) as f32;
         let eos_token_ids = parse_eos(&v);
 
-        // 3. Open the checkpoint and recognise + gate the family.
+        // 3. Open the checkpoint and recognise the family.
         let reader = SafetensorsReader::open(weights_path)
             .map_err(|e| MoeRuntimeError::Load(format!("open {weights_path:?}: {e:?}")))?;
         let names: Vec<String> = reader.iter().map(|e| e.name.to_string()).collect();
@@ -178,25 +176,14 @@ impl MoeRuntime {
             Some(f) => f,
             None => return Err(MoeRuntimeError::NotMoe),
         };
-        // DeepSeek-MoE (MLA) is recognised by `family` only when it carries
-        // Qwen-style markers; MLA checkpoints carry `kv_a_proj_with_mqa` and
-        // have no `k_proj`/`v_proj` → refuse generation explicitly.
-        let has_mla = names.iter().any(|n| n.contains("kv_a_proj_with_mqa"));
-        if has_mla {
-            return Err(MoeRuntimeError::UnsupportedFamily(
-                "DeepSeek-MoE uses MLA attention (kv_a_proj_with_mqa); not modelled by the \
-                 experimental runtime. Its MoE block is certified separately."
-                    .into(),
-            ));
-        }
 
-        // Per-family parameters (the only family-divergent knobs).
-        let (has_shared, attn_has_bias) = match family {
-            MoeFamily::Mixtral => (false, false),
-            MoeFamily::QwenMoe => (true, true),
+        // Per-family knobs: shared expert + routed-expert FFN size.
+        let (has_shared, d_ff) = match family {
+            MoeFamily::Mixtral => (false, cfg_u(&v, "intermediate_size")?),
+            MoeFamily::QwenMoe | MoeFamily::DeepSeekMoe => {
+                (true, cfg_u_any(&v, &["moe_intermediate_size", "intermediate_size"])?)
+            }
         };
-        // Routed-expert FFN size: Qwen uses `moe_intermediate_size`.
-        let d_ff = cfg_u_any(&v, &["moe_intermediate_size", "intermediate_size"])?;
 
         // 4. Adapter validation (Mixtral) + config cross-check (all families).
         let moe_cfg = MoeConfig::from_json_str(&text)
@@ -212,84 +199,38 @@ impl MoeRuntime {
             return Err(MoeRuntimeError::ConfigInconsistent(validation.notes));
         }
 
-        // 5. Assemble per-layer weights (certified) + GQA tiling + optional bias.
+        // 5. Assemble per-layer MoE + residency + cache (COMMON to all families).
         let map = super::data_plane::MoeWeightMap::from_tensors(
             reader.iter().map(|e| (e.name, e.shape.to_vec())),
         );
         let resolve = |name: &str| reader.get(name).and_then(|e| e.to_vec_f32().ok());
-        let get = |name: &str| -> Result<Vec<f32>, MoeRuntimeError> {
-            reader
-                .get(name)
-                .and_then(|e| e.to_vec_f32().ok())
-                .ok_or_else(|| MoeRuntimeError::Load(format!("missing tensor {name}")))
-        };
-
-        let mut layers: Vec<TinyDecoderWeights> = Vec::with_capacity(n_layers);
         let mut residency: Vec<ResidentExpertLayer> = Vec::with_capacity(n_layers);
         let mut caches: Vec<ExpertCache> = Vec::with_capacity(n_layers);
-
+        let mut moes: Vec<RealMoeLayer> = Vec::with_capacity(n_layers);
         for l in 0..n_layers {
-            let p = format!("model.layers.{l}");
             let layer_cfg = MoeLayerConfig::new(n_experts, topk, has_shared, hidden, d_ff)
                 .map_err(|e| MoeRuntimeError::Load(format!("layer cfg: {e}")))?;
             let moe = RealMoeLayer::assemble(&map, l, layer_cfg, &resolve)
                 .map_err(|e| MoeRuntimeError::Load(format!("assemble layer {l}: {e}")))?;
-
-            // Residency + cache wiring (RAM tier), self-validated below.
             let resident = ResidentExpertLayer::from_real_layer(&moe, ExpertTier::Ram)
                 .map_err(|e| MoeRuntimeError::Load(format!("residency layer {l}: {e}")))?;
             Self::self_validate_residency(l, &moe, &resident)?;
             residency.push(resident);
             caches.push(ExpertCache::new(n_experts));
-
-            // GQA: tile K/V to MHA shape so the certified MHA graph is reused.
-            let w_k = to_mha_kv(&get(&format!("{p}.self_attn.k_proj.weight"))?, n_kv_heads, n_heads, head_dim, hidden)
-                .map_err(|e| MoeRuntimeError::Load(format!("k tile layer {l}: {e}")))?;
-            let w_v = to_mha_kv(&get(&format!("{p}.self_attn.v_proj.weight"))?, n_kv_heads, n_heads, head_dim, hidden)
-                .map_err(|e| MoeRuntimeError::Load(format!("v tile layer {l}: {e}")))?;
-
-            // Optional Q/K/V bias (Qwen-MoE). K/V bias tiled to MHA like the
-            // weights; Q bias is already full `[n_heads*head_dim]`.
-            let attn_bias = if attn_has_bias {
-                let qb = get(&format!("{p}.self_attn.q_proj.bias"))?;
-                let kb = to_mha_kv(&get(&format!("{p}.self_attn.k_proj.bias"))?, n_kv_heads, n_heads, head_dim, 1)
-                    .map_err(|e| MoeRuntimeError::Load(format!("k bias tile layer {l}: {e}")))?;
-                let vb = to_mha_kv(&get(&format!("{p}.self_attn.v_proj.bias"))?, n_kv_heads, n_heads, head_dim, 1)
-                    .map_err(|e| MoeRuntimeError::Load(format!("v bias tile layer {l}: {e}")))?;
-                Some(QkvBias { q: qb, k: kb, v: vb })
-            } else {
-                None
-            };
-
-            layers.push(TinyDecoderWeights {
-                input_ln: get(&format!("{p}.input_layernorm.weight"))?,
-                w_q: get(&format!("{p}.self_attn.q_proj.weight"))?,
-                w_k,
-                w_v,
-                w_o: get(&format!("{p}.self_attn.o_proj.weight"))?,
-                post_ln: get(&format!("{p}.post_attention_layernorm.weight"))?,
-                attn_bias,
-                moe,
-            });
+            moes.push(moe);
         }
 
-        let weights = TinyMixtralWeights {
-            config: TinyMixtralConfig {
-                vocab_size: vocab,
-                hidden_size: hidden,
-                num_hidden_layers: n_layers,
-                num_attention_heads: n_heads,
-                head_dim,
-                rope_theta,
-            },
-            embed_tokens: get("model.embed_tokens.weight")?,
-            layers,
-            final_norm: get("model.norm.weight")?,
-            lm_head: get("lm_head.weight")?,
-            rms_eps,
+        // 6. Family-specific attention weights → backend.
+        let backend = match family {
+            MoeFamily::DeepSeekMoe => {
+                Backend::Mla(build_deepseek(&v, &reader, vocab, hidden, n_layers, rms_eps, moes)?)
+            }
+            _ => Backend::Graph(build_graph(
+                &v, &reader, family, vocab, hidden, n_layers, rms_eps, moes,
+            )?),
         };
 
-        Ok(Self { family, weights, eos_token_ids, residency, caches })
+        Ok(Self { family, backend, num_layers: n_layers, eos_token_ids, residency, caches })
     }
 
     /// Self-check that the residency+cache path reproduces the certified MoE
@@ -339,7 +280,7 @@ impl MoeRuntime {
 
     /// Number of decoder layers.
     pub fn num_layers(&self) -> usize {
-        self.weights.config.num_hidden_layers
+        self.num_layers
     }
 
     /// Residency-backed expert storage (RAM tier) per layer.
@@ -352,27 +293,184 @@ impl MoeRuntime {
         &self.caches
     }
 
-    /// **Generate** greedily from `prompt`, stopping at EOS or after
-    /// `max_new_tokens`. Reuses the certified prefill + KV-cache + decode loop.
-    pub fn generate(&self, prompt: &[u32], max_new_tokens: usize) -> Vec<u32> {
-        generate_greedy_tiny_eos(&self.weights, prompt, max_new_tokens, &self.eos_token_ids).tokens
+    /// **MOE-FULL-12** — run only layer `layer`'s MLA attention over
+    /// already-normed hidden states (DeepSeek backend only); `None` for the
+    /// graph backend. Used to certify MLA against HuggingFace in isolation.
+    pub fn debug_mla_attention(
+        &self,
+        layer: usize,
+        normed: &[Vec<f32>],
+    ) -> Option<Vec<Vec<f32>>> {
+        match &self.backend {
+            Backend::Mla(w) => Some(w.debug_attention(layer, normed)),
+            Backend::Graph(_) => None,
+        }
     }
 
-    /// Full-sequence forward logits `[seq * vocab]` for `tokens` (the certified
-    /// MOE-FULL-6 graph). Exposed so callers can validate end-to-end HF parity
-    /// through the productive runtime (not a test helper).
-    pub fn forward_logits(&self, tokens: &[u32]) -> Vec<f32> {
-        use crate::amg::builder::GraphBuilder;
-        use crate::tensor::Tensor;
-        let seq = tokens.len();
-        let mut gb = GraphBuilder::new();
-        let tok = gb.input();
-        let logits = super::full_forward::build_tiny_mixtral_graph(&mut gb, tok, seq, self.weights.clone());
-        gb.output(logits);
-        let mut g = gb.build();
-        let t = Tensor::new_cpu(vec![1, seq], tokens.iter().map(|&x| x as f32).collect());
-        g.execute(vec![t])[0].as_cpu_slice().to_vec()
+    /// **Generate** greedily from `prompt`, stopping at EOS or after
+    /// `max_new_tokens`. Reuses the certified generation loop (graph for
+    /// Mixtral/Qwen; imperative MLA for DeepSeek).
+    pub fn generate(&self, prompt: &[u32], max_new_tokens: usize) -> Vec<u32> {
+        match &self.backend {
+            Backend::Graph(w) => {
+                generate_greedy_tiny_eos(w, prompt, max_new_tokens, &self.eos_token_ids).tokens
+            }
+            Backend::Mla(w) => w.generate_greedy_eos(prompt, max_new_tokens, &self.eos_token_ids),
+        }
     }
+
+    /// Full-sequence forward logits `[seq * vocab]` for `tokens`. Exposed so
+    /// callers can validate end-to-end HF parity through the productive runtime
+    /// (graph for Mixtral/Qwen; imperative MLA prefill for DeepSeek).
+    pub fn forward_logits(&self, tokens: &[u32]) -> Vec<f32> {
+        match &self.backend {
+            Backend::Graph(w) => {
+                use crate::amg::builder::GraphBuilder;
+                use crate::tensor::Tensor;
+                let seq = tokens.len();
+                let mut gb = GraphBuilder::new();
+                let tok = gb.input();
+                let logits =
+                    super::full_forward::build_tiny_mixtral_graph(&mut gb, tok, seq, w.clone());
+                gb.output(logits);
+                let mut g = gb.build();
+                let t = Tensor::new_cpu(vec![1, seq], tokens.iter().map(|&x| x as f32).collect());
+                g.execute(vec![t])[0].as_cpu_slice().to_vec()
+            }
+            Backend::Mla(w) => w.forward_prefill(tokens).0,
+        }
+    }
+}
+
+/// Build the graph (Mixtral/Qwen) backend weights from the reader.
+#[allow(clippy::too_many_arguments)]
+fn build_graph(
+    v: &Value,
+    reader: &SafetensorsReader,
+    family: MoeFamily,
+    vocab: usize,
+    hidden: usize,
+    n_layers: usize,
+    rms_eps: f32,
+    moes: Vec<RealMoeLayer>,
+) -> Result<TinyMixtralWeights, MoeRuntimeError> {
+    let n_heads = cfg_u(v, "num_attention_heads")?;
+    let n_kv_heads = cfg_u(v, "num_key_value_heads")?;
+    let head_dim = v
+        .get("head_dim")
+        .and_then(Value::as_u64)
+        .map(|n| n as usize)
+        .unwrap_or(hidden / n_heads.max(1));
+    let rope_theta = v.get("rope_theta").and_then(Value::as_f64).unwrap_or(10000.0) as u32;
+    let attn_has_bias = family == MoeFamily::QwenMoe;
+    let get = |name: &str| -> Result<Vec<f32>, MoeRuntimeError> {
+        reader
+            .get(name)
+            .and_then(|e| e.to_vec_f32().ok())
+            .ok_or_else(|| MoeRuntimeError::Load(format!("missing tensor {name}")))
+    };
+
+    let mut layers: Vec<TinyDecoderWeights> = Vec::with_capacity(n_layers);
+    for (l, moe) in moes.into_iter().enumerate() {
+        let p = format!("model.layers.{l}");
+        let w_k = to_mha_kv(&get(&format!("{p}.self_attn.k_proj.weight"))?, n_kv_heads, n_heads, head_dim, hidden)
+            .map_err(|e| MoeRuntimeError::Load(format!("k tile layer {l}: {e}")))?;
+        let w_v = to_mha_kv(&get(&format!("{p}.self_attn.v_proj.weight"))?, n_kv_heads, n_heads, head_dim, hidden)
+            .map_err(|e| MoeRuntimeError::Load(format!("v tile layer {l}: {e}")))?;
+        let attn_bias = if attn_has_bias {
+            let qb = get(&format!("{p}.self_attn.q_proj.bias"))?;
+            let kb = to_mha_kv(&get(&format!("{p}.self_attn.k_proj.bias"))?, n_kv_heads, n_heads, head_dim, 1)
+                .map_err(|e| MoeRuntimeError::Load(format!("k bias tile layer {l}: {e}")))?;
+            let vb = to_mha_kv(&get(&format!("{p}.self_attn.v_proj.bias"))?, n_kv_heads, n_heads, head_dim, 1)
+                .map_err(|e| MoeRuntimeError::Load(format!("v bias tile layer {l}: {e}")))?;
+            Some(QkvBias { q: qb, k: kb, v: vb })
+        } else {
+            None
+        };
+        layers.push(TinyDecoderWeights {
+            input_ln: get(&format!("{p}.input_layernorm.weight"))?,
+            w_q: get(&format!("{p}.self_attn.q_proj.weight"))?,
+            w_k,
+            w_v,
+            w_o: get(&format!("{p}.self_attn.o_proj.weight"))?,
+            post_ln: get(&format!("{p}.post_attention_layernorm.weight"))?,
+            attn_bias,
+            moe,
+        });
+    }
+    Ok(TinyMixtralWeights {
+        config: TinyMixtralConfig {
+            vocab_size: vocab,
+            hidden_size: hidden,
+            num_hidden_layers: n_layers,
+            num_attention_heads: n_heads,
+            head_dim,
+            rope_theta,
+        },
+        embed_tokens: get("model.embed_tokens.weight")?,
+        layers,
+        final_norm: get("model.norm.weight")?,
+        lm_head: get("lm_head.weight")?,
+        rms_eps,
+    })
+}
+
+/// Build the MLA (DeepSeek) backend weights from the reader.
+#[allow(clippy::too_many_arguments)]
+fn build_deepseek(
+    v: &Value,
+    reader: &SafetensorsReader,
+    vocab: usize,
+    hidden: usize,
+    n_layers: usize,
+    rms_eps: f32,
+    moes: Vec<RealMoeLayer>,
+) -> Result<DeepseekWeights, MoeRuntimeError> {
+    let n_heads = cfg_u(v, "num_attention_heads")?;
+    let kv_lora_rank = cfg_u(v, "kv_lora_rank")?;
+    let qk_nope_head_dim = cfg_u(v, "qk_nope_head_dim")?;
+    let qk_rope_head_dim = cfg_u(v, "qk_rope_head_dim")?;
+    let v_head_dim = cfg_u(v, "v_head_dim")?;
+    let rope_theta = v.get("rope_theta").and_then(Value::as_f64).unwrap_or(10000.0) as f32;
+    let get = |name: &str| -> Result<Vec<f32>, MoeRuntimeError> {
+        reader
+            .get(name)
+            .and_then(|e| e.to_vec_f32().ok())
+            .ok_or_else(|| MoeRuntimeError::Load(format!("missing tensor {name}")))
+    };
+
+    let mut layers: Vec<DeepseekLayer> = Vec::with_capacity(n_layers);
+    for (l, moe) in moes.into_iter().enumerate() {
+        let p = format!("model.layers.{l}");
+        layers.push(DeepseekLayer {
+            input_ln: get(&format!("{p}.input_layernorm.weight"))?,
+            w_q: get(&format!("{p}.self_attn.q_proj.weight"))?,
+            w_kv_a: get(&format!("{p}.self_attn.kv_a_proj_with_mqa.weight"))?,
+            kv_a_ln: get(&format!("{p}.self_attn.kv_a_layernorm.weight"))?,
+            w_kv_b: get(&format!("{p}.self_attn.kv_b_proj.weight"))?,
+            w_o: get(&format!("{p}.self_attn.o_proj.weight"))?,
+            post_ln: get(&format!("{p}.post_attention_layernorm.weight"))?,
+            moe,
+        });
+    }
+    Ok(DeepseekWeights {
+        config: DeepseekConfig {
+            vocab_size: vocab,
+            hidden_size: hidden,
+            num_hidden_layers: n_layers,
+            num_attention_heads: n_heads,
+            kv_lora_rank,
+            qk_nope_head_dim,
+            qk_rope_head_dim,
+            v_head_dim,
+            rope_theta,
+            rms_eps,
+        },
+        embed_tokens: get("model.embed_tokens.weight")?,
+        layers,
+        final_norm: get("model.norm.weight")?,
+        lm_head: get("lm_head.weight")?,
+    })
 }
 
 // ============================================================================
