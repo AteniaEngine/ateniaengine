@@ -52,6 +52,17 @@ locked by regression tests.
   PyTorch BF16's own 1.53). See
   [HANDOFF_RUNTIME_REAL_2.md](./HANDOFF_RUNTIME_REAL_2.md). Qwen2.5 dense text
   generation is **GREEN**.
+- **Gemma 2 end-to-end (RUNTIME-REAL-3).** Re-confirmed on a real 4.87 GiB
+  sharded Gemma-2-2B-it HF checkpoint (`Gemma2ForCausalLM`: softcaps @50/30,
+  scaled embeddings ×√2304, query_pre_attn_scalar, GeGLU, dual-norm, multi-EOS
+  [1,107]), RTX 4070: loads 288 tensors / 2 shards (~6.75 GiB resident,
+  VRAM/RAM tiered) in ~90 s, generates coherent + factually-correct text
+  ("…is **Paris**. 🇫🇷"), deterministic, EOS (stop=107) + bad-input intact;
+  SoftCap regression 8/8; certified↔fast bit-identical (numcert). **Caveat:** no
+  f64 reference exists for Gemma 2 (numcert null — PyTorch f64 pipeline not
+  wired for this family), so it is GREEN **behaviourally** but lacks the
+  Llama/Qwen numerical-certification bar. See
+  [HANDOFF_RUNTIME_REAL_3.md](./HANDOFF_RUNTIME_REAL_3.md).
 - **Loaders.** Single-file and sharded HuggingFace safetensors; GGUF
   (F16 / Q8_0 / Q4_K_M / Q5_K / Q6_K). BF16 parameter storage (50 % RAM saving),
   BF16 KV cache (default on), RAM↔NVMe spill with chunked streaming.
