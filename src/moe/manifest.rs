@@ -18,6 +18,10 @@ pub enum MoeCertScope {
     /// Also has a certified **real-checkpoint** single-layer MoE-block
     /// sub-reference (stronger evidence than a purely synthetic fixture).
     CertifiedPartial,
+    /// Also certified on a **topology-representative scale** fixture that mirrors
+    /// the real large-checkpoint structure (expert count, top-k, GQA, shared,
+    /// MLA) — NOT the multi-GB real weights (MOE-FULL-15).
+    CertifiedScaled,
     /// Runnable but not certified.
     Experimental,
     /// Recognised but not supported (e.g. an attention variant not implemented).
@@ -29,6 +33,7 @@ impl MoeCertScope {
         match s {
             "certified_fixture" => Some(Self::CertifiedFixture),
             "certified_partial" => Some(Self::CertifiedPartial),
+            "certified_scaled" => Some(Self::CertifiedScaled),
             "experimental" => Some(Self::Experimental),
             "unsupported" => Some(Self::Unsupported),
             _ => None,
@@ -37,13 +42,14 @@ impl MoeCertScope {
 
     /// Whether this scope is allowed to run on the controlled production path.
     pub fn is_runnable(self) -> bool {
-        matches!(self, Self::CertifiedFixture | Self::CertifiedPartial)
+        matches!(self, Self::CertifiedFixture | Self::CertifiedPartial | Self::CertifiedScaled)
     }
 
     pub fn as_str(self) -> &'static str {
         match self {
             Self::CertifiedFixture => "certified_fixture",
             Self::CertifiedPartial => "certified_partial",
+            Self::CertifiedScaled => "certified_scaled",
             Self::Experimental => "experimental",
             Self::Unsupported => "unsupported",
         }
@@ -160,13 +166,15 @@ mod tests {
     #[test]
     fn manifest_parses_and_lists_three_families() {
         let m = MoeCertManifest::builtin();
-        assert_eq!(m.version, 1);
+        assert_eq!(m.version, 2);
         assert_eq!(m.families.len(), 3);
         assert!(m.scope_for(MoeFamily::Mixtral).is_runnable());
         assert!(m.scope_for(MoeFamily::QwenMoe).is_runnable());
         assert!(m.scope_for(MoeFamily::DeepSeekMoe).is_runnable());
-        assert_eq!(m.scope_for(MoeFamily::Mixtral), MoeCertScope::CertifiedPartial);
-        assert_eq!(m.scope_for(MoeFamily::DeepSeekMoe), MoeCertScope::CertifiedFixture);
+        // MOE-FULL-15: all three reached topology-representative scale cert.
+        assert_eq!(m.scope_for(MoeFamily::Mixtral), MoeCertScope::CertifiedScaled);
+        assert_eq!(m.scope_for(MoeFamily::QwenMoe), MoeCertScope::CertifiedScaled);
+        assert_eq!(m.scope_for(MoeFamily::DeepSeekMoe), MoeCertScope::CertifiedScaled);
         assert!(m.unsupported_variants.iter().any(|u| u.variant.contains("Qwen3")));
     }
 

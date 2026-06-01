@@ -457,6 +457,21 @@ profile. Operators opt in and accept the profile.
   MoE is **not** wired into the loader/runtime/Adapter Toolkit/CLI and **no MoE
   family is production-supported**. Full write-up:
   [MOE_OVERVIEW.md](./MOE_OVERVIEW.md).
+- **MoE — full transformer + controlled runtime** (MOE-FULL-1 → MOE-FULL-15).
+  Building on the experimental track: a full tiny MoE transformer (embeddings →
+  attention/RoPE/causal mask → MoE block → lm_head), KV cache + greedy decode,
+  expert residency (RAM/NVMe tiers) + LRU cache, GQA, and a **controlled, opt-in
+  production path** (`moe::controlled_moe_generate` + `atenia moe-generate`,
+  gated by a MoE certification manifest + `ATENIA_ENABLE_MOE=1`). **Three families
+  certified vs HF f64 at three levels** — tiny end-to-end (Mixtral 7.451e-08,
+  Qwen-MoE 5.960e-08, DeepSeek-MoE MLA attn 9.999e-06), **real-checkpoint** layer-0
+  MoE block (~1e-10..1e-11), and **scale topology** (Mixtral-8x7B topology
+  1.639e-07, Qwen 16-expert 1.490e-07, DeepSeek 16-routed 7.806e-03; argmax/greedy
+  exact). The **dense loader still fails loud**; MoE runs **only** behind the
+  explicit opt-in on certified families; unsupported variants (Qwen3 QK-norm,
+  DeepSeek Q-LoRA) are refused clearly. **MoE remains experimental** — the
+  multi-GB real weights are not certified, and there is no tokenizer text CLI nor
+  a dense fail-loud lift. Matrix + verdict: [HANDOFF_MOE_FULL_15.md](./HANDOFF_MOE_FULL_15.md).
 
 ## Scaffolding / known limitations
 

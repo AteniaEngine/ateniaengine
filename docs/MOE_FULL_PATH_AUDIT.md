@@ -326,10 +326,22 @@ active until the very end.
   DeepSeek Q-LoRA) refused with a clear message. **MoE remains experimental** —
   the "MoE support status" + remaining blockers are in the handoff.
 
-- **MOE-FULL-15 — Remaining (to drop "experimental").** Large-checkpoint
-  certification (Mixtral-8x7B, …), tokenizer-backed text CLI, Qwen3-MoE (QK-norm),
-  DeepSeek Q-LoRA + YaRN, a reviewed dense-loader fail-loud lift, VRAM tier,
-  latent KV cache.
+- **MOE-FULL-15 — Scale certification campaign. ✅ DONE** (see
+  `docs/HANDOFF_MOE_FULL_15.md`). All three families certified at **scale
+  topology** vs HF f64 on topology-representative fixtures (Mixtral-8x7B
+  topology: 8 experts/top-2/GQA 4:1, **1.639e-07**; Qwen-MoE: 16 experts/top-4/
+  shared, **1.490e-07**; DeepSeek: 16 routed/top-6/2 shared/MLA, **7.806e-03**,
+  argmax/greedy exact) — generate→EOS, deterministic. New manifest scope
+  `certified_scaled`; all three upgraded. The real multi-GB weights are **not**
+  certified (infeasible to download/commit) — documented, not exaggerated. Text
+  CLI evaluated and deferred (needs a tokenizer-bearing fixture). **MoE remains
+  experimental**; the correctness/certification track is substantially complete
+  — the strategic verdict + remaining blockers are in the handoff.
+
+- **MOE-FULL-16 — Remaining (environment / integration bound).** A real
+  multi-GB checkpoint smoke (needs a capable host), tokenizer text CLI, Qwen3-MoE
+  (QK-norm), DeepSeek Q-LoRA + YaRN, a reviewed dense-loader fail-loud lift, VRAM
+  tier, latent KV cache.
 
 MoE-GGUF is explicitly **after** this line.
 

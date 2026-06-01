@@ -41,7 +41,10 @@ generates to EOS **only when `ATENIA_ENABLE_MOE=1`** (or the legacy
 is wrapped in a **controlled production path** (`moe::controlled_moe_generate` +
 `atenia moe-generate`) gated by a **MoE certification manifest** + the opt-in,
 with real-checkpoint **partial certification** of the layer-0 MoE blocks
-(Mixtral 1.164e-10, Qwen1.5/2/3-MoE ~3e-11 vs HF). Unsupported variants
+(Mixtral 1.164e-10, Qwen1.5/2/3-MoE ~3e-11 vs HF) and **MOE-FULL-15
+scale-topology certification** (the real Mixtral-8x7B / Qwen-MoE / DeepSeek
+routing topologies certified end-to-end vs HF — 1.639e-07 / 1.490e-07 /
+7.806e-03; the multi-GB real weights are NOT certified). Unsupported variants
 (Qwen3 QK-norm, DeepSeek Q-LoRA) are refused with a clear message. The **official
 MoE certification matrix** (per-checkpoint status + drift) lives in
 `docs/HANDOFF_MOE_FULL_13.md`; the support-status + remaining blockers in

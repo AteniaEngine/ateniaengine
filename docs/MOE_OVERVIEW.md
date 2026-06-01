@@ -181,6 +181,7 @@ Layer-0 MoE block, Atenia vs an f64 reference, argmax matched in all cases:
 | Controlled production path | ✅ Done (opt-in) | MOE-FULL-14, `production.rs` + `atenia moe-generate`, manifest-gated (`ATENIA_ENABLE_MOE=1`) | token-id CLI; tiny fixtures; dense loader still fail-loud |
 | MoE cert manifest | ✅ Done | MOE-FULL-14, `manifest.rs` + `moe_cert_manifest.json` | scopes: certified_fixture/partial/experimental/unsupported |
 | Real-checkpoint partial cert | ✅ Done | MOE-FULL-14, `moe_partial_cert_test.rs` (Mixtral 1.164e-10, Qwen1.5/2/3 ~3e-11) | layer-0 block only; no full-model scale |
+| Scale-topology cert | ✅ Done | MOE-FULL-15, `moe_scale_cert_test.rs` (Mixtral 8x7B-topo 1.639e-07, Qwen 16-expert 1.490e-07, DeepSeek 16-routed 7.806e-03) | real topology certified, NOT the multi-GB real weights |
 
 **MoE support status:** experimental runtime (Mixtral/Qwen-MoE/DeepSeek-MoE,
 tiny fixtures) → **controlled product path** (opt-in, manifest-gated, `atenia

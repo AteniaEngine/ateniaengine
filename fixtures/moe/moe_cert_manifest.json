@@ -1,46 +1,49 @@
 {
-  "version": 1,
-  "note": "MOE-FULL-14 — official machine-readable MoE certification manifest. Embedded into the binary (include_str!) and used by the controlled production path to gate execution. Scopes: certified_fixture (numerically certified vs HF f64 on a tiny end-to-end fixture), certified_partial (a real-checkpoint single-layer MoE-block sub-reference is also certified), experimental, unsupported. Tiny fixtures only — this is NOT a large-model production certification.",
+  "version": 2,
+  "note": "MOE-FULL-15 — official machine-readable MoE certification manifest. Embedded into the binary (include_str!) and used by the controlled production path to gate execution. Scopes: certified_fixture (numerically certified vs HF f64 on a tiny end-to-end fixture), certified_partial (a real-checkpoint single-layer MoE-block sub-reference is also certified), certified_scaled (also certified on a topology-representative SCALE fixture mirroring the real large-checkpoint structure — expert count, top-k, GQA, shared, MLA), experimental, unsupported. SCALE certification is of the topology/routing, NOT the multi-GB real weights (those cannot be downloaded/committed).",
   "families": [
     {
       "family": "Mixtral",
-      "scope": "certified_partial",
+      "scope": "certified_scaled",
       "runtime_path": "graph",
       "attention": "MHA / GQA",
       "moe_layout": "packed and classic",
-      "fixtures": ["full_mixtral", "mixtral_classic", "gqa_mixtral"],
+      "fixtures": ["full_mixtral", "mixtral_classic", "gqa_mixtral", "mixtral_scale"],
       "end_to_end_drift_max_abs": 7.451e-08,
       "argmax_match": true,
       "generate_eos": true,
       "real_checkpoint_partial": "mixtral_layer0 (real Mixtral layer-0 MoE block, <1e-6 vs HF)",
-      "limitations": "tiny fixtures only; no Mixtral-8x7B scale certification"
+      "scale_topology": "mixtral_scale: 8 experts, top-2, GQA 4:1 (Mixtral-8x7B topology), end-to-end 1.639e-07 vs HF",
+      "limitations": "topology certified; the multi-GB real Mixtral-8x7B weights are NOT downloaded/certified"
     },
     {
       "family": "Qwen-MoE",
-      "scope": "certified_partial",
+      "scope": "certified_scaled",
       "runtime_path": "graph",
       "attention": "GQA + Q/K/V bias",
       "moe_layout": "packed + shared expert (sigmoid gate)",
-      "fixtures": ["qwen_moe_tiny"],
+      "fixtures": ["qwen_moe_tiny", "qwen_scale"],
       "end_to_end_drift_max_abs": 5.960e-08,
       "argmax_match": true,
       "generate_eos": true,
       "real_checkpoint_partial": "qwen2_moe_layer0 (real Qwen2-MoE layer-0 MoE block vs HF)",
-      "limitations": "tiny fixtures only; norm_topk_prob=true + shared expert convention is auto-resolved from shared_expert_gate (use forward_with to pin)"
+      "scale_topology": "qwen_scale: 16 experts, top-4, shared expert, GQA, qkv bias, end-to-end 1.490e-07 vs HF",
+      "limitations": "topology certified; real large Qwen-MoE weights NOT certified; norm_topk_prob convention auto-resolved from shared_expert_gate"
     },
     {
       "family": "DeepSeek-MoE",
-      "scope": "certified_fixture",
+      "scope": "certified_scaled",
       "runtime_path": "mla",
       "attention": "MLA (low-rank KV, interleaved RoPE)",
       "moe_layout": "packed + shared experts",
-      "fixtures": ["deepseek_full", "deepseek_block"],
+      "fixtures": ["deepseek_full", "deepseek_block", "deepseek_scale"],
       "end_to_end_drift_max_abs": 1.475e-03,
       "mla_attention_drift_max_abs": 9.999e-06,
+      "scale_topology": "deepseek_scale: 16 routed, top-6, 2 shared, MLA, end-to-end 7.806e-03 vs HF (f32-vs-f64, argmax/greedy exact)",
       "argmax_match": true,
       "generate_eos": true,
       "real_checkpoint_partial": null,
-      "limitations": "synthetic tiny fixture only; full-forward drift f32-vs-f64 (MoE block dominated, argmax/greedy exact); no Q-LoRA, no YaRN-scaled RoPE"
+      "limitations": "topology certified (synthetic weights); full-forward drift f32-vs-f64 grows with expert count (argmax/greedy exact); no real DeepSeek weights, no Q-LoRA, no YaRN"
     }
   ],
   "unsupported_variants": [
