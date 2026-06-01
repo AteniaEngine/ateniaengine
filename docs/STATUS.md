@@ -120,6 +120,18 @@ locked by regression tests.
   environment step (download + run). Caveats: disk-tier generation is slow (no
   per-token expert cache yet); DeepSeek/MLA not tiered. See
   [HANDOFF_MOE_PROD_2.md](./HANDOFF_MOE_PROD_2.md).
+- **First real MoE generation (RUNTIME-MOE-2 reopened).** Downloaded the real
+  **Qwen1.5-MoE-A2.7B-Chat** (27 GB, 8 shards, `Qwen2MoeForCausalLM`, 60 experts
+  top-4 + shared, 24 layers) and ran it end-to-end via `atenia moe-generate`
+  with `ATENIA_MOE_EXPERT_TIER=disk`: **loads with experts streamed to NVMe
+  (~50 GB), RAM bounded ~4 GB** (vs ~57 GB f32), and generates **coherent real
+  text** — "What is the capital of France?" → " The capital of France"; "Rust is
+  a programming language that" → " is designed to be fast,". Routing (top-4 of
+  60 + shared), manifest gate, and fail-loud opt-in all verified; no dense
+  fallback. Slow (~2–4 min/token, disk-tier, no expert cache). **Qwen-MoE is now
+  real-GREEN behaviourally** (no full f64 for the 14.3 B model; certified at
+  topology/block scale, MOE-FULL-15). See
+  [HANDOFF_RUNTIME_MOE_2_REOPENED.md](./HANDOFF_RUNTIME_MOE_2_REOPENED.md).
 - **Loaders.** Single-file and sharded HuggingFace safetensors; GGUF
   (F16 / Q8_0 / Q4_K_M / Q5_K / Q6_K). BF16 parameter storage (50 % RAM saving),
   BF16 KV cache (default on), RAM↔NVMe spill with chunked streaming.
