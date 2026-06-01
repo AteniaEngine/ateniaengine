@@ -803,6 +803,20 @@ fn run_moe_generate(args: MoeGenerateArgs) -> i32 {
     };
     match atenia_engine::moe::controlled_moe_generate(&args.model, &prompt_ids, args.max_new) {
         Ok(ids) => {
+            // MOE-PROD-3: optional expert-cache hit-ratio report (disk tier).
+            if std::env::var("ATENIA_MOE_CACHE_STATS").as_deref() == Ok("1") {
+                let s = atenia_engine::moe::graph_op::aggregate_resident_cache_stats();
+                let total = s.hits + s.misses;
+                let ratio = if total > 0 { 100.0 * s.hits as f64 / total as f64 } else { 0.0 };
+                eprintln!(
+                    "[ATENIA] MoE expert cache: hits={} misses={} hit_ratio={:.1}% tier_bytes_read={} (~{:.2} GiB)",
+                    s.hits,
+                    s.misses,
+                    ratio,
+                    s.tier_bytes_read,
+                    s.tier_bytes_read as f64 / (1024.0 * 1024.0 * 1024.0),
+                );
+            }
             let csv = ids.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(",");
             println!("{csv}");
             0

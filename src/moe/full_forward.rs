@@ -60,8 +60,8 @@ pub enum MoeBlock {
 
 impl MoeBlock {
     /// Pre-register a resident layer once and wrap its id.
-    pub fn registered(layer: Arc<ResidentExpertLayer>) -> Self {
-        MoeBlock::Registered(super::graph_op::register_resident_moe_layer(layer))
+    pub fn registered(layer: Arc<ResidentExpertLayer>, cache_capacity: usize) -> Self {
+        MoeBlock::Registered(super::graph_op::register_resident_moe_layer(layer, cache_capacity))
     }
 
     /// Resolve to a graph `layer_id`: `Owned` registers (consuming) on demand;

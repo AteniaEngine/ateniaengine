@@ -132,6 +132,16 @@ locked by regression tests.
   real-GREEN behaviourally** (no full f64 for the 14.3 B model; certified at
   topology/block scale, MOE-FULL-15). See
   [HANDOFF_RUNTIME_MOE_2_REOPENED.md](./HANDOFF_RUNTIME_MOE_2_REOPENED.md).
+- **Expert-cache integration (MOE-PROD-3).** The disk-tier MoE node now threads
+  the existing per-layer `ExpertCache` (`forward_cached`) so repeated routed
+  experts are served from RAM (`ATENIA_MOE_EXPERT_CACHE`, default `2*top_k`;
+  `ATENIA_MOE_CACHE_STATS=1` reports the hit ratio). Bit-exact (disk+cache == RAM
+  `max_abs_diff==0.0`; cached==uncached unit test). **Honest finding:** on real
+  Qwen1.5-MoE it gets a **22.7 % routed hit ratio** but **no end-to-end speedup**
+  (~3101 vs ~2905 s) — the bottleneck is **load-time NVMe tiering** (50 GB f32 as
+  4392 files) + the **shared expert read every token** + per-file overhead, not
+  routed re-reads. The real levers are bf16 tier storage + persisting the tier
+  across runs. See [HANDOFF_MOE_PROD_3.md](./HANDOFF_MOE_PROD_3.md).
 - **Loaders.** Single-file and sharded HuggingFace safetensors; GGUF
   (F16 / Q8_0 / Q4_K_M / Q5_K / Q6_K). BF16 parameter storage (50 % RAM saving),
   BF16 KV cache (default on), RAM↔NVMe spill with chunked streaming.

@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use super::dense::MoeDenseLayer;
 use super::layer::{MoeExecutionConvention, MoeLayerError, RealMoeLayer};
-use super::residency::ResidentExpertLayer;
+use super::residency::{ExpertCache, ResidentExpertLayer};
 use super::sparse::MoeSparseError;
 
 /// Process-global registry of synthetic MoE layers, indexed by the
@@ -206,7 +206,13 @@ pub fn execute_conditional_expert(
 /// `RealMoeLayer::forward_auto` (MOE-FULL-8), so the node output is unchanged.
 enum RegisteredMoe {
     Real(Arc<RealMoeLayer>),
-    Resident(Arc<ResidentExpertLayer>),
+    /// **MOE-PROD-3** — resident (tiered) layer plus a per-layer LRU
+    /// [`ExpertCache`] threaded through the whole generation, so a routed
+    /// expert touched again (within a prefill or across decode steps) is served
+    /// from RAM instead of re-read from NVMe. The cache is bounded (capacity ≪
+    /// num_experts) so it does not re-materialise the whole layer in RAM.
+    /// `forward_cached` is bit-identical to `forward`.
+    Resident { layer: Arc<ResidentExpertLayer>, cache: Mutex<ExpertCache> },
 }
 
 /// Process-global registry of MoE layers, indexed by the `layer_id`
@@ -228,10 +234,28 @@ pub fn register_real_moe_layer(layer: RealMoeLayer) -> u32 {
 /// **MOE-PROD-2** — register a tier-able resident MoE layer (experts in
 /// bf16-RAM or on NVMe) and return its `layer_id`. The node forward delegates
 /// to the certified `ResidentExpertLayer::forward`.
-pub fn register_resident_moe_layer(layer: Arc<ResidentExpertLayer>) -> u32 {
+pub fn register_resident_moe_layer(layer: Arc<ResidentExpertLayer>, cache_capacity: usize) -> u32 {
     let mut reg = real_registry().lock().expect("real moe registry poisoned");
-    reg.push(RegisteredMoe::Resident(layer));
+    reg.push(RegisteredMoe::Resident { layer, cache: Mutex::new(ExpertCache::new(cache_capacity)) });
     (reg.len() - 1) as u32
+}
+
+/// **MOE-PROD-3** — aggregate cache stats across all registered resident MoE
+/// layers (hits / misses / prefetched / tier bytes read). Used to report the
+/// expert-cache hit ratio after a generation.
+pub fn aggregate_resident_cache_stats() -> super::residency::CacheStats {
+    let reg = real_registry().lock().expect("real moe registry poisoned");
+    let mut agg = super::residency::CacheStats::default();
+    for e in reg.iter() {
+        if let RegisteredMoe::Resident { cache, .. } = e {
+            let s = cache.lock().expect("expert cache poisoned").stats();
+            agg.hits += s.hits;
+            agg.misses += s.misses;
+            agg.prefetched += s.prefetched;
+            agg.tier_bytes_read += s.tier_bytes_read;
+        }
+    }
+    agg
 }
 
 /// Fetch a registered **real** (RAM-f32) MoE layer by id (clones the `Arc`).
@@ -250,7 +274,10 @@ fn execute_moe_row(layer_id: u32, row: &[f32]) -> Result<Vec<f32>, MoeLayerError
     let reg = real_registry().lock().expect("real moe registry poisoned");
     match reg.get(layer_id as usize) {
         Some(RegisteredMoe::Real(l)) => l.forward_auto(row),
-        Some(RegisteredMoe::Resident(l)) => l.forward(row).map(|(out, _info)| out),
+        Some(RegisteredMoe::Resident { layer, cache }) => {
+            let mut c = cache.lock().expect("expert cache poisoned");
+            layer.forward_cached(&mut c, row).map(|(out, _info)| out)
+        }
         None => Err(MoeLayerError::Binding(super::binding::MoeBindingError::LayerNotFound {
             layer_id: layer_id as usize,
         })),
@@ -271,7 +298,7 @@ pub fn execute_real_moe_layer(layer_id: u32, input: &[f32]) -> Result<Vec<f32>, 
         let reg = real_registry().lock().expect("real moe registry poisoned");
         match reg.get(layer_id as usize) {
             Some(RegisteredMoe::Real(l)) => l.config.d_model,
-            Some(RegisteredMoe::Resident(l)) => l.config.d_model,
+            Some(RegisteredMoe::Resident { layer, .. }) => layer.config.d_model,
             None => {
                 return Err(MoeLayerError::Binding(
                     super::binding::MoeBindingError::LayerNotFound { layer_id: layer_id as usize },

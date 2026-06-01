@@ -114,6 +114,20 @@ fn expert_tier_from_env() -> ExpertTier {
     }
 }
 
+/// **MOE-PROD-3** — per-layer expert-cache capacity for the disk tier, from
+/// `ATENIA_MOE_EXPERT_CACHE`: an integer (clamped to `num_experts`), `"all"`
+/// (cache every expert — re-materialises the whole layer in RAM, use with
+/// care), or `"0"` to disable. Unset → `2 * experts_per_token` — a bounded
+/// default that captures within-prefill / short-range reuse without
+/// re-materialising the layer.
+fn expert_cache_capacity_from_env(num_experts: usize, experts_per_token: usize) -> usize {
+    match std::env::var("ATENIA_MOE_EXPERT_CACHE").as_deref() {
+        Ok("all") => num_experts,
+        Ok(s) => s.trim().parse::<usize>().unwrap_or(2 * experts_per_token).min(num_experts),
+        Err(_) => (2 * experts_per_token).min(num_experts),
+    }
+}
+
 /// **MOE-PROD-1** — weight source for the MoE loader: a **single**
 /// `model.safetensors`, or a **sharded** checkpoint described by
 /// `model.safetensors.index.json` (real Mixtral / Qwen-MoE / DeepSeek-MoE are
@@ -369,6 +383,7 @@ impl MoeRuntime {
         let map = super::data_plane::MoeWeightMap::from_tensors(
             metas.iter().map(|(n, s)| (n.as_str(), s.clone())),
         );
+        let cache_capacity = expert_cache_capacity_from_env(n_experts, topk);
         let resolve = |name: &str| source.get_f32(name);
         let mut residency: Vec<Arc<ResidentExpertLayer>> = Vec::with_capacity(n_layers);
         let mut caches: Vec<ExpertCache> = Vec::with_capacity(n_layers);
@@ -404,7 +419,7 @@ impl MoeRuntime {
                         // Free the f32 copies before the next layer assembles.
                         drop(moe);
                         drop(resident_ram);
-                        let block = MoeBlock::registered(Arc::clone(&resident_disk));
+                        let block = MoeBlock::registered(Arc::clone(&resident_disk), cache_capacity);
                         residency.push(resident_disk);
                         moe_blocks.push(block);
                     }
