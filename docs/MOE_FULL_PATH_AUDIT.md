@@ -219,10 +219,19 @@ active until the very end.
   it proves attention+residual+MoE *compose*; multi-token attention (RoPE/GQA/
   causal mask/KV cache) + HF single-layer logit comparison are MOE-FULL-6.
 
-- **MOE-FULL-6 — Full tiny Mixtral forward + generation.** Stack all layers,
-  add embeddings + lm_head + KV cache + the existing generation loop; greedy-
-  decode the tiny Mixtral and compare logits/argmax to HF. Lift fail-loud only
-  for the validated Mixtral path, behind the opt-in flag.
+- **MOE-FULL-6 — Tiny full MoE transformer forward (no generation). ✅ DONE**
+  (see `docs/HANDOFF_MOE_FULL_6.md`). `src/moe/full_forward.rs` composes
+  embeddings + 2 decoder layers (real attention: RoPE + causal mask +
+  multi-token; certified MoE block position-wise) + final norm + lm_head into
+  logits, from existing AMG primitives (no new op). Validated vs an offline HF
+  `MixtralForCausalLM` f64 reference: **max_abs_diff 7.451e-08**, per-position
+  argmax matches (real tiny fixture ~251 KB). Honest simplification: **MHA, no
+  GQA** (fixture `n_kv == n_heads`); `1/√d` absorbed by pre-scaling `w_q`.
+  3 unit + 7 integration tests; lib 753.
+
+- **MOE-FULL-7 — Generation + GQA + large-MoE residency (remaining).** KV cache
+  + decode loop, GQA, productive integration + fail-loud lift, experts via the
+  tiered WeightStore. This is what remains for real generation.
 
 - **MOE-FULL-7 — Memory/residency for large MoE.** Route experts through the
   tiered `WeightStore` (don't materialise all in f32) so a real small-but-full

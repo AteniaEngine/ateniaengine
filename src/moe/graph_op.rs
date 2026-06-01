@@ -224,15 +224,29 @@ pub fn get_real_moe_layer(layer_id: u32) -> Option<Arc<RealMoeLayer>> {
 
 /// Execute a registered real MoE layer on `input` using its **auto-resolved
 /// convention** (MOE-18) — exactly the certified `RealMoeLayer::forward_auto`
-/// contract, so the graph op output equals the reference. Output `[d_model]`.
+/// contract, so the graph op output equals the reference.
 ///
-/// Errors if the id is unknown or the forward fails (e.g. bad input dim).
+/// `input` may be a single token (`[d_model]` → `[d_model]`) or, as of
+/// **MOE-FULL-6**, a flat multi-token batch (`[n * d_model]` → `[n * d_model]`)
+/// in which case the layer is applied **independently per `d_model`-sized
+/// row** (the MoE block is position-wise). The single-token case is bit-
+/// identical to before. Errors if the id is unknown or a row forward fails.
 pub fn execute_real_moe_layer(layer_id: u32, input: &[f32]) -> Result<Vec<f32>, MoeLayerError> {
     let layer = get_real_moe_layer(layer_id)
         .ok_or(MoeLayerError::Binding(super::binding::MoeBindingError::LayerNotFound {
             layer_id: layer_id as usize,
         }))?;
-    layer.forward_auto(input)
+    let d_model = layer.config.d_model;
+    // Single token, or a shape forward_auto will reject — delegate directly.
+    if input.len() == d_model || d_model == 0 || input.len() % d_model != 0 {
+        return layer.forward_auto(input);
+    }
+    // MOE-FULL-6: multi-token — apply the position-wise MoE per row.
+    let mut out = Vec::with_capacity(input.len());
+    for chunk in input.chunks(d_model) {
+        out.extend(layer.forward_auto(chunk)?);
+    }
+    Ok(out)
 }
 
 /// Like [`execute_real_moe_layer`] but with an explicit convention override

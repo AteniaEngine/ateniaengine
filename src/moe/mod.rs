@@ -24,6 +24,7 @@ pub mod decoder_layer;
 pub mod dense;
 pub mod detect;
 pub mod fixture;
+pub mod full_forward;
 pub mod graph_op;
 pub mod layer;
 /// **MOE-FULL-3** — experimental Mixtral family adapter (load-only metadata).
