@@ -33,12 +33,18 @@ use super::detect::detect_moe;
 /// (MOE-FULL-10). When **unset**, every MoE path fails loud exactly as before.
 pub const EXPERIMENTAL_MOE_ENV: &str = "ATENIA_EXPERIMENTAL_MOE";
 
-/// Whether the experimental controlled MoE path is opted in
-/// (`ATENIA_EXPERIMENTAL_MOE=1`). This gates **only** the dedicated
-/// experimental Mixtral runtime ([`crate::moe::runtime`]); it does **not**
-/// lift the dense loader's fail-loud guard, which always refuses MoE.
+/// **MOE-FULL-14** — the controlled production opt-in flag. Accepted alongside
+/// the legacy `ATENIA_EXPERIMENTAL_MOE` (so existing tests/callers keep working).
+pub const ENABLE_MOE_ENV: &str = "ATENIA_ENABLE_MOE";
+
+/// Whether the controlled MoE path is opted in — `ATENIA_ENABLE_MOE=1` (the
+/// MOE-FULL-14 production flag) **or** the legacy `ATENIA_EXPERIMENTAL_MOE=1`.
+/// This gates **only** the dedicated MoE runtime ([`crate::moe::runtime`]) and
+/// the controlled production dispatcher; it does **not** lift the dense loader's
+/// fail-loud guard, which always refuses to load MoE as a dense model.
 pub fn experimental_moe_enabled() -> bool {
-    std::env::var(EXPERIMENTAL_MOE_ENV).as_deref() == Ok("1")
+    std::env::var(ENABLE_MOE_ENV).as_deref() == Ok("1")
+        || std::env::var(EXPERIMENTAL_MOE_ENV).as_deref() == Ok("1")
 }
 
 /// A recognised MoE family. Metadata only — recognising a family does **not**

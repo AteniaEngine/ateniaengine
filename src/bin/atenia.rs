@@ -202,6 +202,22 @@ enum Command {
     /// ```
     Generate(GenerateArgs),
 
+    /// **MOE-FULL-14** — controlled, opt-in MoE generation (token-id based).
+    ///
+    /// Loads a recognised + certified MoE checkpoint (Mixtral / Qwen-MoE /
+    /// DeepSeek-MoE) through the controlled production path and generates
+    /// greedily from a list of token ids, stopping at EOS or `--max-new`.
+    /// Refuses unless `ATENIA_ENABLE_MOE=1` or `--experimental-moe` is set, and
+    /// refuses non-certified families / unsupported variants with a clear
+    /// message. The dense `generate` path is unaffected. Token-id based (no
+    /// tokenizer dependency) — for the experimental MoE runtime only.
+    ///
+    /// ```text
+    /// atenia moe-generate --model models/mixtral-tiny \
+    ///     --prompt-ids "22,25,29" --max-new 8 --experimental-moe
+    /// ```
+    MoeGenerate(MoeGenerateArgs),
+
     /// **Adapter Toolkit v2** — parse a declarative adapter DSL
     /// file (`.yaml` / `.json`), validate it, build the v2
     /// adapter, and print a summary. Does **not** run generation.
@@ -468,6 +484,23 @@ struct DiagnoseArgs {
     json: bool,
 }
 
+/// Arguments for `moe-generate` — controlled, opt-in MoE generation.
+#[derive(clap::Args)]
+struct MoeGenerateArgs {
+    /// Path to the MoE model directory (config.json + *.safetensors).
+    #[arg(long)]
+    model: PathBuf,
+    /// Comma-separated prompt token ids, e.g. "22,25,29".
+    #[arg(long)]
+    prompt_ids: String,
+    /// Maximum number of new tokens to generate.
+    #[arg(long, default_value_t = 8)]
+    max_new: usize,
+    /// Opt in to the controlled MoE runtime (equivalent to ATENIA_ENABLE_MOE=1).
+    #[arg(long)]
+    experimental_moe: bool,
+}
+
 /// Arguments for `download` — curated model fetcher.
 #[derive(clap::Args)]
 struct DownloadArgs {
@@ -647,6 +680,7 @@ fn main() {
         Command::Run(args) => run_demo(args),
         Command::Explain(args) => run_explain(args),
         Command::Generate(args) => run_generate(args),
+        Command::MoeGenerate(args) => run_moe_generate(args),
         Command::Load(args) => run_adapter_load(&args.file, false),
         Command::Debug(args) => run_adapter_load(&args.file, true),
         Command::Inspect(args) => run_adapter_inspect(&args.model_dir),
@@ -748,6 +782,39 @@ fn run_adapter_load(file: &std::path::Path, verbose: bool) -> i32 {
 /// `atenia inspect` — Adapter Toolkit v2 auto-detection. Emits a
 /// loadable YAML DSL plus a resolved-spec preview to stdout, or a
 /// rendered [`CliError`] to stderr.
+/// **MOE-FULL-14** — `atenia moe-generate`: controlled, opt-in MoE generation.
+fn run_moe_generate(args: MoeGenerateArgs) -> i32 {
+    logging::info("command start: moe-generate");
+    if args.experimental_moe {
+        // Equivalent to ATENIA_ENABLE_MOE=1 for this process.
+        // SAFETY: single-threaded CLI startup; no other thread reads env here.
+        unsafe {
+            std::env::set_var(atenia_engine::moe::ENABLE_MOE_ENV, "1");
+        }
+    }
+    let prompt_ids: Result<Vec<u32>, _> =
+        args.prompt_ids.split(',').map(|s| s.trim().parse::<u32>()).collect();
+    let prompt_ids = match prompt_ids {
+        Ok(v) if !v.is_empty() => v,
+        _ => {
+            eprintln!("error: --prompt-ids must be a non-empty comma-separated list of token ids");
+            return 2;
+        }
+    };
+    match atenia_engine::moe::controlled_moe_generate(&args.model, &prompt_ids, args.max_new) {
+        Ok(ids) => {
+            let csv = ids.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(",");
+            println!("{csv}");
+            0
+        }
+        Err(e) => {
+            // Clear, actionable message; exit 2 (the CLI's "input/usage" code).
+            eprintln!("{e}");
+            2
+        }
+    }
+}
+
 fn run_adapter_inspect(model_dir: &std::path::Path) -> i32 {
     use atenia_engine::adapter_toolkit::{run_inspect, ToolkitError};
     logging::info("command start: inspect");

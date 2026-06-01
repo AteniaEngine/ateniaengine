@@ -178,6 +178,15 @@ Layer-0 MoE block, Atenia vs an f64 reference, argmax matched in all cases:
 | DeepSeek-MoE (MLA) end-to-end | ✅ Done (experimental, opt-in) | MOE-FULL-12, `mla.rs`, `moe_deepseek_runtime_test.rs` (MLA attn 9.999e-06, full-forward 1.475e-03 vs HF, greedy exact) | imperative MLA, no Q-LoRA/YaRN, no VRAM/CLI |
 | MLA attention | ✅ Done (experimental) | MOE-FULL-12, `mla.rs` (low-rank KV + interleaved RoPE) | tiny fixture, no latent KV cache |
 | Certification matrix | ✅ Done | MOE-FULL-13, `moe_certification_test.rs`; **official matrix in `docs/HANDOFF_MOE_FULL_13.md`** | Mixtral ×3 layouts (packed/classic/GQA), Qwen-MoE ×1, DeepSeek ×1+block; tiny fixtures only |
+| Controlled production path | ✅ Done (opt-in) | MOE-FULL-14, `production.rs` + `atenia moe-generate`, manifest-gated (`ATENIA_ENABLE_MOE=1`) | token-id CLI; tiny fixtures; dense loader still fail-loud |
+| MoE cert manifest | ✅ Done | MOE-FULL-14, `manifest.rs` + `moe_cert_manifest.json` | scopes: certified_fixture/partial/experimental/unsupported |
+| Real-checkpoint partial cert | ✅ Done | MOE-FULL-14, `moe_partial_cert_test.rs` (Mixtral 1.164e-10, Qwen1.5/2/3 ~3e-11) | layer-0 block only; no full-model scale |
+
+**MoE support status:** experimental runtime (Mixtral/Qwen-MoE/DeepSeek-MoE,
+tiny fixtures) → **controlled product path** (opt-in, manifest-gated, `atenia
+moe-generate`) → unsupported variants refused (Qwen3 QK-norm, DeepSeek Q-LoRA).
+General production support is **not** declared; remaining blockers in
+`docs/HANDOFF_MOE_FULL_14.md`.
 | Adapter Toolkit | ❌ Not integrated | — | **BLOCKER**: ATK has no MoE family/tensor spec |
 | Product loader | ❌ Fail-loud | `weight_mapper.rs` guard | **BLOCKER**: must lift fail-loud behind a validated, opt-in path |
 | CLI | ❌ Not integrated | — | **BLOCKER**: no MoE entry point |

@@ -33,8 +33,12 @@ pub mod generate;
 pub mod gqa;
 pub mod graph_op;
 pub mod layer;
+/// **MOE-FULL-14** — machine-readable MoE certification manifest.
+pub mod manifest;
 /// **MOE-FULL-12** — DeepSeek-V2 MLA attention + imperative DeepSeek forward.
 pub mod mla;
+/// **MOE-FULL-14** — controlled production MoE path (gating + dispatcher).
+pub mod production;
 /// **MOE-FULL-3** — experimental Mixtral family adapter (load-only metadata).
 pub mod mixtral_adapter;
 pub mod numerical;
@@ -99,9 +103,11 @@ pub use detect::{
 };
 pub use family::{
     classify_family, experimental_moe_enabled, moe_failloud_report, validate_family_config,
-    FamilyConfigValidation, MoeFamily, MoeFamilyDescriptor, EXPERIMENTAL_MOE_ENV,
+    FamilyConfigValidation, MoeFamily, MoeFamilyDescriptor, ENABLE_MOE_ENV, EXPERIMENTAL_MOE_ENV,
 };
 pub use runtime::{MixtralRuntime, MixtralRuntimeError, MoeRuntime, MoeRuntimeError};
+pub use manifest::{MoeCertEntry, MoeCertManifest, MoeCertScope};
+pub use production::{controlled_moe_generate, diagnose_moe, ControlledMoeError, MoeDiagnosis};
 pub use fixture::{
     f64_reference_weight_bytes, recommend_strategy, FixtureMoESpec, FixtureSpecError,
     MoECertificationStrategy,

@@ -156,6 +156,7 @@ tokenizer, adapter resolution — without generating anything.
 | `load` | Parse and validate an adapter spec file | engineer |
 | `debug` | Like `load`, with a verbose adapter report | engineer |
 | `search` | **Experimental (AQS).** Render a quantization certification report + draft manifest from a results file | engineer |
+| `moe-generate` | **Experimental (MoE).** Controlled, opt-in MoE generation from token ids on a certified MoE checkpoint (Mixtral / Qwen-MoE / DeepSeek-MoE). Requires `ATENIA_ENABLE_MOE=1` or `--experimental-moe`; refuses non-certified families / unsupported variants with a clear message. The dense `generate` path is unaffected. | engineer |
 
 Three further subcommands exist but are outside the scope of this
 manual: `run` (the tri-mode killer demo), `probe` (hardware

@@ -314,9 +314,22 @@ active until the very end.
   architecture / graph ops / families. Strategic review of what remains to drop
   the "experimental" label is in the handoff.
 
-- **MOE-FULL-14 — Remaining.** Large-checkpoint certification (Mixtral-8x7B,
-  etc.), Qwen3-MoE (QK-norm), DeepSeek Q-LoRA + YaRN, productive load path + CLI,
-  numcert manifest, VRAM tier, latent KV cache.
+- **MOE-FULL-14 — Controlled production MoE path. ✅ DONE** (see
+  `docs/HANDOFF_MOE_FULL_14.md`). `src/moe/production.rs::controlled_moe_generate`
+  + the `atenia moe-generate` subcommand gate a model directory through
+  detection → family → unsupported-variant check → **MoE certification manifest**
+  (`src/moe/manifest.rs`, embedded `moe_cert_manifest.json`) → **opt-in**
+  (`ATENIA_ENABLE_MOE=1` / `--experimental-moe`) → the MoE runtime, with clear
+  errors at every gate. Real-checkpoint **partial certification** of the layer-0
+  MoE blocks (Mixtral 1.164e-10, Qwen1.5/2/3-MoE ~3e-11..6e-11 vs HF). Dense path
+  + dense CLI untouched; fail-loud preserved. Unsupported variants (Qwen3 QK-norm,
+  DeepSeek Q-LoRA) refused with a clear message. **MoE remains experimental** —
+  the "MoE support status" + remaining blockers are in the handoff.
+
+- **MOE-FULL-15 — Remaining (to drop "experimental").** Large-checkpoint
+  certification (Mixtral-8x7B, …), tokenizer-backed text CLI, Qwen3-MoE (QK-norm),
+  DeepSeek Q-LoRA + YaRN, a reviewed dense-loader fail-loud lift, VRAM tier,
+  latent KV cache.
 
 MoE-GGUF is explicitly **after** this line.
 

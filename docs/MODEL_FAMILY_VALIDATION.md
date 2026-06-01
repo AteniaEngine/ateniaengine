@@ -36,9 +36,16 @@ not production certification — see [AQS_OVERVIEW.md](./AQS_OVERVIEW.md).
 experimental path exists for three families.** The **dense loader still fails
 loud** on any MoE checkpoint. As of **MOE-FULL-12** a controlled, opt-in
 productive runtime (`moe::runtime::MoeRuntime`) loads real tiny checkpoints and
-generates to EOS **only when `ATENIA_EXPERIMENTAL_MOE=1`** (without it, it
-refuses). The **official MoE certification matrix** (per-checkpoint status +
-drift) lives in `docs/HANDOFF_MOE_FULL_13.md`. Summary:
+generates to EOS **only when `ATENIA_ENABLE_MOE=1`** (or the legacy
+`ATENIA_EXPERIMENTAL_MOE=1`; without it, it refuses). As of **MOE-FULL-14** this
+is wrapped in a **controlled production path** (`moe::controlled_moe_generate` +
+`atenia moe-generate`) gated by a **MoE certification manifest** + the opt-in,
+with real-checkpoint **partial certification** of the layer-0 MoE blocks
+(Mixtral 1.164e-10, Qwen1.5/2/3-MoE ~3e-11 vs HF). Unsupported variants
+(Qwen3 QK-norm, DeepSeek Q-LoRA) are refused with a clear message. The **official
+MoE certification matrix** (per-checkpoint status + drift) lives in
+`docs/HANDOFF_MOE_FULL_13.md`; the support-status + remaining blockers in
+`docs/HANDOFF_MOE_FULL_14.md`. Summary:
 - **Mixtral** — full HF f64 parity across **three real on-disk layouts**:
   packed-MHA (7.451e-08), classic `w1/w3/w2`-MHA (7.451e-08), packed-GQA
   (5.960e-08); generate→EOS.

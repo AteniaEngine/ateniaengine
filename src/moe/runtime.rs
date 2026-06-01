@@ -233,6 +233,22 @@ impl MoeRuntime {
         Ok(Self { family, backend, num_layers: n_layers, eos_token_ids, residency, caches })
     }
 
+    /// **MOE-FULL-14** — load from a model **directory**: finds `config.json`
+    /// and the first `*.safetensors` inside `dir`. CLI-friendly wrapper over
+    /// [`Self::load_from_files`]. Same opt-in gate.
+    pub fn load_from_dir(dir: &Path) -> Result<Self, MoeRuntimeError> {
+        let config = dir.join("config.json");
+        if !config.exists() {
+            return Err(MoeRuntimeError::Config(format!("no config.json in {dir:?}")));
+        }
+        let st = std::fs::read_dir(dir)
+            .map_err(|e| MoeRuntimeError::Load(format!("read_dir {dir:?}: {e}")))?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .find(|p| p.extension().and_then(|x| x.to_str()) == Some("safetensors"))
+            .ok_or_else(|| MoeRuntimeError::Load(format!("no .safetensors in {dir:?}")))?;
+        Self::load_from_files(&config, &st)
+    }
+
     /// Self-check that the residency+cache path reproduces the certified MoE
     /// block bit-exactly (MOE-FULL-8/9 invariant), proving the wiring is real.
     fn self_validate_residency(

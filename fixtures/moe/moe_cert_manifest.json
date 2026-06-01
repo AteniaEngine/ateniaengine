@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "note": "MOE-FULL-14 — official machine-readable MoE certification manifest. Embedded into the binary (include_str!) and used by the controlled production path to gate execution. Scopes: certified_fixture (numerically certified vs HF f64 on a tiny end-to-end fixture), certified_partial (a real-checkpoint single-layer MoE-block sub-reference is also certified), experimental, unsupported. Tiny fixtures only — this is NOT a large-model production certification.",
+  "families": [
+    {
+      "family": "Mixtral",
+      "scope": "certified_partial",
+      "runtime_path": "graph",
+      "attention": "MHA / GQA",
+      "moe_layout": "packed and classic",
+      "fixtures": ["full_mixtral", "mixtral_classic", "gqa_mixtral"],
+      "end_to_end_drift_max_abs": 7.451e-08,
+      "argmax_match": true,
+      "generate_eos": true,
+      "real_checkpoint_partial": "mixtral_layer0 (real Mixtral layer-0 MoE block, <1e-6 vs HF)",
+      "limitations": "tiny fixtures only; no Mixtral-8x7B scale certification"
+    },
+    {
+      "family": "Qwen-MoE",
+      "scope": "certified_partial",
+      "runtime_path": "graph",
+      "attention": "GQA + Q/K/V bias",
+      "moe_layout": "packed + shared expert (sigmoid gate)",
+      "fixtures": ["qwen_moe_tiny"],
+      "end_to_end_drift_max_abs": 5.960e-08,
+      "argmax_match": true,
+      "generate_eos": true,
+      "real_checkpoint_partial": "qwen2_moe_layer0 (real Qwen2-MoE layer-0 MoE block vs HF)",
+      "limitations": "tiny fixtures only; norm_topk_prob=true + shared expert convention is auto-resolved from shared_expert_gate (use forward_with to pin)"
+    },
+    {
+      "family": "DeepSeek-MoE",
+      "scope": "certified_fixture",
+      "runtime_path": "mla",
+      "attention": "MLA (low-rank KV, interleaved RoPE)",
+      "moe_layout": "packed + shared experts",
+      "fixtures": ["deepseek_full", "deepseek_block"],
+      "end_to_end_drift_max_abs": 1.475e-03,
+      "mla_attention_drift_max_abs": 9.999e-06,
+      "argmax_match": true,
+      "generate_eos": true,
+      "real_checkpoint_partial": null,
+      "limitations": "synthetic tiny fixture only; full-forward drift f32-vs-f64 (MoE block dominated, argmax/greedy exact); no Q-LoRA, no YaRN-scaled RoPE"
+    }
+  ],
+  "unsupported_variants": [
+    {"variant": "Qwen3-MoE", "marker": "self_attn.q_norm / k_norm (QK-norm)", "reason": "QK-norm attention not implemented"},
+    {"variant": "DeepSeek Q-LoRA", "marker": "self_attn.q_a_proj / q_b_proj", "reason": "query low-rank compression not implemented"}
+  ]
+}
