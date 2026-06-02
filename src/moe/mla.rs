@@ -93,15 +93,28 @@ impl MlaLayerCache {
 // ----------------------------------------------------------------------------
 
 /// `y = W · x`, `W` row-major `[rows, cols]`, `x` length `cols`. f64 accum.
+///
+/// **MOE-PROD-8** — parallelised across output rows (rayon) for large weights,
+/// bit-identical to the serial path (each `y[r]` is the same sequential f64
+/// reduction; only the thread assignment changes). Same transform as
+/// `dense::matvec`; benefits the DeepSeek/MLA attention projections.
 fn matvec(w: &[f32], rows: usize, cols: usize, x: &[f32]) -> Vec<f32> {
-    let mut y = vec![0.0_f32; rows];
-    for r in 0..rows {
-        let base = r * cols;
+    const PAR_THRESHOLD: usize = 1 << 16;
+    let row = |base: usize| -> f32 {
         let mut acc = 0.0_f64;
         for c in 0..cols {
             acc += (w[base + c] as f64) * (x[c] as f64);
         }
-        y[r] = acc as f32;
+        acc as f32
+    };
+    let mut y = vec![0.0_f32; rows];
+    if rows.saturating_mul(cols) >= PAR_THRESHOLD {
+        use rayon::prelude::*;
+        y.par_iter_mut().enumerate().for_each(|(r, yr)| *yr = row(r * cols));
+    } else {
+        for (r, yr) in y.iter_mut().enumerate() {
+            *yr = row(r * cols);
+        }
     }
     y
 }

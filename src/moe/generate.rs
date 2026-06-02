@@ -342,14 +342,21 @@ pub fn generate_greedy_tiny_eos(
     let vocab = w.config.vocab_size;
     let prompt_len = prompt.len();
 
+    let prof = std::env::var("ATENIA_MOE_CACHE_STATS").as_deref() == Ok("1");
     // ---- Prefill ----
+    let t_pb = std::time::Instant::now();
     let mut gb = GraphBuilder::new();
     let tok = gb.input();
     let (logits_id, kv_nodes) = build_tiny_mixtral_prefill(&mut gb, tok, prompt_len, w.clone());
     gb.output(logits_id);
     let mut g = gb.build();
+    let prefill_build = t_pb.elapsed();
     let pin = Tensor::new_cpu(vec![1, prompt_len], prompt.iter().map(|&t| t as f32).collect());
+    let t_pe = std::time::Instant::now();
     let prefill_logits = g.execute(vec![pin])[0].as_cpu_slice().to_vec();
+    let prefill_exec = t_pe.elapsed();
+    let mut decode_build = std::time::Duration::ZERO;
+    let mut decode_exec = std::time::Duration::ZERO;
 
     let first = argmax_row(&prefill_logits, prompt_len - 1, vocab);
     let first_row = prefill_logits[(prompt_len - 1) * vocab..prompt_len * vocab].to_vec();
@@ -371,6 +378,7 @@ pub fn generate_greedy_tiny_eos(
     for step in 0..(max_new_tokens - 1) {
         let cached_len = prompt_len + step;
 
+        let t_db = std::time::Instant::now();
         let mut gb_d = GraphBuilder::new();
         let tin = gb_d.input();
         let (lid, handles) = build_tiny_mixtral_decode(&mut gb_d, tin, cached_len, w.clone());
@@ -383,9 +391,12 @@ pub fn generate_greedy_tiny_eos(
             g_d.overwrite_parameter(h.cache_v_param_id, cache_v[li].clone())
                 .expect("decode: overwrite cache_V");
         }
+        decode_build += t_db.elapsed();
 
         let tt = Tensor::new_cpu(vec![1, 1], vec![next as f32]);
+        let t_de = std::time::Instant::now();
         let ld = g_d.execute(vec![tt])[0].as_cpu_slice().to_vec(); // [vocab]
+        decode_exec += t_de.elapsed();
         next = argmax_row(&ld, 0, vocab);
 
         cache_k = harvest(&g_d, handles.iter().map(|h| h.k_full_node_id));
@@ -400,6 +411,16 @@ pub fn generate_greedy_tiny_eos(
         }
     }
 
+    if prof {
+        eprintln!(
+            "[ATENIA] gen profile: prefill(build={:.1}s, exec={:.1}s) decode(build={:.1}s, exec={:.1}s) total_decode_steps={}",
+            prefill_build.as_secs_f64(),
+            prefill_exec.as_secs_f64(),
+            decode_build.as_secs_f64(),
+            decode_exec.as_secs_f64(),
+            max_new_tokens.saturating_sub(1),
+        );
+    }
     GreedyGeneration { tokens, step_logits }
 }
 

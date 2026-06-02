@@ -76,17 +76,40 @@ fn silu(x: f32) -> f32 {
     (xd / (1.0 + (-xd).exp())) as f64 as f32
 }
 
+/// Rows*cols product above which [`matvec`] parallelises across output rows.
+/// Below it the rayon fork/join overhead would dominate (e.g. the router's
+/// `[num_experts, d_model]` is tiny); above it (the expert FFN projections —
+/// `d_ff × d_model` with `d_ff` in the thousands) the per-row work amortises
+/// the overhead and the 24-core speedup is real. **MOE-PROD-8.**
+const MATVEC_PAR_THRESHOLD: usize = 1 << 16; // 65 536 MACs
+
 /// `y = W · x` where `W` is row-major `[rows, cols]` and `x` has length
 /// `cols`. Returns length `rows`. Accumulates in f64 for accuracy.
+///
+/// **MOE-PROD-8** — the per-output-row f64 reductions are independent, so for
+/// large weights they run in parallel across rows via rayon. This is
+/// **bit-identical** to the serial path: each `y[r]` is the *same* sequential
+/// f64 accumulation over `c in 0..cols`; only *which thread* computes a given
+/// row changes, never the arithmetic or its order. The expert FFN matmuls
+/// dominate MoE generation (measured ~82 % of the warm wall in MOE-PROD-7), so
+/// this is the highest-ROI generation-compute win that preserves the certified
+/// reference math.
 fn matvec(w: &[f32], rows: usize, cols: usize, x: &[f32]) -> Vec<f32> {
-    let mut y = vec![0.0_f32; rows];
-    for r in 0..rows {
-        let base = r * cols;
+    let row = |base: usize| -> f32 {
         let mut acc = 0.0_f64;
         for c in 0..cols {
             acc += (w[base + c] as f64) * (x[c] as f64);
         }
-        y[r] = acc as f32;
+        acc as f32
+    };
+    let mut y = vec![0.0_f32; rows];
+    if rows.saturating_mul(cols) >= MATVEC_PAR_THRESHOLD {
+        use rayon::prelude::*;
+        y.par_iter_mut().enumerate().for_each(|(r, yr)| *yr = row(r * cols));
+    } else {
+        for (r, yr) in y.iter_mut().enumerate() {
+            *yr = row(r * cols);
+        }
     }
     y
 }

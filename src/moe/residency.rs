@@ -249,10 +249,33 @@ pub fn write_or_reuse(
 
 /// Materialise a stored param to an owned `Vec<f32>` (reads NVMe for the
 /// `Disk` tier; copies the Arc for the `Ram` tier).
+///
+/// **MOE-PROD-8** — for the `Disk` tier (the hot generation path) read the tier
+/// file **directly** into one owned `Vec<f32>` instead of
+/// `to_tensor().ensure_cpu().copy_to_cpu_vec()`, which allocated the f32 buffer
+/// **and then cloned it** (a redundant full copy per projection, ×3 per expert
+/// resolve). The bytes are identical (`read_f32_tensor` / `read_bf16_tensor` +
+/// the same `bf16_decode_bulk` upcast `ensure_cpu` uses) — bit-exact, half the
+/// allocation/memcpy traffic on every routed-expert miss.
 fn materialize(p: &SharedParam) -> Vec<f32> {
-    let mut t = p.to_tensor();
-    t.ensure_cpu().expect("residency: ensure_cpu failed materialising expert weight");
-    t.copy_to_cpu_vec()
+    match p {
+        SharedParam::Disk { handle, .. } => match handle.dtype() {
+            DiskDtype::F32 => disk_tier::read_f32_tensor(handle)
+                .expect("residency: read f32 tier file failed"),
+            DiskDtype::BF16 => {
+                let bits = disk_tier::read_bf16_tensor(handle)
+                    .expect("residency: read bf16 tier file failed");
+                let mut out = vec![0.0_f32; bits.len()];
+                crate::simd_kernels::avx2::bf16_decode_bulk(&bits, &mut out);
+                out
+            }
+        },
+        _ => {
+            let mut t = p.to_tensor();
+            t.ensure_cpu().expect("residency: ensure_cpu failed materialising expert weight");
+            t.copy_to_cpu_vec()
+        }
+    }
 }
 
 /// Host-RAM bytes a stored param occupies (Disk/Cuda → 0; they live off-RAM).

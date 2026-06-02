@@ -193,6 +193,20 @@ locked by regression tests.
   complete (ROI exhausted); the next block is generation compute** (an
   architectural GPU-offload-vs-CPU-GEMM decision). See
   [HANDOFF_MOE_PROD_7.md](./HANDOFF_MOE_PROD_7.md).
+- **Generation compute (MOE-PROD-8) — closes the bit-exact warm-path block.**
+  Attacks the generation graph execution that MOE-PROD-7 proved dominant.
+  (a) **Parallel `matvec`** (dense + MLA): the expert-FFN f64 matmul now runs its
+  independent per-output-row reductions across the 24 cores via rayon —
+  **bit-identical** (same f64 accumulation, only the thread assignment changes).
+  (b) **Single-copy expert resolve**: the Disk-tier `materialize` read the file
+  then cloned the buffer; it now reads straight into one `Vec<f32>` (half the
+  alloc/memcpy per miss). Adds generation-phase profiling. **Real:** warm
+  **204 → 184 s (~10 %)**, bit-exact (`16, 15`). **Block conclusion:** the warm
+  reconstruction is now ~34 s (~18 %); the remaining ~94 s is CPU graph
+  execution using f64 reference accumulation. Further speedup needs an
+  **architectural decision** (GPU offload or f32 accumulation) that **breaks
+  bit-exactness** with the certified f64 reference — so the bit-exact CPU block
+  ends here. See [HANDOFF_MOE_PROD_8.md](./HANDOFF_MOE_PROD_8.md).
 - **Loaders.** Single-file and sharded HuggingFace safetensors; GGUF
   (F16 / Q8_0 / Q4_K_M / Q5_K / Q6_K). BF16 parameter storage (50 % RAM saving),
   BF16 KV cache (default on), RAM↔NVMe spill with chunked streaming.
