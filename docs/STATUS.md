@@ -216,6 +216,21 @@ locked by regression tests.
   **NUMERIC-POLICY / MOE-PERF** (tiered numeric policy + tolerance certificate;
   f32 / bf16 / GPU offload / Tensor Cores evaluation) in
   [PROPOSAL_NUMERIC_POLICY_MOE_PERF.md](./PROPOSAL_NUMERIC_POLICY_MOE_PERF.md).
+- **NUMERIC-POLICY-1 + MOE-PERF-1 — first block of the new series.** Makes MoE
+  compute precision an **explicit, selectable, certifiable** choice without
+  breaking the certified f64 path. `NumericPolicy { Certified, Strict, Fast }`
+  (`ATENIA_NUMERIC_POLICY`, default + fallback **Certified**); `Strict` runs the
+  **expert FFN** in f32 (router stays f64 → routing identical); a
+  `PolicyCertificate` (logit `max_abs_diff`/`rmse`/argmax-rate + **token
+  equality**) certifies a non-Certified run vs the f64 reference, else falls back.
+  **Real Qwen1.5-MoE (CPU, same-prompt A/B):** Certified 206 s → **Strict 180 s
+  (~13 %, identical tokens `16,15`)**. **CUDA feasibility audit:** the GPU is
+  present (RTX 4070, CUDA 13.2) but enabling it gives **0 speedup** — the expert
+  FFN **bypasses the GPU dispatch** (direct CPU call), so GPU offload needs
+  explicit wiring + VRAM streaming + a `Fast` certificate = the next block
+  (**MOE-PERF-2**, scoped, not implemented). See
+  [HANDOFF_NUMERIC_POLICY_1.md](./HANDOFF_NUMERIC_POLICY_1.md) +
+  [HANDOFF_MOE_PERF_1.md](./HANDOFF_MOE_PERF_1.md).
 - **Loaders.** Single-file and sharded HuggingFace safetensors; GGUF
   (F16 / Q8_0 / Q4_K_M / Q5_K / Q6_K). BF16 parameter storage (50 % RAM saving),
   BF16 KV cache (default on), RAM↔NVMe spill with chunked streaming.

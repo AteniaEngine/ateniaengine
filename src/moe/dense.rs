@@ -114,6 +114,41 @@ fn matvec(w: &[f32], rows: usize, cols: usize, x: &[f32]) -> Vec<f32> {
     y
 }
 
+/// **NUMERIC-POLICY-1** — f32-accumulation `matvec`. Same parallel structure as
+/// [`matvec`] but the per-row reduction is f32. Used by the expert FFN under
+/// `Strict`/`Fast`; bounded drift vs the f64 path, certified by tolerance.
+fn matvec_f32(w: &[f32], rows: usize, cols: usize, x: &[f32]) -> Vec<f32> {
+    let row = |base: usize| -> f32 {
+        let mut acc = 0.0_f32;
+        for c in 0..cols {
+            acc += w[base + c] * x[c];
+        }
+        acc
+    };
+    let mut y = vec![0.0_f32; rows];
+    if rows.saturating_mul(cols) >= MATVEC_PAR_THRESHOLD {
+        use rayon::prelude::*;
+        y.par_iter_mut().enumerate().for_each(|(r, yr)| *yr = row(r * cols));
+    } else {
+        for (r, yr) in y.iter_mut().enumerate() {
+            *yr = row(r * cols);
+        }
+    }
+    y
+}
+
+/// **NUMERIC-POLICY-1** — policy-aware `matvec` for the **expert FFN**: f64
+/// under [`NumericPolicy::Certified`] (bit-exact reference), f32 under
+/// `Strict`/`Fast`. The router deliberately does **not** use this (it stays f64
+/// on every policy) so the top-k routing decision is identical.
+fn matvec_policy(w: &[f32], rows: usize, cols: usize, x: &[f32]) -> Vec<f32> {
+    if super::numeric_policy::numeric_policy().ffn_uses_f32() {
+        matvec_f32(w, rows, cols, x)
+    } else {
+        matvec(w, rows, cols, x)
+    }
+}
+
 /// Numerically-stable softmax over `logits`. Returns weights that sum to 1
 /// (within f32 epsilon). f64 internals.
 pub fn softmax(logits: &[f32]) -> Vec<f32> {
@@ -205,13 +240,15 @@ impl MoeDenseExpert {
                 actual: x.len(),
             });
         }
-        let gate = matvec(&self.w_gate, self.d_ff, self.d_model, x);
-        let up = matvec(&self.w_up, self.d_ff, self.d_model, x);
+        // NUMERIC-POLICY-1: the expert FFN projections honour the active policy
+        // (f64 Certified / f32 Strict|Fast). Router stays f64 (see `route`).
+        let gate = matvec_policy(&self.w_gate, self.d_ff, self.d_model, x);
+        let up = matvec_policy(&self.w_up, self.d_ff, self.d_model, x);
         let mut h = vec![0.0_f32; self.d_ff];
         for i in 0..self.d_ff {
             h[i] = silu(gate[i]) * up[i];
         }
-        Ok(matvec(&self.w_down, self.d_model, self.d_ff, &h))
+        Ok(matvec_policy(&self.w_down, self.d_model, self.d_ff, &h))
     }
 }
 
@@ -360,6 +397,51 @@ mod tests {
 
     fn token(seed: u64, d: usize) -> Vec<f32> {
         seeded(seed, d)
+    }
+
+    // NUMERIC-POLICY-1: the expert FFN honours the active policy.
+    #[test]
+    fn expert_forward_certified_is_f64_strict_is_bounded() {
+        use crate::moe::numeric_policy::{
+            clear_numeric_policy_override, set_numeric_policy, NumericPolicy, PolicyCertificate,
+            STRICT_LOGIT_TOLERANCE,
+        };
+        let (d_model, d_ff) = (64usize, 256usize);
+        let e = MoeDenseExpert::new(
+            d_model,
+            d_ff,
+            seeded(11, d_ff * d_model),
+            seeded(12, d_ff * d_model),
+            seeded(13, d_model * d_ff),
+        )
+        .unwrap();
+        let x = seeded(99, d_model);
+
+        // Certified (f64) is deterministic and must equal the pre-policy default.
+        set_numeric_policy(NumericPolicy::Certified);
+        let cert_a = e.forward(&x).unwrap();
+        let cert_b = e.forward(&x).unwrap();
+        assert_eq!(cert_a, cert_b, "Certified forward must be deterministic");
+
+        // Strict (f32) must be within tolerance of Certified, same argmax.
+        set_numeric_policy(NumericPolicy::Strict);
+        let strict = e.forward(&x).unwrap();
+        clear_numeric_policy_override();
+
+        let c = PolicyCertificate::compare(
+            NumericPolicy::Strict,
+            std::slice::from_ref(&cert_a),
+            std::slice::from_ref(&strict),
+            &[0],
+            &[0],
+        );
+        assert!(
+            c.passes(STRICT_LOGIT_TOLERANCE),
+            "Strict expert FFN must certify vs Certified f64: {c:?}"
+        );
+        // The f32 path is genuinely exercised: drift is small but the values
+        // are real f32 reductions (max_abs_diff is a tiny, finite number).
+        assert!(c.max_abs_diff < STRICT_LOGIT_TOLERANCE);
     }
 
     #[test]

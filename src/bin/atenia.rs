@@ -792,6 +792,14 @@ fn run_moe_generate(args: MoeGenerateArgs) -> i32 {
             std::env::set_var(atenia_engine::moe::ENABLE_MOE_ENV, "1");
         }
     }
+    // NUMERIC-POLICY-1: surface the active policy so a non-Certified run is
+    // never silent. Certified (f64, bit-exact) is the default and fallback.
+    if std::env::var("ATENIA_MOE_CACHE_STATS").as_deref() == Ok("1") {
+        eprintln!(
+            "[ATENIA] numeric policy: {}",
+            atenia_engine::moe::numeric_policy::numeric_policy().as_str()
+        );
+    }
     let prompt_ids: Result<Vec<u32>, _> =
         args.prompt_ids.split(',').map(|s| s.trim().parse::<u32>()).collect();
     let prompt_ids = match prompt_ids {

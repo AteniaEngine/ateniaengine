@@ -41,6 +41,8 @@ pub mod mla;
 pub mod production;
 /// **MOE-FULL-3** — experimental Mixtral family adapter (load-only metadata).
 pub mod mixtral_adapter;
+/// **NUMERIC-POLICY-1** — explicit Certified/Strict/Fast numeric policy + tolerance certificate.
+pub mod numeric_policy;
 pub mod numerical;
 /// **MOE-FULL-8** — experimental tiered expert residency (RAM / NVMe).
 pub mod residency;
