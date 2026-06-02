@@ -824,6 +824,14 @@ fn run_moe_generate(args: MoeGenerateArgs) -> i32 {
                     s.tier_bytes_read,
                     s.tier_bytes_read as f64 / (1024.0 * 1024.0 * 1024.0),
                 );
+                // MOE-PERF-3 instrumentation: how much of the wall is the
+                // shared-expert vs routed-expert matmul (the part GPU residency
+                // could accelerate). Bounds the residency ROI.
+                eprintln!(
+                    "[ATENIA] MoE fwd compute: shared={:.2}s routed={:.2}s (matmul only)",
+                    s.shared_fwd_nanos as f64 / 1e9,
+                    s.routed_fwd_nanos as f64 / 1e9,
+                );
             }
             let csv = ids.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(",");
             println!("{csv}");

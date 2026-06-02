@@ -261,6 +261,8 @@ pub fn aggregate_resident_cache_stats() -> super::residency::CacheStats {
             agg.tier_bytes_read += s.tier_bytes_read;
             agg.shared_hits += s.shared_hits;
             agg.shared_misses += s.shared_misses;
+            agg.shared_fwd_nanos += s.shared_fwd_nanos;
+            agg.routed_fwd_nanos += s.routed_fwd_nanos;
         }
     }
     agg

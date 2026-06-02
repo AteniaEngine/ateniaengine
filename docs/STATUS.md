@@ -244,6 +244,19 @@ locked by regression tests.
   `M=seq` prefill** to win — the next block. `Strict` (f32 CPU) stays the fast
   default; `Certified` the reference. See
   [HANDOFF_MOE_PERF_2.md](./HANDOFF_MOE_PERF_2.md).
+- **MOE-PERF-3 — shared-expert VRAM residency: STOP (no ROI), with hard
+  evidence.** Before building a risky CUDA-resident path, **measured the
+  ceiling**: instrumentation (`MoE fwd compute: shared/routed`) shows the
+  shared-expert matmul is **0.24 s (max-new 2) / 0.88 s (max-new 8) — < 0.4 % of
+  the 185–237 s wall**. Even instant residency saves **< 1 s**. The generation is
+  **I/O/load-bound** (disk-tier resolves ~13 GiB + GraphBuilder attn/lm_head),
+  **not** expert-matmul-bound (shared+routed matmul < 1 s total). So the whole
+  "expert FFN compute" direction (f32/GPU/Tensor-Cores/residency) is a dead end
+  here — no expert-matmul change can move a wall that is < 1 % matmul. The only
+  remaining MoE-perf levers are **I/O/load** (bigger cache — hit ratio already
+  55 % at max-new 8; fewer tier files), each gated by the same ROI-ceiling
+  measurement. `Strict` stays the fast default. See
+  [HANDOFF_MOE_PERF_3.md](./HANDOFF_MOE_PERF_3.md).
 - **Loaders.** Single-file and sharded HuggingFace safetensors; GGUF
   (F16 / Q8_0 / Q4_K_M / Q5_K / Q6_K). BF16 parameter storage (50 % RAM saving),
   BF16 KV cache (default on), RAM↔NVMe spill with chunked streaming.

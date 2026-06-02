@@ -622,6 +622,13 @@ pub struct CacheStats {
     /// **MOE-PROD-6** — shared-expert lookups that required a tier read (the
     /// first token, or every token when the shared cache is disabled).
     pub shared_misses: usize,
+    /// **MOE-PERF-3 (instrumentation)** — cumulative nanoseconds spent in the
+    /// **shared expert's `forward`** (the matmul that VRAM residency would
+    /// accelerate). Bounds the maximum possible benefit of GPU residency.
+    pub shared_fwd_nanos: u128,
+    /// **MOE-PERF-3 (instrumentation)** — cumulative nanoseconds spent in the
+    /// **routed experts' `forward`** (matmul only, excluding the tier resolve).
+    pub routed_fwd_nanos: u128,
 }
 
 /// Bounded LRU cache of materialised experts, keyed by routed-expert index.
@@ -796,9 +803,11 @@ impl ResidentExpertLayer {
             let before = cache.stats.tier_bytes_read;
             let expert = self.resolve_cached(cache, e)?;
             materialized_bytes += cache.stats.tier_bytes_read - before;
+            let t_fwd = std::time::Instant::now();
             let y = expert
                 .forward(x)
                 .map_err(|err| MoeLayerError::Binding(super::binding::MoeBindingError::Dense(err)))?;
+            cache.stats.routed_fwd_nanos += t_fwd.elapsed().as_nanos();
             let w = selection.weights[slot];
             for d in 0..self.config.d_model {
                 out[d] += w * y[d];
@@ -824,6 +833,7 @@ impl ResidentExpertLayer {
                     cache.stats.shared_hits += 1;
                 }
             }
+            let t_sfwd = std::time::Instant::now();
             let s = if cache.shared_enabled {
                 // Borrow the pinned expert (no clone of the large weights).
                 cache.shared.as_ref().unwrap().forward(x)
@@ -837,6 +847,7 @@ impl ResidentExpertLayer {
                 expert.forward(x)
             }
             .map_err(|err| MoeLayerError::Binding(super::binding::MoeBindingError::Dense(err)))?;
+            cache.stats.shared_fwd_nanos += t_sfwd.elapsed().as_nanos();
             let scale = match self.convention {
                 MoeExecutionConvention::Atenia => 1.0_f32,
                 MoeExecutionConvention::HuggingFaceQwen => match &self.shared_gate {
