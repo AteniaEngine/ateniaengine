@@ -180,6 +180,19 @@ locked by regression tests.
   GiB**; output identical (token ids `16, 15`). New bottleneck: warm
   reconstruction + CPU expert matmul. See
   [HANDOFF_MOE_PROD_6.md](./HANDOFF_MOE_PROD_6.md).
+- **BF16 backend tier + warm profiling (MOE-PROD-7).** Extends the bf16 tier to
+  the **backend** (embed/lm_head/attention/router/gate) and replaces the
+  element-by-element `read_f32_named` with a memcpy-speed bulk reader
+  (`read_named_to_f32`, dtype-by-size). Adds **per-phase warm profiling**.
+  **Key measured finding:** the warm **reconstruction is only 34.6 s of the
+  204 s** warm wall (~17 %); the other **~168 s (~82 %) is generation compute**
+  (CPU matmul of the expert FFNs + attention). So backend loading was **not** the
+  real bottleneck — the bf16 backend + bulk reader make the load faster (tier
+  28.6 → 26.7 GiB, cold 1942 → 1755 s) and bit-exact (`16, 15`), but the warm
+  wall is unchanged because generation dominates. **The warm-load block is
+  complete (ROI exhausted); the next block is generation compute** (an
+  architectural GPU-offload-vs-CPU-GEMM decision). See
+  [HANDOFF_MOE_PROD_7.md](./HANDOFF_MOE_PROD_7.md).
 - **Loaders.** Single-file and sharded HuggingFace safetensors; GGUF
   (F16 / Q8_0 / Q4_K_M / Q5_K / Q6_K). BF16 parameter storage (50 % RAM saving),
   BF16 KV cache (default on), RAM↔NVMe spill with chunked streaming.

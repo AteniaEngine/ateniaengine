@@ -382,22 +382,48 @@ pub fn write_f32_tensor_named(path: &Path, data: &[f32]) -> io::Result<DiskTenso
 /// elements. Errors (missing / wrong size / unreadable) let the caller fall
 /// back to the shard path — never a silent wrong answer.
 pub fn read_f32_named(path: &Path, expected_numel: usize) -> io::Result<Vec<f32>> {
-    let bytes = fs::read(path)?;
-    if bytes.len() != expected_numel * 4 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "tier file {path:?}: {} bytes, expected {} ({expected_numel} f32)",
-                bytes.len(),
-                expected_numel * 4
-            ),
-        ));
-    }
-    let mut out = Vec::with_capacity(expected_numel);
-    for c in bytes.chunks_exact(4) {
-        out.push(f32::from_le_bytes([c[0], c[1], c[2], c[3]]));
-    }
+    // **MOE-PROD-7** — stream directly into the destination `Vec<f32>` byte view
+    // (4 MiB chunks) instead of `fs::read` + a per-element `from_le_bytes` loop.
+    // Bit-identical on little-endian targets (the on-disk bytes are the native
+    // LE layout); bounded peak allocation; ~the bandwidth of a memcpy.
+    let expected_bytes = expected_numel.checked_mul(4).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "tier numel * 4 overflows usize")
+    })?;
+    let mut out = vec![0f32; expected_numel];
+    // SAFETY: `out` owns `expected_numel` f32 = `expected_bytes` bytes,
+    // contiguous; the byte view aliases the same allocation for the read only.
+    let out_bytes = unsafe {
+        std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, std::mem::size_of_val(&*out))
+    };
+    stream_read_exact_into_bytes(path, expected_bytes, out_bytes)?;
     Ok(out)
+}
+
+/// **MOE-PROD-7** — read a persistent tier file to `Vec<f32>`, detecting the
+/// on-disk dtype from the file's byte length: `numel*4` → F32 (direct),
+/// `numel*2` → BF16 (upcast to f32 via the SIMD `bf16_decode_bulk`, the same
+/// lossless `<<16` expansion the `ensure_cpu` disk arm uses). Any other length
+/// is corruption → `InvalidData` (caller falls back to the certified path).
+/// Used for the warm-reconstruction backend tensors so they too can be bf16.
+pub fn read_named_to_f32(path: &Path, numel: usize) -> io::Result<Vec<f32>> {
+    let len = fs::metadata(path)?.len();
+    if len == (numel as u64) * 4 {
+        read_f32_named(path, numel)
+    } else if len == (numel as u64) * 2 {
+        let mut bits = vec![0u16; numel];
+        let bytes = unsafe {
+            std::slice::from_raw_parts_mut(bits.as_mut_ptr() as *mut u8, std::mem::size_of_val(&*bits))
+        };
+        stream_read_exact_into_bytes(path, numel * 2, bytes)?;
+        let mut out = vec![0f32; numel];
+        crate::simd_kernels::avx2::bf16_decode_bulk(&bits, &mut out);
+        Ok(out)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("tier file {path:?}: {len} bytes, expected {} (f32) or {} (bf16)", numel * 4, numel * 2),
+        ))
+    }
 }
 
 /// **MOE-PROD-4** — wrap an **existing** persistent f32 tier file as a handle
@@ -1168,6 +1194,36 @@ mod tests {
 
         drop(bad);
         drop(good);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn test_read_named_to_f32_detects_dtype_by_size() {
+        // MOE-PROD-7: a dtype-detecting named reader for the warm backend.
+        let dir = test_cache_dir("named_to_f32");
+        // f32 file: read back exactly.
+        let f32_data: Vec<f32> = vec![1.5, -2.0, 0.0, 3.25];
+        let f32_path = dir.join("a_f32.bin");
+        write_f32_tensor_named(&f32_path, &f32_data).unwrap();
+        let got_f32 = read_named_to_f32(&f32_path, f32_data.len()).unwrap();
+        assert_eq!(got_f32, f32_data);
+
+        // bf16 file (bf16-source values): upcast back to the exact f32.
+        let src: Vec<f32> = f32_data
+            .iter()
+            .map(|f| f32::from_bits(f.to_bits() & 0xFFFF_0000))
+            .collect();
+        let bits: Vec<u16> = src.iter().map(|f| (f.to_bits() >> 16) as u16).collect();
+        let bf16_path = dir.join("a_bf16.bin");
+        write_bf16_tensor_named(&bf16_path, &bits).unwrap();
+        let got_bf16 = read_named_to_f32(&bf16_path, src.len()).unwrap();
+        assert_eq!(got_bf16, src, "bf16 file must upcast to the exact f32 values");
+        // bf16 file is half the size of the f32 file.
+        assert_eq!(fs::metadata(&bf16_path).unwrap().len() * 2, fs::metadata(&f32_path).unwrap().len());
+
+        // A size matching neither dtype is rejected.
+        assert!(read_named_to_f32(&f32_path, f32_data.len() + 1).is_err());
+
         cleanup(&dir);
     }
 

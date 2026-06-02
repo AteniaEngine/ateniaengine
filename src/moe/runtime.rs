@@ -192,10 +192,11 @@ fn entry_bytes(e: &TierManifestEntry) -> u64 {
     e.numel as u64 * per
 }
 
-// **MOE-PROD-6** — bumped to 3: tier entries now carry an on-disk dtype
-// (f32/bf16). The bump invalidates v2 (f32-only) tiers so a warm load with the
-// new code rebuilds them once (and may persist experts as bf16).
-const TIER_MANIFEST_VERSION: u32 = 3;
+// **MOE-PROD-7** — bumped to 4: the backend tensors (embed / lm_head /
+// attention / norms) may now also be bf16, read back via the dtype-detecting
+// `read_named_to_f32`. The bump invalidates v3 (f32-backend) tiers so a warm
+// load with the new code rebuilds them once to gain the bf16 backend read.
+const TIER_MANIFEST_VERSION: u32 = 4;
 
 fn convention_str(c: super::layer::MoeExecutionConvention) -> &'static str {
     match c {
@@ -216,22 +217,26 @@ fn convention_from_str(s: &str) -> Option<super::layer::MoeExecutionConvention> 
 /// final norm, per-layer attention + biases) to the tier so a warm load can
 /// rebuild the whole `TinyMixtralWeights` without the shards. Experts + router +
 /// shared-gate were already persisted by `from_real_layer_at`.
-fn persist_backend(ctx: &mut TierContext, w: &TinyMixtralWeights) -> std::io::Result<()> {
+fn persist_backend(
+    ctx: &mut TierContext,
+    w: &TinyMixtralWeights,
+    allow_bf16: bool,
+) -> std::io::Result<()> {
     use super::residency::write_or_reuse;
-    write_or_reuse(ctx, "embed_tokens", &w.embed_tokens)?;
-    write_or_reuse(ctx, "final_norm", &w.final_norm)?;
-    write_or_reuse(ctx, "lm_head", &w.lm_head)?;
+    write_or_reuse(ctx, "embed_tokens", &w.embed_tokens, allow_bf16)?;
+    write_or_reuse(ctx, "final_norm", &w.final_norm, allow_bf16)?;
+    write_or_reuse(ctx, "lm_head", &w.lm_head, allow_bf16)?;
     for (l, lw) in w.layers.iter().enumerate() {
-        write_or_reuse(ctx, &format!("L{l}.input_ln"), &lw.input_ln)?;
-        write_or_reuse(ctx, &format!("L{l}.w_q"), &lw.w_q)?;
-        write_or_reuse(ctx, &format!("L{l}.w_k"), &lw.w_k)?;
-        write_or_reuse(ctx, &format!("L{l}.w_v"), &lw.w_v)?;
-        write_or_reuse(ctx, &format!("L{l}.w_o"), &lw.w_o)?;
-        write_or_reuse(ctx, &format!("L{l}.post_ln"), &lw.post_ln)?;
+        write_or_reuse(ctx, &format!("L{l}.input_ln"), &lw.input_ln, allow_bf16)?;
+        write_or_reuse(ctx, &format!("L{l}.w_q"), &lw.w_q, allow_bf16)?;
+        write_or_reuse(ctx, &format!("L{l}.w_k"), &lw.w_k, allow_bf16)?;
+        write_or_reuse(ctx, &format!("L{l}.w_v"), &lw.w_v, allow_bf16)?;
+        write_or_reuse(ctx, &format!("L{l}.w_o"), &lw.w_o, allow_bf16)?;
+        write_or_reuse(ctx, &format!("L{l}.post_ln"), &lw.post_ln, allow_bf16)?;
         if let Some(b) = &lw.attn_bias {
-            write_or_reuse(ctx, &format!("L{l}.q_bias"), &b.q)?;
-            write_or_reuse(ctx, &format!("L{l}.k_bias"), &b.k)?;
-            write_or_reuse(ctx, &format!("L{l}.v_bias"), &b.v)?;
+            write_or_reuse(ctx, &format!("L{l}.q_bias"), &b.q, allow_bf16)?;
+            write_or_reuse(ctx, &format!("L{l}.k_bias"), &b.k, allow_bf16)?;
+            write_or_reuse(ctx, &format!("L{l}.v_bias"), &b.v, allow_bf16)?;
         }
     }
     Ok(())
@@ -257,6 +262,7 @@ fn try_warm_reconstruct(
     cache_capacity: usize,
 ) -> Option<MoeRuntime> {
     let dbg = std::env::var("ATENIA_MOE_CACHE_STATS").as_deref() == Ok("1");
+    let t0 = std::time::Instant::now();
     macro_rules! bail {
         ($($a:tt)*) => {{ if dbg { eprintln!("[ATENIA] tier warm fallback: {}", format!($($a)*)); } return None; }};
     }
@@ -302,7 +308,8 @@ fn try_warm_reconstruct(
     }
     let read = |key: &str| -> Option<Vec<f32>> {
         let n = *numel.get(key)?;
-        crate::tensor::disk_tier::read_f32_named(&dir.join(format!("{key}.bin")), n).ok()
+        // **MOE-PROD-7** — dtype-detecting reader: backend tensors may be bf16.
+        crate::tensor::disk_tier::read_named_to_f32(&dir.join(format!("{key}.bin")), n).ok()
     };
 
     let n_heads = cfg_u(v, "num_attention_heads").ok()?;
@@ -316,9 +323,11 @@ fn try_warm_reconstruct(
     if dbg {
         eprintln!("[ATENIA] tier warm: manifest valid, reconstructing {n_layers} layers");
     }
+    let t_validate = t0.elapsed();
     let mut residency: Vec<Arc<ResidentExpertLayer>> = Vec::with_capacity(n_layers);
     let mut caches: Vec<ExpertCache> = Vec::with_capacity(n_layers);
     let mut layers: Vec<TinyDecoderWeights> = Vec::with_capacity(n_layers);
+    let t_loop = std::time::Instant::now();
     for l in 0..n_layers {
         let layer_cfg = MoeLayerConfig::new(n_experts, topk, m.has_shared, hidden, d_ff).ok()?;
         let shared_gate_present = numel.contains_key(&format!("L{l}.shared_gate"));
@@ -361,7 +370,13 @@ fn try_warm_reconstruct(
         residency.push(resident);
         caches.push(ExpertCache::new(n_experts));
     }
+    let t_layers = t_loop.elapsed();
 
+    let t_head = std::time::Instant::now();
+    let embed_tokens = read("embed_tokens")?;
+    let final_norm = read("final_norm")?;
+    let lm_head = read("lm_head")?;
+    let t_headtail = t_head.elapsed();
     let weights = TinyMixtralWeights {
         config: TinyMixtralConfig {
             vocab_size: vocab,
@@ -371,13 +386,22 @@ fn try_warm_reconstruct(
             head_dim,
             rope_theta,
         },
-        embed_tokens: read("embed_tokens")?,
+        embed_tokens,
         layers,
-        final_norm: read("final_norm")?,
-        lm_head: read("lm_head")?,
+        final_norm,
+        lm_head,
         rms_eps,
     };
 
+    if dbg {
+        eprintln!(
+            "[ATENIA] tier warm reconstruct: total={:.1}s (validate={:.2}s, layers[experts+attn]={:.1}s, embed/lm_head={:.1}s)",
+            t0.elapsed().as_secs_f64(),
+            t_validate.as_secs_f64(),
+            t_layers.as_secs_f64(),
+            t_headtail.as_secs_f64(),
+        );
+    }
     Some(MoeRuntime {
         family,
         backend: Backend::Graph(weights),
@@ -816,7 +840,7 @@ impl MoeRuntime {
                 // **MOE-PROD-5** — persist the rest of the backend + the full
                 // manifest so the next load can rebuild without the shards.
                 if let Some(ctx) = &mut tier_ctx {
-                    persist_backend(ctx, &weights)
+                    persist_backend(ctx, &weights, tier_bf16)
                         .map_err(|e| MoeRuntimeError::Load(format!("persist backend: {e}")))?;
                     let convention = residency
                         .first()

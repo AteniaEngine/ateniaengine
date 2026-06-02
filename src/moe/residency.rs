@@ -230,28 +230,20 @@ pub fn write_or_reuse_expert(
     Ok(dtype)
 }
 
-/// **MOE-PROD-5** — write `data` to `dir/<key>.bin` (reusing an existing file
-/// with the expected byte length) and record the manifest entry. Used for tier
-/// tensors that stay **RAM-resident** in the runtime (router / shared-gate /
-/// attention / embed / lm_head) — they are persisted for warm reconstruction
-/// but do not become `SharedParam::Disk`.
-pub fn write_or_reuse(ctx: &mut TierContext, key: &str, data: &[f32]) -> io::Result<()> {
-    let file = format!("{key}.bin");
-    let path = ctx.dir.join(&file);
-    let expected_bytes = std::mem::size_of_val(data) as u64;
-    let valid = std::fs::metadata(&path).map(|m| m.len() == expected_bytes).unwrap_or(false);
-    if valid {
-        ctx.reused += 1;
-    } else {
-        disk_tier::write_f32_tensor_named(&path, data)?;
-        ctx.written += 1;
-    }
-    ctx.entries.push(TierEntry {
-        key: key.to_string(),
-        file,
-        numel: data.len(),
-        dtype: DiskDtype::F32,
-    });
+/// **MOE-PROD-5 / MOE-PROD-7** — write `data` to `dir/<key>.bin` (reusing an
+/// existing file with the expected byte length) and record the manifest entry.
+/// Used for tier tensors read back to RAM at warm reconstruction (router /
+/// shared-gate / attention / embed / lm_head). With `allow_bf16` the big
+/// backend tensors are persisted as bf16 when losslessly representable (halving
+/// the warm backend read), exactly like the experts; warm reads detect the
+/// dtype by file size (`read_named_to_f32`).
+pub fn write_or_reuse(
+    ctx: &mut TierContext,
+    key: &str,
+    data: &[f32],
+    allow_bf16: bool,
+) -> io::Result<()> {
+    write_or_reuse_expert(ctx, key, data, allow_bf16)?;
     Ok(())
 }
 
@@ -420,9 +412,9 @@ impl ResidentExpertLayer {
         };
         // **MOE-PROD-5** — persist router + shared-gate too, so a warm load can
         // reconstruct the layer without re-reading the shards.
-        write_or_reuse(ctx, &format!("L{layer_id}.router"), &layer.routed.w_router)?;
+        write_or_reuse(ctx, &format!("L{layer_id}.router"), &layer.routed.w_router, allow_bf16)?;
         if let Some(g) = &layer.shared_gate {
-            write_or_reuse(ctx, &format!("L{layer_id}.shared_gate"), g)?;
+            write_or_reuse(ctx, &format!("L{layer_id}.shared_gate"), g, allow_bf16)?;
         }
         Ok(Self {
             config: layer.config,
@@ -455,7 +447,8 @@ impl ResidentExpertLayer {
         let d_model = config.d_model;
         let d_ff = config.d_ff;
         let n = config.num_experts;
-        let w_router = disk_tier::read_f32_named(
+        // **MOE-PROD-7** — router/shared-gate may be bf16 (dtype-detecting read).
+        let w_router = disk_tier::read_named_to_f32(
             &dir.join(format!("L{layer_id}.router.bin")),
             n * d_model,
         )?;
@@ -476,7 +469,7 @@ impl ResidentExpertLayer {
             None
         };
         let shared_gate = if shared_gate_present {
-            Some(disk_tier::read_f32_named(
+            Some(disk_tier::read_named_to_f32(
                 &dir.join(format!("L{layer_id}.shared_gate.bin")),
                 d_model,
             )?)
