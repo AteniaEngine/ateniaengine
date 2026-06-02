@@ -129,10 +129,25 @@ pub struct TierEntry {
     pub file: String,
     /// Element count.
     pub numel: usize,
-    /// **MOE-PROD-6** — on-disk dtype: F32 (`numel*4` B) or BF16 (`numel*2` B,
-    /// lossless for bf16-source weights). Backend tensors stay F32; only routed
-    /// + shared experts may be BF16.
+    /// **MOE-PROD-6 / NUMERIC-POLICY-2** — on-disk dtype: F32 (`numel*4` B), BF16
+    /// (`numel*2` B, lossless for bf16-source), or QInt8 (`rows*4 + numel` B,
+    /// lossy per-row int8). Backend tensors stay F32/BF16; only routed + shared
+    /// experts may be QInt8.
     pub dtype: DiskDtype,
+    /// **NUMERIC-POLICY-2** — actual on-disk byte length (dtype-dependent; QInt8
+    /// is not a clean per-element width). Used for manifest validation.
+    pub bytes: u64,
+}
+
+/// **NUMERIC-POLICY-2** — on-disk format chosen for an expert tier tensor.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TierFmt {
+    /// Always f32 (`numel*4`).
+    F32,
+    /// bf16 when losslessly representable, else f32 (MOE-PROD-6 default).
+    Bf16Auto,
+    /// Per-row symmetric int8 (lossy; `rows*4 + numel`). Experts only.
+    QInt8,
 }
 
 /// **MOE-PROD-6** — if every value in `data` is **exactly** representable as
@@ -173,60 +188,57 @@ fn place_at(
     key: &str,
     shape: Vec<usize>,
     data: &[f32],
-    allow_bf16: bool,
+    fmt: TierFmt,
 ) -> io::Result<SharedParam> {
-    let dtype = write_or_reuse_expert(ctx, key, data, allow_bf16)?;
+    let dtype = write_or_reuse_expert(ctx, key, data, &shape, fmt)?;
     let path = ctx.dir.join(format!("{key}.bin"));
     Ok(SharedParam::Disk { shape, handle: disk_tier::open_existing(&path, data.len(), dtype) })
 }
 
-/// **MOE-PROD-6** — write (or reuse) an **expert** tier tensor at `dir/<key>.bin`,
-/// choosing the on-disk dtype: when `allow_bf16` and `data` is bf16-lossless,
-/// persist as BF16 (`numel*2` bytes — halves the tier I/O), else F32. Reuse
-/// accepts an existing file whose byte length matches **either** dtype (so a
-/// tier written by a previous run is reused without a rewrite). Returns the
-/// dtype actually on disk and records the manifest entry.
+/// **MOE-PROD-6 / NUMERIC-POLICY-2** — write (or reuse) an **expert** tier tensor
+/// at `dir/<key>.bin` in the requested [`TierFmt`]: `QInt8` (per-row int8,
+/// `rows*4 + numel` B — halves the bf16 tier), `Bf16Auto` (bf16 if lossless
+/// else f32), or `F32`. Reuse skips the write when an existing file already
+/// matches the chosen format's byte length. Records the manifest entry (dtype +
+/// actual bytes) and returns the on-disk dtype.
 pub fn write_or_reuse_expert(
     ctx: &mut TierContext,
     key: &str,
     data: &[f32],
-    allow_bf16: bool,
+    shape: &[usize],
+    fmt: TierFmt,
 ) -> io::Result<DiskDtype> {
     let file = format!("{key}.bin");
     let path = ctx.dir.join(&file);
     let numel = data.len();
-    let f32_bytes = (numel * 4) as u64;
-    let bf16_bytes = (numel * 2) as u64;
-    let existing = std::fs::metadata(&path).map(|m| m.len()).ok();
+    // Quant axis = the tensor's first dim (rows). For non-quant fmts it's unused.
+    let rows = shape.first().copied().filter(|&r| r > 0 && numel % r == 0).unwrap_or(numel.max(1));
+    let bf16 = if matches!(fmt, TierFmt::Bf16Auto) { bf16_truncate_lossless(data) } else { None };
 
-    // Decide the bf16 truncation once (only if we may need it).
-    let bf16 = if allow_bf16 { bf16_truncate_lossless(data) } else { None };
-
-    let dtype = match existing {
-        // Reuse a valid existing file (either dtype) — no rewrite.
-        Some(len) if len == f32_bytes => {
-            ctx.reused += 1;
-            DiskDtype::F32
-        }
-        Some(len) if len == bf16_bytes && bf16.is_some() => {
-            ctx.reused += 1;
-            DiskDtype::BF16
-        }
-        // Otherwise (missing / wrong size) write fresh.
-        _ => match &bf16 {
-            Some(bits) => {
-                disk_tier::write_bf16_tensor_named(&path, bits)?;
-                ctx.written += 1;
-                DiskDtype::BF16
-            }
-            None => {
-                disk_tier::write_f32_tensor_named(&path, data)?;
-                ctx.written += 1;
-                DiskDtype::F32
-            }
-        },
+    let (dtype, disk_bytes) = match fmt {
+        TierFmt::QInt8 => (DiskDtype::QInt8, disk_tier::qint8_disk_bytes(numel, rows) as u64),
+        TierFmt::Bf16Auto if bf16.is_some() => (DiskDtype::BF16, (numel * 2) as u64),
+        _ => (DiskDtype::F32, (numel * 4) as u64),
     };
-    ctx.entries.push(TierEntry { key: key.to_string(), file, numel, dtype });
+
+    let valid = std::fs::metadata(&path).map(|m| m.len() == disk_bytes).unwrap_or(false);
+    if valid {
+        ctx.reused += 1;
+    } else {
+        match dtype {
+            DiskDtype::QInt8 => {
+                disk_tier::write_qint8_tensor_named(&path, data, rows, numel / rows)?;
+            }
+            DiskDtype::BF16 => {
+                disk_tier::write_bf16_tensor_named(&path, bf16.as_ref().unwrap())?;
+            }
+            DiskDtype::F32 => {
+                disk_tier::write_f32_tensor_named(&path, data)?;
+            }
+        }
+        ctx.written += 1;
+    }
+    ctx.entries.push(TierEntry { key: key.to_string(), file, numel, dtype, bytes: disk_bytes });
     Ok(dtype)
 }
 
@@ -243,8 +255,25 @@ pub fn write_or_reuse(
     data: &[f32],
     allow_bf16: bool,
 ) -> io::Result<()> {
-    write_or_reuse_expert(ctx, key, data, allow_bf16)?;
+    // Backend tensors are never int8 (NUMERIC-POLICY-2 quantises experts only).
+    let fmt = if allow_bf16 { TierFmt::Bf16Auto } else { TierFmt::F32 };
+    write_or_reuse_expert(ctx, key, data, &[], fmt)?;
     Ok(())
+}
+
+/// **NUMERIC-POLICY-2** — whether to simulate the int8 expert tier numerically
+/// (`ATENIA_MOE_QUANT_SIM=int8`), cached. Used to certify int8 cheaply before
+/// building the real byte-reducing tier.
+fn quant_sim_int8() -> bool {
+    use std::sync::OnceLock;
+    static SIM: OnceLock<bool> = OnceLock::new();
+    *SIM.get_or_init(|| std::env::var("ATENIA_MOE_QUANT_SIM").as_deref() == Ok("int8"))
+}
+
+/// Per-row int8 quantize→dequantize round-trip (the lossy effect of an int8 tier).
+fn qdq_per_row_i8(data: &[f32], rows: usize, cols: usize) -> Vec<f32> {
+    let (q, scales) = disk_tier::quantize_per_row_i8(data, rows, cols);
+    disk_tier::dequantize_per_row_i8(&q, &scales, rows, cols)
 }
 
 /// Materialise a stored param to an owned `Vec<f32>` (reads NVMe for the
@@ -259,7 +288,7 @@ pub fn write_or_reuse(
 /// allocation/memcpy traffic on every routed-expert miss.
 fn materialize(p: &SharedParam) -> Vec<f32> {
     match p {
-        SharedParam::Disk { handle, .. } => match handle.dtype() {
+        SharedParam::Disk { handle, shape } => match handle.dtype() {
             DiskDtype::F32 => disk_tier::read_f32_tensor(handle)
                 .expect("residency: read f32 tier file failed"),
             DiskDtype::BF16 => {
@@ -268,6 +297,13 @@ fn materialize(p: &SharedParam) -> Vec<f32> {
                 let mut out = vec![0.0_f32; bits.len()];
                 crate::simd_kernels::avx2::bf16_decode_bulk(&bits, &mut out);
                 out
+            }
+            // **NUMERIC-POLICY-2** — per-row int8: dequantize to f32 (rows = the
+            // tensor's first dim from the stored shape).
+            DiskDtype::QInt8 => {
+                let rows = shape.first().copied().unwrap_or(1);
+                disk_tier::read_qint8_to_f32(handle, rows)
+                    .expect("residency: read qint8 tier file failed")
             }
         },
         _ => {
@@ -306,14 +342,14 @@ impl ResidentExpert {
         ctx: &mut TierContext,
         prefix: &str,
         e: &MoeDenseExpert,
-        allow_bf16: bool,
+        fmt: TierFmt,
     ) -> io::Result<Self> {
         Ok(Self {
             d_model: e.d_model,
             d_ff: e.d_ff,
-            gate: place_at(ctx, &format!("{prefix}.gate"), vec![e.d_ff, e.d_model], &e.w_gate, allow_bf16)?,
-            up: place_at(ctx, &format!("{prefix}.up"), vec![e.d_ff, e.d_model], &e.w_up, allow_bf16)?,
-            down: place_at(ctx, &format!("{prefix}.down"), vec![e.d_model, e.d_ff], &e.w_down, allow_bf16)?,
+            gate: place_at(ctx, &format!("{prefix}.gate"), vec![e.d_ff, e.d_model], &e.w_gate, fmt)?,
+            up: place_at(ctx, &format!("{prefix}.up"), vec![e.d_ff, e.d_model], &e.w_up, fmt)?,
+            down: place_at(ctx, &format!("{prefix}.down"), vec![e.d_model, e.d_ff], &e.w_down, fmt)?,
         })
     }
 
@@ -333,18 +369,22 @@ impl ResidentExpert {
         let wrap = |role: &str, numel: usize, shape: Vec<usize>| -> io::Result<SharedParam> {
             let path = dir.join(format!("{prefix}.{role}.bin"));
             let md = std::fs::metadata(&path)?;
+            let rows = shape.first().copied().unwrap_or(1);
             let dtype = if md.len() == (numel * 4) as u64 {
                 DiskDtype::F32
             } else if md.len() == (numel * 2) as u64 {
                 DiskDtype::BF16
+            } else if md.len() == disk_tier::qint8_disk_bytes(numel, rows) as u64 {
+                DiskDtype::QInt8
             } else {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
-                        "tier file {path:?}: {} bytes, expected {} (f32) or {} (bf16)",
+                        "tier file {path:?}: {} bytes, expected {} (f32) / {} (bf16) / {} (qint8)",
                         md.len(),
                         numel * 4,
-                        numel * 2
+                        numel * 2,
+                        disk_tier::qint8_disk_bytes(numel, rows),
                     ),
                 ));
             };
@@ -361,9 +401,18 @@ impl ResidentExpert {
 
     /// Materialise the three projections into a transient `MoeDenseExpert`.
     fn resolve(&self) -> Result<(MoeDenseExpert, usize), MoeDenseError> {
-        let g = materialize(&self.gate);
-        let u = materialize(&self.up);
-        let d = materialize(&self.down);
+        let mut g = materialize(&self.gate);
+        let mut u = materialize(&self.up);
+        let mut d = materialize(&self.down);
+        // **NUMERIC-POLICY-2** — int8 **simulation**: quantise+dequantise the
+        // resolved weights per-row to reproduce the *numerical* effect of an
+        // int8 expert tier, reusing the existing bf16 tier (no cold rebuild).
+        // Gates the real int8 tier on a cheap certification run.
+        if quant_sim_int8() {
+            g = qdq_per_row_i8(&g, self.d_ff, self.d_model);
+            u = qdq_per_row_i8(&u, self.d_ff, self.d_model);
+            d = qdq_per_row_i8(&d, self.d_model, self.d_ff);
+        }
         let bytes = (g.len() + u.len() + d.len()) * 4;
         let expert = MoeDenseExpert::new(self.d_model, self.d_ff, g, u, d)?;
         Ok((expert, bytes))
@@ -416,28 +465,28 @@ impl ResidentExpertLayer {
         layer: &RealMoeLayer,
         ctx: &mut TierContext,
         layer_id: usize,
-        allow_bf16: bool,
+        fmt: TierFmt,
     ) -> io::Result<Self> {
+        // Experts (routed + shared) use the requested format (incl. QInt8);
+        // the router + shared-gate stay bf16 (tiny, kept accurate).
         let experts = layer
             .routed
             .experts
             .iter()
             .enumerate()
-            .map(|(i, e)| {
-                ResidentExpert::from_dense_at(ctx, &format!("L{layer_id}.e{i}"), e, allow_bf16)
-            })
+            .map(|(i, e)| ResidentExpert::from_dense_at(ctx, &format!("L{layer_id}.e{i}"), e, fmt))
             .collect::<io::Result<Vec<_>>>()?;
         let shared = match &layer.shared {
             Some(se) => {
-                Some(ResidentExpert::from_dense_at(ctx, &format!("L{layer_id}.shared"), se, allow_bf16)?)
+                Some(ResidentExpert::from_dense_at(ctx, &format!("L{layer_id}.shared"), se, fmt)?)
             }
             None => None,
         };
         // **MOE-PROD-5** — persist router + shared-gate too, so a warm load can
         // reconstruct the layer without re-reading the shards.
-        write_or_reuse(ctx, &format!("L{layer_id}.router"), &layer.routed.w_router, allow_bf16)?;
+        write_or_reuse(ctx, &format!("L{layer_id}.router"), &layer.routed.w_router, true)?;
         if let Some(g) = &layer.shared_gate {
-            write_or_reuse(ctx, &format!("L{layer_id}.shared_gate"), g, allow_bf16)?;
+            write_or_reuse(ctx, &format!("L{layer_id}.shared_gate"), g, true)?;
         }
         Ok(Self {
             config: layer.config,

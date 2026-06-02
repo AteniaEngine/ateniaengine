@@ -538,6 +538,8 @@ impl Tensor {
         let dtype = match handle.dtype() {
             disk_tier::DiskDtype::F32 => DType::F32,
             disk_tier::DiskDtype::BF16 => DType::BF16,
+            // NUMERIC-POLICY-2: int8 tier dequantises to f32 on read.
+            disk_tier::DiskDtype::QInt8 => DType::F32,
         };
         let strides = Self::compute_strides(&shape, &Layout::Contiguous);
         Self {
@@ -1333,6 +1335,12 @@ impl Tensor {
                         crate::simd_kernels::avx2::bf16_decode_bulk(&bits, &mut out);
                         out
                     }
+                    // NUMERIC-POLICY-2: per-row int8 → f32 (rows = first dim).
+                    disk_tier::DiskDtype::QInt8 => {
+                        let rows = self.shape.first().copied().unwrap_or(1);
+                        disk_tier::read_qint8_to_f32(handle, rows)
+                            .expect("copy_to_cpu_vec: disk read (qint8) failed")
+                    }
                 }
             }
             // M9.1 + M9.4 — INT8 dequant on access. `group_size` is
@@ -1511,6 +1519,7 @@ impl Tensor {
                 // (1.5 × the F32 footprint, no worse than the
                 // M4.7.2 BF16 → F32 decode itself).
                 let expected = self.numel();
+                let qint8_rows = self.shape.first().copied().unwrap_or(1);
                 let data: Vec<f32> = match handle.dtype() {
                     disk_tier::DiskDtype::F32 => disk_tier::read_f32_tensor(handle)
                         .map_err(|e| StorageTransferError::DiskReadFailed(e.to_string()))?,
@@ -1524,6 +1533,9 @@ impl Tensor {
                         crate::simd_kernels::avx2::bf16_decode_bulk(&bits, &mut out);
                         out
                     }
+                    // NUMERIC-POLICY-2: per-row int8 → f32 (rows = first dim).
+                    disk_tier::DiskDtype::QInt8 => disk_tier::read_qint8_to_f32(handle, qint8_rows)
+                        .map_err(|e| StorageTransferError::DiskReadFailed(e.to_string()))?,
                 };
                 if data.len() != expected {
                     return Err(StorageTransferError::DiskSizeMismatch {

@@ -165,6 +165,99 @@ fn stream_read_exact_into_bytes(
     Ok(())
 }
 
+/// **NUMERIC-POLICY-2** — write a per-row int8-quantised `[rows, cols]` weight
+/// to a **deterministic** `path` as `[rows × f32 scales][numel × i8 quants]`,
+/// returning a **persistent** [`DiskDtype::QInt8`] handle. Halves the bf16 tier
+/// (~1 byte/element), so the resolve reads — and the antivirus scans — far fewer
+/// bytes (the MOE-IO-1 bottleneck). Lossy; certified by tolerance vs Certified.
+pub fn write_qint8_tensor_named(
+    path: &Path,
+    data: &[f32],
+    rows: usize,
+    cols: usize,
+) -> io::Result<DiskTensorHandle> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let (q, scales) = quantize_per_row_i8(data, rows, cols);
+    let mut buf = Vec::with_capacity(rows * 4 + q.len());
+    for s in &scales {
+        buf.extend_from_slice(&s.to_le_bytes());
+    }
+    buf.extend(q.iter().map(|&v| v as u8));
+    fs::write(path, &buf)?;
+    Ok(DiskTensorHandle {
+        inner: Arc::new(InnerDiskFile {
+            path: path.to_path_buf(),
+            numel: rows * cols,
+            dtype: DiskDtype::QInt8,
+            persistent: true,
+        }),
+    })
+}
+
+/// **NUMERIC-POLICY-2** — read a per-row int8 tier file (written by
+/// [`write_qint8_tensor_named`]) and **dequantize to f32**. `rows` is the quant
+/// axis (the tensor's first dim); `cols = numel / rows`. Validates the on-disk
+/// size (`rows*4 + numel`); a mismatch → `InvalidData` (caller falls back).
+pub fn read_qint8_to_f32(handle: &DiskTensorHandle, rows: usize) -> io::Result<Vec<f32>> {
+    let numel = handle.numel();
+    if rows == 0 || numel % rows != 0 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "qint8: bad rows for numel"));
+    }
+    let cols = numel / rows;
+    let expected = qint8_disk_bytes(numel, rows);
+    let bytes = fs::read(handle.path())?;
+    if bytes.len() != expected {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("qint8 file {:?}: {} bytes, expected {expected}", handle.path(), bytes.len()),
+        ));
+    }
+    let mut scales = vec![0.0f32; rows];
+    for (r, s) in scales.iter_mut().enumerate() {
+        let b = r * 4;
+        *s = f32::from_le_bytes([bytes[b], bytes[b + 1], bytes[b + 2], bytes[b + 3]]);
+    }
+    let q: Vec<i8> = bytes[rows * 4..].iter().map(|&b| b as i8).collect();
+    Ok(dequantize_per_row_i8(&q, &scales, rows, cols))
+}
+
+/// **NUMERIC-POLICY-2** — per-row **symmetric int8** quantization of a row-major
+/// `[rows, cols]` weight: each row gets one f32 `scale = max(|row|)/127`, and
+/// `q = round(w/scale)` clamped to `[-127, 127]`. Returns `(q, scales)`. An
+/// all-zero row uses `scale = 1` (`q = 0`). The quant axis is the **output row**
+/// (the standard, most accurate per-output-channel choice for a weight matmul).
+pub fn quantize_per_row_i8(data: &[f32], rows: usize, cols: usize) -> (Vec<i8>, Vec<f32>) {
+    let mut q = vec![0i8; rows * cols];
+    let mut scales = vec![1.0f32; rows];
+    for r in 0..rows {
+        let base = r * cols;
+        let amax = data[base..base + cols].iter().fold(0.0f32, |m, &v| m.max(v.abs()));
+        let scale = if amax > 0.0 { amax / 127.0 } else { 1.0 };
+        scales[r] = scale;
+        let inv = 1.0 / scale;
+        for c in 0..cols {
+            q[base + c] = (data[base + c] * inv).round().clamp(-127.0, 127.0) as i8;
+        }
+    }
+    (q, scales)
+}
+
+/// **NUMERIC-POLICY-2** — dequantize a per-row symmetric int8 weight back to f32:
+/// `w[r,c] = q[r,c] * scales[r]`. Inverse of [`quantize_per_row_i8`].
+pub fn dequantize_per_row_i8(q: &[i8], scales: &[f32], rows: usize, cols: usize) -> Vec<f32> {
+    let mut out = vec![0.0f32; rows * cols];
+    for r in 0..rows {
+        let base = r * cols;
+        let s = scales[r];
+        for c in 0..cols {
+            out[base + c] = q[base + c] as f32 * s;
+        }
+    }
+    out
+}
+
 /// On-disk dtype of a spilled tensor (M4.7.4.a).
 ///
 /// Lives on the [`DiskTensorHandle`], not in the file itself. The
@@ -184,16 +277,32 @@ pub enum DiskDtype {
     /// [`crate::tensor::TensorStorage::CpuBf16`] variant carries.
     /// Round-trip via [`write_bf16_tensor`] / [`read_bf16_tensor`].
     BF16,
+    /// **NUMERIC-POLICY-2** — per-row symmetric int8 (lossy). On disk:
+    /// `[rows × f32 scales][rows*cols × i8 quants]` = `rows*4 + numel` bytes
+    /// (≈ 1 byte/element + a tiny scale header). Round-trip via
+    /// [`write_qint8_tensor_named`] / [`read_qint8_to_f32`]; needs `rows` (the
+    /// quant axis) to split the header, supplied by the caller from the shape.
+    QInt8,
 }
 
 impl DiskDtype {
-    /// Bytes per element on disk. F32 = 4, BF16 = 2.
+    /// Bytes per **element** for the dense dtypes (F32 = 4, BF16 = 2). `QInt8`
+    /// is **not** a fixed per-element width (it carries a per-row scale header),
+    /// so it returns the 1-byte quant width; use [`qint8_disk_bytes`] for the
+    /// full on-disk size of a quantised tensor.
     pub fn bytes_per_element(self) -> usize {
         match self {
             DiskDtype::F32 => 4,
             DiskDtype::BF16 => 2,
+            DiskDtype::QInt8 => 1,
         }
     }
+}
+
+/// **NUMERIC-POLICY-2** — full on-disk byte size of a per-row int8 tensor:
+/// `rows` f32 scales + `numel` i8 quants.
+pub fn qint8_disk_bytes(numel: usize, rows: usize) -> usize {
+    rows * 4 + numel
 }
 
 /// Owning record of an on-disk tensor file. Drop removes the file
@@ -1195,6 +1304,33 @@ mod tests {
         drop(bad);
         drop(good);
         cleanup(&dir);
+    }
+
+    #[test]
+    fn test_per_row_i8_quant_dequant_roundtrip_bounded() {
+        // NUMERIC-POLICY-2: per-row symmetric int8 quant error is <= scale/2 =
+        // (amax/127)/2 per element. Verify bit patterns dequantise within that.
+        let rows = 4usize;
+        let cols = 5usize;
+        let data: Vec<f32> = (0..rows * cols).map(|i| (i as f32) * 0.37 - 3.1).collect();
+        let (q, scales) = quantize_per_row_i8(&data, rows, cols);
+        assert_eq!(q.len(), rows * cols);
+        assert_eq!(scales.len(), rows);
+        let dq = dequantize_per_row_i8(&q, &scales, rows, cols);
+        for r in 0..rows {
+            let amax = data[r * cols..r * cols + cols].iter().fold(0.0f32, |m, &v| m.max(v.abs()));
+            let tol = (amax / 127.0) / 2.0 + 1e-6;
+            for c in 0..cols {
+                let d = (dq[r * cols + c] - data[r * cols + c]).abs();
+                assert!(d <= tol, "row {r} col {c}: |{d}| > {tol}");
+            }
+        }
+        // An all-zero row → scale 1, q 0, exact.
+        let z = vec![0.0f32; cols];
+        let (qz, sz) = quantize_per_row_i8(&z, 1, cols);
+        assert!(qz.iter().all(|&v| v == 0));
+        assert_eq!(sz[0], 1.0);
+        assert_eq!(dequantize_per_row_i8(&qz, &sz, 1, cols), z);
     }
 
     #[test]

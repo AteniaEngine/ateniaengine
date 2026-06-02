@@ -273,6 +273,21 @@ locked by regression tests.
   wall; the CLI now detects + recommends it) and **NUMERIC-POLICY** (quantised
   experts = fewer bytes to scan, tolerance-certified). `Strict` stays the fast
   default. See [HANDOFF_MOE_IO_1.md](./HANDOFF_MOE_IO_1.md).
+- **NUMERIC-POLICY-2 — int8 quantized expert tier (certified, real win).** Acts
+  on MOE-IO-1's only code lever (**fewer bytes**): the routed + shared **experts**
+  persist as **per-row symmetric int8** (`rows*4 + numel` B ≈ half the bf16 tier);
+  the router/shared-gate/backend stay bf16/f32. The dequantised f32 flows through
+  the unchanged forward (Certified f64 / Strict f32). `ATENIA_MOE_TIER_QUANT=int8`
+  (default off → bf16); manifest **v5** (per-entry dtype + bytes); warm
+  reconstruction size-detects f32/bf16/qint8; mismatch → certified shard
+  fallback. **Certified first, cheaply:** an in-memory int8 *simulation*
+  (`ATENIA_MOE_QUANT_SIM=int8`, reusing the bf16 tier) produced **identical
+  tokens** (`16,15` and the 8-token sequence) on the real model. **Real
+  benchmark:** tier **26.7 → 14.3 GiB (−46 %)**, resolve **~90 → 45 s (~−50 %,
+  68 → 287 MB/s)**, warm wall **~180 → 142 s (~−21 %)**, tokens identical →
+  certified; cold 1942 → 1543 s. int4 deferred (sim-certify first, never on
+  intuition). `Strict` stays the fast default; `Certified` the reference. See
+  [HANDOFF_NUMERIC_POLICY_2.md](./HANDOFF_NUMERIC_POLICY_2.md).
 - **Loaders.** Single-file and sharded HuggingFace safetensors; GGUF
   (F16 / Q8_0 / Q4_K_M / Q5_K / Q6_K). BF16 parameter storage (50 % RAM saving),
   BF16 KV cache (default on), RAM↔NVMe spill with chunked streaming.

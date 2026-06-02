@@ -168,11 +168,14 @@ struct TierManifestEntry {
     key: String,
     file: String,
     numel: usize,
-    /// **MOE-PROD-6** — on-disk dtype: `"f32"` (numel*4 B) or `"bf16"`
-    /// (numel*2 B). Defaults to `"f32"` for older manifests (which only had
-    /// f32 entries); the version bump invalidates them anyway.
+    /// **MOE-PROD-6 / NUMERIC-POLICY-2** — on-disk dtype: `"f32"`, `"bf16"`, or
+    /// `"qint8"`. Defaults to `"f32"` for older manifests.
     #[serde(default = "dtype_f32")]
     dtype: String,
+    /// **NUMERIC-POLICY-2** — actual on-disk byte length (qint8 is not a clean
+    /// per-element width). 0 in older manifests → recompute from dtype/numel.
+    #[serde(default)]
+    bytes: u64,
 }
 
 fn dtype_f32() -> String {
@@ -183,20 +186,24 @@ fn dtype_str(d: crate::tensor::disk_tier::DiskDtype) -> &'static str {
     match d {
         crate::tensor::disk_tier::DiskDtype::F32 => "f32",
         crate::tensor::disk_tier::DiskDtype::BF16 => "bf16",
+        crate::tensor::disk_tier::DiskDtype::QInt8 => "qint8",
     }
 }
 
-/// On-disk bytes for a manifest entry given its recorded dtype.
+/// On-disk bytes for a manifest entry: the recorded `bytes` if present, else
+/// (older manifests) recomputed from the dense dtype + numel.
 fn entry_bytes(e: &TierManifestEntry) -> u64 {
+    if e.bytes > 0 {
+        return e.bytes;
+    }
     let per = if e.dtype == "bf16" { 2 } else { 4 };
     e.numel as u64 * per
 }
 
-// **MOE-PROD-7** — bumped to 4: the backend tensors (embed / lm_head /
-// attention / norms) may now also be bf16, read back via the dtype-detecting
-// `read_named_to_f32`. The bump invalidates v3 (f32-backend) tiers so a warm
-// load with the new code rebuilds them once to gain the bf16 backend read.
-const TIER_MANIFEST_VERSION: u32 = 4;
+// **NUMERIC-POLICY-2** — bumped to 5: expert tensors may now be `qint8` (per-row
+// int8), and entries carry an explicit on-disk `bytes`. The bump invalidates v4
+// tiers so a warm load rebuilds once into the requested format.
+const TIER_MANIFEST_VERSION: u32 = 5;
 
 fn convention_str(c: super::layer::MoeExecutionConvention) -> &'static str {
     match c {
@@ -425,6 +432,19 @@ fn try_warm_reconstruct(
 /// enabled; force f32 with `ATENIA_MOE_TIER_BF16=0`.
 fn tier_bf16_from_env() -> bool {
     std::env::var("ATENIA_MOE_TIER_BF16").as_deref() != Ok("0")
+}
+
+/// **NUMERIC-POLICY-2** — expert tier on-disk format. `ATENIA_MOE_TIER_QUANT=int8`
+/// → per-row int8 (lossy, ~half the bf16 tier, certified by tolerance); else
+/// bf16-auto (lossless) when `allow_bf16`, else f32. Experts only — the router /
+/// shared-gate / backend stay bf16/f32.
+fn expert_tier_fmt(allow_bf16: bool) -> super::residency::TierFmt {
+    use super::residency::TierFmt;
+    match std::env::var("ATENIA_MOE_TIER_QUANT").as_deref() {
+        Ok("int8") => TierFmt::QInt8,
+        _ if allow_bf16 => TierFmt::Bf16Auto,
+        _ => TierFmt::F32,
+    }
 }
 
 fn expert_cache_capacity_from_env(num_experts: usize, experts_per_token: usize) -> usize {
@@ -765,9 +785,15 @@ impl MoeRuntime {
             None
         };
 
-        // **MOE-PROD-6** — persist experts as bf16 (half the tier I/O) when the
-        // persistent tier is active; lossless per-tensor (falls back to f32).
+        // **MOE-PROD-6 / NUMERIC-POLICY-2** — expert tier format when the
+        // persistent tier is active: QInt8 (per-row int8) if requested, else
+        // bf16-auto (lossless), else f32. Backend tensors stay bf16/f32.
         let tier_bf16 = tier_ctx.is_some() && tier_bf16_from_env();
+        let tier_fmt = if tier_ctx.is_some() {
+            expert_tier_fmt(tier_bf16)
+        } else {
+            super::residency::TierFmt::Bf16Auto
+        };
         let resolve = |name: &str| source.get_f32(name);
         let mut residency: Vec<Arc<ResidentExpertLayer>> = Vec::with_capacity(n_layers);
         let mut caches: Vec<ExpertCache> = Vec::with_capacity(n_layers);
@@ -799,7 +825,7 @@ impl MoeRuntime {
                             // Persistent tier: deterministic names, reuse files
                             // that already exist (skips the multi-GB re-write).
                             Some(ctx) => {
-                                ResidentExpertLayer::from_real_layer_at(&moe, ctx, l, tier_bf16)
+                                ResidentExpertLayer::from_real_layer_at(&moe, ctx, l, tier_fmt)
                                     .map_err(|e| {
                                         MoeRuntimeError::Load(format!(
                                             "tier residency layer {l}: {e}"
@@ -846,11 +872,7 @@ impl MoeRuntime {
                         .first()
                         .map(|r| convention_str(r.convention).to_string())
                         .unwrap_or_else(|| "atenia".to_string());
-                    let total_bytes: u64 = ctx
-                        .entries
-                        .iter()
-                        .map(|e| e.numel as u64 * e.dtype.bytes_per_element() as u64)
-                        .sum();
+                    let total_bytes: u64 = ctx.entries.iter().map(|e| e.bytes).sum();
                     let manifest = TierManifest {
                         version: TIER_MANIFEST_VERSION,
                         model_id: model_id.clone(),
@@ -873,6 +895,7 @@ impl MoeRuntime {
                                 file: e.file.clone(),
                                 numel: e.numel,
                                 dtype: dtype_str(e.dtype).to_string(),
+                                bytes: e.bytes,
                             })
                             .collect(),
                     };
