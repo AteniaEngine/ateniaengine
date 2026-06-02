@@ -67,6 +67,13 @@ impl NumericPolicy {
         !matches!(self, NumericPolicy::Certified)
     }
 
+    /// **MOE-PERF-2** — whether the **expert FFN** matmul is offloaded to the
+    /// GPU (`cuda_matmul`, f32, with an automatic CPU-f32 fallback) under this
+    /// policy. Only `Fast`. `Certified`/`Strict` stay on the CPU.
+    pub fn ffn_uses_cuda(self) -> bool {
+        matches!(self, NumericPolicy::Fast)
+    }
+
     fn encode(self) -> u8 {
         match self {
             NumericPolicy::Certified => 0,
@@ -193,30 +200,23 @@ impl PolicyCertificate {
 /// (logits are O(1–10)). Published, not magic: tighten with measured data.
 pub const STRICT_LOGIT_TOLERANCE: f64 = 0.5;
 
+// NOTE: tests that **mutate** the process-global policy override
+// (`set_numeric_policy`) live in `tests/numeric_policy_test.rs` — a separate
+// test binary (own process) — so they never race the many in-process FFN
+// equality tests that read the global. The pure (non-mutating) checks stay
+// here.
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn default_is_certified_and_safe() {
-        clear_numeric_policy_override();
-        // With no override set, the policy is env-or-Certified; the override
-        // API must round-trip and Certified must report f64.
-        set_numeric_policy(NumericPolicy::Certified);
-        assert_eq!(numeric_policy(), NumericPolicy::Certified);
+    fn policy_classification_is_correct() {
         assert!(!NumericPolicy::Certified.ffn_uses_f32());
-        clear_numeric_policy_override();
-    }
-
-    #[test]
-    fn override_wins_and_clears() {
-        set_numeric_policy(NumericPolicy::Strict);
-        assert_eq!(numeric_policy(), NumericPolicy::Strict);
+        assert!(!NumericPolicy::Certified.ffn_uses_cuda());
         assert!(NumericPolicy::Strict.ffn_uses_f32());
-        set_numeric_policy(NumericPolicy::Fast);
-        assert_eq!(numeric_policy(), NumericPolicy::Fast);
+        assert!(!NumericPolicy::Strict.ffn_uses_cuda());
         assert!(NumericPolicy::Fast.ffn_uses_f32());
-        clear_numeric_policy_override();
+        assert!(NumericPolicy::Fast.ffn_uses_cuda());
     }
 
     #[test]

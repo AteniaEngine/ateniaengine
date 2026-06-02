@@ -231,6 +231,19 @@ locked by regression tests.
   (**MOE-PERF-2**, scoped, not implemented). See
   [HANDOFF_NUMERIC_POLICY_1.md](./HANDOFF_NUMERIC_POLICY_1.md) +
   [HANDOFF_MOE_PERF_1.md](./HANDOFF_MOE_PERF_1.md).
+- **MOE-PERF-2 — GPU expert FFN (`NumericPolicy::Fast`): implemented, certified,
+  but SLOWER (honest STOP).** Wires the expert FFN matmul to `cuda_matmul` under
+  `Fast` (f32 GPU, automatic CPU-f32 fallback, router stays f64). It is correct,
+  **certified** (real tokens identical `16,15`, GPU used — VRAM 625 MiB / 8 GB),
+  and fallback-safe — **but ~15 % slower** on the real model (Certified 180 s /
+  Strict 179 s / **Fast 207 s**). **Why exactly:** the expert FFN is per-token
+  `M=1` GEMVs over **transient** weights (each routed expert resolved from disk,
+  used once), so every GPU call pays a full PCIe weight upload that exceeds the
+  tiny GEMV compute; the 24-core CPU reading already-resident RAM wins. The GPU
+  needs **VRAM-resident reused weights** (the cached shared expert) or **batched
+  `M=seq` prefill** to win — the next block. `Strict` (f32 CPU) stays the fast
+  default; `Certified` the reference. See
+  [HANDOFF_MOE_PERF_2.md](./HANDOFF_MOE_PERF_2.md).
 - **Loaders.** Single-file and sharded HuggingFace safetensors; GGUF
   (F16 / Q8_0 / Q4_K_M / Q5_K / Q6_K). BF16 parameter storage (50 % RAM saving),
   BF16 KV cache (default on), RAM↔NVMe spill with chunked streaming.

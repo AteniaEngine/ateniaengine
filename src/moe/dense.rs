@@ -137,12 +137,30 @@ fn matvec_f32(w: &[f32], rows: usize, cols: usize, x: &[f32]) -> Vec<f32> {
     y
 }
 
-/// **NUMERIC-POLICY-1** — policy-aware `matvec` for the **expert FFN**: f64
-/// under [`NumericPolicy::Certified`] (bit-exact reference), f32 under
-/// `Strict`/`Fast`. The router deliberately does **not** use this (it stays f64
-/// on every policy) so the top-k routing decision is identical.
+/// **MOE-PERF-2** — GPU `matvec` for the expert FFN under
+/// [`NumericPolicy::Fast`]. `y = W·x` is computed as the GEMM
+/// `W[rows,cols] · x[cols,1]` through [`crate::cuda::matmul::cuda_matmul`],
+/// which uploads/launches/downloads on the GPU and **falls back to the exact
+/// CPU f32 matmul** on any CUDA failure or in a CUDA-less build — so this is
+/// always safe (worst case == `Strict`). f32 throughout.
+fn matvec_cuda(w: &[f32], rows: usize, cols: usize, x: &[f32]) -> Vec<f32> {
+    use crate::tensor::Tensor;
+    let a = Tensor::new_cpu(vec![rows, cols], w.to_vec());
+    let b = Tensor::new_cpu(vec![cols, 1], x.to_vec());
+    let out = crate::cuda::matmul::cuda_matmul(&a, &b, rows, cols, 1);
+    out.as_cpu_slice().to_vec()
+}
+
+/// **NUMERIC-POLICY-1 / MOE-PERF-2** — policy-aware `matvec` for the **expert
+/// FFN**: f64 under [`NumericPolicy::Certified`] (bit-exact reference), f32 CPU
+/// under `Strict`, f32 **GPU** (`cuda_matmul`, CPU-f32 fallback) under `Fast`.
+/// The router deliberately does **not** use this (it stays f64 on every policy)
+/// so the top-k routing decision is identical.
 fn matvec_policy(w: &[f32], rows: usize, cols: usize, x: &[f32]) -> Vec<f32> {
-    if super::numeric_policy::numeric_policy().ffn_uses_f32() {
+    let p = super::numeric_policy::numeric_policy();
+    if p.ffn_uses_cuda() {
+        matvec_cuda(w, rows, cols, x)
+    } else if p.ffn_uses_f32() {
         matvec_f32(w, rows, cols, x)
     } else {
         matvec(w, rows, cols, x)
@@ -399,49 +417,40 @@ mod tests {
         seeded(seed, d)
     }
 
-    // NUMERIC-POLICY-1: the expert FFN honours the active policy.
+    // NUMERIC-POLICY-1 / MOE-PERF-2: the three matvec precision backends
+    // (f64 Certified, f32 Strict, GPU/CPU-f32 Fast) must agree within
+    // tolerance. Calls the backends DIRECTLY (no global-policy mutation) so it
+    // never races sibling FFN tests on the process-global policy.
     #[test]
-    fn expert_forward_certified_is_f64_strict_is_bounded() {
-        use crate::moe::numeric_policy::{
-            clear_numeric_policy_override, set_numeric_policy, NumericPolicy, PolicyCertificate,
-            STRICT_LOGIT_TOLERANCE,
-        };
-        let (d_model, d_ff) = (64usize, 256usize);
-        let e = MoeDenseExpert::new(
-            d_model,
-            d_ff,
-            seeded(11, d_ff * d_model),
-            seeded(12, d_ff * d_model),
-            seeded(13, d_model * d_ff),
-        )
-        .unwrap();
-        let x = seeded(99, d_model);
+    fn matvec_backends_certify_against_f64() {
+        use crate::moe::numeric_policy::{NumericPolicy, PolicyCertificate, STRICT_LOGIT_TOLERANCE};
+        let (rows, cols) = (256usize, 512usize);
+        let w = seeded(11, rows * cols);
+        let x = seeded(99, cols);
 
-        // Certified (f64) is deterministic and must equal the pre-policy default.
-        set_numeric_policy(NumericPolicy::Certified);
-        let cert_a = e.forward(&x).unwrap();
-        let cert_b = e.forward(&x).unwrap();
-        assert_eq!(cert_a, cert_b, "Certified forward must be deterministic");
+        let y64 = matvec(&w, rows, cols, &x); // Certified reference
+        let y64b = matvec(&w, rows, cols, &x);
+        assert_eq!(y64, y64b, "f64 matvec deterministic");
+        let y32 = matvec_f32(&w, rows, cols, &x); // Strict
+        let ycuda = matvec_cuda(&w, rows, cols, &x); // Fast (GPU or CPU-f32 fallback)
 
-        // Strict (f32) must be within tolerance of Certified, same argmax.
-        set_numeric_policy(NumericPolicy::Strict);
-        let strict = e.forward(&x).unwrap();
-        clear_numeric_policy_override();
-
-        let c = PolicyCertificate::compare(
+        let cs = PolicyCertificate::compare(
             NumericPolicy::Strict,
-            std::slice::from_ref(&cert_a),
-            std::slice::from_ref(&strict),
+            std::slice::from_ref(&y64),
+            std::slice::from_ref(&y32),
             &[0],
             &[0],
         );
-        assert!(
-            c.passes(STRICT_LOGIT_TOLERANCE),
-            "Strict expert FFN must certify vs Certified f64: {c:?}"
+        assert!(cs.passes(STRICT_LOGIT_TOLERANCE), "Strict matvec certifies: {cs:?}");
+
+        let cf = PolicyCertificate::compare(
+            NumericPolicy::Fast,
+            std::slice::from_ref(&y64),
+            std::slice::from_ref(&ycuda),
+            &[0],
+            &[0],
         );
-        // The f32 path is genuinely exercised: drift is small but the values
-        // are real f32 reductions (max_abs_diff is a tiny, finite number).
-        assert!(c.max_abs_diff < STRICT_LOGIT_TOLERANCE);
+        assert!(cf.passes(STRICT_LOGIT_TOLERANCE), "Fast matvec certifies: {cf:?}");
     }
 
     #[test]
