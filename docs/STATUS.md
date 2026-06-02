@@ -207,6 +207,15 @@ locked by regression tests.
   **architectural decision** (GPU offload or f32 accumulation) that **breaks
   bit-exactness** with the certified f64 reference — so the bit-exact CPU block
   ends here. See [HANDOFF_MOE_PROD_8.md](./HANDOFF_MOE_PROD_8.md).
+- **MOE-PROD series CLOSED (1 → 8).** Warm path **350 → 184 s (~47 %, same-prompt,
+  bit-exact)**; tier 53 → 26.7 GiB; cold 3757 → 1755 s; reconstruction now ~34 s.
+  Full closing audit (per-milestone, cumulative metrics, bottlenecks, lessons,
+  f64-path limits) in [HANDOFF_MOE_PROD_SERIES.md](./HANDOFF_MOE_PROD_SERIES.md).
+  The residual bottleneck is CPU f64 graph execution, which cannot shrink further
+  without changing the numerics — designed (not implemented) as the next series
+  **NUMERIC-POLICY / MOE-PERF** (tiered numeric policy + tolerance certificate;
+  f32 / bf16 / GPU offload / Tensor Cores evaluation) in
+  [PROPOSAL_NUMERIC_POLICY_MOE_PERF.md](./PROPOSAL_NUMERIC_POLICY_MOE_PERF.md).
 - **Loaders.** Single-file and sharded HuggingFace safetensors; GGUF
   (F16 / Q8_0 / Q4_K_M / Q5_K / Q6_K). BF16 parameter storage (50 % RAM saving),
   BF16 KV cache (default on), RAM↔NVMe spill with chunked streaming.
