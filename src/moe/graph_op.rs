@@ -263,6 +263,7 @@ pub fn aggregate_resident_cache_stats() -> super::residency::CacheStats {
             agg.shared_misses += s.shared_misses;
             agg.shared_fwd_nanos += s.shared_fwd_nanos;
             agg.routed_fwd_nanos += s.routed_fwd_nanos;
+            agg.resolve_nanos += s.resolve_nanos;
         }
     }
     agg

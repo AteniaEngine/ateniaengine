@@ -827,11 +827,32 @@ fn run_moe_generate(args: MoeGenerateArgs) -> i32 {
                 // MOE-PERF-3 instrumentation: how much of the wall is the
                 // shared-expert vs routed-expert matmul (the part GPU residency
                 // could accelerate). Bounds the residency ROI.
+                let resolve_s = s.resolve_nanos as f64 / 1e9;
+                let resolve_mbps = if resolve_s > 0.0 {
+                    (s.tier_bytes_read as f64 / (1024.0 * 1024.0)) / resolve_s
+                } else {
+                    0.0
+                };
                 eprintln!(
-                    "[ATENIA] MoE fwd compute: shared={:.2}s routed={:.2}s (matmul only)",
+                    "[ATENIA] MoE fwd compute: shared={:.2}s routed={:.2}s (matmul only); tier resolve(disk)={:.2}s @ {:.0} MB/s",
                     s.shared_fwd_nanos as f64 / 1e9,
                     s.routed_fwd_nanos as f64 / 1e9,
+                    resolve_s,
+                    resolve_mbps,
                 );
+                // MOE-IO finding: a pathologically low resolve throughput (<<
+                // NVMe bandwidth) on Windows is almost always real-time AV
+                // scanning the tier files on first open. Point the operator at
+                // the operational fix (no code change reduces an AV scan).
+                if resolve_mbps > 0.0 && resolve_mbps < 250.0 {
+                    eprintln!(
+                        "[ATENIA] note: tier resolve is {:.0} MB/s, far below NVMe — likely \
+                         antivirus real-time scanning the tier files. Excluding {:?} from your \
+                         AV typically restores full read speed.",
+                        resolve_mbps,
+                        std::env::var("ATENIA_DISK_TIER_DIR").unwrap_or_else(|_| "the tier dir".into()),
+                    );
+                }
             }
             let csv = ids.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(",");
             println!("{csv}");

@@ -257,6 +257,22 @@ locked by regression tests.
   55 % at max-new 8; fewer tier files), each gated by the same ROI-ceiling
   measurement. `Strict` stays the fast default. See
   [HANDOFF_MOE_PERF_3.md](./HANDOFF_MOE_PERF_3.md).
+- **MOE-IO-1 — I/O profiling: dominant bottleneck is antivirus, code candidates
+  eliminated (STOP).** New line attacking I/O/load. Instrumentation (`tier
+  resolve(disk)=..s @ ..MB/s`) shows the **disk-tier resolve is ~50 % of the
+  wall** (~100 s at max-new 2; expert matmul < 1 s). Measured ROI ceiling of each
+  code candidate and **eliminated all**: (a) **bigger cache** — no ROI (misses
+  are first-touch: 297→291, hit 22.7→24.2 %); (b) **consolidate the 4659 tier
+  files** — a read benchmark shows cold 68 MB/s vs warm 1282 MB/s with only
+  ~1 ms/file open overhead, i.e. the cost is **cold content scanning** (Windows
+  Defender RTP is ON; 68 MB/s = Defender throughput) which is **per-byte** —
+  consolidation would make Defender scan whole 330 MB layer blobs instead of the
+  top-k ~28 MB, *worse*. **Root cause: AV real-time scan of tier files on first
+  open — environmental, not a code defect.** The real fixes live elsewhere:
+  **operational** (exclude the tier dir from AV → ~NVMe speed → ~50 % off the
+  wall; the CLI now detects + recommends it) and **NUMERIC-POLICY** (quantised
+  experts = fewer bytes to scan, tolerance-certified). `Strict` stays the fast
+  default. See [HANDOFF_MOE_IO_1.md](./HANDOFF_MOE_IO_1.md).
 - **Loaders.** Single-file and sharded HuggingFace safetensors; GGUF
   (F16 / Q8_0 / Q4_K_M / Q5_K / Q6_K). BF16 parameter storage (50 % RAM saving),
   BF16 KV cache (default on), RAM↔NVMe spill with chunked streaming.

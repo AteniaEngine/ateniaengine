@@ -629,6 +629,10 @@ pub struct CacheStats {
     /// **MOE-PERF-3 (instrumentation)** — cumulative nanoseconds spent in the
     /// **routed experts' `forward`** (matmul only, excluding the tier resolve).
     pub routed_fwd_nanos: u128,
+    /// **MOE-IO (instrumentation)** — cumulative nanoseconds spent in the tier
+    /// **`resolve()`** (NVMe read + bf16→f32 decode of expert weights, routed +
+    /// shared). Isolates the disk-I/O cost from the matmul and the GraphBuilder.
+    pub resolve_nanos: u128,
 }
 
 /// Bounded LRU cache of materialised experts, keyed by routed-expert index.
@@ -748,9 +752,11 @@ impl ResidentExpertLayer {
             cache.stats.hits += 1;
             return Ok(expert.clone());
         }
+        let t_res = std::time::Instant::now();
         let (expert, bytes) = self.experts[idx]
             .resolve()
             .map_err(|e| MoeLayerError::Binding(super::binding::MoeBindingError::Dense(e)))?;
+        cache.stats.resolve_nanos += t_res.elapsed().as_nanos();
         cache.stats.misses += 1;
         cache.stats.tier_bytes_read += bytes;
         if cache.capacity > 0 {
@@ -822,9 +828,11 @@ impl ResidentExpertLayer {
             // Populate the pinned slot on a miss (or every token if disabled).
             if cache.shared_enabled {
                 if cache.shared.is_none() {
+                    let t_res = std::time::Instant::now();
                     let (expert, bytes) = se.resolve().map_err(|err| {
                         MoeLayerError::Binding(super::binding::MoeBindingError::Dense(err))
                     })?;
+                    cache.stats.resolve_nanos += t_res.elapsed().as_nanos();
                     cache.stats.shared_misses += 1;
                     cache.stats.tier_bytes_read += bytes;
                     materialized_bytes += bytes;
