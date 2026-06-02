@@ -152,19 +152,29 @@ fn place_at(
     shape: Vec<usize>,
     data: &[f32],
 ) -> io::Result<SharedParam> {
+    write_or_reuse(ctx, key, data)?;
+    let path = ctx.dir.join(format!("{key}.bin"));
+    Ok(SharedParam::Disk { shape, handle: disk_tier::open_existing_f32(&path, data.len()) })
+}
+
+/// **MOE-PROD-5** — write `data` to `dir/<key>.bin` (reusing an existing file
+/// with the expected byte length) and record the manifest entry. Used for tier
+/// tensors that stay **RAM-resident** in the runtime (router / shared-gate /
+/// attention / embed / lm_head) — they are persisted for warm reconstruction
+/// but do not become `SharedParam::Disk`.
+pub fn write_or_reuse(ctx: &mut TierContext, key: &str, data: &[f32]) -> io::Result<()> {
     let file = format!("{key}.bin");
     let path = ctx.dir.join(&file);
     let expected_bytes = std::mem::size_of_val(data) as u64;
     let valid = std::fs::metadata(&path).map(|m| m.len() == expected_bytes).unwrap_or(false);
-    let handle = if valid {
+    if valid {
         ctx.reused += 1;
-        disk_tier::open_existing_f32(&path, data.len())
     } else {
+        disk_tier::write_f32_tensor_named(&path, data)?;
         ctx.written += 1;
-        disk_tier::write_f32_tensor_named(&path, data)?
-    };
+    }
     ctx.entries.push(TierEntry { key: key.to_string(), file, numel: data.len() });
-    Ok(SharedParam::Disk { shape, handle })
+    Ok(())
 }
 
 /// Materialise a stored param to an owned `Vec<f32>` (reads NVMe for the
@@ -210,6 +220,36 @@ impl ResidentExpert {
             gate: place_at(ctx, &format!("{prefix}.gate"), vec![e.d_ff, e.d_model], &e.w_gate)?,
             up: place_at(ctx, &format!("{prefix}.up"), vec![e.d_ff, e.d_model], &e.w_up)?,
             down: place_at(ctx, &format!("{prefix}.down"), vec![e.d_model, e.d_ff], &e.w_down)?,
+        })
+    }
+
+    /// **MOE-PROD-5** — wrap an expert's three projection files from the
+    /// persistent tier (`dir/{prefix}.{gate,up,down}.bin`) as disk-backed
+    /// `SharedParam`s, validating each file's presence + byte length so a
+    /// missing/corrupt tier triggers the caller's fallback.
+    fn from_tier(
+        dir: &std::path::Path,
+        prefix: &str,
+        d_model: usize,
+        d_ff: usize,
+    ) -> io::Result<Self> {
+        let wrap = |role: &str, numel: usize, shape: Vec<usize>| -> io::Result<SharedParam> {
+            let path = dir.join(format!("{prefix}.{role}.bin"));
+            let md = std::fs::metadata(&path)?;
+            if md.len() != (numel * 4) as u64 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("tier file {path:?}: {} bytes, expected {}", md.len(), numel * 4),
+                ));
+            }
+            Ok(SharedParam::Disk { shape, handle: disk_tier::open_existing_f32(&path, numel) })
+        };
+        Ok(Self {
+            d_model,
+            d_ff,
+            gate: wrap("gate", d_ff * d_model, vec![d_ff, d_model])?,
+            up: wrap("up", d_ff * d_model, vec![d_ff, d_model])?,
+            down: wrap("down", d_model * d_ff, vec![d_model, d_ff])?,
         })
     }
 
@@ -282,6 +322,12 @@ impl ResidentExpertLayer {
             Some(se) => Some(ResidentExpert::from_dense_at(ctx, &format!("L{layer_id}.shared"), se)?),
             None => None,
         };
+        // **MOE-PROD-5** — persist router + shared-gate too, so a warm load can
+        // reconstruct the layer without re-reading the shards.
+        write_or_reuse(ctx, &format!("L{layer_id}.router"), &layer.routed.w_router)?;
+        if let Some(g) = &layer.shared_gate {
+            write_or_reuse(ctx, &format!("L{layer_id}.shared_gate"), g)?;
+        }
         Ok(Self {
             config: layer.config,
             convention: layer.resolve_convention(),
@@ -291,6 +337,57 @@ impl ResidentExpertLayer {
             shared,
             shared_gate: layer.shared_gate.clone(),
         })
+    }
+
+    /// **MOE-PROD-5** — reconstruct a disk-tier layer **directly from the
+    /// persistent tier** (`dir`), without a `RealMoeLayer` and without reading
+    /// the shards: experts wrap existing tier files (`open_existing_f32`), the
+    /// router + optional shared-gate are read from their small tier files. The
+    /// caller must have validated the manifest (all files present, correct
+    /// sizes) — otherwise it falls back to the certified shard path. Output is
+    /// bit-identical (the tier holds the exact f32 bytes a cold load wrote).
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_tier(
+        config: MoeLayerConfig,
+        convention: MoeExecutionConvention,
+        dir: &std::path::Path,
+        layer_id: usize,
+        has_shared: bool,
+        shared_gate_present: bool,
+        shared_d_ff: usize,
+    ) -> io::Result<Self> {
+        let d_model = config.d_model;
+        let d_ff = config.d_ff;
+        let n = config.num_experts;
+        let w_router = disk_tier::read_f32_named(
+            &dir.join(format!("L{layer_id}.router.bin")),
+            n * d_model,
+        )?;
+        let experts = (0..n)
+            .map(|i| ResidentExpert::from_tier(dir, &format!("L{layer_id}.e{i}"), d_model, d_ff))
+            .collect::<io::Result<Vec<_>>>()?;
+        // The shared expert may have a different FFN width
+        // (`shared_expert_intermediate_size` ≠ `moe_intermediate_size` for
+        // Qwen-MoE), so it uses `shared_d_ff`, not the routed `d_ff`.
+        let shared = if has_shared {
+            Some(ResidentExpert::from_tier(
+                dir,
+                &format!("L{layer_id}.shared"),
+                d_model,
+                shared_d_ff,
+            )?)
+        } else {
+            None
+        };
+        let shared_gate = if shared_gate_present {
+            Some(disk_tier::read_f32_named(
+                &dir.join(format!("L{layer_id}.shared_gate.bin")),
+                d_model,
+            )?)
+        } else {
+            None
+        };
+        Ok(Self { config, convention, tier: ExpertTier::Disk, w_router, experts, shared, shared_gate })
     }
 
     /// Number of routed experts.

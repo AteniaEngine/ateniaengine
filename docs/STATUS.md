@@ -152,6 +152,17 @@ locked by regression tests.
   MOE-PROD-3 pointed at. New bottleneck: shard read + f32 expert assembly (scope
   A still assembles experts; scope B would skip that). Default off = unchanged
   ephemeral tier. See [HANDOFF_MOE_PROD_4.md](./HANDOFF_MOE_PROD_4.md).
+- **Warm backend reconstruction (MOE-PROD-5, scope C).** A warm load now rebuilds
+  the **whole** MoE backend (experts + attention + embed + lm_head + router +
+  gate) **directly from the persistent tier — no shard read, no expert
+  assembly** ("reconstructing N layers"), with a safe fallback to the certified
+  shard path on any manifest/file doubt. Bit-exact (proved by deleting the shard
+  files and still generating identically; `tests/moe_tier_reconstruct_test.rs`).
+  **Real result** on Qwen1.5-MoE: warm load+gen **2445 s → 701 s (~71 % / ~29 min
+  faster)**, output identical. New bottleneck is the per-token disk-tier
+  generation, not the load. (Fixed a shared-expert FFN-width bug found by the
+  real run.) Default off = unchanged. See
+  [HANDOFF_MOE_PROD_5.md](./HANDOFF_MOE_PROD_5.md).
 - **Loaders.** Single-file and sharded HuggingFace safetensors; GGUF
   (F16 / Q8_0 / Q4_K_M / Q5_K / Q6_K). BF16 parameter storage (50 % RAM saving),
   BF16 KV cache (default on), RAM↔NVMe spill with chunked streaming.

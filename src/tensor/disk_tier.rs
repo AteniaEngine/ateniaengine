@@ -377,6 +377,29 @@ pub fn write_f32_tensor_named(path: &Path, data: &[f32]) -> io::Result<DiskTenso
     })
 }
 
+/// **MOE-PROD-5** — read a persistent f32 tier file at `path` back into a
+/// `Vec<f32>`, validating that its byte length matches `expected_numel`
+/// elements. Errors (missing / wrong size / unreadable) let the caller fall
+/// back to the shard path — never a silent wrong answer.
+pub fn read_f32_named(path: &Path, expected_numel: usize) -> io::Result<Vec<f32>> {
+    let bytes = fs::read(path)?;
+    if bytes.len() != expected_numel * 4 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "tier file {path:?}: {} bytes, expected {} ({expected_numel} f32)",
+                bytes.len(),
+                expected_numel * 4
+            ),
+        ));
+    }
+    let mut out = Vec::with_capacity(expected_numel);
+    for c in bytes.chunks_exact(4) {
+        out.push(f32::from_le_bytes([c[0], c[1], c[2], c[3]]));
+    }
+    Ok(out)
+}
+
 /// **MOE-PROD-4** — wrap an **existing** persistent f32 tier file as a handle
 /// **without** writing it (the reuse fast-path: the deterministically-named
 /// file already holds the right bytes). `numel` is the element count the caller

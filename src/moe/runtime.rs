@@ -123,21 +123,15 @@ fn tier_persist_enabled() -> bool {
     std::env::var("ATENIA_MOE_TIER_PERSIST").as_deref() == Ok("1")
 }
 
-/// Stable per-checkpoint id from the config + the (name, shape) metadata —
-/// distinguishes models so two checkpoints never share a tier directory.
-fn compute_model_id(config_text: &str, metas: &[(String, Vec<usize>)]) -> String {
+/// Stable per-checkpoint id from the config + a cheap source identity signature
+/// (see [`MoeWeightSource::identity_signature`]) — distinguishes models so two
+/// checkpoints never share a tier directory, and is computable **without**
+/// reading shard data.
+fn compute_model_id(config_text: &str, signature: &str) -> String {
     use std::hash::{Hash, Hasher};
-    // Sort by tensor name first: `tensor_metas()` iteration order is not
-    // deterministic across loads (HashMap-backed), so hashing in iteration
-    // order would yield a different id every run. Sorting makes the id stable.
-    let mut sorted: Vec<&(String, Vec<usize>)> = metas.iter().collect();
-    sorted.sort_by(|a, b| a.0.cmp(&b.0));
     let mut h = std::collections::hash_map::DefaultHasher::new();
     config_text.hash(&mut h);
-    for (n, s) in sorted {
-        n.hash(&mut h);
-        s.hash(&mut h);
-    }
+    signature.hash(&mut h);
     format!("{:016x}", h.finish())
 }
 
@@ -159,6 +153,11 @@ struct TierManifest {
     experts_per_token: usize,
     hidden_size: usize,
     moe_intermediate_size: usize,
+    /// **MOE-PROD-5** — fields needed to reconstruct the whole backend from the
+    /// tier without re-reading the shards.
+    convention: String,
+    has_shared: bool,
+    attn_has_bias: bool,
     tensor_count: usize,
     total_bytes: u64,
     entries: Vec<TierManifestEntry>,
@@ -171,7 +170,197 @@ struct TierManifestEntry {
     numel: usize,
 }
 
-const TIER_MANIFEST_VERSION: u32 = 1;
+const TIER_MANIFEST_VERSION: u32 = 2;
+
+fn convention_str(c: super::layer::MoeExecutionConvention) -> &'static str {
+    match c {
+        super::layer::MoeExecutionConvention::Atenia => "atenia",
+        super::layer::MoeExecutionConvention::HuggingFaceQwen => "hf_qwen",
+    }
+}
+
+fn convention_from_str(s: &str) -> Option<super::layer::MoeExecutionConvention> {
+    match s {
+        "atenia" => Some(super::layer::MoeExecutionConvention::Atenia),
+        "hf_qwen" => Some(super::layer::MoeExecutionConvention::HuggingFaceQwen),
+        _ => None,
+    }
+}
+
+/// **MOE-PROD-5** — persist the **non-expert** backend tensors (embed, lm_head,
+/// final norm, per-layer attention + biases) to the tier so a warm load can
+/// rebuild the whole `TinyMixtralWeights` without the shards. Experts + router +
+/// shared-gate were already persisted by `from_real_layer_at`.
+fn persist_backend(ctx: &mut TierContext, w: &TinyMixtralWeights) -> std::io::Result<()> {
+    use super::residency::write_or_reuse;
+    write_or_reuse(ctx, "embed_tokens", &w.embed_tokens)?;
+    write_or_reuse(ctx, "final_norm", &w.final_norm)?;
+    write_or_reuse(ctx, "lm_head", &w.lm_head)?;
+    for (l, lw) in w.layers.iter().enumerate() {
+        write_or_reuse(ctx, &format!("L{l}.input_ln"), &lw.input_ln)?;
+        write_or_reuse(ctx, &format!("L{l}.w_q"), &lw.w_q)?;
+        write_or_reuse(ctx, &format!("L{l}.w_k"), &lw.w_k)?;
+        write_or_reuse(ctx, &format!("L{l}.w_v"), &lw.w_v)?;
+        write_or_reuse(ctx, &format!("L{l}.w_o"), &lw.w_o)?;
+        write_or_reuse(ctx, &format!("L{l}.post_ln"), &lw.post_ln)?;
+        if let Some(b) = &lw.attn_bias {
+            write_or_reuse(ctx, &format!("L{l}.q_bias"), &b.q)?;
+            write_or_reuse(ctx, &format!("L{l}.k_bias"), &b.k)?;
+            write_or_reuse(ctx, &format!("L{l}.v_bias"), &b.v)?;
+        }
+    }
+    Ok(())
+}
+
+/// **MOE-PROD-5** — try to rebuild the whole graph backend from the persistent
+/// tier, **without reading the shards**. Returns `None` (→ caller falls back to
+/// the certified shard path) on any doubt: missing/invalid manifest, model_id
+/// or version mismatch, a missing tier file, or a size mismatch. Output is
+/// bit-identical (the tier holds the exact f32 bytes a cold load wrote).
+#[allow(clippy::too_many_arguments)]
+fn try_warm_reconstruct(
+    v: &Value,
+    model_id: &str,
+    dir: &std::path::Path,
+    vocab: usize,
+    hidden: usize,
+    n_layers: usize,
+    n_experts: usize,
+    topk: usize,
+    rms_eps: f32,
+    eos_token_ids: &[u32],
+    cache_capacity: usize,
+) -> Option<MoeRuntime> {
+    let dbg = std::env::var("ATENIA_MOE_CACHE_STATS").as_deref() == Ok("1");
+    macro_rules! bail {
+        ($($a:tt)*) => {{ if dbg { eprintln!("[ATENIA] tier warm fallback: {}", format!($($a)*)); } return None; }};
+    }
+    let text = match std::fs::read_to_string(dir.join("tier_manifest.json")) {
+        Ok(t) => t,
+        Err(e) => bail!("read manifest {dir:?}: {e}"),
+    };
+    let m: TierManifest = match serde_json::from_str(&text) {
+        Ok(m) => m,
+        Err(e) => bail!("parse manifest: {e}"),
+    };
+    if m.version != TIER_MANIFEST_VERSION {
+        bail!("version {} != {}", m.version, TIER_MANIFEST_VERSION);
+    }
+    if m.model_id != model_id {
+        bail!("model_id {} != {}", m.model_id, model_id);
+    }
+    if m.num_hidden_layers != n_layers || m.num_experts != n_experts || m.experts_per_token != topk
+    {
+        bail!("dims mismatch");
+    }
+    let family = match m.family.as_str() {
+        "Mixtral" => MoeFamily::Mixtral,
+        "QwenMoe" => MoeFamily::QwenMoe,
+        other => bail!("non-graph family {other}"),
+    };
+    let convention = match convention_from_str(&m.convention) {
+        Some(c) => c,
+        None => bail!("unknown convention {}", m.convention),
+    };
+    let d_ff = m.moe_intermediate_size;
+
+    // Validate every recorded file (present + exact byte length) before reusing.
+    let mut numel: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for e in &m.entries {
+        match std::fs::metadata(dir.join(&e.file)) {
+            Ok(md) if md.len() == (e.numel as u64) * 4 => {}
+            Ok(md) => bail!("{}: {} bytes != {}", e.file, md.len(), e.numel * 4),
+            Err(err) => bail!("{}: {err}", e.file),
+        }
+        numel.insert(e.key.clone(), e.numel);
+    }
+    let read = |key: &str| -> Option<Vec<f32>> {
+        let n = *numel.get(key)?;
+        crate::tensor::disk_tier::read_f32_named(&dir.join(format!("{key}.bin")), n).ok()
+    };
+
+    let n_heads = cfg_u(v, "num_attention_heads").ok()?;
+    let head_dim = v
+        .get("head_dim")
+        .and_then(Value::as_u64)
+        .map(|n| n as usize)
+        .unwrap_or(hidden / n_heads.max(1));
+    let rope_theta = v.get("rope_theta").and_then(Value::as_f64).unwrap_or(10000.0) as u32;
+
+    if dbg {
+        eprintln!("[ATENIA] tier warm: manifest valid, reconstructing {n_layers} layers");
+    }
+    let mut residency: Vec<Arc<ResidentExpertLayer>> = Vec::with_capacity(n_layers);
+    let mut caches: Vec<ExpertCache> = Vec::with_capacity(n_layers);
+    let mut layers: Vec<TinyDecoderWeights> = Vec::with_capacity(n_layers);
+    for l in 0..n_layers {
+        let layer_cfg = MoeLayerConfig::new(n_experts, topk, m.has_shared, hidden, d_ff).ok()?;
+        let shared_gate_present = numel.contains_key(&format!("L{l}.shared_gate"));
+        // The shared expert's FFN width is recovered from its tier file size
+        // (`numel = shared_d_ff * hidden`) — it can differ from the routed d_ff.
+        let shared_d_ff = if m.has_shared {
+            match numel.get(&format!("L{l}.shared.gate")) {
+                Some(&ng) => ng / hidden,
+                None => bail!("missing shared.gate for layer {l}"),
+            }
+        } else {
+            0
+        };
+        let resident = match ResidentExpertLayer::from_tier(
+            layer_cfg, convention, dir, l, m.has_shared, shared_gate_present, shared_d_ff,
+        ) {
+            Ok(r) => Arc::new(r),
+            Err(e) => bail!("from_tier layer {l}: {e}"),
+        };
+        let block = MoeBlock::registered(Arc::clone(&resident), cache_capacity);
+        let attn_bias = if m.attn_has_bias {
+            Some(QkvBias {
+                q: read(&format!("L{l}.q_bias"))?,
+                k: read(&format!("L{l}.k_bias"))?,
+                v: read(&format!("L{l}.v_bias"))?,
+            })
+        } else {
+            None
+        };
+        layers.push(TinyDecoderWeights {
+            input_ln: read(&format!("L{l}.input_ln"))?,
+            w_q: read(&format!("L{l}.w_q"))?,
+            w_k: read(&format!("L{l}.w_k"))?,
+            w_v: read(&format!("L{l}.w_v"))?,
+            w_o: read(&format!("L{l}.w_o"))?,
+            post_ln: read(&format!("L{l}.post_ln"))?,
+            attn_bias,
+            moe: block,
+        });
+        residency.push(resident);
+        caches.push(ExpertCache::new(n_experts));
+    }
+
+    let weights = TinyMixtralWeights {
+        config: TinyMixtralConfig {
+            vocab_size: vocab,
+            hidden_size: hidden,
+            num_hidden_layers: n_layers,
+            num_attention_heads: n_heads,
+            head_dim,
+            rope_theta,
+        },
+        embed_tokens: read("embed_tokens")?,
+        layers,
+        final_norm: read("final_norm")?,
+        lm_head: read("lm_head")?,
+        rms_eps,
+    };
+
+    Some(MoeRuntime {
+        family,
+        backend: Backend::Graph(weights),
+        num_layers: n_layers,
+        eos_token_ids: eos_token_ids.to_vec(),
+        residency,
+        caches,
+    })
+}
 
 /// **MOE-PROD-3** — per-layer expert-cache capacity for the disk tier, from
 /// `ATENIA_MOE_EXPERT_CACHE`: an integer (clamped to `num_experts`), `"all"`
@@ -265,6 +454,37 @@ impl MoeWeightSource {
                 Ok(out)
             }
         }
+    }
+
+    /// **MOE-PROD-5** — a cheap, stable identity signature for the checkpoint
+    /// (no shard **data** read): the sharded arm hashes the index `weight_map`
+    /// + base dir + total size; the single-file arm hashes the (already
+    /// in-RAM) tensor names + shapes. Drives the per-model tier id so the warm
+    /// path can be chosen **without** `tensor_metas()` (which opens shards).
+    fn identity_signature(&self) -> String {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        match self {
+            MoeWeightSource::Single(r) => {
+                let mut v: Vec<(String, Vec<usize>)> =
+                    r.iter().map(|e| (e.name.to_string(), e.shape.to_vec())).collect();
+                v.sort_by(|a, b| a.0.cmp(&b.0));
+                for (n, s) in v {
+                    n.hash(&mut h);
+                    s.hash(&mut h);
+                }
+            }
+            MoeWeightSource::Sharded { index, .. } => {
+                index.base_dir.to_string_lossy().hash(&mut h);
+                // `weight_map` is a BTreeMap → deterministic iteration order.
+                for (name, shard) in &index.weight_map {
+                    name.hash(&mut h);
+                    shard.hash(&mut h);
+                }
+                index.total_size.hash(&mut h);
+            }
+        }
+        format!("{:016x}", h.finish())
     }
 
     /// Resolve one tensor by name to an owned `Vec<f32>` (lossless BF16/F16/F32
@@ -395,6 +615,32 @@ impl MoeRuntime {
         let rms_eps = v.get("rms_norm_eps").and_then(Value::as_f64).unwrap_or(1e-5) as f32;
         let eos_token_ids = parse_eos(&v);
 
+        // **MOE-PROD-5** — warm fast path: if a persistent tier exists for this
+        // checkpoint, rebuild the whole backend from it **without reading the
+        // shards**. `model_id` is computed from a cheap source signature (no
+        // shard data), so this decision itself does not open the shards. Any
+        // doubt → `None` → fall through to the certified shard path below.
+        let model_id = compute_model_id(config_text, &source.identity_signature());
+        if tier_persist_enabled() && expert_tier_from_env() == ExpertTier::Disk {
+            let cache_capacity = expert_cache_capacity_from_env(n_experts, topk);
+            let dir = tier_base_dir().join("moe_tier").join(&model_id);
+            if let Some(rt) = try_warm_reconstruct(
+                &v,
+                &model_id,
+                &dir,
+                vocab,
+                hidden,
+                n_layers,
+                n_experts,
+                topk,
+                rms_eps,
+                &eos_token_ids,
+                cache_capacity,
+            ) {
+                return Ok(rt);
+            }
+        }
+
         // 3. Resolve tensor metadata (single-file or sharded) and recognise family.
         let metas = source.tensor_metas()?;
         let names: Vec<String> = metas.iter().map(|(n, _)| n.clone()).collect();
@@ -444,8 +690,10 @@ impl MoeRuntime {
         );
         let cache_capacity = expert_cache_capacity_from_env(n_experts, topk);
 
-        // **MOE-PROD-4** — opt-in persistent expert tier (disk graph families).
-        let model_id = compute_model_id(config_text, &metas);
+        // **MOE-PROD-4/5** — opt-in persistent tier (disk graph families). The
+        // warm fast path above already returned if a valid tier existed; here we
+        // (re)generate it. `model_id` was computed earlier from the source
+        // signature.
         let mut tier_ctx: Option<TierContext> = if tier_persist_enabled()
             && family != MoeFamily::DeepSeekMoe
             && expert_tier == ExpertTier::Disk
@@ -509,47 +757,6 @@ impl MoeRuntime {
             }
         }
 
-        // **MOE-PROD-4** — persist the tier manifest + report reuse.
-        if let Some(ctx) = &tier_ctx {
-            let total_bytes: u64 = ctx.entries.iter().map(|e| e.numel as u64 * 4).sum();
-            let manifest = TierManifest {
-                version: TIER_MANIFEST_VERSION,
-                model_id: model_id.clone(),
-                family: format!("{family:?}"),
-                num_hidden_layers: n_layers,
-                num_experts: n_experts,
-                experts_per_token: topk,
-                hidden_size: hidden,
-                moe_intermediate_size: d_ff,
-                tensor_count: ctx.entries.len(),
-                total_bytes,
-                entries: ctx
-                    .entries
-                    .iter()
-                    .map(|e| TierManifestEntry {
-                        key: e.key.clone(),
-                        file: e.file.clone(),
-                        numel: e.numel,
-                    })
-                    .collect(),
-            };
-            let mpath = ctx.dir.join("tier_manifest.json");
-            if let Ok(json) = serde_json::to_vec_pretty(&manifest) {
-                let _ = std::fs::write(&mpath, json);
-            }
-            if std::env::var("ATENIA_MOE_CACHE_STATS").as_deref() == Ok("1") {
-                eprintln!(
-                    "[ATENIA] MoE tier ({}): {} reused, {} written ({} expert tensors, ~{:.1} GiB) at {:?}",
-                    model_id,
-                    ctx.reused,
-                    ctx.written,
-                    ctx.entries.len(),
-                    total_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
-                    ctx.dir,
-                );
-            }
-        }
-
         // 6. Family-specific attention weights → backend.
         let backend = match family {
             MoeFamily::DeepSeekMoe => Backend::Mla(build_deepseek(
@@ -561,9 +768,60 @@ impl MoeRuntime {
                 rms_eps,
                 deepseek_moes,
             )?),
-            _ => Backend::Graph(build_graph(
-                &v, source, family, vocab, hidden, n_layers, rms_eps, moe_blocks,
-            )?),
+            _ => {
+                let weights =
+                    build_graph(&v, source, family, vocab, hidden, n_layers, rms_eps, moe_blocks)?;
+                // **MOE-PROD-5** — persist the rest of the backend + the full
+                // manifest so the next load can rebuild without the shards.
+                if let Some(ctx) = &mut tier_ctx {
+                    persist_backend(ctx, &weights)
+                        .map_err(|e| MoeRuntimeError::Load(format!("persist backend: {e}")))?;
+                    let convention = residency
+                        .first()
+                        .map(|r| convention_str(r.convention).to_string())
+                        .unwrap_or_else(|| "atenia".to_string());
+                    let total_bytes: u64 = ctx.entries.iter().map(|e| e.numel as u64 * 4).sum();
+                    let manifest = TierManifest {
+                        version: TIER_MANIFEST_VERSION,
+                        model_id: model_id.clone(),
+                        family: format!("{family:?}"),
+                        num_hidden_layers: n_layers,
+                        num_experts: n_experts,
+                        experts_per_token: topk,
+                        hidden_size: hidden,
+                        moe_intermediate_size: d_ff,
+                        convention,
+                        has_shared,
+                        attn_has_bias: family == MoeFamily::QwenMoe,
+                        tensor_count: ctx.entries.len(),
+                        total_bytes,
+                        entries: ctx
+                            .entries
+                            .iter()
+                            .map(|e| TierManifestEntry {
+                                key: e.key.clone(),
+                                file: e.file.clone(),
+                                numel: e.numel,
+                            })
+                            .collect(),
+                    };
+                    if let Ok(json) = serde_json::to_vec_pretty(&manifest) {
+                        let _ = std::fs::write(ctx.dir.join("tier_manifest.json"), json);
+                    }
+                    if std::env::var("ATENIA_MOE_CACHE_STATS").as_deref() == Ok("1") {
+                        eprintln!(
+                            "[ATENIA] MoE tier ({}) COLD: {} reused, {} written ({} tensors, ~{:.1} GiB) at {:?}",
+                            model_id,
+                            ctx.reused,
+                            ctx.written,
+                            ctx.entries.len(),
+                            total_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
+                            ctx.dir,
+                        );
+                    }
+                }
+                Backend::Graph(weights)
+            }
         };
 
         Ok(Self { family, backend, num_layers: n_layers, eos_token_ids, residency, caches })
