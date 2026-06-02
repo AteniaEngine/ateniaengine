@@ -54,7 +54,7 @@ use std::io;
 use std::path::PathBuf;
 
 use crate::amg::weight_store::SharedParam;
-use crate::tensor::disk_tier::{self, DiskTensorHandle};
+use crate::tensor::disk_tier::{self, DiskDtype, DiskTensorHandle};
 use std::sync::Arc;
 
 use super::dense::{MoeDenseExpert, MoeDenseError};
@@ -127,8 +127,30 @@ pub struct TierEntry {
     pub key: String,
     /// Bare file name (`<key>.bin`).
     pub file: String,
-    /// Element count (f32).
+    /// Element count.
     pub numel: usize,
+    /// **MOE-PROD-6** — on-disk dtype: F32 (`numel*4` B) or BF16 (`numel*2` B,
+    /// lossless for bf16-source weights). Backend tensors stay F32; only routed
+    /// + shared experts may be BF16.
+    pub dtype: DiskDtype,
+}
+
+/// **MOE-PROD-6** — if every value in `data` is **exactly** representable as
+/// bf16 (its low 16 mantissa bits are zero — true for any f32 decoded from a
+/// bf16 source via `(bits as u32) << 16`), return the truncated `Vec<u16>` bf16
+/// bits; otherwise `None` (the tensor must stay f32 to preserve bit-exactness).
+/// Truncating `bits >> 16` and later upcasting `<< 16` (`bf16_decode_bulk`) is
+/// the identity for such values — so a bf16 tier is bit-identical to f32 here.
+fn bf16_truncate_lossless(data: &[f32]) -> Option<Vec<u16>> {
+    let mut out = Vec::with_capacity(data.len());
+    for &v in data {
+        let bits = v.to_bits();
+        if bits & 0xFFFF != 0 {
+            return None;
+        }
+        out.push((bits >> 16) as u16);
+    }
+    Some(out)
 }
 
 /// **MOE-PROD-4** — accumulates the **persistent** expert tier for one model
@@ -151,10 +173,61 @@ fn place_at(
     key: &str,
     shape: Vec<usize>,
     data: &[f32],
+    allow_bf16: bool,
 ) -> io::Result<SharedParam> {
-    write_or_reuse(ctx, key, data)?;
+    let dtype = write_or_reuse_expert(ctx, key, data, allow_bf16)?;
     let path = ctx.dir.join(format!("{key}.bin"));
-    Ok(SharedParam::Disk { shape, handle: disk_tier::open_existing_f32(&path, data.len()) })
+    Ok(SharedParam::Disk { shape, handle: disk_tier::open_existing(&path, data.len(), dtype) })
+}
+
+/// **MOE-PROD-6** — write (or reuse) an **expert** tier tensor at `dir/<key>.bin`,
+/// choosing the on-disk dtype: when `allow_bf16` and `data` is bf16-lossless,
+/// persist as BF16 (`numel*2` bytes — halves the tier I/O), else F32. Reuse
+/// accepts an existing file whose byte length matches **either** dtype (so a
+/// tier written by a previous run is reused without a rewrite). Returns the
+/// dtype actually on disk and records the manifest entry.
+pub fn write_or_reuse_expert(
+    ctx: &mut TierContext,
+    key: &str,
+    data: &[f32],
+    allow_bf16: bool,
+) -> io::Result<DiskDtype> {
+    let file = format!("{key}.bin");
+    let path = ctx.dir.join(&file);
+    let numel = data.len();
+    let f32_bytes = (numel * 4) as u64;
+    let bf16_bytes = (numel * 2) as u64;
+    let existing = std::fs::metadata(&path).map(|m| m.len()).ok();
+
+    // Decide the bf16 truncation once (only if we may need it).
+    let bf16 = if allow_bf16 { bf16_truncate_lossless(data) } else { None };
+
+    let dtype = match existing {
+        // Reuse a valid existing file (either dtype) — no rewrite.
+        Some(len) if len == f32_bytes => {
+            ctx.reused += 1;
+            DiskDtype::F32
+        }
+        Some(len) if len == bf16_bytes && bf16.is_some() => {
+            ctx.reused += 1;
+            DiskDtype::BF16
+        }
+        // Otherwise (missing / wrong size) write fresh.
+        _ => match &bf16 {
+            Some(bits) => {
+                disk_tier::write_bf16_tensor_named(&path, bits)?;
+                ctx.written += 1;
+                DiskDtype::BF16
+            }
+            None => {
+                disk_tier::write_f32_tensor_named(&path, data)?;
+                ctx.written += 1;
+                DiskDtype::F32
+            }
+        },
+    };
+    ctx.entries.push(TierEntry { key: key.to_string(), file, numel, dtype });
+    Ok(dtype)
 }
 
 /// **MOE-PROD-5** — write `data` to `dir/<key>.bin` (reusing an existing file
@@ -173,7 +246,12 @@ pub fn write_or_reuse(ctx: &mut TierContext, key: &str, data: &[f32]) -> io::Res
         disk_tier::write_f32_tensor_named(&path, data)?;
         ctx.written += 1;
     }
-    ctx.entries.push(TierEntry { key: key.to_string(), file, numel: data.len() });
+    ctx.entries.push(TierEntry {
+        key: key.to_string(),
+        file,
+        numel: data.len(),
+        dtype: DiskDtype::F32,
+    });
     Ok(())
 }
 
@@ -213,13 +291,14 @@ impl ResidentExpert {
         ctx: &mut TierContext,
         prefix: &str,
         e: &MoeDenseExpert,
+        allow_bf16: bool,
     ) -> io::Result<Self> {
         Ok(Self {
             d_model: e.d_model,
             d_ff: e.d_ff,
-            gate: place_at(ctx, &format!("{prefix}.gate"), vec![e.d_ff, e.d_model], &e.w_gate)?,
-            up: place_at(ctx, &format!("{prefix}.up"), vec![e.d_ff, e.d_model], &e.w_up)?,
-            down: place_at(ctx, &format!("{prefix}.down"), vec![e.d_model, e.d_ff], &e.w_down)?,
+            gate: place_at(ctx, &format!("{prefix}.gate"), vec![e.d_ff, e.d_model], &e.w_gate, allow_bf16)?,
+            up: place_at(ctx, &format!("{prefix}.up"), vec![e.d_ff, e.d_model], &e.w_up, allow_bf16)?,
+            down: place_at(ctx, &format!("{prefix}.down"), vec![e.d_model, e.d_ff], &e.w_down, allow_bf16)?,
         })
     }
 
@@ -233,16 +312,28 @@ impl ResidentExpert {
         d_model: usize,
         d_ff: usize,
     ) -> io::Result<Self> {
+        // **MOE-PROD-6** — detect the on-disk dtype from the file's byte length:
+        // `numel*4` → F32, `numel*2` → BF16 (lossless upcast at materialise). A
+        // length matching neither is corruption → error → caller falls back.
         let wrap = |role: &str, numel: usize, shape: Vec<usize>| -> io::Result<SharedParam> {
             let path = dir.join(format!("{prefix}.{role}.bin"));
             let md = std::fs::metadata(&path)?;
-            if md.len() != (numel * 4) as u64 {
+            let dtype = if md.len() == (numel * 4) as u64 {
+                DiskDtype::F32
+            } else if md.len() == (numel * 2) as u64 {
+                DiskDtype::BF16
+            } else {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("tier file {path:?}: {} bytes, expected {}", md.len(), numel * 4),
+                    format!(
+                        "tier file {path:?}: {} bytes, expected {} (f32) or {} (bf16)",
+                        md.len(),
+                        numel * 4,
+                        numel * 2
+                    ),
                 ));
-            }
-            Ok(SharedParam::Disk { shape, handle: disk_tier::open_existing_f32(&path, numel) })
+            };
+            Ok(SharedParam::Disk { shape, handle: disk_tier::open_existing(&path, numel, dtype) })
         };
         Ok(Self {
             d_model,
@@ -310,16 +401,21 @@ impl ResidentExpertLayer {
         layer: &RealMoeLayer,
         ctx: &mut TierContext,
         layer_id: usize,
+        allow_bf16: bool,
     ) -> io::Result<Self> {
         let experts = layer
             .routed
             .experts
             .iter()
             .enumerate()
-            .map(|(i, e)| ResidentExpert::from_dense_at(ctx, &format!("L{layer_id}.e{i}"), e))
+            .map(|(i, e)| {
+                ResidentExpert::from_dense_at(ctx, &format!("L{layer_id}.e{i}"), e, allow_bf16)
+            })
             .collect::<io::Result<Vec<_>>>()?;
         let shared = match &layer.shared {
-            Some(se) => Some(ResidentExpert::from_dense_at(ctx, &format!("L{layer_id}.shared"), se)?),
+            Some(se) => {
+                Some(ResidentExpert::from_dense_at(ctx, &format!("L{layer_id}.shared"), se, allow_bf16)?)
+            }
             None => None,
         };
         // **MOE-PROD-5** — persist router + shared-gate too, so a warm load can
@@ -504,6 +600,12 @@ pub struct CacheStats {
     pub prefetched: usize,
     /// Total weight bytes read from the tier (misses + prefetch).
     pub tier_bytes_read: usize,
+    /// **MOE-PROD-6** — shared-expert lookups served from the pinned cache slot
+    /// (the shared expert is identical every token; cached once per layer).
+    pub shared_hits: usize,
+    /// **MOE-PROD-6** — shared-expert lookups that required a tier read (the
+    /// first token, or every token when the shared cache is disabled).
+    pub shared_misses: usize,
 }
 
 /// Bounded LRU cache of materialised experts, keyed by routed-expert index.
@@ -515,12 +617,44 @@ pub struct ExpertCache {
     clock: u64,
     entries: HashMap<usize, (MoeDenseExpert, u64)>,
     stats: CacheStats,
+    /// **MOE-PROD-6** — pinned cache slot for the **shared** expert (read every
+    /// token in HF-Qwen/Atenia conventions). The shared expert's weights never
+    /// change during a generation, so it is materialised once and reused. This
+    /// is the highest-leverage per-token I/O cut (the shared FFN is ~4× a routed
+    /// expert on Qwen-MoE). Bounded by construction: one expert per layer.
+    shared: Option<MoeDenseExpert>,
+    /// Whether the pinned shared slot is enabled. When `false`, the shared
+    /// expert is resolved from the tier every token (the certified MOE-PROD-5
+    /// behaviour) — the safe fallback.
+    shared_enabled: bool,
 }
 
 impl ExpertCache {
-    /// New cache holding at most `capacity` experts (0 = no caching).
+    /// New cache holding at most `capacity` routed experts (0 = no caching).
+    /// The shared-expert pinned slot is **enabled** by default.
     pub fn new(capacity: usize) -> Self {
-        Self { capacity, clock: 0, entries: HashMap::new(), stats: CacheStats::default() }
+        Self {
+            capacity,
+            clock: 0,
+            entries: HashMap::new(),
+            stats: CacheStats::default(),
+            shared: None,
+            shared_enabled: true,
+        }
+    }
+
+    /// **MOE-PROD-6** — toggle the pinned shared-expert slot. Disabling reverts
+    /// to per-token resolution of the shared expert (safe fallback / A-B test).
+    pub fn set_shared_enabled(&mut self, enabled: bool) {
+        self.shared_enabled = enabled;
+        if !enabled {
+            self.shared = None;
+        }
+    }
+
+    /// Whether the pinned shared-expert slot is currently populated.
+    pub fn shared_cached(&self) -> bool {
+        self.shared.is_some()
     }
 
     /// Current resident entry count.
@@ -655,15 +789,38 @@ impl ResidentExpertLayer {
             }
         }
 
-        // Shared expert (Mixtral has none) — resolved directly each token.
+        // Shared expert (Mixtral has none). **MOE-PROD-6** — the shared expert
+        // is identical every token, so it is materialised once into the cache's
+        // pinned slot and reused (the biggest per-token I/O cut). With the slot
+        // disabled it is resolved from the tier every token (MOE-PROD-5).
         if let Some(se) = &self.shared {
-            let (expert, bytes) = se
-                .resolve()
-                .map_err(|err| MoeLayerError::Binding(super::binding::MoeBindingError::Dense(err)))?;
-            materialized_bytes += bytes;
-            let s = expert
-                .forward(x)
-                .map_err(|err| MoeLayerError::Binding(super::binding::MoeBindingError::Dense(err)))?;
+            // Populate the pinned slot on a miss (or every token if disabled).
+            if cache.shared_enabled {
+                if cache.shared.is_none() {
+                    let (expert, bytes) = se.resolve().map_err(|err| {
+                        MoeLayerError::Binding(super::binding::MoeBindingError::Dense(err))
+                    })?;
+                    cache.stats.shared_misses += 1;
+                    cache.stats.tier_bytes_read += bytes;
+                    materialized_bytes += bytes;
+                    cache.shared = Some(expert);
+                } else {
+                    cache.stats.shared_hits += 1;
+                }
+            }
+            let s = if cache.shared_enabled {
+                // Borrow the pinned expert (no clone of the large weights).
+                cache.shared.as_ref().unwrap().forward(x)
+            } else {
+                let (expert, bytes) = se.resolve().map_err(|err| {
+                    MoeLayerError::Binding(super::binding::MoeBindingError::Dense(err))
+                })?;
+                cache.stats.shared_misses += 1;
+                cache.stats.tier_bytes_read += bytes;
+                materialized_bytes += bytes;
+                expert.forward(x)
+            }
+            .map_err(|err| MoeLayerError::Binding(super::binding::MoeBindingError::Dense(err)))?;
             let scale = match self.convention {
                 MoeExecutionConvention::Atenia => 1.0_f32,
                 MoeExecutionConvention::HuggingFaceQwen => match &self.shared_gate {
@@ -760,6 +917,46 @@ mod tests {
         let map = MoeWeightMap::from_tensors(ns.iter().map(|(n, s)| (n.as_str(), s.clone())));
         let resolve = move |name: &str| store.get(name).cloned();
         let cfg = MoeLayerConfig::new(n, 2, false, d_model, d_ff).unwrap();
+        RealMoeLayer::assemble(&map, 0, cfg, &resolve).unwrap()
+    }
+
+    /// **MOE-PROD-6** — Qwen-MoE-style real layer WITH a shared expert (its FFN
+    /// width `d_ff_s` may differ from the routed `d_ff`) + a sigmoid shared gate.
+    /// Exercises the pinned shared-expert cache and the HF-Qwen convention.
+    fn build_real_with_shared(n: usize, d_model: usize, d_ff: usize, d_ff_s: usize) -> RealMoeLayer {
+        let mut ns: Vec<(String, Vec<usize>)> = Vec::new();
+        let mut store: HashMap<String, Vec<f32>> = HashMap::new();
+        let router = "model.layers.0.mlp.gate.weight".to_string();
+        ns.push((router.clone(), vec![n, d_model]));
+        store.insert(router, seeded(1, n * d_model));
+        for e in 0..n {
+            let base = 100 + e as u64;
+            let g = format!("model.layers.0.mlp.experts.{e}.gate_proj.weight");
+            let u = format!("model.layers.0.mlp.experts.{e}.up_proj.weight");
+            let d = format!("model.layers.0.mlp.experts.{e}.down_proj.weight");
+            ns.push((g.clone(), vec![d_ff, d_model]));
+            ns.push((u.clone(), vec![d_ff, d_model]));
+            ns.push((d.clone(), vec![d_model, d_ff]));
+            store.insert(g, seeded(base * 10 + 1, d_ff * d_model));
+            store.insert(u, seeded(base * 10 + 2, d_ff * d_model));
+            store.insert(d, seeded(base * 10 + 3, d_model * d_ff));
+        }
+        // Shared expert (different FFN width) + sigmoid gate.
+        let sg = "model.layers.0.mlp.shared_expert.gate_proj.weight".to_string();
+        let su = "model.layers.0.mlp.shared_expert.up_proj.weight".to_string();
+        let sd = "model.layers.0.mlp.shared_expert.down_proj.weight".to_string();
+        let sgate = "model.layers.0.mlp.shared_expert_gate.weight".to_string();
+        ns.push((sg.clone(), vec![d_ff_s, d_model]));
+        ns.push((su.clone(), vec![d_ff_s, d_model]));
+        ns.push((sd.clone(), vec![d_model, d_ff_s]));
+        ns.push((sgate.clone(), vec![1, d_model]));
+        store.insert(sg, seeded(9001, d_ff_s * d_model));
+        store.insert(su, seeded(9002, d_ff_s * d_model));
+        store.insert(sd, seeded(9003, d_model * d_ff_s));
+        store.insert(sgate, seeded(9004, d_model));
+        let map = MoeWeightMap::from_tensors(ns.iter().map(|(n, s)| (n.as_str(), s.clone())));
+        let resolve = move |name: &str| store.get(name).cloned();
+        let cfg = MoeLayerConfig::new(n, 2, true, d_model, d_ff).unwrap();
         RealMoeLayer::assemble(&map, 0, cfg, &resolve).unwrap()
     }
 
@@ -905,6 +1102,62 @@ mod tests {
         // Never exceeds the budget; evictions happened.
         assert!(cache.len() <= 1);
         assert!(cache.stats().evictions > 0, "capacity-1 cache must evict");
+    }
+
+    // ---- MOE-PROD-6: bf16 lossless detection + shared cache ----
+
+    #[test]
+    fn bf16_truncate_lossless_detects_representability() {
+        // bf16-source values (low 16 bits zero) → Some, truncation is exact.
+        let bf16_src: Vec<f32> =
+            [0.0_f32, -2.5, 1.5, 256.0].iter().map(|f| f32::from_bits(f.to_bits() & 0xFFFF_0000)).collect();
+        let bits = bf16_truncate_lossless(&bf16_src).expect("bf16-source must be representable");
+        assert_eq!(bits.len(), bf16_src.len());
+        // Upcast bf16 → f32 must recover the exact value.
+        for (b, v) in bits.iter().zip(bf16_src.iter()) {
+            assert_eq!(f32::from_bits((*b as u32) << 16).to_bits(), v.to_bits());
+        }
+        // A value with non-zero low 16 bits is NOT representable → None (stays f32).
+        let arbitrary = vec![0.0_f32, f32::from_bits(0x3F80_0001)];
+        assert!(bf16_truncate_lossless(&arbitrary).is_none());
+    }
+
+    #[test]
+    fn shared_cache_pins_and_is_bit_exact() {
+        // A layer WITH a shared expert: forward_cached must (a) read the shared
+        // expert from the tier exactly once across many tokens (pinned slot),
+        // and (b) produce output identical to the uncached forward.
+        let real = build_real_with_shared(4, 8, 16, 12);
+        let res = ResidentExpertLayer::from_real_layer(&real, ExpertTier::Disk).unwrap();
+        let mut cache = ExpertCache::new(4);
+        for s in 0..5u64 {
+            let x = seeded(700 + s, 8);
+            let (cached, _) = res.forward_cached(&mut cache, &x).unwrap();
+            let (plain, _) = res.forward(&x).unwrap();
+            assert_eq!(cached, plain, "shared-cached forward must equal uncached (seed {s})");
+        }
+        let st = cache.stats();
+        assert_eq!(st.shared_misses, 1, "shared expert read from tier exactly once");
+        assert_eq!(st.shared_hits, 4, "subsequent tokens reuse the pinned shared slot");
+        assert!(cache.shared_cached());
+    }
+
+    #[test]
+    fn shared_cache_disabled_resolves_every_token() {
+        let real = build_real_with_shared(4, 8, 16, 12);
+        let res = ResidentExpertLayer::from_real_layer(&real, ExpertTier::Disk).unwrap();
+        let mut cache = ExpertCache::new(4);
+        cache.set_shared_enabled(false);
+        for s in 0..3u64 {
+            let x = seeded(800 + s, 8);
+            let (off, _) = res.forward_cached(&mut cache, &x).unwrap();
+            let (plain, _) = res.forward(&x).unwrap();
+            assert_eq!(off, plain, "disabled shared cache still bit-exact");
+        }
+        let st = cache.stats();
+        assert_eq!(st.shared_misses, 3, "disabled slot resolves shared every token");
+        assert_eq!(st.shared_hits, 0);
+        assert!(!cache.shared_cached());
     }
 
     #[test]

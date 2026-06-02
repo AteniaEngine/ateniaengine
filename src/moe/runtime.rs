@@ -168,9 +168,34 @@ struct TierManifestEntry {
     key: String,
     file: String,
     numel: usize,
+    /// **MOE-PROD-6** — on-disk dtype: `"f32"` (numel*4 B) or `"bf16"`
+    /// (numel*2 B). Defaults to `"f32"` for older manifests (which only had
+    /// f32 entries); the version bump invalidates them anyway.
+    #[serde(default = "dtype_f32")]
+    dtype: String,
 }
 
-const TIER_MANIFEST_VERSION: u32 = 2;
+fn dtype_f32() -> String {
+    "f32".to_string()
+}
+
+fn dtype_str(d: crate::tensor::disk_tier::DiskDtype) -> &'static str {
+    match d {
+        crate::tensor::disk_tier::DiskDtype::F32 => "f32",
+        crate::tensor::disk_tier::DiskDtype::BF16 => "bf16",
+    }
+}
+
+/// On-disk bytes for a manifest entry given its recorded dtype.
+fn entry_bytes(e: &TierManifestEntry) -> u64 {
+    let per = if e.dtype == "bf16" { 2 } else { 4 };
+    e.numel as u64 * per
+}
+
+// **MOE-PROD-6** — bumped to 3: tier entries now carry an on-disk dtype
+// (f32/bf16). The bump invalidates v2 (f32-only) tiers so a warm load with the
+// new code rebuilds them once (and may persist experts as bf16).
+const TIER_MANIFEST_VERSION: u32 = 3;
 
 fn convention_str(c: super::layer::MoeExecutionConvention) -> &'static str {
     match c {
@@ -267,9 +292,10 @@ fn try_warm_reconstruct(
     // Validate every recorded file (present + exact byte length) before reusing.
     let mut numel: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for e in &m.entries {
+        let expect = entry_bytes(e);
         match std::fs::metadata(dir.join(&e.file)) {
-            Ok(md) if md.len() == (e.numel as u64) * 4 => {}
-            Ok(md) => bail!("{}: {} bytes != {}", e.file, md.len(), e.numel * 4),
+            Ok(md) if md.len() == expect => {}
+            Ok(md) => bail!("{}: {} bytes != {} ({})", e.file, md.len(), expect, e.dtype),
             Err(err) => bail!("{}: {err}", e.file),
         }
         numel.insert(e.key.clone(), e.numel);
@@ -368,6 +394,15 @@ fn try_warm_reconstruct(
 /// care), or `"0"` to disable. Unset → `2 * experts_per_token` — a bounded
 /// default that captures within-prefill / short-range reuse without
 /// re-materialising the layer.
+/// **MOE-PROD-6** — whether to persist the routed + shared experts in the tier
+/// as **bf16** (half the NVMe I/O during generation). Lossless by construction
+/// (only bf16-representable tensors are truncated; others stay f32 —
+/// see `bf16_truncate_lossless`). Default **on** when the persistent tier is
+/// enabled; force f32 with `ATENIA_MOE_TIER_BF16=0`.
+fn tier_bf16_from_env() -> bool {
+    std::env::var("ATENIA_MOE_TIER_BF16").as_deref() != Ok("0")
+}
+
 fn expert_cache_capacity_from_env(num_experts: usize, experts_per_token: usize) -> usize {
     match std::env::var("ATENIA_MOE_EXPERT_CACHE").as_deref() {
         Ok("all") => num_experts,
@@ -706,6 +741,9 @@ impl MoeRuntime {
             None
         };
 
+        // **MOE-PROD-6** — persist experts as bf16 (half the tier I/O) when the
+        // persistent tier is active; lossless per-tensor (falls back to f32).
+        let tier_bf16 = tier_ctx.is_some() && tier_bf16_from_env();
         let resolve = |name: &str| source.get_f32(name);
         let mut residency: Vec<Arc<ResidentExpertLayer>> = Vec::with_capacity(n_layers);
         let mut caches: Vec<ExpertCache> = Vec::with_capacity(n_layers);
@@ -736,10 +774,14 @@ impl MoeRuntime {
                         let resident_disk = Arc::new(match &mut tier_ctx {
                             // Persistent tier: deterministic names, reuse files
                             // that already exist (skips the multi-GB re-write).
-                            Some(ctx) => ResidentExpertLayer::from_real_layer_at(&moe, ctx, l)
-                                .map_err(|e| {
-                                    MoeRuntimeError::Load(format!("tier residency layer {l}: {e}"))
-                                })?,
+                            Some(ctx) => {
+                                ResidentExpertLayer::from_real_layer_at(&moe, ctx, l, tier_bf16)
+                                    .map_err(|e| {
+                                        MoeRuntimeError::Load(format!(
+                                            "tier residency layer {l}: {e}"
+                                        ))
+                                    })?
+                            }
                             // Ephemeral tier (default): UUID-named, deleted on drop.
                             None => ResidentExpertLayer::from_real_layer(&moe, ExpertTier::Disk)
                                 .map_err(|e| {
@@ -780,7 +822,11 @@ impl MoeRuntime {
                         .first()
                         .map(|r| convention_str(r.convention).to_string())
                         .unwrap_or_else(|| "atenia".to_string());
-                    let total_bytes: u64 = ctx.entries.iter().map(|e| e.numel as u64 * 4).sum();
+                    let total_bytes: u64 = ctx
+                        .entries
+                        .iter()
+                        .map(|e| e.numel as u64 * e.dtype.bytes_per_element() as u64)
+                        .sum();
                     let manifest = TierManifest {
                         version: TIER_MANIFEST_VERSION,
                         model_id: model_id.clone(),
@@ -802,6 +848,7 @@ impl MoeRuntime {
                                 key: e.key.clone(),
                                 file: e.file.clone(),
                                 numel: e.numel,
+                                dtype: dtype_str(e.dtype).to_string(),
                             })
                             .collect(),
                     };

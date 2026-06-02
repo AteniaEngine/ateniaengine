@@ -10,7 +10,15 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::SystemTime;
+
+/// The two reconstruction tests both mutate process-global env vars
+/// (`ATENIA_DISK_TIER_DIR`, `ATENIA_MOE_TIER_PERSIST`, …). Cargo runs tests in
+/// a file on parallel threads, so without serialization they race on those
+/// vars and one load reads the other's tier dir. Hold this lock for the whole
+/// body of each test.
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 use atenia_engine::moe::runtime::MixtralRuntime;
 use atenia_engine::v17::loader::safetensors_reader::SafetensorsReader;
@@ -56,6 +64,7 @@ fn warm_reconstructs_qwen_with_shared_expert_without_shards() {
 }
 
 fn reconstruct_without_shards(label: &str, config_name: &str, weights_name: &str) {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     // Build a 2-shard checkpoint dir from a committed tiny fixture.
     let reader = SafetensorsReader::open(&fixture_dir().join(weights_name)).unwrap();
     let tensors: Vec<(String, Vec<usize>, Vec<f32>)> =

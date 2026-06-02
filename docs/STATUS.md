@@ -163,6 +163,23 @@ locked by regression tests.
   generation, not the load. (Fixed a shared-expert FFN-width bug found by the
   real run.) Default off = unchanged. See
   [HANDOFF_MOE_PROD_5.md](./HANDOFF_MOE_PROD_5.md).
+- **BF16 tier + shared-expert cache (MOE-PROD-6).** Cuts the per-token
+  generation I/O that MOE-PROD-5 left as the bottleneck, without touching the
+  MoE math/routing/outputs. (a) **BF16 expert tier**: routed + shared experts
+  persist as bf16 (half the NVMe bytes), **auto-detected per tensor** — only
+  bf16-representable values are truncated (lossless `>>16`/`<<16` round-trip);
+  arbitrary f32 stays f32. The read path upcasts bf16→f32 via the existing
+  `ensure_cpu` disk arm; warm reads detect the dtype by file size. (b) **Pinned
+  shared-expert cache**: the shared expert (read *every* token, ~4× a routed
+  expert on Qwen-MoE) is materialised once per layer and reused. Both are
+  bit-exact and have env escape hatches (`ATENIA_MOE_TIER_BF16=0`,
+  `ATENIA_MOE_SHARED_CACHE=0`) plus the certified shard fallback; manifest
+  bumped to v3 (per-tensor dtype). **Real result** on Qwen1.5-MoE (rigorous
+  same-prompt A/B): warm load+gen **350 s → 204 s (~42 %, −146 s)** — bf16 tier
+  −120 s + shared cache −26 s — with the on-disk tier shrinking **53.3 → 28.6
+  GiB**; output identical (token ids `16, 15`). New bottleneck: warm
+  reconstruction + CPU expert matmul. See
+  [HANDOFF_MOE_PROD_6.md](./HANDOFF_MOE_PROD_6.md).
 - **Loaders.** Single-file and sharded HuggingFace safetensors; GGUF
   (F16 / Q8_0 / Q4_K_M / Q5_K / Q6_K). BF16 parameter storage (50 % RAM saving),
   BF16 KV cache (default on), RAM↔NVMe spill with chunked streaming.

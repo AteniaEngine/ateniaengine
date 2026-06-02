@@ -405,14 +405,49 @@ pub fn read_f32_named(path: &Path, expected_numel: usize) -> io::Result<Vec<f32>
 /// file already holds the right bytes). `numel` is the element count the caller
 /// expects; the file is assumed valid (the caller validates presence + size).
 pub fn open_existing_f32(path: &Path, numel: usize) -> DiskTensorHandle {
+    open_existing(path, numel, DiskDtype::F32)
+}
+
+/// **MOE-PROD-6** — generalised [`open_existing_f32`]: wrap an existing
+/// persistent tier file as a handle of the given on-disk `dtype`
+/// (F32 = 4 B/elem, BF16 = 2 B/elem) **without** writing it. The
+/// caller validates presence + byte length (`numel * dtype.bytes_per_element()`)
+/// before relying on the handle; materialising it later (`ensure_cpu`)
+/// dispatches on the dtype and upcasts BF16 → F32 losslessly.
+pub fn open_existing(path: &Path, numel: usize, dtype: DiskDtype) -> DiskTensorHandle {
     DiskTensorHandle {
         inner: Arc::new(InnerDiskFile {
             path: path.to_path_buf(),
             numel,
-            dtype: DiskDtype::F32,
+            dtype,
             persistent: true,
         }),
     }
+}
+
+/// **MOE-PROD-6** — write a BF16 tensor (`&[u16]` raw bf16 bits) to a
+/// **deterministic** `path` and return a **persistent** handle (its `Drop`
+/// does not delete the file). The on-disk size is `numel * 2` — half the f32
+/// tier. Mirrors [`write_f32_tensor_named`] for the bf16 expert tier; a later
+/// run reuses the file via [`open_existing`] with [`DiskDtype::BF16`].
+pub fn write_bf16_tensor_named(path: &Path, data: &[u16]) -> io::Result<DiskTensorHandle> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    // SAFETY: `u16` is `Copy + 'static`, 2 bytes, stable layout — same byte-view
+    // justification as `write_f32_tensor_named` with width 2.
+    let bytes: &[u8] = unsafe {
+        std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(data))
+    };
+    fs::write(path, bytes)?;
+    Ok(DiskTensorHandle {
+        inner: Arc::new(InnerDiskFile {
+            path: path.to_path_buf(),
+            numel: data.len(),
+            dtype: DiskDtype::BF16,
+            persistent: true,
+        }),
+    })
 }
 
 /// Serialize a `bf16`-as-`u16` slice to a fresh file under

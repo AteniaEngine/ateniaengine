@@ -236,7 +236,13 @@ pub fn register_real_moe_layer(layer: RealMoeLayer) -> u32 {
 /// to the certified `ResidentExpertLayer::forward`.
 pub fn register_resident_moe_layer(layer: Arc<ResidentExpertLayer>, cache_capacity: usize) -> u32 {
     let mut reg = real_registry().lock().expect("real moe registry poisoned");
-    reg.push(RegisteredMoe::Resident { layer, cache: Mutex::new(ExpertCache::new(cache_capacity)) });
+    let mut cache = ExpertCache::new(cache_capacity);
+    // **MOE-PROD-6** — the pinned shared-expert slot is on by default; disable
+    // with `ATENIA_MOE_SHARED_CACHE=0` (safe fallback: per-token resolution).
+    if std::env::var("ATENIA_MOE_SHARED_CACHE").as_deref() == Ok("0") {
+        cache.set_shared_enabled(false);
+    }
+    reg.push(RegisteredMoe::Resident { layer, cache: Mutex::new(cache) });
     (reg.len() - 1) as u32
 }
 
@@ -253,6 +259,8 @@ pub fn aggregate_resident_cache_stats() -> super::residency::CacheStats {
             agg.misses += s.misses;
             agg.prefetched += s.prefetched;
             agg.tier_bytes_read += s.tier_bytes_read;
+            agg.shared_hits += s.shared_hits;
+            agg.shared_misses += s.shared_misses;
         }
     }
     agg
