@@ -208,10 +208,20 @@ pub struct InnerDiskFile {
     /// constructed via the legacy `write_f32_tensor` path, preserving
     /// bit-exact M3-e.11.1 behaviour.
     dtype: DiskDtype,
+    /// **MOE-PROD-4** — when `true` the file is **persistent**: its `Drop`
+    /// does **not** delete it, so a deterministically-named tier file survives
+    /// process exit and can be reused by a later run. Ephemeral (UUID) handles
+    /// keep `false` and are still auto-deleted on drop (unchanged behaviour).
+    persistent: bool,
 }
 
 impl Drop for InnerDiskFile {
     fn drop(&mut self) {
+        // Persistent tier files (MOE-PROD-4) are owned by the on-disk tier
+        // manifest, not by the handle lifetime — never auto-delete them.
+        if self.persistent {
+            return;
+        }
         // Best-effort delete. We intentionally ignore the result:
         // - `NotFound` happens if the file was already gc'd by a
         //   concurrent process or manually deleted by the user.
@@ -338,8 +348,48 @@ pub fn write_f32_tensor(cache_dir: &Path, data: &[f32]) -> io::Result<DiskTensor
             path,
             numel: data.len(),
             dtype: DiskDtype::F32,
+            persistent: false,
         }),
     })
+}
+
+/// **MOE-PROD-4** — write an f32 tensor to a **deterministic** `path` (not a
+/// UUID) and return a **persistent** handle (its `Drop` does not delete the
+/// file). Used by the persistent MoE tier so a later run can reuse the file.
+/// Creates the parent directory if needed.
+pub fn write_f32_tensor_named(path: &Path, data: &[f32]) -> io::Result<DiskTensorHandle> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    // SAFETY: identical justification to `write_f32_tensor` — `&[f32]` → `&[u8]`
+    // byte view over the same allocation for the duration of the borrow.
+    let bytes: &[u8] = unsafe {
+        std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(data))
+    };
+    fs::write(path, bytes)?;
+    Ok(DiskTensorHandle {
+        inner: Arc::new(InnerDiskFile {
+            path: path.to_path_buf(),
+            numel: data.len(),
+            dtype: DiskDtype::F32,
+            persistent: true,
+        }),
+    })
+}
+
+/// **MOE-PROD-4** — wrap an **existing** persistent f32 tier file as a handle
+/// **without** writing it (the reuse fast-path: the deterministically-named
+/// file already holds the right bytes). `numel` is the element count the caller
+/// expects; the file is assumed valid (the caller validates presence + size).
+pub fn open_existing_f32(path: &Path, numel: usize) -> DiskTensorHandle {
+    DiskTensorHandle {
+        inner: Arc::new(InnerDiskFile {
+            path: path.to_path_buf(),
+            numel,
+            dtype: DiskDtype::F32,
+            persistent: true,
+        }),
+    }
 }
 
 /// Serialize a `bf16`-as-`u16` slice to a fresh file under
@@ -376,6 +426,7 @@ pub fn write_bf16_tensor(cache_dir: &Path, data: &[u16]) -> io::Result<DiskTenso
             path,
             numel: data.len(),
             dtype: DiskDtype::BF16,
+            persistent: false,
         }),
     })
 }
@@ -441,6 +492,7 @@ pub fn write_bf16_from_raw_bytes(
             path,
             numel,
             dtype: DiskDtype::BF16,
+            persistent: false,
         }),
     })
 }
@@ -712,6 +764,7 @@ mod tests {
                 path: good.path().to_path_buf(),
                 numel: 7, // file has 10 floats, not 7
                 dtype: DiskDtype::F32,
+                persistent: false,
             }),
         };
         let result = read_f32_tensor(&bad);
@@ -1048,6 +1101,7 @@ mod tests {
                 path: good.path().to_path_buf(),
                 numel: 9, // file has 6 u16, not 9
                 dtype: DiskDtype::BF16,
+                persistent: false,
             }),
         };
         let result = read_bf16_tensor(&bad);

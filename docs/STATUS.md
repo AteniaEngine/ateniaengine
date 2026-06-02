@@ -142,6 +142,16 @@ locked by regression tests.
   4392 files) + the **shared expert read every token** + per-file overhead, not
   routed re-reads. The real levers are bf16 tier storage + persisting the tier
   across runs. See [HANDOFF_MOE_PROD_3.md](./HANDOFF_MOE_PROD_3.md).
+- **Persistent expert tier (MOE-PROD-4).** `ATENIA_MOE_TIER_PERSIST=1` writes the
+  disk tier under deterministic names in `<base>/moe_tier/<model_id>/` with a
+  `tier_manifest.json` and **reuses** it on a later load instead of rewriting the
+  ~50 GB. Bit-exact (reuse mtimes unchanged + identical generation;
+  `tests/moe_tier_persist_test.rs`); regenerates on file loss. **Real result** on
+  Qwen1.5-MoE: cold load+gen **3757 s** → warm **2445 s** (**~35 % / ~22 min
+  saved**; 4392 expert files reused, 0 rewritten, output identical) — the lever
+  MOE-PROD-3 pointed at. New bottleneck: shard read + f32 expert assembly (scope
+  A still assembles experts; scope B would skip that). Default off = unchanged
+  ephemeral tier. See [HANDOFF_MOE_PROD_4.md](./HANDOFF_MOE_PROD_4.md).
 - **Loaders.** Single-file and sharded HuggingFace safetensors; GGUF
   (F16 / Q8_0 / Q4_K_M / Q5_K / Q6_K). BF16 parameter storage (50 % RAM saving),
   BF16 KV cache (default on), RAM↔NVMe spill with chunked streaming.

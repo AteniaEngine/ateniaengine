@@ -40,7 +40,7 @@ use super::gqa::to_mha_kv;
 use super::layer::{MoeLayerConfig, RealMoeLayer};
 use super::mixtral_adapter::MixtralAdapter;
 use super::mla::{DeepseekConfig, DeepseekLayer, DeepseekWeights};
-use super::residency::{ExpertCache, ExpertTier, ResidentExpertLayer};
+use super::residency::{ExpertCache, ExpertTier, ResidentExpertLayer, TierContext};
 use crate::nn::llama::moe_config::MoeConfig;
 use crate::v17::loader::safetensors_reader::SafetensorsReader;
 use crate::v17::loader::shard_index::ShardIndex;
@@ -113,6 +113,65 @@ fn expert_tier_from_env() -> ExpertTier {
         _ => ExpertTier::Ram,
     }
 }
+
+/// **MOE-PROD-4** — opt-in persistent expert tier. When
+/// `ATENIA_MOE_TIER_PERSIST=1`, the disk tier writes deterministically-named
+/// files under `<base>/moe_tier/<model_id>/` and **reuses** them on a later
+/// load (skipping the multi-GB re-write). Default off → ephemeral UUID files
+/// (unchanged MOE-PROD-2 behaviour).
+fn tier_persist_enabled() -> bool {
+    std::env::var("ATENIA_MOE_TIER_PERSIST").as_deref() == Ok("1")
+}
+
+/// Stable per-checkpoint id from the config + the (name, shape) metadata —
+/// distinguishes models so two checkpoints never share a tier directory.
+fn compute_model_id(config_text: &str, metas: &[(String, Vec<usize>)]) -> String {
+    use std::hash::{Hash, Hasher};
+    // Sort by tensor name first: `tensor_metas()` iteration order is not
+    // deterministic across loads (HashMap-backed), so hashing in iteration
+    // order would yield a different id every run. Sorting makes the id stable.
+    let mut sorted: Vec<&(String, Vec<usize>)> = metas.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    config_text.hash(&mut h);
+    for (n, s) in sorted {
+        n.hash(&mut h);
+        s.hash(&mut h);
+    }
+    format!("{:016x}", h.finish())
+}
+
+/// Base tier directory: `ATENIA_DISK_TIER_DIR` if set, else the platform cache
+/// dir; the per-model tier lands in `<base>/moe_tier/<model_id>/`.
+fn tier_base_dir() -> std::path::PathBuf {
+    crate::tensor::disk_tier::default_cache_dir()
+}
+
+/// **MOE-PROD-4** — the on-disk tier manifest (`tier_manifest.json`): enough to
+/// know whether an existing tier is reusable for this checkpoint.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct TierManifest {
+    version: u32,
+    model_id: String,
+    family: String,
+    num_hidden_layers: usize,
+    num_experts: usize,
+    experts_per_token: usize,
+    hidden_size: usize,
+    moe_intermediate_size: usize,
+    tensor_count: usize,
+    total_bytes: u64,
+    entries: Vec<TierManifestEntry>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct TierManifestEntry {
+    key: String,
+    file: String,
+    numel: usize,
+}
+
+const TIER_MANIFEST_VERSION: u32 = 1;
 
 /// **MOE-PROD-3** — per-layer expert-cache capacity for the disk tier, from
 /// `ATENIA_MOE_EXPERT_CACHE`: an integer (clamped to `num_experts`), `"all"`
@@ -384,6 +443,21 @@ impl MoeRuntime {
             metas.iter().map(|(n, s)| (n.as_str(), s.clone())),
         );
         let cache_capacity = expert_cache_capacity_from_env(n_experts, topk);
+
+        // **MOE-PROD-4** — opt-in persistent expert tier (disk graph families).
+        let model_id = compute_model_id(config_text, &metas);
+        let mut tier_ctx: Option<TierContext> = if tier_persist_enabled()
+            && family != MoeFamily::DeepSeekMoe
+            && expert_tier == ExpertTier::Disk
+        {
+            let dir = tier_base_dir().join("moe_tier").join(&model_id);
+            std::fs::create_dir_all(&dir)
+                .map_err(|e| MoeRuntimeError::Load(format!("tier dir {dir:?}: {e}")))?;
+            Some(TierContext { dir, ..Default::default() })
+        } else {
+            None
+        };
+
         let resolve = |name: &str| source.get_f32(name);
         let mut residency: Vec<Arc<ResidentExpertLayer>> = Vec::with_capacity(n_layers);
         let mut caches: Vec<ExpertCache> = Vec::with_capacity(n_layers);
@@ -411,11 +485,19 @@ impl MoeRuntime {
                         moe_blocks.push(MoeBlock::Owned(moe));
                     }
                     ExpertTier::Disk => {
-                        let resident_disk = Arc::new(
-                            ResidentExpertLayer::from_real_layer(&moe, ExpertTier::Disk).map_err(
-                                |e| MoeRuntimeError::Load(format!("disk residency layer {l}: {e}")),
-                            )?,
-                        );
+                        let resident_disk = Arc::new(match &mut tier_ctx {
+                            // Persistent tier: deterministic names, reuse files
+                            // that already exist (skips the multi-GB re-write).
+                            Some(ctx) => ResidentExpertLayer::from_real_layer_at(&moe, ctx, l)
+                                .map_err(|e| {
+                                    MoeRuntimeError::Load(format!("tier residency layer {l}: {e}"))
+                                })?,
+                            // Ephemeral tier (default): UUID-named, deleted on drop.
+                            None => ResidentExpertLayer::from_real_layer(&moe, ExpertTier::Disk)
+                                .map_err(|e| {
+                                    MoeRuntimeError::Load(format!("disk residency layer {l}: {e}"))
+                                })?,
+                        });
                         // Free the f32 copies before the next layer assembles.
                         drop(moe);
                         drop(resident_ram);
@@ -424,6 +506,47 @@ impl MoeRuntime {
                         moe_blocks.push(block);
                     }
                 }
+            }
+        }
+
+        // **MOE-PROD-4** — persist the tier manifest + report reuse.
+        if let Some(ctx) = &tier_ctx {
+            let total_bytes: u64 = ctx.entries.iter().map(|e| e.numel as u64 * 4).sum();
+            let manifest = TierManifest {
+                version: TIER_MANIFEST_VERSION,
+                model_id: model_id.clone(),
+                family: format!("{family:?}"),
+                num_hidden_layers: n_layers,
+                num_experts: n_experts,
+                experts_per_token: topk,
+                hidden_size: hidden,
+                moe_intermediate_size: d_ff,
+                tensor_count: ctx.entries.len(),
+                total_bytes,
+                entries: ctx
+                    .entries
+                    .iter()
+                    .map(|e| TierManifestEntry {
+                        key: e.key.clone(),
+                        file: e.file.clone(),
+                        numel: e.numel,
+                    })
+                    .collect(),
+            };
+            let mpath = ctx.dir.join("tier_manifest.json");
+            if let Ok(json) = serde_json::to_vec_pretty(&manifest) {
+                let _ = std::fs::write(&mpath, json);
+            }
+            if std::env::var("ATENIA_MOE_CACHE_STATS").as_deref() == Ok("1") {
+                eprintln!(
+                    "[ATENIA] MoE tier ({}): {} reused, {} written ({} expert tensors, ~{:.1} GiB) at {:?}",
+                    model_id,
+                    ctx.reused,
+                    ctx.written,
+                    ctx.entries.len(),
+                    total_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
+                    ctx.dir,
+                );
             }
         }
 

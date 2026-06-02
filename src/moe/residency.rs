@@ -51,6 +51,7 @@
 
 use std::collections::HashMap;
 use std::io;
+use std::path::PathBuf;
 
 use crate::amg::weight_store::SharedParam;
 use crate::tensor::disk_tier::{self, DiskTensorHandle};
@@ -119,6 +120,53 @@ fn place(tier: ExpertTier, shape: Vec<usize>, data: &[f32]) -> io::Result<Shared
     }
 }
 
+/// **MOE-PROD-4** — one tiered tensor recorded in the on-disk tier manifest.
+#[derive(Debug, Clone)]
+pub struct TierEntry {
+    /// Logical key (e.g. `L3.e17.gate`) — also the bare file name minus `.bin`.
+    pub key: String,
+    /// Bare file name (`<key>.bin`).
+    pub file: String,
+    /// Element count (f32).
+    pub numel: usize,
+}
+
+/// **MOE-PROD-4** — accumulates the **persistent** expert tier for one model
+/// load: the on-disk directory, the per-tensor entries, and how many tensors
+/// were **reused** from an existing tier vs **written** fresh.
+#[derive(Debug, Default)]
+pub struct TierContext {
+    pub dir: PathBuf,
+    pub entries: Vec<TierEntry>,
+    pub reused: usize,
+    pub written: usize,
+}
+
+/// Place an f32 weight buffer into the **persistent** disk tier at a
+/// deterministic path `dir/<key>.bin`. If that file already exists with the
+/// expected byte length, **reuse** it (no write); otherwise write it. Records
+/// the entry and bumps the reused/written counter.
+fn place_at(
+    ctx: &mut TierContext,
+    key: &str,
+    shape: Vec<usize>,
+    data: &[f32],
+) -> io::Result<SharedParam> {
+    let file = format!("{key}.bin");
+    let path = ctx.dir.join(&file);
+    let expected_bytes = std::mem::size_of_val(data) as u64;
+    let valid = std::fs::metadata(&path).map(|m| m.len() == expected_bytes).unwrap_or(false);
+    let handle = if valid {
+        ctx.reused += 1;
+        disk_tier::open_existing_f32(&path, data.len())
+    } else {
+        ctx.written += 1;
+        disk_tier::write_f32_tensor_named(&path, data)?
+    };
+    ctx.entries.push(TierEntry { key: key.to_string(), file, numel: data.len() });
+    Ok(SharedParam::Disk { shape, handle })
+}
+
 /// Materialise a stored param to an owned `Vec<f32>` (reads NVMe for the
 /// `Disk` tier; copies the Arc for the `Ram` tier).
 fn materialize(p: &SharedParam) -> Vec<f32> {
@@ -145,6 +193,23 @@ impl ResidentExpert {
             gate: place(tier, vec![e.d_ff, e.d_model], &e.w_gate)?,
             up: place(tier, vec![e.d_ff, e.d_model], &e.w_up)?,
             down: place(tier, vec![e.d_model, e.d_ff], &e.w_down)?,
+        })
+    }
+
+    /// **MOE-PROD-4** — like [`Self::from_dense`] but into the **persistent**
+    /// disk tier under deterministic keys `{prefix}.{gate,up,down}` (reusing
+    /// existing files when present).
+    fn from_dense_at(
+        ctx: &mut TierContext,
+        prefix: &str,
+        e: &MoeDenseExpert,
+    ) -> io::Result<Self> {
+        Ok(Self {
+            d_model: e.d_model,
+            d_ff: e.d_ff,
+            gate: place_at(ctx, &format!("{prefix}.gate"), vec![e.d_ff, e.d_model], &e.w_gate)?,
+            up: place_at(ctx, &format!("{prefix}.up"), vec![e.d_ff, e.d_model], &e.w_up)?,
+            down: place_at(ctx, &format!("{prefix}.down"), vec![e.d_model, e.d_ff], &e.w_down)?,
         })
     }
 
@@ -187,6 +252,40 @@ impl ResidentExpertLayer {
             config: layer.config,
             convention: layer.resolve_convention(),
             tier,
+            w_router: layer.routed.w_router.clone(),
+            experts,
+            shared,
+            shared_gate: layer.shared_gate.clone(),
+        })
+    }
+
+    /// **MOE-PROD-4** — build a disk-tier residency layer whose expert weights
+    /// land in the **persistent** tier (`ctx.dir`) under deterministic keys
+    /// `L{layer_id}.e{i}.*` / `L{layer_id}.shared.*`, reusing existing tier
+    /// files when present (skips the write). Identical to
+    /// [`Self::from_real_layer`] with `Disk` otherwise — the on-disk bytes are
+    /// the same whether written or reused, so output is bit-identical. Router +
+    /// shared-expert gate stay RAM-resident (small; re-read each load).
+    pub fn from_real_layer_at(
+        layer: &RealMoeLayer,
+        ctx: &mut TierContext,
+        layer_id: usize,
+    ) -> io::Result<Self> {
+        let experts = layer
+            .routed
+            .experts
+            .iter()
+            .enumerate()
+            .map(|(i, e)| ResidentExpert::from_dense_at(ctx, &format!("L{layer_id}.e{i}"), e))
+            .collect::<io::Result<Vec<_>>>()?;
+        let shared = match &layer.shared {
+            Some(se) => Some(ResidentExpert::from_dense_at(ctx, &format!("L{layer_id}.shared"), se)?),
+            None => None,
+        };
+        Ok(Self {
+            config: layer.config,
+            convention: layer.resolve_convention(),
+            tier: ExpertTier::Disk,
             w_router: layer.routed.w_router.clone(),
             experts,
             shared,
