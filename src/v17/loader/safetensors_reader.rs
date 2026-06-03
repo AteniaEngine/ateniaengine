@@ -58,12 +58,41 @@ struct EntryOffsets {
     from_decoded: bool,
 }
 
-/// Owned safetensors reader. Construct via [`Self::open`] or
-/// [`Self::from_bytes`]; query via [`Self::iter`], [`Self::get`], and
+/// **STREAMING-LOADER-1** — how the reader holds the file bytes. `open`
+/// memory-maps the file (file-backed, reclaimable pages → low peak committed
+/// RAM); `from_bytes` keeps an owned heap buffer (for `.bin`-transcoded /
+/// network / FP8-decoded inputs). Both deref to `&[u8]`, so the rest of the
+/// reader is backing-agnostic.
+enum Backing {
+    Owned(Vec<u8>),
+    Mapped(memmap2::Mmap),
+}
+
+impl std::ops::Deref for Backing {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            Backing::Owned(v) => v,
+            Backing::Mapped(m) => m,
+        }
+    }
+}
+
+impl std::fmt::Debug for Backing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Backing::Owned(v) => write!(f, "Owned({} bytes)", v.len()),
+            Backing::Mapped(m) => write!(f, "Mapped({} bytes)", m.len()),
+        }
+    }
+}
+
+/// Owned safetensors reader. Construct via [`Self::open`] (memory-mapped) or
+/// [`Self::from_bytes`] (owned); query via [`Self::iter`], [`Self::get`], and
 /// [`Self::metadata`].
 #[derive(Debug)]
 pub struct SafetensorsReader {
-    bytes: Vec<u8>,
+    bytes: Backing,
     /// **FP8-SAFETENSORS-1** — side buffer holding F32-decoded bytes for
     /// tensors that were FP8 on disk. Empty when the file has no FP8
     /// tensors (zero overhead for the common case).
@@ -99,8 +128,31 @@ impl SafetensorsReader {
                 path.to_string_lossy().to_string(),
             ));
         }
-        let bytes = fs::read(path).map_err(|e| LoaderError::IoError(e.to_string()))?;
-        Self::from_bytes(bytes)
+        // **STREAMING-LOADER-1** — memory-map by default (low peak RAM). The
+        // explicit `ATENIA_DISABLE_MMAP=1` opt-out and the automatic fallback
+        // on mmap failure both go through the byte-identical owned read path,
+        // so behaviour is never silently different — only the RAM profile is.
+        if std::env::var("ATENIA_DISABLE_MMAP").as_deref() == Ok("1") {
+            let bytes = fs::read(path).map_err(|e| LoaderError::IoError(e.to_string()))?;
+            return Self::from_backing(Backing::Owned(bytes));
+        }
+        let file = std::fs::File::open(path).map_err(|e| LoaderError::IoError(e.to_string()))?;
+        // SAFETY: read-only mapping of a model file for the duration of load.
+        // The file is not mutated by Atenia; external truncation while mapped
+        // is the standard documented mmap caveat (same assumption the
+        // `safetensors` crate's own mmap API makes).
+        match unsafe { memmap2::Mmap::map(&file) } {
+            Ok(mmap) => Self::from_backing(Backing::Mapped(mmap)),
+            Err(e) => {
+                eprintln!(
+                    "[ATENIA] mmap failed for {} ({e}); falling back to full read \
+                     (higher peak RAM, identical bytes).",
+                    path.display()
+                );
+                let bytes = fs::read(path).map_err(|e| LoaderError::IoError(e.to_string()))?;
+                Self::from_backing(Backing::Owned(bytes))
+            }
+        }
     }
 
     /// Construct a reader from an in-memory byte buffer. Same
@@ -108,6 +160,13 @@ impl SafetensorsReader {
     /// useful for tests and for callers that obtain bytes over the
     /// network.
     pub fn from_bytes(bytes: Vec<u8>) -> Result<Self, LoaderError> {
+        Self::from_backing(Backing::Owned(bytes))
+    }
+
+    /// Backing-agnostic construction. Parses the header + tensor offsets from
+    /// `backing` (owned `Vec` or memory-map), then takes ownership of it.
+    fn from_backing(backing: Backing) -> Result<Self, LoaderError> {
+        let bytes: &[u8] = &backing;
         // Parse the header once to extract the optional
         // `__metadata__` map — the `SafeTensors<'data>` view produced
         // by `deserialize` does not expose a `metadata()` accessor in
@@ -115,7 +174,7 @@ impl SafetensorsReader {
         // The extra pass over the first 8 + header_len bytes is
         // negligible; the body itself is not re-scanned.
         let (_hdr_len, hdr_metadata) =
-            safetensors::SafeTensors::read_metadata(&bytes).map_err(|e| {
+            safetensors::SafeTensors::read_metadata(bytes).map_err(|e| {
                 LoaderError::InvalidFormat(format!("safetensors read_metadata: {:?}", e))
             })?;
         let metadata: Option<HashMap<String, String>> = hdr_metadata.metadata().clone();
@@ -123,7 +182,7 @@ impl SafetensorsReader {
         // `safetensors::SafeTensors::deserialize` validates the
         // header-size prefix, parses the JSON, and checks that every
         // declared tensor's `data_offsets` falls within the body.
-        let view = safetensors::SafeTensors::deserialize(&bytes)
+        let view = safetensors::SafeTensors::deserialize(bytes)
             .map_err(|e| LoaderError::InvalidFormat(format!("safetensors deserialize: {:?}", e)))?;
 
         // Compute the header-size prefix so we can translate
@@ -238,7 +297,7 @@ impl SafetensorsReader {
         drop(view);
 
         Ok(Self {
-            bytes,
+            bytes: backing,
             decoded,
             entries,
             names_in_order,
@@ -260,7 +319,7 @@ impl SafetensorsReader {
     pub fn iter(&self) -> impl Iterator<Item = TensorEntry<'_>> {
         self.names_in_order.iter().map(move |name| {
             let entry = &self.entries[name];
-            let buf = if entry.from_decoded { &self.decoded } else { &self.bytes };
+            let buf: &[u8] = if entry.from_decoded { &self.decoded } else { &self.bytes };
             TensorEntry {
                 name: name.as_str(),
                 shape: entry.shape.as_slice(),
@@ -278,7 +337,7 @@ impl SafetensorsReader {
     pub fn get(&self, name: &str) -> Option<TensorEntry<'_>> {
         let owned_name = self.names_in_order.iter().find(|n| n.as_str() == name)?;
         let entry = &self.entries[owned_name];
-        let buf = if entry.from_decoded { &self.decoded } else { &self.bytes };
+        let buf: &[u8] = if entry.from_decoded { &self.decoded } else { &self.bytes };
         Some(TensorEntry {
             name: owned_name.as_str(),
             shape: entry.shape.as_slice(),

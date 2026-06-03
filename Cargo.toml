@@ -65,6 +65,14 @@ libloading = "0.8"
 safetensors = "0.4"
 half = "2"
 
+# STREAMING-LOADER-1 — memory-map single-file / per-shard safetensors at load
+# instead of reading the whole file into a heap `Vec<u8>`. memmap2 is pure-Rust,
+# no C toolchain, cross-platform (Windows + Linux), MIT/Apache — preserves the
+# vendor-agnostic posture. The mapped, read-only file pages are file-backed and
+# reclaimable, so peak *committed* RAM during load drops by ~the file size. A
+# graceful `fs::read` fallback (and `ATENIA_DISABLE_MMAP=1`) keep the old path.
+memmap2 = "0.9"
+
 # M4.8.e — vendor-agnostic cache-blocked SIMD matmul.
 # Pure-Rust BLIS-style sgemm with AVX2/FMA + NEON paths and
 # runtime ISA dispatch (no MKL, no C toolchain, AMD-friendly,

@@ -376,8 +376,21 @@ locked by regression tests.
   all-FP8 SmolLM2-135M loads + generates coherent text end to end. Fail-loud on
   body-length mismatch / unsupported dtypes. `atenia capabilities` lists FP8.
   See [HANDOFF_FP8_SAFETENSORS_1.md](./HANDOFF_FP8_SAFETENSORS_1.md).
+- **STREAMING-LOADER-1 — memory-mapped safetensors load.** `SafetensorsReader::open`
+  now **memory-maps** the file (via `memmap2`) instead of `fs::read`-ing the whole
+  thing into a heap `Vec`, behind an unchanged reader API (a private
+  `Backing{Owned|Mapped}` enum derefs to `&[u8]`) — so the weight mapper, adapter
+  layer, graph and tier planner are untouched, and single-file **and per-shard**
+  safetensors both benefit (the sharded loader and the `.bin` transcode funnel
+  through `open`). The mapped read-only pages are file-backed + reclaimable, so
+  they leave committed RAM. **Benchmark (Qwen2.5-1.5B, 2945 MB single-file, warm):
+  peak commit 12865 → 9483 MB (−3382 MB ≈ file size), peak working set 4461 →
+  3790 MB, wall 16.7 → 16.6 s (no penalty)** — scales to tens of GB on large
+  models. `ATENIA_DISABLE_MMAP=1` + automatic byte-identical `fs::read` fallback
+  keep the old path; mmap vs owned proven identical (by name).
+  See [HANDOFF_STREAMING_LOADER_1.md](./HANDOFF_STREAMING_LOADER_1.md).
 - **Loaders.** Single-file and sharded HuggingFace safetensors
-  (F32 / F16 / BF16 / **FP8 E4M3+E5M2**); GGUF
+  (F32 / F16 / BF16 / **FP8 E4M3+E5M2**), **memory-mapped at load**; GGUF
   (F16 / Q8_0 / Q4_K_M / Q5_K / Q6_K); single-file **and sharded** PyTorch `.bin`
   (transcoded + assembled).
   BF16 parameter storage (50 % RAM saving),
