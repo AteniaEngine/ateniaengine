@@ -5,9 +5,9 @@
   "model_family": "gemma2",
   "model_path_hint": "models/gemma-2-2b-it/model.safetensors[.index.json]",
   "atenia_version": "0.11.3-M11.C",
-  "f64_fixture_version": "pending — fixture not yet generated (see f64_certification_status)",
+  "f64_fixture_version": "gemma2-2b-v1 (tests/fixtures/gemma2_2b_reference/expected_logits_f64.json)",
   "f64_fixture_test": "tests/certify_breadth_f64_validation_test.rs::gemma2_2b_atenia_f32_matches_f64",
-  "f64_certification_status": "INFRASTRUCTURE READY, EVIDENCE PENDING (CERTIFY-BREADTH-1). The reusable F64 generator (tests/fixtures/generate_f64_reference.py) and the CPU-F32-vs-F64 harness (tests/certify_breadth_f64_validation_test.rs::gemma2_2b_atenia_f32_matches_f64, #[ignore]) are committed and wired. To fill the null drift below: (1) generate the fixture — `python tests/fixtures/generate_f64_reference.py models/gemma-2-2b-it tests/fixtures/gemma2_2b_reference` (needs ~21 GiB free RAM for the F64 pass); (2) run `GEMMA2_2B_DIR=models/gemma-2-2b-it cargo test --test certify_breadth_f64_validation_test --release -- --ignored gemma2_2b_atenia_f32_matches_f64 --nocapture`; (3) transcribe the printed max_abs_diff + argmax into certified_mode below. NO number is recorded until that run produces it. The certified_mode field additionally describes the GPU-TF32 kernel path; the harness measures the CPU-F32 path (ADR-004 primary metric) — a complementary, non-relaxed certification.",
+  "f64_certification_status": "CERTIFIED (CPU-F32, ADR-004 primary metric) — CERTIFY-BREADTH-2 (2026-06-03). Atenia's CPU F32 forward vs a PyTorch F64 reference on the canonical 4-token sequence [1,100,200,300]: max_abs_diff_vs_f64 = 0.058711 (threshold 0.5, ~8.5x margin), per-position argmax match 4/4 (F64 argmax ids 108 / 1 / 108 / 209). Higher than plain decoders (Gemma-3-1B 0.0012, Llama-3.2 0.0097) as expected — the attn/final SoftCap (tanh) + scaled embeddings amplify F32 rounding — but comfortably inside the gate. Reproduce: (1) `python tests/fixtures/generate_f64_reference.py models/gemma-2-2b-it tests/fixtures/gemma2_2b_reference` (F64 pass peaks ~22.4 GiB — needs that much free RAM or swap); (2) `GEMMA2_2B_DIR=models/gemma-2-2b-it cargo test --test certify_breadth_f64_validation_test --release -- --ignored gemma2_2b_atenia_f32_matches_f64 --nocapture`. NOTE: this certifies the CPU-F32 graph-execution path (the ADR-004 primary metric, as the Llama/Qwen M4.6 CPU tests). The GPU-TF32 production-kernel number (certified_mode.kernel_path below) is a SEPARATE, still-pending field.",
   "generated_at": "2026-05-09",
   "generated_on": "RTX 4070 Laptop (sm_89), 8 GB VRAM, 32 GB RAM, Windows 11",
 
@@ -35,12 +35,13 @@
 
   "drift_envelope": {
     "certified_mode": {
-      "max_abs_diff_vs_f64": null,
-      "argmax_match_4_of_4": null,
-      "adr_004_strict_pass": null,
+      "max_abs_diff_vs_f64": 0.058711,
+      "argmax_match_4_of_4": true,
+      "adr_004_strict_pass": true,
       "adr_004_threshold": 0.5,
-      "kernel_path": "cuda_matmul_bf16_inplace (Path B M8.4c) + CUBLAS_COMPUTE_32F_FAST_TF32 (M10.2.0)",
-      "validation_notes": "F64 reference not generated for Gemma 2 on the dev box. The 2.6B parameter footprint is structurally feasible for an F64 generation pass (peak F64 ~21 GiB, comfortably under the 32 GiB RAM ceiling), but the PyTorch F64 generation pipeline is not yet wired for Gemma 2 (the existing fixture covers the Llama M4.6 family only). Validation today: greedy-generation smoke under both modes, comparing decoded text — both modes produced bit-identical output on the M11.C reference prompt. SoftCap node was specifically validated by the M11.C step 2 `soft_cap_saturates_finite_no_nan` regression test (extreme inputs up to ±f32::MAX/2 with cap=50.0 produce finite saturated outputs); the smoke run produced no NaN or Inf in the logits."
+      "adr_004_margin": 8.5,
+      "kernel_path": "Measured on the CPU-F32 graph-execution path (certify_breadth harness, the ADR-004 primary metric). The GPU production kernel (cuda_matmul_bf16_inplace + CUBLAS_COMPUTE_32F_FAST_TF32) drift is NOT measured here — a separate CUDA run is still pending.",
+      "validation_notes": "MEASURED CERTIFY-BREADTH-2 (2026-06-03), CPU-F32 vs PyTorch F64 on tokens [1,100,200,300]: max_abs_diff_vs_f64 = 0.058711 (~8.5x inside the 0.5 gate), per-position argmax match 4/4 (F64 argmax ids 108 / 1 / 108 / 209). No mean/rmse recorded — the harness reports max_abs_diff + argmax only; no number fabricated. (Prior M11.C smoke evidence: certified/fast argmax bit-identical on the reference prompt; SoftCap finite-saturation regression `soft_cap_saturates_finite_no_nan` passing.)"
     },
     "fast_mode": {
       "max_abs_diff_vs_f64": null,
