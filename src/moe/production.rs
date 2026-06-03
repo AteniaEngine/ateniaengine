@@ -210,6 +210,45 @@ pub fn diagnose_moe(dir: &Path) -> MoeDiagnosis {
     }
 }
 
+/// **MOE-INTEGRATE-2** — the routing decision the normal `generate` path makes
+/// from a read-only [`MoeDiagnosis`]. Pure (no I/O); the CLI maps it to an
+/// action. The default for anything that is not a runnable, opted-in MoE is to
+/// **not** run MoE — dense passes through, everything else fails loud.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MoeRoute {
+    /// Not a (recognised) MoE checkpoint → use the dense pipeline, unchanged.
+    Dense,
+    /// A runnable, certified MoE family **with the opt-in set** → route to the
+    /// controlled MoE runtime.
+    RunMoe { family: MoeFamily },
+    /// A runnable, certified MoE family but the **opt-in is not set** → fail
+    /// loud (the default protection).
+    NeedsOptIn { family: MoeFamily },
+    /// MoE but an unsupported variant / not a runnable certification scope /
+    /// unrecognised family → fail loud.
+    Refused,
+}
+
+/// Decide how the normal `generate` path should handle a diagnosed model.
+/// Fail-loud by default: only a runnable, certified MoE family with the opt-in
+/// explicitly set is routed to the MoE runtime; dense passes through unchanged.
+pub fn decide_route(diag: &MoeDiagnosis) -> MoeRoute {
+    if !diag.is_moe {
+        return MoeRoute::Dense;
+    }
+    if diag.unsupported_variant.is_some() || !diag.certified_runnable {
+        return MoeRoute::Refused;
+    }
+    match diag.family {
+        // DeepSeek-MoE (MLA) is deferred — MOE-INTEGRATE-2 routes Mixtral and
+        // Qwen-MoE only. Refuse it rather than routing the MLA runtime.
+        Some(MoeFamily::DeepSeekMoe) => MoeRoute::Refused,
+        Some(family) if diag.opt_in_set => MoeRoute::RunMoe { family },
+        Some(family) => MoeRoute::NeedsOptIn { family },
+        None => MoeRoute::Refused,
+    }
+}
+
 /// **Controlled production generate**: gate a model directory through the
 /// certification matrix + opt-in, then run the MoE runtime. Returns the
 /// generated token ids. Every gate is a clear error; the dense path is never
@@ -250,5 +289,76 @@ mod tests {
     fn diagnose_nonexistent_is_not_moe() {
         let d = diagnose_moe(Path::new("/nonexistent/model/dir"));
         assert!(!d.is_moe);
+    }
+
+    // ---- MOE-INTEGRATE-2: routing decision (pure; no model needed) ----
+
+    fn diag(
+        is_moe: bool,
+        family: Option<MoeFamily>,
+        runnable: bool,
+        opt_in: bool,
+        unsupported: Option<&str>,
+    ) -> MoeDiagnosis {
+        MoeDiagnosis {
+            is_moe,
+            family,
+            scope: None,
+            unsupported_variant: unsupported.map(str::to_string),
+            certified_runnable: runnable,
+            opt_in_set: opt_in,
+            message: String::new(),
+        }
+    }
+
+    #[test]
+    fn dense_routes_to_dense() {
+        assert_eq!(
+            decide_route(&diag(false, None, false, false, None)),
+            MoeRoute::Dense
+        );
+        // A dense checkpoint with the opt-in set is still dense.
+        assert_eq!(
+            decide_route(&diag(false, None, false, true, None)),
+            MoeRoute::Dense
+        );
+    }
+
+    #[test]
+    fn runnable_moe_requires_opt_in() {
+        // Mixtral, runnable, no opt-in → fail loud (NeedsOptIn).
+        assert_eq!(
+            decide_route(&diag(true, Some(MoeFamily::Mixtral), true, false, None)),
+            MoeRoute::NeedsOptIn { family: MoeFamily::Mixtral }
+        );
+        // Qwen-MoE, runnable, opt-in set → route to MoE.
+        assert_eq!(
+            decide_route(&diag(true, Some(MoeFamily::QwenMoe), true, true, None)),
+            MoeRoute::RunMoe { family: MoeFamily::QwenMoe }
+        );
+    }
+
+    #[test]
+    fn unsupported_or_uncertified_is_refused_even_with_opt_in() {
+        // Unsupported variant → Refused regardless of opt-in.
+        assert_eq!(
+            decide_route(&diag(true, Some(MoeFamily::QwenMoe), false, true, Some("QK-norm"))),
+            MoeRoute::Refused
+        );
+        // Recognised but not runnable scope → Refused.
+        assert_eq!(
+            decide_route(&diag(true, Some(MoeFamily::DeepSeekMoe), false, true, None)),
+            MoeRoute::Refused
+        );
+        // DeepSeek-MoE is deferred — refused even when runnable + opted in.
+        assert_eq!(
+            decide_route(&diag(true, Some(MoeFamily::DeepSeekMoe), true, true, None)),
+            MoeRoute::Refused
+        );
+        // MoE but unrecognised family → Refused.
+        assert_eq!(
+            decide_route(&diag(true, None, false, true, None)),
+            MoeRoute::Refused
+        );
     }
 }

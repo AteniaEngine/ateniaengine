@@ -349,6 +349,18 @@ locked by regression tests.
   number is a separate pending field for each. Certified families: **Llama,
   Qwen2, Gemma 3, Gemma 2 (CPU-F32)**. **Phi-3.5** (f64 pass needs ~30 GiB)
   remains evidence-pending.
+- **MOE-INTEGRATE-1/2 — MoE reachable from the normal runtime (opt-in).**
+  INTEGRATE-1 added a declarative **`moe` section** to the Adapter Toolkit DSL
+  (`MoeFamilyKind`, typed `ExpertLayout`/`RouterNaming`/`SharedExpertNaming`,
+  `auto` defaults deferring to `config.json`; describe + validate only). 
+  INTEGRATE-2 wired the **routing**: `atenia generate` now runs `diagnose_moe`
+  on a checkpoint and `decide_route` decides — **dense → unchanged**; a runnable,
+  certified **Mixtral / Qwen-MoE** family **with the opt-in** (`ATENIA_ENABLE_MOE=1`)
+  → routed to the controlled `MoeRuntime` (tokenize → `controlled_moe_generate` →
+  decode); **without the opt-in → fail loud**; unsupported variant / DeepSeek-MoE
+  (deferred) / unrecognised → fail loud. The dense loader's MoE guard and the
+  MoE runtime are untouched; default behaviour for dense models is identical.
+  See `docs/MOE_ADAPTER_SPEC_AUDIT.md` + `docs/ADAPTER_TOOLKIT_V2.md` §17.
 - **FORMAT-INTAKE-1 — PyTorch `.bin` intake.** Closes the coverage audit's #2
   gap (otherwise-supported checkpoints unloadable purely because they ship as
   `pytorch_model.bin`). A new `src/v17/loader/pytorch_bin.rs` **transcodes** a

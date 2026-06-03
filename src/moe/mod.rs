@@ -111,7 +111,10 @@ pub use family::{
 };
 pub use runtime::{MixtralRuntime, MixtralRuntimeError, MoeRuntime, MoeRuntimeError};
 pub use manifest::{MoeCertEntry, MoeCertManifest, MoeCertScope};
-pub use production::{controlled_moe_generate, diagnose_moe, ControlledMoeError, MoeDiagnosis};
+pub use production::{
+    controlled_moe_generate, decide_route, diagnose_moe, ControlledMoeError, MoeDiagnosis,
+    MoeRoute,
+};
 pub use fixture::{
     f64_reference_weight_bytes, recommend_strategy, FixtureMoESpec, FixtureSpecError,
     MoECertificationStrategy,

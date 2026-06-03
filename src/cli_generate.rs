@@ -324,6 +324,26 @@ pub fn run(args: GenerateArgs) -> i32 {
     }
     let _ = args.cache_dir;
 
+    // **MOE-INTEGRATE-2** — route a recognised MoE checkpoint to the controlled
+    // MoE runtime instead of the dense pipeline (which fails loud on MoE).
+    // Dense checkpoints pass straight through (`decide_route → Dense`). MoE
+    // detection reads safetensors tensor names; a GGUF checkpoint is never a
+    // routable MoE here, so the probe is skipped for GGUF. Fail-loud is the
+    // default: only a runnable, certified family *with the opt-in* is run.
+    if !is_gguf {
+        use crate::moe::{decide_route, diagnose_moe, MoeRoute};
+        let diag = diagnose_moe(&args.model);
+        match decide_route(&diag) {
+            MoeRoute::Dense => {} // fall through to the dense path, unchanged
+            MoeRoute::RunMoe { .. } => return run_moe_text(&args),
+            MoeRoute::NeedsOptIn { .. } | MoeRoute::Refused => {
+                // Clear, family-aware fail-loud message (built by `diagnose_moe`).
+                eprintln!("{}", diag.message);
+                return 2;
+            }
+        }
+    }
+
     // CLI-2: command-start logging. `info` shows under --verbose;
     // the parameter dump shows under --debug.
     logging::info("command start: generate");
@@ -559,6 +579,59 @@ fn run_generate<S: TokenSink>(
     } else {
         pipe.generate(&args.prompt, args.max_tokens, sink)
             .map_err(|e| e.to_string())
+    }
+}
+
+/// **MOE-INTEGRATE-2** — text generation through the controlled MoE runtime.
+/// Reached only when `decide_route` returned `RunMoe` (a runnable, certified
+/// MoE family with the opt-in set). It tokenises `--prompt`, runs the existing
+/// gated `controlled_moe_generate` (the same entry `atenia moe-generate` uses),
+/// and decodes the result back to text. It does **not** change the MoE runtime
+/// or the dense path; it is the text ⇄ token-id bridge for the normal command.
+fn run_moe_text(args: &GenerateArgs) -> i32 {
+    use crate::tokenizer::{AteniaTokenizer, ChatMessage};
+
+    let tok = match AteniaTokenizer::from_model_dir(&args.model) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("error: could not load tokenizer for the MoE checkpoint: {e}");
+            return 2;
+        }
+    };
+    let prompt_text = if args.no_chat_template {
+        args.prompt.clone()
+    } else {
+        tok.apply_chat_template(&[ChatMessage::user(args.prompt.clone())])
+            .unwrap_or_else(|_| args.prompt.clone())
+    };
+    let prompt_ids = match tok.encode(&prompt_text, true) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: could not tokenise the prompt: {e}");
+            return 2;
+        }
+    };
+
+    eprintln!(
+        "[ATENIA] MoE checkpoint routed to the controlled MoE runtime \
+         (experimental, opt-in). The dense path is untouched."
+    );
+    match crate::moe::controlled_moe_generate(&args.model, &prompt_ids, args.max_tokens) {
+        Ok(out_ids) => match tok.decode(&out_ids, true) {
+            Ok(text) => {
+                println!("{text}");
+                0
+            }
+            Err(e) => {
+                eprintln!("error: could not decode MoE output: {e}");
+                3
+            }
+        },
+        Err(e) => {
+            // Family-aware controlled-path error (opt-in / certification / runtime).
+            eprintln!("{e}");
+            3
+        }
     }
 }
 
