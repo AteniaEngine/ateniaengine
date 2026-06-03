@@ -5,8 +5,9 @@
   "model_family": "gemma2",
   "model_path_hint": "models/gemma-2-2b-it/model.safetensors[.index.json]",
   "atenia_version": "0.11.3-M11.C",
-  "f64_fixture_version": "n/a — Gemma 2 not in the M4.6 fixture; reference would require a separate PyTorch F64 generation pass",
-  "f64_fixture_test": "n/a — see drift_envelope.validation_notes",
+  "f64_fixture_version": "pending — fixture not yet generated (see f64_certification_status)",
+  "f64_fixture_test": "tests/certify_breadth_f64_validation_test.rs::gemma2_2b_atenia_f32_matches_f64",
+  "f64_certification_status": "INFRASTRUCTURE READY, EVIDENCE PENDING (CERTIFY-BREADTH-1). The reusable F64 generator (tests/fixtures/generate_f64_reference.py) and the CPU-F32-vs-F64 harness (tests/certify_breadth_f64_validation_test.rs::gemma2_2b_atenia_f32_matches_f64, #[ignore]) are committed and wired. To fill the null drift below: (1) generate the fixture — `python tests/fixtures/generate_f64_reference.py models/gemma-2-2b-it tests/fixtures/gemma2_2b_reference` (needs ~21 GiB free RAM for the F64 pass); (2) run `GEMMA2_2B_DIR=models/gemma-2-2b-it cargo test --test certify_breadth_f64_validation_test --release -- --ignored gemma2_2b_atenia_f32_matches_f64 --nocapture`; (3) transcribe the printed max_abs_diff + argmax into certified_mode below. NO number is recorded until that run produces it. The certified_mode field additionally describes the GPU-TF32 kernel path; the harness measures the CPU-F32 path (ADR-004 primary metric) — a complementary, non-relaxed certification.",
   "generated_at": "2026-05-09",
   "generated_on": "RTX 4070 Laptop (sm_89), 8 GB VRAM, 32 GB RAM, Windows 11",
 

@@ -319,6 +319,25 @@ locked by regression tests.
   5 crate-boundary integration, green. **Default off → unchanged behaviour.** See
   [HANDOFF_MODEL_INTAKE_1.md](./HANDOFF_MODEL_INTAKE_1.md) +
   [MODEL_COVERAGE_EXECUTIVE_AUDIT.md](./MODEL_COVERAGE_EXECUTIVE_AUDIT.md).
+- **CERTIFY-BREADTH-1 — numeric-certification infrastructure for Phi-3 / Gemma
+  (evidence pending, no fabrication).** The coverage gap between *functionally
+  validated* and *numerically certified* for Phi-3 / Gemma is exactly one missing
+  artefact per model: a **PyTorch-F64 reference** (ADR-004). This milestone
+  delivers the **reusable infrastructure** to close it — a parametrised F64
+  generator (`tests/fixtures/generate_f64_reference.py`, generalising the
+  per-model `generate_f64.py` scripts) and a **family-agnostic CPU-F32-vs-F64
+  harness** (`tests/certify_breadth_f64_validation_test.rs`, driving the forward
+  through the adapter layer; pure CPU, no CUDA; single-file + sharded) with
+  `#[ignore]` validations for Gemma-2-2B / Gemma-3-1B / Phi-3.5 and **6 CI unit
+  tests** for the pure logic. The Gemma-2 + Phi-3.5 manifests are re-pointed at
+  the harness with an exact reproduction recipe; a new Gemma-3-1B manifest wires
+  the slot. **Every `max_abs_diff_vs_f64` stays `null` — no number is
+  fabricated, ADR-004 is not relaxed, "certified" is not redefined.** Completing
+  the real certification is a pure *execution* step on adequate hardware (free
+  RAM ≈ 8 GiB Gemma-3-1B / 21 GiB Gemma-2-2B / 30 GiB Phi-3.5 for the F64 pass;
+  build-time free RAM here was 12.7 GiB). Certified families remain **Llama +
+  Qwen2**; Phi-3 / Gemma are *certification-infrastructure-ready, evidence-pending*.
+  See [HANDOFF_CERTIFY_BREADTH_1.md](./HANDOFF_CERTIFY_BREADTH_1.md).
 - **Loaders.** Single-file and sharded HuggingFace safetensors; GGUF
   (F16 / Q8_0 / Q4_K_M / Q5_K / Q6_K). BF16 parameter storage (50 % RAM saving),
   BF16 KV cache (default on), RAM↔NVMe spill with chunked streaming.

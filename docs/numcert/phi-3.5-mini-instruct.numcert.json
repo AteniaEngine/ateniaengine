@@ -5,8 +5,9 @@
   "model_family": "phi3-longrope",
   "model_path_hint": "models/phi-3.5-mini-instruct/model.safetensors[.index.json]",
   "atenia_version": "0.11.2-M11.B",
-  "f64_fixture_version": "n/a — Phi-3.5 not in the M4.6 fixture; reference would require a separate PyTorch F64 generation pass",
-  "f64_fixture_test": "n/a — see drift_envelope.validation_notes",
+  "f64_fixture_version": "pending — fixture not yet generated (see f64_certification_status)",
+  "f64_fixture_test": "tests/certify_breadth_f64_validation_test.rs::phi35_mini_atenia_f32_matches_f64",
+  "f64_certification_status": "INFRASTRUCTURE READY, EVIDENCE PENDING (CERTIFY-BREADTH-1). The reusable F64 generator (tests/fixtures/generate_f64_reference.py) and the CPU-F32-vs-F64 harness (tests/certify_breadth_f64_validation_test.rs::phi35_mini_atenia_f32_matches_f64, #[ignore]) are committed and wired. To fill the null drift below: (1) generate the fixture — `python tests/fixtures/generate_f64_reference.py models/phi-3.5-mini-instruct tests/fixtures/phi35_mini_reference` (needs ~30 GiB free RAM for the 3.8B F64 pass — near a 32 GiB ceiling; a higher-RAM box is recommended); (2) run `PHI35_MINI_DIR=models/phi-3.5-mini-instruct cargo test --test certify_breadth_f64_validation_test --release -- --ignored phi35_mini_atenia_f32_matches_f64 --nocapture`; (3) transcribe the printed max_abs_diff + argmax into certified_mode below. NO number is recorded until that run produces it. The certified_mode field additionally describes the GPU-TF32 kernel path; the harness measures the CPU-F32 path (ADR-004 primary metric) — a complementary, non-relaxed certification.",
   "generated_at": "2026-05-09",
   "generated_on": "RTX 4070 Laptop (sm_89), 8 GB VRAM, 32 GB RAM, Windows 11",
 

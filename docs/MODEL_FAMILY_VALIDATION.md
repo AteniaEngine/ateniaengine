@@ -20,6 +20,19 @@ numeric-drift gate with a versioned manifest. Only the four ADR-004
 fixture models carry numcert manifests; every other entry below is
 functional validation only.
 
+**CERTIFY-BREADTH-1 update.** The infrastructure to numerically certify the
+functionally-validated non-Llama families (Phi-3, Gemma 2, Gemma 3) is now
+committed: a reusable F64 reference generator
+(`tests/fixtures/generate_f64_reference.py`) and a family-agnostic
+CPU-F32-vs-F64 harness (`tests/certify_breadth_f64_validation_test.rs`, driven
+through the adapter layer, `#[ignore]` per model). The Gemma-2 / Phi-3.5
+manifests carry an `f64_certification_status` block with the exact reproduction
+recipe; a Gemma-3-1B manifest wires the slot. **These remain functionally
+validated, not yet numerically certified** — the manifests' `max_abs_diff_vs_f64`
+stay `null` until the (RAM-gated) PyTorch-F64 pass is run on adequate hardware.
+No drift number has been fabricated. See
+[HANDOFF_CERTIFY_BREADTH_1.md](./HANDOFF_CERTIFY_BREADTH_1.md).
+
 Terminology used here — "family validation", "functional
 validation", "mastery battery" — is deliberate. The word
 "certified" is reserved for ADR-004 numcert and is **not** claimed
