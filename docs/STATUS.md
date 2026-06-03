@@ -303,6 +303,22 @@ locked by regression tests.
   `Certified` default + bit-exact path untouched.** Tests: cert units + governance
   integration (certify → refuse-uncertified → allow-with-cert) + full regression
   green. See [HANDOFF_NUMERIC_POLICY_3.md](./HANDOFF_NUMERIC_POLICY_3.md).
+- **MODEL-INTAKE-1 — architecture compatibility layer ("say yes more often,
+  safely").** Closes the coverage audit's #1 blocker (an unknown
+  `architectures[0]` was a blanket hard-reject). Native resolution is
+  **unchanged** (certified/supported families byte-identical); only on a registry
+  miss does a new explicit layer (`model_adapters::compat`) decide: a curated
+  **evidence-gated allowlist** of distinct-but-Llama-compatible arch strings
+  (`LLaMAForCausalLM`, `YiForCausalLM` → `LlamaForCausalLM`), or an **opt-in
+  generic decoder path** (`ATENIA_INTAKE_GENERIC=1`) that runs an unknown arch as
+  Llama **iff** `check_llama_topology` passes (positive dims, head/GQA
+  divisibility, **no** specialised-family fields = Gemma soft-caps / Gemma-3
+  dual-RoPE / Phi-4 partial rotary), loudly **UNCERTIFIED** and fail-loud at
+  weight binding. No silent fallback: every reject names the reason + the opt-in.
+  `atenia capabilities` surfaces the allowlist + opt-in. Tests: 9 compat units +
+  5 crate-boundary integration, green. **Default off → unchanged behaviour.** See
+  [HANDOFF_MODEL_INTAKE_1.md](./HANDOFF_MODEL_INTAKE_1.md) +
+  [MODEL_COVERAGE_EXECUTIVE_AUDIT.md](./MODEL_COVERAGE_EXECUTIVE_AUDIT.md).
 - **Loaders.** Single-file and sharded HuggingFace safetensors; GGUF
   (F16 / Q8_0 / Q4_K_M / Q5_K / Q6_K). BF16 parameter storage (50 % RAM saving),
   BF16 KV cache (default on), RAM↔NVMe spill with chunked streaming.

@@ -406,9 +406,24 @@ fn collect_diagnose_checks(model_dir: &Path) -> Vec<Check> {
 struct CapabilitiesReport {
     supported_families: Vec<String>,
     unsupported_architectures: Vec<String>,
+    /// **MODEL-INTAKE-1** — non-native architecture strings the
+    /// curated allowlist maps to a compatible base family (UNCERTIFIED).
+    compatible_architectures: Vec<String>,
+    /// **MODEL-INTAKE-1** — env opt-in for the generic decoder path.
+    generic_intake_opt_in: String,
     formats: Vec<String>,
     gguf_quants: Vec<String>,
     features: Vec<String>,
+}
+
+/// `architecture -> base (evidence)` lines for the curated
+/// known-compatible allowlist. Single source of truth: the compat
+/// layer's [`crate::model_adapters::compat::LLAMA_COMPATIBLE_ALLOWLIST`].
+fn compatible_architecture_lines() -> Vec<String> {
+    crate::model_adapters::compat::LLAMA_COMPATIBLE_ALLOWLIST
+        .iter()
+        .map(|e| format!("{} -> {} (uncertified)", e.architecture, e.base_architecture))
+        .collect()
 }
 
 const FEATURES: &[&str] = &[
@@ -431,6 +446,8 @@ pub fn run_capabilities(json: bool) -> i32 {
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
+            compatible_architectures: compatible_architecture_lines(),
+            generic_intake_opt_in: crate::model_adapters::compat::GENERIC_INTAKE_ENV.to_string(),
             formats: vec!["GGUF".to_string(), "safetensors".to_string()],
             gguf_quants: SUPPORTED_QUANTS.iter().map(|s| s.to_string()).collect(),
             features: FEATURES.iter().map(|s| s.to_string()).collect(),
@@ -456,6 +473,15 @@ pub fn run_capabilities(json: bool) -> i32 {
         for a in UNSUPPORTED_ARCHITECTURES {
             out.push_str(&format!("  - {a}\n"));
         }
+        out.push_str("\nKnown-compatible (allowlist, mapped + uncertified):\n");
+        for line in compatible_architecture_lines() {
+            out.push_str(&format!("  - {line}\n"));
+        }
+        out.push_str(&format!(
+            "  (unknown architectures: set {}=1 to attempt the generic Llama-compatible \
+             decoder path, topology-checked + uncertified)\n",
+            crate::model_adapters::compat::GENERIC_INTAKE_ENV
+        ));
         out.push_str("\nWeight formats:\n  - GGUF\n  - safetensors\n");
         out.push_str("\nGGUF quantisations:\n");
         for q in SUPPORTED_QUANTS {

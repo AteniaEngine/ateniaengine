@@ -12,6 +12,13 @@ mod llama_family;
 mod phi3;
 mod qwen3;
 
+// **MODEL-INTAKE-1** — architecture compatibility layer ("Say Yes
+// More Often, Safely"): a curated, evidence-gated allowlist + an
+// opt-in generic Llama-compatible decoder path with explicit topology
+// checks. Consulted only when `resolve_adapter` returns `None`, so
+// natively-supported / certified families are never affected.
+pub mod compat;
+
 // **AT-2** — conformance harness. Test-only: an executable freeze
 // of current adapter behaviour, the oracle for the AT-1 refactor
 // (ADR-006). No production logic.

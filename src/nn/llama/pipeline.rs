@@ -572,14 +572,52 @@ impl GenerationPipeline {
                 ModelFormat::HfSafetensors
             },
         );
-        let adapter = resolve_adapter(&metadata).ok_or_else(|| {
-            PipelineError::Loader(LoaderError::InvalidFormat(format!(
-                "unsupported architecture/model_type: architecture=\"{}\", model_type={:?}; {}",
-                metadata.architecture,
-                config.model_type,
-                crate::model_adapters::supported_architectures_message()
-            )))
-        })?;
+        // **MODEL-INTAKE-1** — native resolution is unchanged: a
+        // registered (certified / supported) adapter is used exactly
+        // as before. Only when the registry returns `None` do we
+        // consult the explicit compatibility layer, which either
+        // accepts the checkpoint via the curated allowlist or the
+        // `ATENIA_INTAKE_GENERIC` opt-in (after structural topology
+        // checks, loudly logged as UNCERTIFIED) or refuses it with an
+        // actionable message. There is **no silent fallback**.
+        let adapter = match resolve_adapter(&metadata) {
+            Some(adapter) => adapter,
+            None => {
+                use crate::model_adapters::compat::{
+                    resolve_intake, IntakeOutcome, GENERIC_INTAKE_ENV,
+                };
+                let generic_opt_in =
+                    std::env::var(GENERIC_INTAKE_ENV).as_deref() == Ok("1");
+                match resolve_intake(
+                    metadata.architecture,
+                    config.model_type.as_deref(),
+                    &config,
+                    generic_opt_in,
+                ) {
+                    IntakeOutcome::Accept {
+                        adapter,
+                        status,
+                        warnings,
+                    } => {
+                        for w in &warnings {
+                            eprintln!("[ATENIA] intake: {w}");
+                        }
+                        eprintln!(
+                            "[ATENIA] intake: architecture \"{}\" accepted via {} \
+                             — running as the resolved compatible family (UNCERTIFIED).",
+                            metadata.architecture,
+                            status.label()
+                        );
+                        adapter
+                    }
+                    IntakeOutcome::Reject { message } => {
+                        return Err(PipelineError::Loader(LoaderError::InvalidFormat(
+                            message,
+                        )));
+                    }
+                }
+            }
+        };
         adapter.log_selection();
         let residency_hints = adapter.residency_hints(&config);
         log_adapter_residency_policy(adapter, residency_hints);
