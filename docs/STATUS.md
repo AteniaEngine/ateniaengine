@@ -366,7 +366,18 @@ locked by regression tests.
   identical greedy text** to safetensors on a real **2-shard** SmolLM2-135M. All
   single- and multi-file `.bin` checkpoints of supported families now load with
   no external conversion. See [HANDOFF_FORMAT_INTAKE_2.md](./HANDOFF_FORMAT_INTAKE_2.md).
-- **Loaders.** Single-file and sharded HuggingFace safetensors; GGUF
+- **FP8-SAFETENSORS-1 — FP8 safetensors read.** Reads `F8_E4M3` (e4m3fn) and
+  `F8_E5M2` tensors by **decoding to F32 at read time** inside `SafetensorsReader`
+  (a side buffer; the FP8 tensor surfaces as a plain F32 entry) — so the weight
+  mapper, graph, kernels, tier planner and adapters are **unchanged** and never
+  see FP8 (no Numeric Policy / CUDA touched; F32/F16/BF16 paths intact). Works
+  for single-file, sharded, and `.bin`-transcoded safetensors. Decoders are
+  **bit-identical to PyTorch's `fp8.to(float32)`** (CI fixture test), and a real
+  all-FP8 SmolLM2-135M loads + generates coherent text end to end. Fail-loud on
+  body-length mismatch / unsupported dtypes. `atenia capabilities` lists FP8.
+  See [HANDOFF_FP8_SAFETENSORS_1.md](./HANDOFF_FP8_SAFETENSORS_1.md).
+- **Loaders.** Single-file and sharded HuggingFace safetensors
+  (F32 / F16 / BF16 / **FP8 E4M3+E5M2**); GGUF
   (F16 / Q8_0 / Q4_K_M / Q5_K / Q6_K); single-file **and sharded** PyTorch `.bin`
   (transcoded + assembled).
   BF16 parameter storage (50 % RAM saving),

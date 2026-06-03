@@ -45,11 +45,17 @@ use super::loader_errors::LoaderError;
 struct EntryOffsets {
     shape: Vec<usize>,
     dtype: DType,
-    /// Absolute offset into `SafetensorsReader::bytes` where this
-    /// tensor's payload begins.
+    /// Offset where this tensor's payload begins — into
+    /// `SafetensorsReader::bytes` when `from_decoded == false`, or into
+    /// `SafetensorsReader::decoded` when `from_decoded == true`.
     body_start: usize,
-    /// Absolute offset (exclusive) where this tensor's payload ends.
+    /// Offset (exclusive) where this tensor's payload ends.
     body_end: usize,
+    /// **FP8-SAFETENSORS-1** — `true` when this entry was an on-disk FP8
+    /// tensor decoded to F32 at construction; its `dtype` is then `F32`
+    /// and its bytes live in the side `decoded` buffer, so everything
+    /// downstream sees a plain F32 tensor (no FP8 in the graph/kernels).
+    from_decoded: bool,
 }
 
 /// Owned safetensors reader. Construct via [`Self::open`] or
@@ -58,6 +64,10 @@ struct EntryOffsets {
 #[derive(Debug)]
 pub struct SafetensorsReader {
     bytes: Vec<u8>,
+    /// **FP8-SAFETENSORS-1** — side buffer holding F32-decoded bytes for
+    /// tensors that were FP8 on disk. Empty when the file has no FP8
+    /// tensors (zero overhead for the common case).
+    decoded: Vec<u8>,
     entries: HashMap<String, EntryOffsets>,
     /// Tensor names in declaration order (the order they appear in
     /// the header JSON). `HashMap` iteration is non-deterministic, so
@@ -143,13 +153,56 @@ impl SafetensorsReader {
 
         let mut entries: HashMap<String, EntryOffsets> = HashMap::new();
         let mut names_in_order: Vec<String> = Vec::new();
+        let mut decoded: Vec<u8> = Vec::new();
 
         for (name, tv) in view.tensors() {
-            let dtype = map_dtype(tv.dtype())
-                .map_err(|msg| LoaderError::InvalidFormat(format!("tensor '{}': {}", name, msg)))?;
-
             let shape: Vec<usize> = tv.shape().to_vec();
             let data = tv.data();
+
+            // **FP8-SAFETENSORS-1** — decode FP8 (E4M3 / E5M2) to F32 at
+            // construction into the side `decoded` buffer, so the entry
+            // is presented as a plain F32 tensor. The graph, kernels,
+            // adapters and tier planner never see an FP8 dtype.
+            use safetensors::Dtype as St;
+            let st_dtype = tv.dtype();
+            if matches!(st_dtype, St::F8_E4M3 | St::F8_E5M2) {
+                let elems: usize = shape.iter().product();
+                if data.len() != elems {
+                    return Err(LoaderError::InvalidFormat(format!(
+                        "tensor '{}': FP8 body carries {} bytes but shape {:?} implies {} \
+                         elements (FP8 is 1 byte/element)",
+                        name,
+                        data.len(),
+                        shape,
+                        elems
+                    )));
+                }
+                let body_start = decoded.len();
+                decoded.reserve(elems * 4);
+                for &b in data {
+                    let f = match st_dtype {
+                        St::F8_E4M3 => fp8_e4m3_to_f32(b),
+                        _ => fp8_e5m2_to_f32(b),
+                    };
+                    decoded.extend_from_slice(&f.to_le_bytes());
+                }
+                entries.insert(
+                    name.to_string(),
+                    EntryOffsets {
+                        shape,
+                        dtype: DType::F32,
+                        body_start,
+                        body_end: decoded.len(),
+                        from_decoded: true,
+                    },
+                );
+                names_in_order.push(name.to_string());
+                continue;
+            }
+
+            let dtype = map_dtype(st_dtype)
+                .map_err(|msg| LoaderError::InvalidFormat(format!("tensor '{}': {}", name, msg)))?;
+
             // `data` is a slice of `bytes`; compute its absolute
             // offset range by pointer arithmetic. This is safe
             // because `SafeTensors::deserialize` guarantees that
@@ -174,18 +227,19 @@ impl SafetensorsReader {
                     dtype,
                     body_start,
                     body_end,
+                    from_decoded: false,
                 },
             );
             names_in_order.push(name.to_string());
         }
 
         // `view` is dropped here — from now on we read from `bytes`
-        // directly via the offsets we captured. `metadata` was
-        // already captured above from `read_metadata`.
+        // (or `decoded`) directly via the offsets we captured.
         drop(view);
 
         Ok(Self {
             bytes,
+            decoded,
             entries,
             names_in_order,
             metadata,
@@ -206,11 +260,12 @@ impl SafetensorsReader {
     pub fn iter(&self) -> impl Iterator<Item = TensorEntry<'_>> {
         self.names_in_order.iter().map(move |name| {
             let entry = &self.entries[name];
+            let buf = if entry.from_decoded { &self.decoded } else { &self.bytes };
             TensorEntry {
                 name: name.as_str(),
                 shape: entry.shape.as_slice(),
                 dtype: entry.dtype,
-                raw_bytes: &self.bytes[entry.body_start..entry.body_end],
+                raw_bytes: &buf[entry.body_start..entry.body_end],
             }
         })
     }
@@ -223,11 +278,12 @@ impl SafetensorsReader {
     pub fn get(&self, name: &str) -> Option<TensorEntry<'_>> {
         let owned_name = self.names_in_order.iter().find(|n| n.as_str() == name)?;
         let entry = &self.entries[owned_name];
+        let buf = if entry.from_decoded { &self.decoded } else { &self.bytes };
         Some(TensorEntry {
             name: owned_name.as_str(),
             shape: entry.shape.as_slice(),
             dtype: entry.dtype,
-            raw_bytes: &self.bytes[entry.body_start..entry.body_end],
+            raw_bytes: &buf[entry.body_start..entry.body_end],
         })
     }
 
@@ -372,5 +428,90 @@ fn map_dtype(st: safetensors::Dtype) -> Result<DType, String> {
              (integer, BOOL, and F64 tensors are not a Model-Loader target)",
             other
         )),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FP8-SAFETENSORS-1 — FP8 → F32 decoders (OCP 8-bit float formats).
+// ---------------------------------------------------------------------------
+
+/// Decode one **E4M3** byte (1 sign · 4 exp, bias 7 · 3 mantissa) to `f32`.
+/// This is the `e4m3fn` variant used by safetensors / PyTorch: **no
+/// infinities**, and the only NaN is `S.1111.111`. Max finite magnitude 448.
+/// The conversion is exact (FP8 → F32 widening never loses bits).
+fn fp8_e4m3_to_f32(b: u8) -> f32 {
+    let sign = if b & 0x80 != 0 { -1.0f32 } else { 1.0 };
+    let exp = ((b >> 3) & 0x0F) as i32;
+    let man = (b & 0x07) as i32;
+    if exp == 0x0F && man == 0x07 {
+        return f32::NAN;
+    }
+    if exp == 0 {
+        // Subnormal: 2^(1-7) · man/8 = man · 2^-9.
+        sign * (man as f32) * 2f32.powi(-9)
+    } else {
+        // Normal: (1 + man/8) · 2^(exp-7).
+        sign * (1.0 + (man as f32) / 8.0) * 2f32.powi(exp - 7)
+    }
+}
+
+/// Decode one **E5M2** byte (1 sign · 5 exp, bias 15 · 2 mantissa) to `f32`.
+/// IEEE-like: `exp == 31` is ±inf (mantissa 0) or NaN. Max finite 57344.
+fn fp8_e5m2_to_f32(b: u8) -> f32 {
+    let neg = b & 0x80 != 0;
+    let sign = if neg { -1.0f32 } else { 1.0 };
+    let exp = ((b >> 2) & 0x1F) as i32;
+    let man = (b & 0x03) as i32;
+    if exp == 0x1F {
+        return if man == 0 {
+            if neg { f32::NEG_INFINITY } else { f32::INFINITY }
+        } else {
+            f32::NAN
+        };
+    }
+    if exp == 0 {
+        // Subnormal: 2^(1-15) · man/4 = man · 2^-16.
+        sign * (man as f32) * 2f32.powi(-16)
+    } else {
+        // Normal: (1 + man/4) · 2^(exp-15).
+        sign * (1.0 + (man as f32) / 4.0) * 2f32.powi(exp - 15)
+    }
+}
+
+#[cfg(test)]
+mod fp8_tests {
+    use super::*;
+
+    #[test]
+    fn e4m3_known_values() {
+        assert_eq!(fp8_e4m3_to_f32(0x00), 0.0);
+        assert_eq!(fp8_e4m3_to_f32(0x38), 1.0); // exp=7,man=0 → 2^0
+        assert_eq!(fp8_e4m3_to_f32(0xB8), -1.0); // sign + 1.0
+        assert_eq!(fp8_e4m3_to_f32(0x3F), 1.875); // (1+7/8)·2^0
+        assert_eq!(fp8_e4m3_to_f32(0x7E), 448.0); // max finite
+        assert!(fp8_e4m3_to_f32(0x7F).is_nan()); // only NaN
+        assert_eq!(fp8_e4m3_to_f32(0x08), 0.015625); // 2^-6 smallest normal
+    }
+
+    #[test]
+    fn e5m2_known_values() {
+        assert_eq!(fp8_e5m2_to_f32(0x00), 0.0);
+        assert_eq!(fp8_e5m2_to_f32(0x3C), 1.0); // exp=15,man=0
+        assert_eq!(fp8_e5m2_to_f32(0xBC), -1.0);
+        assert_eq!(fp8_e5m2_to_f32(0x7B), 57344.0); // max finite
+        assert!(fp8_e5m2_to_f32(0x7C).is_infinite() && fp8_e5m2_to_f32(0x7C) > 0.0);
+        assert!(fp8_e5m2_to_f32(0xFC).is_infinite() && fp8_e5m2_to_f32(0xFC) < 0.0);
+        assert!(fp8_e5m2_to_f32(0x7D).is_nan());
+    }
+
+    #[test]
+    fn fp8_widening_is_exact_roundtrippable_subset() {
+        // Every E4M3 normal value is representable exactly in f32.
+        for b in 0u8..=255 {
+            let v = fp8_e4m3_to_f32(b);
+            if v.is_finite() {
+                assert_eq!(v, v as f64 as f32, "byte {b:#04x}");
+            }
+        }
     }
 }

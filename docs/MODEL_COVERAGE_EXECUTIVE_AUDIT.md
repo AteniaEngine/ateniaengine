@@ -137,7 +137,7 @@ RoPE scaling or norm placement) without changing the arch string.
 
 | Format / capability | Supported | Where | Limits |
 |---|:---:|---|---|
-| **safetensors (single file)** | ✅ | `v17/loader/safetensors_reader.rs` | F32/BF16/F16; **no FP8**; whole file into RAM (no mmap) |
+| **safetensors (single file)** | ✅ | `v17/loader/safetensors_reader.rs` | F32/BF16/F16 **and FP8 (E4M3/E5M2, decoded to F32 — FP8-SAFETENSORS-1)**; whole file into RAM (no mmap) |
 | **safetensors (sharded, index.json)** | ✅ | `shard_index.rs` + `sharded_reader.rs` | Full `weight_map`, per-shard streaming; proven on 13B+ and 8-shard MoE |
 | **HF directory (config.json)** | ✅ | `gguf_config.rs` / adapters | Parses Llama-config + MoE metadata |
 | **GGUF (read)** | ✅ | `gguf_reader.rs` + `gguf_decode.rs` | F32/F16/Q8_0/Q5_0/Q5_K/Q6_K decode→F32; **Q4_K partial** |

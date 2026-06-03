@@ -450,8 +450,8 @@ pub fn run_capabilities(json: bool) -> i32 {
             generic_intake_opt_in: crate::model_adapters::compat::GENERIC_INTAKE_ENV.to_string(),
             formats: vec![
                 "GGUF".to_string(),
-                "safetensors".to_string(),
-                "PyTorch .bin (single-file pytorch_model.bin, transcoded)".to_string(),
+                "safetensors (F32 / F16 / BF16 / FP8 E4M3+E5M2 → decoded to F32)".to_string(),
+                "PyTorch .bin (single-file + sharded, transcoded)".to_string(),
             ],
             gguf_quants: SUPPORTED_QUANTS.iter().map(|s| s.to_string()).collect(),
             features: FEATURES.iter().map(|s| s.to_string()).collect(),
@@ -487,8 +487,9 @@ pub fn run_capabilities(json: bool) -> i32 {
             crate::model_adapters::compat::GENERIC_INTAKE_ENV
         ));
         out.push_str(
-            "\nWeight formats:\n  - GGUF\n  - safetensors\n  \
-             - PyTorch .bin (single-file pytorch_model.bin, transcoded to safetensors)\n",
+            "\nWeight formats:\n  - GGUF\n  \
+             - safetensors (F32 / F16 / BF16 / FP8 E4M3+E5M2, decoded to F32)\n  \
+             - PyTorch .bin (single-file + sharded, transcoded to safetensors)\n",
         );
         out.push_str("\nGGUF quantisations:\n");
         for q in SUPPORTED_QUANTS {
