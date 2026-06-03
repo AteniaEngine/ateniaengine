@@ -261,11 +261,37 @@ pub fn write_or_reuse(
     Ok(())
 }
 
-/// **NUMERIC-POLICY-2** — whether to simulate the int8 expert tier numerically
-/// (`ATENIA_MOE_QUANT_SIM=int8`), cached. Used to certify int8 cheaply before
-/// building the real byte-reducing tier.
+/// **NUMERIC-POLICY-2/3** — whether to simulate the int8 expert tier numerically
+/// (quantise→dequantise the resolved weights per-row). Source order:
+/// **in-process override** (set by the certification runner, NUMERIC-POLICY-3) →
+/// else the cached env `ATENIA_MOE_QUANT_SIM=int8`. The override lets the cert
+/// runner toggle the int8 effect per case on one loaded (bf16) model.
+const QSIM_UNSET: u8 = u8::MAX;
+static QUANT_SIM_OVERRIDE: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(QSIM_UNSET);
+
+/// **NUMERIC-POLICY-3** — force the int8 sim on/off in-process (`Some(true/false)`)
+/// or clear the override (`None` → fall back to the env).
+pub fn set_quant_sim_int8_override(v: Option<bool>) {
+    use std::sync::atomic::Ordering;
+    QUANT_SIM_OVERRIDE.store(
+        match v {
+            Some(true) => 1,
+            Some(false) => 0,
+            None => QSIM_UNSET,
+        },
+        Ordering::Relaxed,
+    );
+}
+
 fn quant_sim_int8() -> bool {
+    use std::sync::atomic::Ordering;
     use std::sync::OnceLock;
+    match QUANT_SIM_OVERRIDE.load(Ordering::Relaxed) {
+        1 => return true,
+        0 => return false,
+        _ => {}
+    }
     static SIM: OnceLock<bool> = OnceLock::new();
     *SIM.get_or_init(|| std::env::var("ATENIA_MOE_QUANT_SIM").as_deref() == Ok("int8"))
 }

@@ -416,6 +416,7 @@ fn try_warm_reconstruct(
         eos_token_ids: eos_token_ids.to_vec(),
         residency,
         caches,
+        model_id: model_id.to_string(),
     })
 }
 
@@ -445,6 +446,89 @@ fn expert_tier_fmt(allow_bf16: bool) -> super::residency::TierFmt {
         _ if allow_bf16 => TierFmt::Bf16Auto,
         _ => TierFmt::F32,
     }
+}
+
+/// **NUMERIC-POLICY-3** — the requested expert tier dtype as a certificate key.
+fn requested_tier_dtype_str() -> &'static str {
+    use super::residency::TierFmt;
+    match expert_tier_fmt(tier_bf16_from_env()) {
+        TierFmt::QInt8 => "qint8",
+        TierFmt::Bf16Auto => "bf16",
+        TierFmt::F32 => "f32",
+    }
+}
+
+/// **NUMERIC-POLICY-3 guard.** Enforced only under `ATENIA_NUMERIC_REQUIRE_CERT=1`
+/// (default off → unchanged). A **lossy (qint8) tier** without a valid passing
+/// certificate for the requested compute policy is **refused** (a tier is baked
+/// on disk and cannot be downgraded at run time). On a **lossless (bf16/f32)
+/// tier**, a non-`Certified` compute policy without a valid cert **falls back to
+/// `Certified`** (runtime-switchable). The effective mode is logged.
+fn apply_certification_guard(model_id: &str) -> Result<(), MoeRuntimeError> {
+    use super::cert;
+    use super::numeric_policy::{numeric_policy, set_numeric_policy, NumericPolicy};
+
+    let requested = numeric_policy();
+    let tier_dtype = requested_tier_dtype_str();
+    let dbg = std::env::var("ATENIA_MOE_CACHE_STATS").as_deref() == Ok("1");
+
+    if !cert::require_cert() {
+        if dbg {
+            eprintln!(
+                "[ATENIA] numeric mode: {}",
+                cert::numeric_mode_descriptor(requested, tier_dtype, "ungoverned")
+            );
+        }
+        return Ok(());
+    }
+
+    let dir = tier_base_dir().join("moe_tier").join(model_id);
+    let valid_for = |policy: NumericPolicy| -> bool {
+        cert::load_certificate(&cert::certificate_path(&dir, policy, tier_dtype))
+            .map(|c| {
+                c.is_valid_for(
+                    model_id,
+                    policy,
+                    tier_dtype,
+                    TIER_MANIFEST_VERSION,
+                    cert::VALIDATION_SET_ID,
+                )
+            })
+            .unwrap_or(false)
+    };
+
+    let (effective, status) = if tier_dtype == "qint8" {
+        // Lossy tier: cannot be downgraded at run time → require a cert or refuse.
+        if valid_for(requested) {
+            (requested, "valid")
+        } else {
+            return Err(MoeRuntimeError::Load(format!(
+                "NUMERIC_REQUIRE_CERT: quantised tier 'qint8' has no valid certificate for policy \
+                 '{}' (model {model_id}). Generate one (numeric certification) or unset \
+                 ATENIA_NUMERIC_REQUIRE_CERT.",
+                requested.as_str()
+            )));
+        }
+    } else {
+        // Lossless tier: fall back the compute policy to Certified if uncertified.
+        let eff = cert::governed_compute_policy(requested, true, valid_for(requested));
+        if eff != requested {
+            set_numeric_policy(eff);
+            (eff, "uncertified->certified")
+        } else if requested == NumericPolicy::Certified {
+            (eff, "certified")
+        } else {
+            (eff, "valid")
+        }
+    };
+
+    if dbg {
+        eprintln!(
+            "[ATENIA] numeric mode: {}",
+            cert::numeric_mode_descriptor(effective, tier_dtype, status)
+        );
+    }
+    Ok(())
 }
 
 fn expert_cache_capacity_from_env(num_experts: usize, experts_per_token: usize) -> usize {
@@ -628,9 +712,18 @@ pub struct MoeRuntime {
     residency: Vec<Arc<ResidentExpertLayer>>,
     /// Per-layer expert LRU cache (MOE-FULL-9), available to the runtime.
     caches: Vec<ExpertCache>,
+    /// **NUMERIC-POLICY-3** — the per-checkpoint tier model id (config + source
+    /// signature hash). Used to key the numeric certificate. Empty for
+    /// non-persistent/ephemeral loads where no tier id was computed.
+    model_id: String,
 }
 
 impl MoeRuntime {
+    /// **NUMERIC-POLICY-3** — the per-checkpoint tier model id (for the cert key).
+    pub fn model_id(&self) -> &str {
+        &self.model_id
+    }
+
     /// Load a controlled MoE runtime from a HF `config.json` and a safetensors
     /// weights file. **Refuses unless `ATENIA_EXPERIMENTAL_MOE=1`.** Enables
     /// **Mixtral** and **Qwen-MoE**; refuses DeepSeek-MoE (MLA) and dense.
@@ -700,6 +793,16 @@ impl MoeRuntime {
         // shard data), so this decision itself does not open the shards. Any
         // doubt → `None` → fall through to the certified shard path below.
         let model_id = compute_model_id(config_text, &source.identity_signature());
+
+        // **NUMERIC-POLICY-3 — certification guard.** Under
+        // `ATENIA_NUMERIC_REQUIRE_CERT=1`, a non-`Certified` compute policy or a
+        // quantised tier is only honoured if a **valid passing certificate**
+        // exists for (model_id, policy, tier dtype). Otherwise: the compute
+        // policy falls back to `Certified` (runtime-switchable, free); a
+        // quantised tier without a cert is **refused** (it is baked on disk and
+        // cannot be downgraded at run time). Default (flag off) → unchanged.
+        apply_certification_guard(&model_id)?;
+
         if tier_persist_enabled() && expert_tier_from_env() == ExpertTier::Disk {
             let cache_capacity = expert_cache_capacity_from_env(n_experts, topk);
             let dir = tier_base_dir().join("moe_tier").join(&model_id);
@@ -918,7 +1021,15 @@ impl MoeRuntime {
             }
         };
 
-        Ok(Self { family, backend, num_layers: n_layers, eos_token_ids, residency, caches })
+        Ok(Self {
+            family,
+            backend,
+            num_layers: n_layers,
+            eos_token_ids,
+            residency,
+            caches,
+            model_id,
+        })
     }
 
     /// Self-check that the residency+cache path reproduces the certified MoE
@@ -1007,6 +1118,27 @@ impl MoeRuntime {
         }
     }
 
+    /// **NUMERIC-POLICY-3** — like [`Self::generate`] but returns the full
+    /// [`GreedyGeneration`] (tokens + per-step logits), so the certification
+    /// runner can compare both token ids and logit drift against the Certified
+    /// reference. Graph families only; MLA/DeepSeek returns tokens + no logits
+    /// (it is outside the numeric-policy scope today).
+    pub fn generate_full(
+        &self,
+        prompt: &[u32],
+        max_new_tokens: usize,
+    ) -> super::generate::GreedyGeneration {
+        match &self.backend {
+            Backend::Graph(w) => {
+                generate_greedy_tiny_eos(w, prompt, max_new_tokens, &self.eos_token_ids)
+            }
+            Backend::Mla(w) => super::generate::GreedyGeneration {
+                tokens: w.generate_greedy_eos(prompt, max_new_tokens, &self.eos_token_ids),
+                step_logits: Vec::new(),
+            },
+        }
+    }
+
     /// Full-sequence forward logits `[seq * vocab]` for `tokens`. Exposed so
     /// callers can validate end-to-end HF parity through the productive runtime
     /// (graph for Mixtral/Qwen; imperative MLA prefill for DeepSeek).
@@ -1028,6 +1160,33 @@ impl MoeRuntime {
             Backend::Mla(w) => w.forward_prefill(tokens).0,
         }
     }
+}
+
+/// **NUMERIC-POLICY-3** — generate + persist a [`cert::NumericCertificate`] for
+/// running `dir` with (`policy`, `tier_dtype`). Loads the model **losslessly**
+/// (the caller must not request a quantised tier for this load — the int8 effect
+/// is modelled by the sim inside [`cert::run_certification`], so the reference
+/// stays true Certified), runs the validation set under Certified vs the
+/// candidate, and writes the certificate next to the tier manifest. Returns the
+/// certificate + its path.
+pub fn certify_model(
+    dir: &Path,
+    policy: super::numeric_policy::NumericPolicy,
+    tier_dtype: &str,
+) -> Result<(super::cert::NumericCertificate, std::path::PathBuf), MoeRuntimeError> {
+    let rt = MoeRuntime::load_from_dir(dir)?;
+    let model_id = rt.model_id().to_string();
+    if model_id.is_empty() {
+        return Err(MoeRuntimeError::Load(
+            "certify: no tier model_id was computed for this load".into(),
+        ));
+    }
+    let cert = super::cert::run_certification(&rt, &model_id, policy, tier_dtype, TIER_MANIFEST_VERSION);
+    let cdir = tier_base_dir().join("moe_tier").join(&model_id);
+    let path = super::cert::certificate_path(&cdir, policy, tier_dtype);
+    super::cert::save_certificate(&cert, &path)
+        .map_err(|e| MoeRuntimeError::Load(format!("save certificate: {e}")))?;
+    Ok((cert, path))
 }
 
 /// Build the graph (Mixtral/Qwen) backend weights from the reader.

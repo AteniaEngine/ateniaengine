@@ -288,6 +288,21 @@ locked by regression tests.
   certified; cold 1942 → 1543 s. int4 deferred (sim-certify first, never on
   intuition). `Strict` stays the fast default; `Certified` the reference. See
   [HANDOFF_NUMERIC_POLICY_2.md](./HANDOFF_NUMERIC_POLICY_2.md).
+- **NUMERIC-POLICY-3 — certification governance.** Closes the audit's #1 gap
+  (certification was manual/offline/unpersisted). Adds a persisted
+  **`NumericCertificate`** (JSON, per model × policy × tier dtype: expected vs
+  observed tokens, argmax/tokens match, drift, manifest/code/cert/prompt-set
+  versions, pass/fail), an offline **validation prompt set** (6 deterministic
+  greedy cases, ids `0..=9`), a **runner** (`atenia moe-certify` / `certify_model`
+  — Certified-vs-candidate on one lossless load via policy toggle + int8 sim), a
+  **loader/validator** (`is_valid_for`: every field + pass), and a **runtime
+  guard** (`ATENIA_NUMERIC_REQUIRE_CERT=1`): a **lossy (int8) tier without a valid
+  cert is refused**, a non-Certified compute policy on a **lossless tier without a
+  cert falls back to `Certified`**; the effective mode is logged
+  (`numeric mode: policy=… tier=… cert=…`). **Default off → unchanged opt-in;
+  `Certified` default + bit-exact path untouched.** Tests: cert units + governance
+  integration (certify → refuse-uncertified → allow-with-cert) + full regression
+  green. See [HANDOFF_NUMERIC_POLICY_3.md](./HANDOFF_NUMERIC_POLICY_3.md).
 - **Loaders.** Single-file and sharded HuggingFace safetensors; GGUF
   (F16 / Q8_0 / Q4_K_M / Q5_K / Q6_K). BF16 parameter storage (50 % RAM saving),
   BF16 KV cache (default on), RAM↔NVMe spill with chunked streaming.

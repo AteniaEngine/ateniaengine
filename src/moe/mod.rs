@@ -18,6 +18,8 @@
 //! See `docs/MOE_CERTIFICATION_SUBSTRATE.md` for the full analysis.
 
 pub mod binding;
+/// **NUMERIC-POLICY-3** — persisted numeric certificate + validation set + guard.
+pub mod cert;
 pub mod convention;
 pub mod data_plane;
 pub mod decoder_layer;

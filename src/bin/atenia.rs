@@ -218,6 +218,17 @@ enum Command {
     /// ```
     MoeGenerate(MoeGenerateArgs),
 
+    /// **NUMERIC-POLICY-3** — generate + persist a numeric certificate for a
+    /// non-Certified MoE mode (compute policy + expert tier dtype), comparing it
+    /// against the Certified f64 reference on a fixed validation prompt set.
+    /// Writes `numeric_cert_<policy>_<tier>.json` next to the tier manifest. A
+    /// passing certificate lets `ATENIA_NUMERIC_REQUIRE_CERT=1` trust that mode.
+    ///
+    /// ```text
+    /// atenia moe-certify --model models/qwen-moe --policy strict --tier qint8 --experimental-moe
+    /// ```
+    MoeCertify(MoeCertifyArgs),
+
     /// **Adapter Toolkit v2** — parse a declarative adapter DSL
     /// file (`.yaml` / `.json`), validate it, build the v2
     /// adapter, and print a summary. Does **not** run generation.
@@ -501,6 +512,23 @@ struct MoeGenerateArgs {
     experimental_moe: bool,
 }
 
+/// Arguments for `moe-certify` — NUMERIC-POLICY-3 certificate generation.
+#[derive(clap::Args)]
+struct MoeCertifyArgs {
+    /// Path to the MoE model directory.
+    #[arg(long)]
+    model: PathBuf,
+    /// Compute policy to certify: `certified` | `strict` | `fast`.
+    #[arg(long, default_value = "strict")]
+    policy: String,
+    /// Expert tier dtype to certify: `bf16` | `qint8`.
+    #[arg(long, default_value = "qint8")]
+    tier: String,
+    /// Opt in to the controlled MoE runtime.
+    #[arg(long)]
+    experimental_moe: bool,
+}
+
 /// Arguments for `download` — curated model fetcher.
 #[derive(clap::Args)]
 struct DownloadArgs {
@@ -681,6 +709,7 @@ fn main() {
         Command::Explain(args) => run_explain(args),
         Command::Generate(args) => run_generate(args),
         Command::MoeGenerate(args) => run_moe_generate(args),
+        Command::MoeCertify(args) => run_moe_certify(args),
         Command::Load(args) => run_adapter_load(&args.file, false),
         Command::Debug(args) => run_adapter_load(&args.file, true),
         Command::Inspect(args) => run_adapter_inspect(&args.model_dir),
@@ -861,6 +890,56 @@ fn run_moe_generate(args: MoeGenerateArgs) -> i32 {
         Err(e) => {
             // Clear, actionable message; exit 2 (the CLI's "input/usage" code).
             eprintln!("{e}");
+            2
+        }
+    }
+}
+
+/// **NUMERIC-POLICY-3** — `atenia moe-certify`: generate + persist a numeric
+/// certificate for (policy, tier dtype) vs the Certified reference.
+fn run_moe_certify(args: MoeCertifyArgs) -> i32 {
+    logging::info("command start: moe-certify");
+    use atenia_engine::moe::numeric_policy::NumericPolicy;
+    if args.experimental_moe {
+        // SAFETY: single-threaded CLI startup.
+        unsafe { std::env::set_var(atenia_engine::moe::ENABLE_MOE_ENV, "1") };
+    }
+    // The certificate load must be LOSSLESS (true Certified reference); the
+    // candidate's tier dtype is modelled by the sim, not the load. Ensure the
+    // load is not itself quantised and the guard does not interfere.
+    unsafe {
+        std::env::remove_var("ATENIA_MOE_TIER_QUANT");
+        std::env::remove_var("ATENIA_NUMERIC_REQUIRE_CERT");
+    }
+    let policy = match args.policy.trim().to_ascii_lowercase().as_str() {
+        "certified" | "f64" => NumericPolicy::Certified,
+        "strict" | "f32" => NumericPolicy::Strict,
+        "fast" => NumericPolicy::Fast,
+        other => {
+            eprintln!("error: --policy must be certified|strict|fast (got '{other}')");
+            return 2;
+        }
+    };
+    let tier = args.tier.trim().to_ascii_lowercase();
+    if tier != "bf16" && tier != "qint8" && tier != "f32" {
+        eprintln!("error: --tier must be bf16|qint8 (got '{tier}')");
+        return 2;
+    }
+    match atenia_engine::moe::runtime::certify_model(&args.model, policy, &tier) {
+        Ok((cert, path)) => {
+            println!(
+                "numeric certificate: policy={} tier={} pass={} worst_max_abs_diff={:.4} cases={}",
+                policy.as_str(),
+                tier,
+                cert.pass,
+                cert.worst_max_abs_diff,
+                cert.cases.len(),
+            );
+            println!("saved: {}", path.display());
+            if cert.pass { 0 } else { 1 }
+        }
+        Err(e) => {
+            eprintln!("certification failed: {e}");
             2
         }
     }
