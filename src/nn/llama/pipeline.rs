@@ -649,6 +649,44 @@ impl GenerationPipeline {
         let index_path = model_dir.join("model.safetensors.index.json");
         let single_path = model_dir.join("model.safetensors");
 
+        // **FORMAT-INTAKE-1** — PyTorch `.bin` intake. Only when neither GGUF
+        // nor safetensors is present (safetensors is always preferred — it is
+        // the native, faster, lossless path) do we look for a `torch.save`
+        // checkpoint. A single `pytorch_model.bin` is transcoded to an
+        // in-memory safetensors buffer and flows through the existing
+        // single-file branch unchanged. Sharded `.bin` is refused loudly (no
+        // silent fallback): the user is told to convert to safetensors.
+        let bin_reader: Option<SafetensorsReader> =
+            if !is_gguf && !single_path.exists() && !index_path.exists() {
+                let bin_single = model_dir.join("pytorch_model.bin");
+                let bin_index = model_dir.join("pytorch_model.bin.index.json");
+                if bin_index.exists() {
+                    return Err(PipelineError::Loader(LoaderError::InvalidFormat(format!(
+                        "sharded PyTorch checkpoint detected ({}) — FORMAT-INTAKE-1 supports a \
+                         single-file pytorch_model.bin only. Convert to safetensors (e.g. \
+                         `python -m safetensors.torch` / `transformers` save_pretrained with \
+                         safe_serialization=True).",
+                        bin_index.display()
+                    ))));
+                }
+                if bin_single.exists() {
+                    let bytes = std::fs::read(&bin_single).map_err(PipelineError::Io)?;
+                    let st = crate::v17::loader::pytorch_bin::transcode_bin_to_safetensors(&bytes)
+                        .map_err(PipelineError::Loader)?;
+                    eprintln!(
+                        "[ATENIA] format: PyTorch .bin intake — transcoded {} → in-memory \
+                         safetensors ({} bytes).",
+                        bin_single.display(),
+                        st.len()
+                    );
+                    Some(SafetensorsReader::from_bytes(st).map_err(PipelineError::Loader)?)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
         // **M6 replan sub-fase 3** — tier-aware loader (now default).
         //
         // Originally introduced as opt-in via `ATENIA_TIER_AWARE_LOADER=1`
@@ -877,8 +915,11 @@ impl GenerationPipeline {
                     &param_names,
                 )?;
                 store = s;
-            } else if single_path.exists() {
-                let reader = SafetensorsReader::open(&single_path)?;
+            } else if single_path.exists() || bin_reader.is_some() {
+                let reader = match bin_reader {
+                    Some(r) => r,
+                    None => SafetensorsReader::open(&single_path)?,
+                };
                 let metas: Vec<crate::gpu::tier_plan::TensorMeta> = reader
                     .iter()
                     .map(|e| crate::gpu::tier_plan::TensorMeta {
@@ -926,7 +967,7 @@ impl GenerationPipeline {
                 store = s;
             } else {
                 return Err(PipelineError::MissingFile(format!(
-                    "{} or {} or a single .gguf file",
+                    "{} or {} or a single pytorch_model.bin or a single .gguf file",
                     single_path.display(),
                     index_path.display()
                 )));
@@ -952,12 +993,15 @@ impl GenerationPipeline {
             } else if index_path.exists() {
                 let sharded = ShardedSafetensorsReader::open(&index_path)?;
                 let _report = sharded.load_into(&mut scratch_graph, &mapper)?;
-            } else if single_path.exists() {
-                let reader = SafetensorsReader::open(&single_path)?;
+            } else if single_path.exists() || bin_reader.is_some() {
+                let reader = match bin_reader {
+                    Some(r) => r,
+                    None => SafetensorsReader::open(&single_path)?,
+                };
                 let _report = mapper.load_into(&mut scratch_graph, &reader)?;
             } else {
                 return Err(PipelineError::MissingFile(format!(
-                    "{} or {}",
+                    "{} or {} or a single pytorch_model.bin",
                     single_path.display(),
                     index_path.display()
                 )));

@@ -141,7 +141,7 @@ RoPE scaling or norm placement) without changing the arch string.
 | **safetensors (sharded, index.json)** | ✅ | `shard_index.rs` + `sharded_reader.rs` | Full `weight_map`, per-shard streaming; proven on 13B+ and 8-shard MoE |
 | **HF directory (config.json)** | ✅ | `gguf_config.rs` / adapters | Parses Llama-config + MoE metadata |
 | **GGUF (read)** | ✅ | `gguf_reader.rs` + `gguf_decode.rs` | F32/F16/Q8_0/Q5_0/Q5_K/Q6_K decode→F32; **Q4_K partial** |
-| **PyTorch `.bin` / `.pth`** | ❌ | — | Not implemented (user must convert to safetensors) |
+| **PyTorch `.bin`** (single-file) | ✅ | `v17/loader/pytorch_bin.rs` | **FORMAT-INTAKE-1** — `torch.save` ZIP+pickle transcoded to safetensors; contiguous F32/F16/BF16; sharded `.bin` + `.pth` still pending |
 | **GPTQ / AWQ pre-quant** | ⚠️ Experimental | `src/quant/*` | CPU reconstruction→F32 only; **not on the load path** |
 | **bitsandbytes / FP8** | ❌ | — | No reader |
 | **Dense** | ✅ | core | The mature path |

@@ -338,8 +338,25 @@ locked by regression tests.
   build-time free RAM here was 12.7 GiB). Certified families remain **Llama +
   Qwen2**; Phi-3 / Gemma are *certification-infrastructure-ready, evidence-pending*.
   See [HANDOFF_CERTIFY_BREADTH_1.md](./HANDOFF_CERTIFY_BREADTH_1.md).
+- **FORMAT-INTAKE-1 — PyTorch `.bin` intake.** Closes the coverage audit's #2
+  gap (otherwise-supported checkpoints unloadable purely because they ship as
+  `pytorch_model.bin`). A new `src/v17/loader/pytorch_bin.rs` **transcodes** a
+  single-file `torch.save` `.bin` (ZIP + restricted pickle) into an in-memory
+  safetensors buffer consumed by the existing `SafetensorsReader::from_bytes` —
+  so the weight mapper, **adapter layer**, transforms and tier planning are
+  reused **unchanged**. Hand-rolled STORED-zip reader + a **restricted**
+  unpickler (whitelist of `OrderedDict` / `_rebuild_tensor_v2` /
+  `_rebuild_parameter` / `torch.{Float,Half,BFloat16}Storage` — any other
+  global/opcode is a hard error, never executed). Detection slots **after**
+  GGUF/safetensors (safetensors always preferred); **sharded `.bin` and every
+  unsupported shape fail loud** (no silent fallback). Proven **byte-identical**
+  to a torch-saved reference (CI round-trip) and **end-to-end identical greedy
+  text** to safetensors on a real SmolLM2-135M (`.bin` ↔ safetensors). Limits:
+  single-file, contiguous F32/F16/BF16 only. `atenia capabilities` lists `.bin`.
+  See [HANDOFF_FORMAT_INTAKE_1.md](./HANDOFF_FORMAT_INTAKE_1.md).
 - **Loaders.** Single-file and sharded HuggingFace safetensors; GGUF
-  (F16 / Q8_0 / Q4_K_M / Q5_K / Q6_K). BF16 parameter storage (50 % RAM saving),
+  (F16 / Q8_0 / Q4_K_M / Q5_K / Q6_K); single-file PyTorch `.bin` (transcoded).
+  BF16 parameter storage (50 % RAM saving),
   BF16 KV cache (default on), RAM↔NVMe spill with chunked streaming.
 - **Adapter layer.** Llama / Qwen 2 / Qwen 3 / Mistral / Phi-3 / Gemma 2 /
   Gemma 3 (text) family logic lives in `src/model_adapters/`; the
