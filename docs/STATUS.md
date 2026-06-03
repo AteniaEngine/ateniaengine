@@ -338,6 +338,15 @@ locked by regression tests.
   build-time free RAM here was 12.7 GiB). Certified families remain **Llama +
   Qwen2**; Phi-3 / Gemma are *certification-infrastructure-ready, evidence-pending*.
   See [HANDOFF_CERTIFY_BREADTH_1.md](./HANDOFF_CERTIFY_BREADTH_1.md).
+- **CERTIFY-BREADTH-2 (Gemma-3-1B) — first evidence landed.** Ran the committed
+  harness on **Gemma-3-1B-IT**: Atenia CPU-F32 vs a freshly-generated PyTorch-F64
+  reference on `[1,100,200,300]` → **max_abs_diff = 0.001249** (≈400× inside the
+  0.5 ADR-004 gate), **argmax 4/4**. `docs/numcert/gemma-3-1b-it.numcert.json` now
+  carries the measured numbers (was null) + the committed f64 fixture
+  (`tests/fixtures/gemma3_1b_reference/`). **Gemma 3 → CERTIFIED (CPU-F32, ADR-004
+  primary metric)**; the GPU-TF32 production-kernel number is a separate pending
+  field. Certified families: **Llama, Qwen2, Gemma 3 (CPU-F32)**. Gemma-2-2B
+  (needs ~21 GiB RAM) and Phi-3.5 (~30 GiB) remain evidence-pending.
 - **FORMAT-INTAKE-1 — PyTorch `.bin` intake.** Closes the coverage audit's #2
   gap (otherwise-supported checkpoints unloadable purely because they ship as
   `pytorch_model.bin`). A new `src/v17/loader/pytorch_bin.rs` **transcodes** a

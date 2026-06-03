@@ -4,12 +4,12 @@
   "model": "Gemma-3-1B-IT",
   "model_family": "gemma3",
   "model_path_hint": "models/gemma-3-1b-it/model.safetensors",
-  "atenia_version": "0.x-CERTIFY-BREADTH-1",
-  "f64_fixture_version": "pending — fixture not yet generated (see f64_certification_status)",
+  "atenia_version": "0.x-CERTIFY-BREADTH-2",
+  "f64_fixture_version": "gemma3-1b-v1 (tests/fixtures/gemma3_1b_reference/expected_logits_f64.json)",
   "f64_fixture_test": "tests/certify_breadth_f64_validation_test.rs::gemma3_1b_atenia_f32_matches_f64",
-  "f64_certification_status": "INFRASTRUCTURE READY, EVIDENCE PENDING (CERTIFY-BREADTH-1). Gemma-3-1B is the SMALLEST of the three targets and the only one whose F64 reference (~8 GiB peak) fits a typical 16 GiB box, so it is the recommended first model to actually certify. To fill the null drift below: (1) `python tests/fixtures/generate_f64_reference.py models/gemma-3-1b-it tests/fixtures/gemma3_1b_reference`; (2) `GEMMA3_1B_DIR=models/gemma-3-1b-it cargo test --test certify_breadth_f64_validation_test --release -- --ignored gemma3_1b_atenia_f32_matches_f64 --nocapture`; (3) transcribe the printed max_abs_diff + argmax into certified_mode below. NO number is recorded until that run produces it. Caveat: Gemma 3 alternates local-sliding-window (window 512) and global attention layers; the text builder ships full causal attention, which is mathematically equivalent only for contexts shorter than the window — the 4-token fixture is well within it, but longer-context drift is a separate follow-up.",
-  "generated_at": "pending",
-  "generated_on": "pending",
+  "f64_certification_status": "CERTIFIED (CPU-F32, ADR-004 primary metric) — CERTIFY-BREADTH-2. Atenia's CPU F32 forward vs a PyTorch F64 reference on the canonical 4-token sequence [1,100,200,300]: max_abs_diff_vs_f64 = 0.001249 (threshold 0.5, ~400x margin), per-position argmax match 4/4. Reproduce: (1) `python tests/fixtures/generate_f64_reference.py models/gemma-3-1b-it tests/fixtures/gemma3_1b_reference`; (2) `GEMMA3_1B_DIR=models/gemma-3-1b-it cargo test --test certify_breadth_f64_validation_test --release -- --ignored gemma3_1b_atenia_f32_matches_f64 --nocapture`. NOTE: this certifies the CPU-F32 graph-execution path (the same ADR-004 primary metric the Llama/Qwen M4.6 CPU tests use). The GPU-TF32 production kernel number (cuda_matmul_bf16_inplace) is a SEPARATE field still pending a CUDA run. Caveat: Gemma 3 alternates local-sliding-window (window 512) and global attention; the text builder ships full causal attention, mathematically equivalent only for contexts shorter than the window — the 4-token fixture is well within it, so long-context drift is a separate follow-up.",
+  "generated_at": "2026-06-03",
+  "generated_on": "F64 reference: PyTorch 2.5.1+cpu / transformers 5.6.2, Windows 11 (CPU). Atenia: CPU F32 forward (mmap loader), RTX 4070 Laptop host, 32 GB RAM.",
 
   "config_summary": {
     "architectures": "Gemma3ForCausalLM",
@@ -30,16 +30,17 @@
     "tie_word_embeddings": true,
     "eos_token_id": [1, 106]
   },
-  "config_compatibility_notes": "Gemma 3 (text) extends the Gemma 2 deltas with per-head QK-Norm and dual-RoPE (global layers use rope_theta=1e6, local sliding-window layers use rope_local_base_freq=1e4, period sliding_window_pattern=6). The Gemma3ForCausalLM text path is validated functionally (MODEL_FAMILY_VALIDATION.md); this manifest wires the numeric-certification slot, which is EVIDENCE PENDING.",
+  "config_compatibility_notes": "Gemma 3 (text) extends the Gemma 2 deltas with per-head QK-Norm and dual-RoPE (global layers use rope_theta=1e6, local sliding-window layers use rope_local_base_freq=1e4, period sliding_window_pattern=6). The Gemma3ForCausalLM text path is validated functionally (MODEL_FAMILY_VALIDATION.md) AND now numerically CERTIFIED on the CPU-F32 path vs PyTorch F64 (CERTIFY-BREADTH-2).",
 
   "drift_envelope": {
     "certified_mode": {
-      "max_abs_diff_vs_f64": null,
-      "argmax_match_4_of_4": null,
-      "adr_004_strict_pass": null,
+      "max_abs_diff_vs_f64": 0.001249,
+      "argmax_match_4_of_4": true,
+      "adr_004_strict_pass": true,
       "adr_004_threshold": 0.5,
-      "kernel_path": "CPU F32 graph execution (ADR-004 primary metric, via certify_breadth harness) and/or GPU TF32 (cuda_matmul_bf16_inplace) — both pending evidence",
-      "validation_notes": "No F64 reference generated yet. See f64_certification_status for the exact reproduction recipe. No number fabricated."
+      "adr_004_margin": 400.3,
+      "kernel_path": "CPU F32 graph execution (ADR-004 primary metric, via the certify_breadth harness — the same metric the Llama/Qwen M4.6 CPU tests use). The GPU-TF32 production kernel (cuda_matmul_bf16_inplace) number is NOT covered here; it needs a separate CUDA run.",
+      "validation_notes": "Measured CERTIFY-BREADTH-2 (2026-06-03): Atenia CPU F32 vs PyTorch F64 on tokens [1,100,200,300] — max_abs_diff_vs_f64 = 0.001249 (~400x inside the 0.5 gate), per-position argmax match 4/4 (F64 argmax ids 161596 / 26503 / 240960 / 206500). No mean/rmse recorded — the harness reports max_abs_diff + argmax only; no number fabricated."
     },
     "fast_mode": {
       "max_abs_diff_vs_f64": null,
@@ -52,13 +53,15 @@
   },
 
   "recommended_mode": "certified",
-  "recommended_mode_rationale": "Conservative default while the F64 evidence is pending — certified mode (the reference numeric path) until a real drift number is recorded.",
+  "recommended_mode_rationale": "Certified mode is the measured, ADR-004-passing CPU-F32 path (max_abs_diff 0.001249 vs F64). Fast mode (GPU-TF32 / BF16-TC) drift is still uncharacterised for Gemma 3, so certified remains the recommended default.",
 
   "per_tensor_policy": null,
-  "per_tensor_policy_status": "Reserved — no per-tensor fast routing claimed until the whole-model F64 drift is measured.",
+  "per_tensor_policy_status": "Reserved — fast-mode (GPU) drift is not yet characterised for Gemma 3, so no per-tensor fast routing is claimed.",
 
   "verification": {
-    "command": "see f64_certification_status",
-    "note": "EVIDENCE PENDING — this manifest wires the certification slot; it does not yet claim a measured drift envelope."
+    "command": "GEMMA3_1B_DIR=models/gemma-3-1b-it cargo test --test certify_breadth_f64_validation_test --release -- --ignored gemma3_1b_atenia_f32_matches_f64 --nocapture",
+    "f64_reference": "python tests/fixtures/generate_f64_reference.py models/gemma-3-1b-it tests/fixtures/gemma3_1b_reference",
+    "expected": "max_abs_diff vs F64 = 0.001249 (< 0.5), per-position argmax match 4/4 (CPU-F32 / ADR-004 primary metric).",
+    "note": "Certifies the CPU-F32 graph path. The GPU-TF32 production kernel number is a separate, still-pending field."
   }
 }
