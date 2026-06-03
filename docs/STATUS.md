@@ -354,8 +354,21 @@ locked by regression tests.
   text** to safetensors on a real SmolLM2-135M (`.bin` ↔ safetensors). Limits:
   single-file, contiguous F32/F16/BF16 only. `atenia capabilities` lists `.bin`.
   See [HANDOFF_FORMAT_INTAKE_1.md](./HANDOFF_FORMAT_INTAKE_1.md).
+- **FORMAT-INTAKE-2 — sharded PyTorch `.bin`.** Extends FORMAT-INTAKE-1 to
+  multi-file `pytorch_model-0000k-of-000NN.bin` + `pytorch_model.bin.index.json`.
+  Reuses the existing `ShardIndex` parser (the `.bin` index schema is identical
+  to the safetensors one) and the FI-1 per-shard transcode: each shard is
+  transcoded and **assembled into one in-memory safetensors buffer** that flows
+  through the unchanged adapter/mapper/pipeline. **Fail-loud consistency** —
+  missing shard, duplicate tensor across shards, weight_map ghost tensor,
+  undeclared shard tensor, malformed weight_map all error (no silent fallback).
+  Proven **byte-identical** to an assembled reference (CI) and **end-to-end
+  identical greedy text** to safetensors on a real **2-shard** SmolLM2-135M. All
+  single- and multi-file `.bin` checkpoints of supported families now load with
+  no external conversion. See [HANDOFF_FORMAT_INTAKE_2.md](./HANDOFF_FORMAT_INTAKE_2.md).
 - **Loaders.** Single-file and sharded HuggingFace safetensors; GGUF
-  (F16 / Q8_0 / Q4_K_M / Q5_K / Q6_K); single-file PyTorch `.bin` (transcoded).
+  (F16 / Q8_0 / Q4_K_M / Q5_K / Q6_K); single-file **and sharded** PyTorch `.bin`
+  (transcoded + assembled).
   BF16 parameter storage (50 % RAM saving),
   BF16 KV cache (default on), RAM↔NVMe spill with chunked streaming.
 - **Adapter layer.** Llama / Qwen 2 / Qwen 3 / Mistral / Phi-3 / Gemma 2 /

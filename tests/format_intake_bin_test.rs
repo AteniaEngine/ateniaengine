@@ -11,7 +11,9 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use atenia_engine::v17::loader::pytorch_bin::transcode_bin_to_safetensors;
+use atenia_engine::v17::loader::pytorch_bin::{
+    transcode_bin_to_safetensors, transcode_sharded_bin_to_safetensors,
+};
 use atenia_engine::v17::loader::safetensors_reader::SafetensorsReader;
 
 fn fixture(name: &str) -> PathBuf {
@@ -71,6 +73,130 @@ fn corrupt_bin_fails_loud() {
 fn non_bin_bytes_fail_loud() {
     let r = transcode_bin_to_safetensors(b"this is plainly not a pytorch checkpoint");
     assert!(r.is_err(), "non-zip bytes must be rejected with an error");
+}
+
+// ---------------------------------------------------------------------------
+// FORMAT-INTAKE-2 — sharded `.bin`
+// ---------------------------------------------------------------------------
+
+fn shard_fixture(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/pytorch_bin_sharded")
+        .join(name)
+}
+
+fn scratch_dir(label: &str) -> PathBuf {
+    let n = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let d = std::env::temp_dir().join(format!("atenia_fi2_{label}_{}_{n}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+const SHARD1: &str = "pytorch_model-00001-of-00002.bin";
+const SHARD2: &str = "pytorch_model-00002-of-00002.bin";
+
+#[test]
+fn sharded_bin_transcode_matches_reference() {
+    let index = shard_fixture("pytorch_model.bin.index.json");
+    let transcoded = transcode_sharded_bin_to_safetensors(&index).expect("transcode sharded .bin");
+    let from_bin = SafetensorsReader::from_bytes(transcoded).expect("read transcoded");
+
+    let reference = SafetensorsReader::open(&shard_fixture("assembled_reference.safetensors"))
+        .expect("read reference");
+
+    let a = collect(&from_bin);
+    let b = collect(&reference);
+    assert_eq!(
+        a.keys().collect::<Vec<_>>(),
+        b.keys().collect::<Vec<_>>(),
+        "assembled tensor set differs"
+    );
+    for (name, (shape_b, dtype_b, bytes_b)) in &b {
+        let (shape_a, dtype_a, bytes_a) = a.get(name).expect("present");
+        assert_eq!(shape_a, shape_b, "{name}: shape");
+        assert_eq!(dtype_a, dtype_b, "{name}: dtype");
+        assert_eq!(bytes_a, bytes_b, "{name}: bytes");
+    }
+    assert_eq!(a.len(), 4, "expected 4 assembled tensors");
+}
+
+#[test]
+fn sharded_missing_shard_fails_loud() {
+    let dir = scratch_dir("missing");
+    // Copy the index + only ONE of the two shards.
+    std::fs::copy(shard_fixture("pytorch_model.bin.index.json"), dir.join("pytorch_model.bin.index.json")).unwrap();
+    std::fs::copy(shard_fixture(SHARD1), dir.join(SHARD1)).unwrap();
+    let r = transcode_sharded_bin_to_safetensors(&dir.join("pytorch_model.bin.index.json"));
+    assert!(r.is_err(), "a missing shard must be rejected");
+    assert!(format!("{}", r.unwrap_err()).contains("cannot read shard"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn sharded_weight_map_declares_absent_tensor_fails_loud() {
+    let dir = scratch_dir("absent");
+    std::fs::copy(shard_fixture(SHARD1), dir.join(SHARD1)).unwrap();
+    std::fs::copy(shard_fixture(SHARD2), dir.join(SHARD2)).unwrap();
+    // Index that references a tensor no shard provides.
+    let bad = format!(
+        r#"{{"metadata":{{"total_size":0}},"weight_map":{{
+            "model.embed_tokens.weight":"{SHARD1}",
+            "model.layers.0.mlp.gate_proj.weight":"{SHARD1}",
+            "model.norm.weight":"{SHARD2}",
+            "lm_head.weight":"{SHARD2}",
+            "ghost.weight":"{SHARD2}"
+        }}}}"#
+    );
+    let idx = dir.join("pytorch_model.bin.index.json");
+    std::fs::write(&idx, bad).unwrap();
+    let r = transcode_sharded_bin_to_safetensors(&idx);
+    assert!(r.is_err(), "a weight_map ghost tensor must be rejected");
+    assert!(format!("{}", r.unwrap_err()).contains("absent from the shards"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn sharded_extra_tensor_not_in_weight_map_fails_loud() {
+    let dir = scratch_dir("extra");
+    std::fs::copy(shard_fixture(SHARD1), dir.join(SHARD1)).unwrap();
+    std::fs::copy(shard_fixture(SHARD2), dir.join(SHARD2)).unwrap();
+    // Index omits one real tensor (lm_head.weight) → it becomes "extra".
+    let bad = format!(
+        r#"{{"metadata":{{"total_size":0}},"weight_map":{{
+            "model.embed_tokens.weight":"{SHARD1}",
+            "model.layers.0.mlp.gate_proj.weight":"{SHARD1}",
+            "model.norm.weight":"{SHARD2}"
+        }}}}"#
+    );
+    let idx = dir.join("pytorch_model.bin.index.json");
+    std::fs::write(&idx, bad).unwrap();
+    let r = transcode_sharded_bin_to_safetensors(&idx);
+    assert!(r.is_err(), "an undeclared shard tensor must be rejected");
+    assert!(format!("{}", r.unwrap_err()).contains("not declared in weight_map"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn sharded_duplicate_tensor_across_shards_fails_loud() {
+    let dir = scratch_dir("dup");
+    // Use shard1 content for BOTH shard files → embed/gate appear twice.
+    std::fs::copy(shard_fixture(SHARD1), dir.join(SHARD1)).unwrap();
+    std::fs::copy(shard_fixture(SHARD1), dir.join(SHARD2)).unwrap();
+    let bad = format!(
+        r#"{{"metadata":{{"total_size":0}},"weight_map":{{
+            "model.embed_tokens.weight":"{SHARD1}",
+            "model.layers.0.mlp.gate_proj.weight":"{SHARD2}"
+        }}}}"#
+    );
+    let idx = dir.join("pytorch_model.bin.index.json");
+    std::fs::write(&idx, bad).unwrap();
+    let r = transcode_sharded_bin_to_safetensors(&idx);
+    assert!(r.is_err(), "a tensor in two shards must be rejected");
+    assert!(format!("{}", r.unwrap_err()).contains("more than one shard"));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // End-to-end: a real model loaded from `pytorch_model.bin` must generate the

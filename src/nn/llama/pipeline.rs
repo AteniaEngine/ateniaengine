@@ -661,15 +661,21 @@ impl GenerationPipeline {
                 let bin_single = model_dir.join("pytorch_model.bin");
                 let bin_index = model_dir.join("pytorch_model.bin.index.json");
                 if bin_index.exists() {
-                    return Err(PipelineError::Loader(LoaderError::InvalidFormat(format!(
-                        "sharded PyTorch checkpoint detected ({}) — FORMAT-INTAKE-1 supports a \
-                         single-file pytorch_model.bin only. Convert to safetensors (e.g. \
-                         `python -m safetensors.torch` / `transformers` save_pretrained with \
-                         safe_serialization=True).",
-                        bin_index.display()
-                    ))));
-                }
-                if bin_single.exists() {
+                    // **FORMAT-INTAKE-2** — sharded `.bin`: transcode + assemble
+                    // all shards into one in-memory safetensors buffer.
+                    let st =
+                        crate::v17::loader::pytorch_bin::transcode_sharded_bin_to_safetensors(
+                            &bin_index,
+                        )
+                        .map_err(PipelineError::Loader)?;
+                    eprintln!(
+                        "[ATENIA] format: PyTorch sharded .bin intake — assembled {} → \
+                         in-memory safetensors ({} bytes).",
+                        bin_index.display(),
+                        st.len()
+                    );
+                    Some(SafetensorsReader::from_bytes(st).map_err(PipelineError::Loader)?)
+                } else if bin_single.exists() {
                     let bytes = std::fs::read(&bin_single).map_err(PipelineError::Io)?;
                     let st = crate::v17::loader::pytorch_bin::transcode_bin_to_safetensors(&bytes)
                         .map_err(PipelineError::Loader)?;

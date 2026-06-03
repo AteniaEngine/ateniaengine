@@ -38,6 +38,7 @@
 //!   opcodes; nested/unexpected pickle structure.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use safetensors::tensor::TensorView;
 use safetensors::Dtype as StDtype;
@@ -599,13 +600,21 @@ fn dtype_size(d: StDtype) -> usize {
 }
 
 // ===========================================================================
-// Public entry point
+// Public entry points
 // ===========================================================================
 
-/// Transcode a `torch.save` `.bin` byte buffer into an equivalent **safetensors**
-/// byte buffer (consumable by `SafetensorsReader::from_bytes`). Fails loud on
-/// any structure outside the supported subset (see module docs).
-pub fn transcode_bin_to_safetensors(bin_bytes: &[u8]) -> Result<Vec<u8>, LoaderError> {
+/// One materialised tensor extracted from a `.bin`: name, safetensors dtype,
+/// shape, and the contiguous little-endian bytes.
+pub(crate) struct BinTensor {
+    pub name: String,
+    pub dtype: StDtype,
+    pub shape: Vec<usize>,
+    pub bytes: Vec<u8>,
+}
+
+/// Parse one `torch.save` `.bin` buffer into its materialised tensors. Fails
+/// loud on any structure outside the supported subset (see module docs).
+pub(crate) fn bin_to_tensors(bin_bytes: &[u8]) -> Result<Vec<BinTensor>, LoaderError> {
     let zip = Zip::parse(bin_bytes)?;
     let root = zip.find_pkl_root()?;
 
@@ -637,9 +646,7 @@ pub fn transcode_bin_to_safetensors(bin_bytes: &[u8]) -> Result<Vec<u8>, LoaderE
         return Err(err("pytorch .bin: state dict contains no tensors"));
     }
 
-    // Materialise each tensor's contiguous bytes, then serialize to safetensors.
-    // Hold owned byte buffers alive in `bufs` while the views borrow them.
-    let mut bufs: Vec<(String, StDtype, Vec<usize>, Vec<u8>)> = Vec::with_capacity(tensors.len());
+    let mut out: Vec<BinTensor> = Vec::with_capacity(tensors.len());
     for (name, spec) in tensors {
         let dsize = dtype_size(spec.storage.dtype);
         let numel: usize = spec.size.iter().product();
@@ -681,17 +688,97 @@ pub fn transcode_bin_to_safetensors(bin_bytes: &[u8]) -> Result<Vec<u8>, LoaderE
                 storage_bytes.len()
             )));
         }
-        bufs.push((name, spec.storage.dtype, spec.size, storage_bytes[..need].to_vec()));
+        out.push(BinTensor {
+            name,
+            dtype: spec.storage.dtype,
+            shape: spec.size,
+            bytes: storage_bytes[..need].to_vec(),
+        });
     }
+    Ok(out)
+}
 
+/// Serialize materialised tensors into a safetensors byte buffer.
+fn serialize_tensors(tensors: &[BinTensor]) -> Result<Vec<u8>, LoaderError> {
     let mut views: BTreeMap<String, TensorView> = BTreeMap::new();
-    for (name, dtype, shape, bytes) in &bufs {
-        let view = TensorView::new(*dtype, shape.clone(), bytes)
-            .map_err(|e| err(format!("pytorch .bin: building safetensors view for {name:?}: {e:?}")))?;
-        views.insert(name.clone(), view);
+    for t in tensors {
+        let view = TensorView::new(t.dtype, t.shape.clone(), &t.bytes).map_err(|e| {
+            err(format!(
+                "pytorch .bin: building safetensors view for {:?}: {e:?}",
+                t.name
+            ))
+        })?;
+        views.insert(t.name.clone(), view);
     }
     safetensors::serialize(&views, &None)
         .map_err(|e| err(format!("pytorch .bin: safetensors serialize failed: {e:?}")))
+}
+
+/// **FORMAT-INTAKE-1** — transcode a single-file `torch.save` `.bin` byte
+/// buffer into an equivalent **safetensors** byte buffer (consumable by
+/// `SafetensorsReader::from_bytes`).
+pub fn transcode_bin_to_safetensors(bin_bytes: &[u8]) -> Result<Vec<u8>, LoaderError> {
+    serialize_tensors(&bin_to_tensors(bin_bytes)?)
+}
+
+/// **FORMAT-INTAKE-2** — transcode a **sharded** PyTorch checkpoint
+/// (`pytorch_model.bin.index.json` + `pytorch_model-0000k-of-000NN.bin`) into a
+/// single in-memory safetensors buffer.
+///
+/// Reuses the FORMAT-INTAKE-1 per-shard transcode and the existing
+/// [`super::shard_index::ShardIndex`] parser (same JSON schema as the
+/// safetensors index). Every shard is transcoded and its tensors assembled into
+/// one logical reader. **Fail-loud consistency** (no silent fallback):
+/// - missing / unreadable shard file → error;
+/// - the same tensor name in more than one shard → error;
+/// - a tensor declared in `weight_map` but absent from the shards → error;
+/// - a tensor present in the shards but not declared in `weight_map` → error;
+/// - malformed / empty `weight_map`, duplicate index keys → error (via `ShardIndex`).
+pub fn transcode_sharded_bin_to_safetensors(index_path: &Path) -> Result<Vec<u8>, LoaderError> {
+    use super::shard_index::ShardIndex;
+    use std::collections::BTreeSet;
+
+    let index = ShardIndex::from_file(index_path)?;
+
+    let mut all: BTreeMap<String, BinTensor> = BTreeMap::new();
+    for shard in index.shard_filenames() {
+        let path = index.shard_path(&shard);
+        let bytes = std::fs::read(&path).map_err(|e| {
+            err(format!(
+                "sharded .bin: cannot read shard {} referenced by the index: {e}",
+                path.display()
+            ))
+        })?;
+        let tensors = bin_to_tensors(&bytes)
+            .map_err(|e| err(format!("sharded .bin: in shard {shard}: {e}")))?;
+        for t in tensors {
+            let name = t.name.clone();
+            if all.insert(name.clone(), t).is_some() {
+                return Err(err(format!(
+                    "sharded .bin: tensor `{name}` appears in more than one shard"
+                )));
+            }
+        }
+    }
+
+    // Cross-check the assembled tensor set against the index's weight_map.
+    let declared: BTreeSet<&String> = index.weight_map.keys().collect();
+    let assembled: BTreeSet<&String> = all.keys().collect();
+    let missing: Vec<&String> = declared.difference(&assembled).map(|s| *s).collect();
+    if !missing.is_empty() {
+        return Err(err(format!(
+            "sharded .bin: weight_map declares tensors absent from the shards: {missing:?}"
+        )));
+    }
+    let extra: Vec<&String> = assembled.difference(&declared).map(|s| *s).collect();
+    if !extra.is_empty() {
+        return Err(err(format!(
+            "sharded .bin: shards contain tensors not declared in weight_map: {extra:?}"
+        )));
+    }
+
+    let tensors: Vec<BinTensor> = all.into_values().collect();
+    serialize_tensors(&tensors)
 }
 
 #[cfg(test)]
