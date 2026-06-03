@@ -1010,6 +1010,80 @@ of a model — or a per-checkpoint override.
 
 ---
 
+## 17. MoE Specification v1 (MOE-INTEGRATE-1)
+
+The toolkit can also **describe and validate** a Mixture-of-Experts family via
+an optional `moe:` section. It is **declarative only** — like every other
+section it does **not** execute, route, load, or lift the dense loader's
+fail-loud guard (that is MOE-INTEGRATE-2). It gives a MoE family the same
+authored, validated, self-documenting record the dense families have.
+
+**Contract — no second source of truth.** Every `moe` field defaults to `auto`,
+meaning *defer to `config.json`* (parsed by `moe_config`). Explicit values are
+**expectations** checked against the model (via the `effective_*` accessors on
+`ResolvedMoeSpec`, which combine *declared ⊕ config*), never injected into it. A
+dense spec omits `moe:` entirely and behaves exactly as before.
+
+Families: `mixtral`, `qwen-moe` (DeepSeek-MoE is **deferred** — MLA is a separate
+runtime). Resolution lives in `src/adapter_toolkit/moe_spec.rs::ResolvedMoeSpec`;
+checkpoint validation **reuses** `moe::family::validate_family_config` (no
+duplicated logic).
+
+### Example — Qwen-MoE (explicit)
+
+```yaml
+family: qwen-moe
+architecture: Qwen2MoeForCausalLM
+attention:
+  type: gqa
+  kv_heads: auto
+moe:
+  experts: 60            # or `auto` → config.json num_experts
+  top_k: 4               # or `auto` → num_experts_per_tok
+  shared_expert:
+    present: true        # or `auto`
+    gating: sigmoid      # sigmoid (Qwen) | none/ungated (Mixtral) | auto
+  routing:
+    renormalize_topk: false   # or `auto` → norm_topk_prob (Qwen default false)
+  experts_layout: classic     # classic | packed | auto
+```
+
+### Example — Mixtral (minimal, all `auto`)
+
+```yaml
+family: mixtral
+architecture: MixtralForCausalLM
+moe: {}                   # every field auto: experts/top_k from config.json,
+                          # no shared expert, renormalise top-k (family default)
+```
+
+### `auto` behaviour (resolution chain)
+
+| Field | `auto` resolves to |
+|---|---|
+| `experts` | `config.json` num_experts / num_local_experts / n_routed_experts |
+| `top_k` | `config.json` num_experts_per_tok (clamped to `[1, experts]`) |
+| `routing.renormalize_topk` | `config.json` `norm_topk_prob`, else the family default (Mixtral = true, Qwen = false) |
+| `shared_expert.present` | `config.json` (shared-expert size / count) |
+| `experts_layout` / `router_naming` | detected from the checkpoint tensors at load (layout is checkpoint-dependent for Mixtral) |
+
+### Validation (loud, no silent acceptance)
+
+Resolve-time contradictions are hard errors: `shared_expert.present: false` with
+`gating: sigmoid`; a `router_naming` that contradicts the family
+(`block_sparse` ↔ non-Mixtral, `mlp_router` ↔ non-Qwen); `top_k > experts`; an
+invalid keyword. Against a real checkpoint, `ResolvedMoeSpec::validate_against`
+delegates to the runtime's `validate_family_config` (expert count, top-k bound,
+shared-expert agreement).
+
+### What v1 does NOT do
+
+No execution, no `generate` → `MoeRuntime` routing, no fail-loud lift, no
+runtime / loader / numerics change. The MoE spec front-ends the certified MoE
+math and the working `MoeRuntime`; it does not re-derive or run them.
+
+---
+
 *This manual describes Adapter Toolkit v2 as implemented in
 `src/adapter_toolkit/`. For the v1 adapter system it builds on, see
 `src/model_adapters/`. For the functional validation of the model

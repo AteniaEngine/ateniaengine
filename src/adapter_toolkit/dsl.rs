@@ -72,6 +72,16 @@ pub struct AdapterDsl {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tokenizer: Option<TokenizerSection>,
 
+    /// **MOE-INTEGRATE-1** — Mixture-of-Experts declarations. Optional and
+    /// additive: a dense spec omits it entirely and behaves exactly as before.
+    /// Its presence signals a MoE family; it is **declarative, not
+    /// authoritative** (every field defaults to `auto`, deferring to
+    /// `config.json` via `moe_config` — the section never becomes a second
+    /// source of truth). Resolution lives in [`super::moe_spec`]; the dense
+    /// `resolve`/`generator` path ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moe: Option<MoeSection>,
+
     /// Per-checkpoint overrides, keyed by an opaque label
     /// (e.g. `deepseek-distill`). Each entry layers on top of the
     /// base spec.
@@ -174,6 +184,89 @@ pub struct TokenizerSection {
     /// to ids by vocab lookup in the generation pipeline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_terminators: Option<Vec<String>>,
+}
+
+/// **MOE-INTEGRATE-1** — Mixture-of-Experts declarations.
+///
+/// **Semantics — declarative, not authoritative** (see [`ConfigSection`]).
+/// Every field is an *expected constraint* used for validation / selection;
+/// `auto` (the default for every field) means "defer to `config.json`" via
+/// `crate::nn::llama::moe_config::MoeConfig`. Explicit values are checked
+/// against the model, never injected into it — there is no second source of
+/// truth. This section does **not** execute, route, or lift fail-loud.
+#[derive(Debug, Clone, PartialEq, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MoeSection {
+    /// Routed-expert count: an integer or `auto` (defer to `config.json`'s
+    /// `num_experts` / `num_local_experts` / `n_routed_experts`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub experts: Option<MoeCount>,
+
+    /// Experts activated per token (top-k): an integer or `auto`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_k: Option<MoeCount>,
+
+    /// Shared-expert declarations (presence + gating).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_expert: Option<SharedExpertSection>,
+
+    /// Routing convention declarations (top-k renormalisation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing: Option<RoutingSection>,
+
+    /// Expert weight layout: `classic`, `packed`, or `auto` (detect from
+    /// tensors at load — the layout is checkpoint-dependent for Mixtral).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub experts_layout: Option<String>,
+
+    /// Router tensor naming: `block_sparse`, `mlp_gate`, `mlp_router`, or
+    /// `auto`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub router_naming: Option<String>,
+}
+
+/// A MoE count field: an explicit integer or the `auto` keyword.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum MoeCount {
+    /// An explicit non-negative count.
+    Count(usize),
+    /// A keyword — only `auto` is accepted (validated in [`super::moe_spec`]).
+    Keyword(String),
+}
+
+/// A MoE boolean field: an explicit bool or the `auto` keyword.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum MoeFlag {
+    /// An explicit boolean.
+    Bool(bool),
+    /// A keyword — only `auto` is accepted.
+    Keyword(String),
+}
+
+/// Shared-expert declarations.
+#[derive(Debug, Clone, PartialEq, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SharedExpertSection {
+    /// Whether the model carries a shared expert: `true` / `false` / `auto`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub present: Option<MoeFlag>,
+
+    /// Shared-expert gating: `sigmoid` (Qwen), `none` / `ungated` (Mixtral),
+    /// or `auto`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gating: Option<String>,
+}
+
+/// Routing-convention declarations.
+#[derive(Debug, Clone, PartialEq, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoutingSection {
+    /// Whether the router renormalises the selected top-k weights to sum 1:
+    /// `true` / `false` / `auto` (Mixtral default true; Qwen `norm_topk_prob`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renormalize_topk: Option<MoeFlag>,
 }
 
 /// A per-checkpoint override block. Only the sections that a
@@ -329,6 +422,67 @@ overrides:
     fn unknown_field_is_hard_error() {
         let err = AdapterDsl::from_str("family: llama\nbogus_key: 1\n", true);
         assert!(err.is_err(), "deny_unknown_fields must reject typos");
+    }
+
+    // ---- MOE-INTEGRATE-1: optional `moe` section ----
+
+    #[test]
+    fn dense_spec_omits_moe_and_round_trips() {
+        // Backward compatibility: a dense spec parses with `moe == None` and
+        // serializes without a `moe` key (skip_serializing_if).
+        let dsl = AdapterDsl::from_str("family: llama\nconfig:\n  rope: standard\n", true)
+            .expect("parses");
+        assert!(dsl.moe.is_none());
+        let yaml = dsl.to_yaml().expect("serializes");
+        assert!(!yaml.contains("moe"), "no moe key when absent: {yaml}");
+        assert_eq!(AdapterDsl::from_str(&yaml, true).unwrap(), dsl);
+    }
+
+    #[test]
+    fn moe_section_parses_and_round_trips() {
+        let text = "\
+family: qwen-moe
+moe:
+  experts: 60
+  top_k: 4
+  shared_expert:
+    present: true
+    gating: sigmoid
+  routing:
+    renormalize_topk: false
+  experts_layout: classic
+";
+        let dsl = AdapterDsl::from_str(text, true).expect("parses");
+        let moe = dsl.moe.as_ref().expect("moe present");
+        assert_eq!(moe.experts, Some(MoeCount::Count(60)));
+        assert_eq!(moe.top_k, Some(MoeCount::Count(4)));
+        assert_eq!(
+            moe.shared_expert.as_ref().unwrap().present,
+            Some(MoeFlag::Bool(true))
+        );
+        assert_eq!(
+            moe.shared_expert.as_ref().unwrap().gating.as_deref(),
+            Some("sigmoid")
+        );
+        // Round-trip.
+        let yaml = dsl.to_yaml().expect("serializes");
+        assert_eq!(AdapterDsl::from_str(&yaml, true).unwrap(), dsl);
+    }
+
+    #[test]
+    fn moe_accepts_auto_keyword() {
+        let dsl = AdapterDsl::from_str("family: mixtral\nmoe:\n  experts: auto\n", true).unwrap();
+        assert_eq!(
+            dsl.moe.unwrap().experts,
+            Some(MoeCount::Keyword("auto".to_string()))
+        );
+    }
+
+    #[test]
+    fn moe_unknown_field_is_hard_error() {
+        // deny_unknown_fields applies inside the moe section too.
+        let err = AdapterDsl::from_str("family: mixtral\nmoe:\n  expertz: 8\n", true);
+        assert!(err.is_err(), "typo inside moe must be rejected");
     }
 
     #[test]

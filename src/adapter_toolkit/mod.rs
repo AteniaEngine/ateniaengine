@@ -25,11 +25,18 @@ pub mod dsl;
 pub mod generator;
 pub mod inspect;
 pub mod introspect;
+// **MOE-INTEGRATE-1** — declarative MoE Specification v1 (describe + validate
+// only; no execution / routing / fail-loud lift / runtime change).
+pub mod moe_spec;
 pub mod registry;
 pub mod spec;
 pub mod validate;
 
 pub use dsl::AdapterDsl;
+pub use moe_spec::{
+    resolve_moe_family, ExpertLayout, MoeFamilyKind, ResolvedMoeSpec, RouterNaming, SharedExpertNaming,
+    SharedGating,
+};
 pub use generator::GeneratedAdapter;
 pub use inspect::{inspect_model_dir, InspectionReport};
 pub use introspect::{describe_adapter, describe_spec};
