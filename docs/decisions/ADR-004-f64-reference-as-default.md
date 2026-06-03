@@ -122,3 +122,4 @@ The investigation sequence is preserved in test files (untracked or committed as
 - [ADR-003](./ADR-003-methodology-questioning-framework.md) — questioning "PyTorch as ground truth" was an explicit application of this framework
 - [HANDOFF M4.5](../HANDOFF_APX_V20_M4.5.md) — initial drift observation that motivated investigation
 - [ROADMAP](../../ROADMAP.md) — M4.6 milestone where this methodology is first applied
+- [ADR-007 — MoE certification by decomposition](./ADR-007-moe-certification-ladder.md) — extends this contract to Mixture-of-Experts models, where a single global F64 forward is infeasible (RAM) and incomplete (sparse routing); **reuses this ADR's `max_abs_diff < 0.5` + argmax bar verbatim** and adds the L0–L4 ladder rather than changing any threshold here. (This is the "F64 fixture generation becomes intractable for some model scale" trigger above, resolved for the MoE class.)

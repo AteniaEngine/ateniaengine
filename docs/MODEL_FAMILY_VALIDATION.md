@@ -294,3 +294,25 @@ this is **not** family mastery and **not** product certification.
   Mixtral 8x7B are the natural first targets once the Adapter Toolkit MoE spec,
   full transformer path, and a large-model memory strategy land. See
   `docs/MOE_OVERVIEW.md` for the exact production-blocker list.
+
+### MoE certification ladder (ADR-007) — how to read these MoE numbers
+
+MoE certification does **not** use the dense ADR-004 contract: a single global
+F64 forward is infeasible for a real MoE (its full weights do not fit in F64 RAM
+— Mixtral ~373 GB, Qwen-MoE ~114 GB) and incomplete (a forward only exercises the
+top-k routed experts). Per **[ADR-007](./decisions/ADR-007-moe-certification-ladder.md)**,
+MoE is certified **by decomposition** against an **L0–L4 ladder** over obligations
+C1–C5 (per-expert, router, attention, assembly/topology, active-path), each
+reusing the ADR-004 `max_abs_diff < 0.5` + argmax bar **unchanged**.
+
+- **The scale-topology results above (1.639e-07 / 1.490e-07 / 7.806e-03) are an
+  L0 (topology-certified) result** — they certify the *engine reproduces the real
+  routing topology* on a reduced-dim full-F64 fixture, **not** the real trained
+  weights.
+- A family is written **`MoE-certified Ln`**, never a bare "certified". An Ln
+  (`n < 4`) certificate is **not** the dense ADR-004 guarantee: it names exactly
+  the subgraph exercised and lists the unreached obligations.
+- **No MoE family is above L0 today.** Raising Qwen-MoE / Mixtral to L1→L2→L3 is
+  the MOE-CERT-2/3/4 work; L4 (global F64, dense-equivalent) is reserved and
+  currently unreachable for large-active MoE (RAM). See
+  `docs/MOE_CERTIFICATION_AUDIT.md` for the full methodology.

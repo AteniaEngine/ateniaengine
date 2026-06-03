@@ -361,6 +361,22 @@ locked by regression tests.
   (deferred) / unrecognised → fail loud. The dense loader's MoE guard and the
   MoE runtime are untouched; default behaviour for dense models is identical.
   See `docs/MOE_ADAPTER_SPEC_AUDIT.md` + `docs/ADAPTER_TOOLKIT_V2.md` §17.
+- **MOE-CERT-1 — MoE certification ladder formalised (ADR-007, docs only).**
+  ADR-004's global-F64 contract is infeasible for real MoE (full weights don't
+  fit F64 RAM — Mixtral ~373 GB; and a forward only exercises the top-k routed
+  experts). `docs/decisions/ADR-007-moe-certification-ladder.md` formalises
+  **certification by decomposition**: obligations **C1–C5** (per-expert / router
+  / attention / assembly-topology / active-path) over an **L0–L4 ladder**
+  (topology → component → assembly → active-path → dense-equivalent), **reusing
+  the ADR-004 `max_abs_diff < 0.5` + argmax bar verbatim — no threshold changed**.
+  Reporting discipline added so a partial **`MoE-certified Ln`** status is never
+  read as the dense ADR-004 `CERTIFIED` (mandatory level qualifier; headline =
+  lowest fully-passed level; distinct `schema_variant: "moe-decomposition"`
+  manifest). All three MoE families sit at **L0** today; raising them is the
+  MOE-CERT-2/3/4 work. **Definition only — no harness, no execution, no runtime /
+  loader / `MoeRuntime` / Adapter Toolkit change.** Cross-referenced from
+  ADR-004, `CERTIFICATION.md`, `FAMILY_COVERAGE_AUDIT.md`,
+  `MODEL_FAMILY_VALIDATION.md`; built on `docs/MOE_CERTIFICATION_AUDIT.md`.
 - **FORMAT-INTAKE-1 — PyTorch `.bin` intake.** Closes the coverage audit's #2
   gap (otherwise-supported checkpoints unloadable purely because they ship as
   `pytorch_model.bin`). A new `src/v17/loader/pytorch_bin.rs` **transcodes** a

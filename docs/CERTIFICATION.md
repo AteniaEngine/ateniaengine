@@ -168,10 +168,28 @@ production manifests described in this document**:
 If/when AQS graduates a manifest format for runtime use, it will go through
 the same ADR process and schema-versioning as the manifests above.
 
+## MoE checkpoints — a distinct manifest variant (ADR-007)
+
+The manifest schema above describes a **dense** checkpoint, where one global F64
+forward certifies the whole model. **Mixture-of-Experts checkpoints cannot use
+it**: their full weights do not fit in F64 RAM and a single forward only
+exercises the top-k routed experts (see
+[ADR-007](./decisions/ADR-007-moe-certification-ladder.md)). MoE certification is
+therefore **by decomposition** — a composite of per-obligation evidence (C1–C5)
+reported against an **L0–L4 ladder**, not a single `drift_envelope` number. A MoE
+manifest uses `schema_variant: "moe-decomposition"`, carries a `ladder_level`
+field + a `pending_levels` array (each with its `blocker`), and **must** name its
+level explicitly: the bare word "certified" is forbidden for MoE — a family is
+"**MoE-certified Ln**", which is **not** the same guarantee as a dense ADR-004
+`certified`. ADR-007 reuses this document's `max_abs_diff < 0.5` + argmax bar
+verbatim; it changes no threshold here. (Definition only — no MoE manifest is
+shipped yet; see `docs/MOE_CERTIFICATION_AUDIT.md` and ADR-007.)
+
 ## Related
 
 - [ADR-004 — F64 reference as default](./decisions/ADR-004-f64-reference-as-default.md)
 - [ADR-005 — Fast mode (BF16-TC) drift envelope](./decisions/ADR-005-fast-mode-bf16-tc-envelope.md)
+- [ADR-007 — MoE certification by decomposition (L0–L4 ladder)](./decisions/ADR-007-moe-certification-ladder.md)
 - [ROADMAP.md §"Numeric contract strategy"](../ROADMAP.md#numeric-contract-strategy)
 - [AQS_OVERVIEW.md — experimental quantization search](./AQS_OVERVIEW.md)
 - The 4-model F64 fixture: [`tests/m8_5_full_family_validation_test.rs`](../tests/m8_5_full_family_validation_test.rs)
