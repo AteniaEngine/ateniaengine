@@ -457,6 +457,21 @@ locked by regression tests.
   mixtral 4/4, **full lib 838 passed**. **No threshold lowered; no real download/
   cert; no latent cache / Q-LoRA / V3 / productive-loader lift.** See
   `docs/HANDOFF_MLA_0.md`. Next: **MLA-1** (provision V2-Lite → ADR-007 C1–C5).
+- **MLA-1 (C1+C2) — DeepSeek-V2-Lite per-expert + router certified (real, partial
+  L1).** Reusing ~95% of the Qwen MOE-CERT-2-ext decomposition tooling (DeepSeek's
+  expert/router tensor names are identical), certifies on the **real**
+  DeepSeek-V2-Lite weights: **C1** all **1664** routed experts (26 MoE layers × 64;
+  dense layer 0 skipped) under the ADR-004 gate, **global worst `max_abs_diff`
+  1.907e-6** (layer 26, expert 57), exhaustive, 0 failures; **C2** top-6 expert
+  **set equality** on all 26 MoE layers (hard gate, 0 failures), **min routing
+  margin 0.011981** (layer 23). **C3** reused at the mechanism level (DeepSeek MLA
+  cert 9.999e-6 + MLA-0 9.072e-5); **C4** (deepseek_scale 7.806e-3) available, not
+  folded; **C5** pending. Result: **DeepSeek-V2-Lite — partial L1** (C1+C2
+  real-weight + C3 mechanism); manifest `docs/numcert/deepseek-v2-lite.moecert.json`
+  (`schema_variant: moe-decomposition`). **No `src/` change** — harness only calls
+  the certified MoE primitives; ADR-004 gate not lowered; MLA/YaRN/runtime/loader/
+  numerics untouched. Real run ~505 s. See `docs/HANDOFF_MLA1_C1_C2.md`. Next:
+  C4 fold → L2, C5 active-path → L3.
 - **FORMAT-INTAKE-1 — PyTorch `.bin` intake.** Closes the coverage audit's #2
   gap (otherwise-supported checkpoints unloadable purely because they ship as
   `pytorch_model.bin`). A new `src/v17/loader/pytorch_bin.rs` **transcodes** a
