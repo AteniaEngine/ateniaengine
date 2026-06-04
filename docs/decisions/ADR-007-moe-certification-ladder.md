@@ -147,9 +147,14 @@ wall). L4 is **never fabricated**: a family that has not passed L4 lists it as
 `pending` with the **exact blocker** (e.g. "L4: requires ~373 GB F64 RAM").
 
 **L0 is already satisfied** for Mixtral, Qwen-MoE and DeepSeek-MoE (scale-topology
-certs, `HANDOFF_MOE_FULL_15.md`). No family has yet been certified above L0 on
-this ladder; raising Qwen-MoE / Mixtral to L1→L2→L3 is the work of the later
-MOE-CERT-2/3/4 milestones (out of scope for this ADR, which is definition-only).
+certs, `HANDOFF_MOE_FULL_15.md`). **MOE-CERT-2** then produced the first
+above-L0 evidence: **Qwen-MoE — MoE-certified L1 on the layer-0 representative
+scope** (C1 exhaustive over layer-0's 60 routed experts on the real trained
+weights, worst `max_abs_diff` 1.192e-7; C2 layer-0 router top-k set match,
+routing margin 0.160333; C3 via the existing attention mechanism cert). Its
+whole-model headline stays **L0** until C1/C2 are extended across all 24 layers
+(`docs/numcert/qwen1.5-moe-a2.7b.moecert.json`). Raising Qwen-MoE / Mixtral
+further (whole-model L1 → L2 → L3) is the work of MOE-CERT-2(ext)/3/4.
 
 ### 3. Reporting discipline (how a partial level is shown honestly)
 

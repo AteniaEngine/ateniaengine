@@ -312,7 +312,17 @@ reusing the ADR-004 `max_abs_diff < 0.5` + argmax bar **unchanged**.
 - A family is written **`MoE-certified Ln`**, never a bare "certified". An Ln
   (`n < 4`) certificate is **not** the dense ADR-004 guarantee: it names exactly
   the subgraph exercised and lists the unreached obligations.
-- **No MoE family is above L0 today.** Raising Qwen-MoE / Mixtral to L1→L2→L3 is
-  the MOE-CERT-2/3/4 work; L4 (global F64, dense-equivalent) is reserved and
-  currently unreachable for large-active MoE (RAM). See
-  `docs/MOE_CERTIFICATION_AUDIT.md` for the full methodology.
+- **Qwen-MoE — MoE-certified L1 (layer-0 representative scope)** via **MOE-CERT-2**
+  (`tests/moe_cert2_qwen_decomposition_test.rs`,
+  `docs/numcert/qwen1.5-moe-a2.7b.moecert.json`): on the **real** Qwen1.5-MoE-A2.7B
+  layer-0 weights vs a float64 reference computed one expert at a time —
+  **C1** all 60 routed experts under the ADR-004 gate (worst `max_abs_diff`
+  **1.192e-7**, exhaustive), **C2** top-k expert set equality (`[10,24,39,42]`,
+  hard gate) + routing margin **0.160333**, **C3** reused from the existing
+  attention mechanism cert (5.960e-08, MOE-FULL-13). This is **L1 on the layer-0
+  scope**, NOT the dense ADR-004 `CERTIFIED`, and NOT whole-model L1 — the
+  whole-model headline stays **L0** until C1/C2 extend to all 24 layers.
+- **Mixtral / DeepSeek-MoE remain at L0.** Raising them, and lifting Qwen-MoE to
+  whole-model L1 → L2 → L3, is the MOE-CERT-2(ext)/3/4 work; L4 (global F64,
+  dense-equivalent) is reserved and currently unreachable for large-active MoE
+  (RAM). See `docs/MOE_CERTIFICATION_AUDIT.md` for the full methodology.

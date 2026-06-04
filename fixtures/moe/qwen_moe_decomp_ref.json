@@ -1,0 +1,26 @@
+{
+  "milestone": "MOE-CERT-2",
+  "obligations": [
+    "C1 per-expert",
+    "C2 router"
+  ],
+  "model": "Qwen1.5-MoE-A2.7B-Chat",
+  "source_arch": "Qwen2MoeForCausalLM",
+  "layer": 0,
+  "d_model": 2048,
+  "d_ff": 1408,
+  "num_experts": 60,
+  "experts_per_token": 4,
+  "norm_topk_prob": false,
+  "input_seed": 20260603,
+  "oracle": "NumPy float64 (one expert at a time; no full-model F64)",
+  "topk_indices": [
+    10,
+    24,
+    39,
+    42
+  ],
+  "routing_margin": 0.16033291284956297,
+  "reference_file": "qwen_moe_decomp_ref.safetensors",
+  "note": "Real trained layer-0 weights. ADR-007 C1/C2. C3 (attention) is covered by the existing Qwen-MoE full-forward cert, not here."
+}

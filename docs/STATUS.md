@@ -377,6 +377,22 @@ locked by regression tests.
   loader / `MoeRuntime` / Adapter Toolkit change.** Cross-referenced from
   ADR-004, `CERTIFICATION.md`, `FAMILY_COVERAGE_AUDIT.md`,
   `MODEL_FAMILY_VALIDATION.md`; built on `docs/MOE_CERTIFICATION_AUDIT.md`.
+- **MOE-CERT-2 — Qwen-MoE certified by decomposition (ADR-007 C1+C2, real
+  weights).** First above-L0 evidence on the ladder. A test-only harness
+  (`tests/moe_cert2_qwen_decomposition_test.rs`) certifies, on the **real**
+  Qwen1.5-MoE-A2.7B **layer-0** weights vs a **float64** reference computed **one
+  expert at a time** (`fixtures/moe/generate_qwen_moe_decomposition_reference.py`
+  → `qwen_moe_decomp_ref.safetensors`): **C1** — all **60** routed experts under
+  the ADR-004 gate, worst `max_abs_diff` **1.192e-7** (~4.2e6× inside 0.5),
+  exhaustive (no sampling); **C2** — top-k expert **set equality** vs the f64
+  reference (`[10,24,39,42]`, hard gate) + **routing margin 0.160333** reported.
+  **C3** (attention) reused from the existing mechanism cert (MOE-FULL-13,
+  5.960e-08). Result: **Qwen-MoE — MoE-certified L1 on the layer-0 representative
+  scope**; whole-model headline stays **L0** until C1/C2 extend to all 24 layers
+  (`docs/numcert/qwen1.5-moe-a2.7b.moecert.json`, `schema_variant:
+  moe-decomposition`). A non-ignored CI smoke exercises the harness on the tiny
+  committed fixture. **No `src/` change** — no runtime / loader / `MoeRuntime` /
+  Adapter Toolkit / numerics touched; gate not lowered; fail-loud preserved.
 - **FORMAT-INTAKE-1 — PyTorch `.bin` intake.** Closes the coverage audit's #2
   gap (otherwise-supported checkpoints unloadable purely because they ship as
   `pytorch_model.bin`). A new `src/v17/loader/pytorch_bin.rs` **transcodes** a
