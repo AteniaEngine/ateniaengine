@@ -421,6 +421,23 @@ locked by regression tests.
   **No `src/` change** — manifest + docs only; ADR-004 gate not lowered; C4 test
   re-run green (1.490e-7). **L3 (C5 active-path) and L4 (global F64) remain
   pending** — not L3, not L4, not the dense ADR-004 `CERTIFIED`.
+- **MOE-CERT-4 — Qwen-MoE whole-model L3 (C5 active-path).** Adds the final
+  reachable obligation **C5** (active-path parity) → **L3 = L2 + C5**. A
+  test-only harness (`tests/moe_cert4_qwen_active_path_test.rs`) runs Atenia's
+  controlled **`MoeRuntime` full forward of the REAL Qwen1.5-MoE-A2.7B**
+  (disk-tier, ~few GB RAM) on a canonical 4-token input and gates it against a
+  **float64 reference computed one decoder layer at a time** with HuggingFace's
+  own Qwen2Moe module (`fixtures/moe/generate_qwen_moe_c5_reference.py`,
+  driver validated against the tiny HF fixture at 1.348e-8 before use; classic→
+  packed expert conversion matching Atenia's certified MOE-15 convention). Result:
+  end-to-end **max_abs_diff 1.866e-4** (< 0.5; ~2680× inside) + **per-position
+  argmax exact 4/4** (`[18493,1,1,1]`) + deterministic. This is the **F64-active**
+  form (one layer at a time, never the whole model in F64 → **not L4**). Result:
+  **Qwen-MoE — MoE-certified L3 (active-path-certified, whole model)**; manifest
+  `ladder_level_whole_model: L3`. **No `src/` change** — the harness only *calls*
+  the existing runtime; ADR-004 gate not lowered; fail-loud preserved. **Only L4
+  (global F64) remains, reserved/unreachable** — not L4, not the dense ADR-004
+  `CERTIFIED`. (Real run ~950 s, disk-tier.)
 - **FORMAT-INTAKE-1 — PyTorch `.bin` intake.** Closes the coverage audit's #2
   gap (otherwise-supported checkpoints unloadable purely because they ship as
   `pytorch_model.bin`). A new `src/v17/loader/pytorch_bin.rs` **transcodes** a

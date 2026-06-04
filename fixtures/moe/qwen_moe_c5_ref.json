@@ -1,0 +1,22 @@
+{
+  "milestone": "MOE-CERT-4",
+  "obligation": "C5 active-path (F64, one layer at a time)",
+  "model": "Qwen1.5-MoE-A2.7B-Chat",
+  "oracle": "HuggingFace Qwen2MoeDecoderLayer in float64, one layer at a time (trusted HF code; never the whole model in F64 -> not L4)",
+  "input_ids": [
+    1,
+    100,
+    200,
+    300
+  ],
+  "seq": 4,
+  "vocab_size": 151936,
+  "argmax_per_position": [
+    18493,
+    1,
+    1,
+    1
+  ],
+  "reference_file": "qwen_moe_c5_ref.safetensors",
+  "note": "Real trained weights, full end-to-end forward. ADR-007 C5 F64 form. Driver validated against the tiny Qwen-MoE HF fixture before this run."
+}

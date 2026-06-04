@@ -153,10 +153,17 @@ to **L1 (whole model)**: C1 exhaustive over **all 24 layers × 60 routed experts
 layer 6 / expert 37, 0 failures); C2 top-k set match on all 24 layers (0 failures,
 min routing margin 0.001834, no flip); C3 via the existing attention mechanism
 cert. **MOE-CERT-3** then folded in **C4** (the Qwen-MoE scale-topology end-to-end
-cert vs HF f64 = 1.490e-7, `tests/moe_scale_cert_test.rs`) to reach **MoE-certified
-L2 (whole model)** = L1 + C4 (`docs/numcert/qwen1.5-moe-a2.7b.moecert.json`).
-Mixtral and DeepSeek-MoE remain at L0. Raising Qwen-MoE further (L3 active-path)
-and Mixtral up the ladder is the work of MOE-CERT-4+.
+cert vs HF f64 = 1.490e-7, `tests/moe_scale_cert_test.rs`) to reach L2 = L1 + C4.
+**MOE-CERT-4** then added **C5** (active-path): Atenia's controlled `MoeRuntime`
+full forward of the real Qwen1.5-MoE-A2.7B on a canonical 4-token input vs a
+float64 reference computed **one decoder layer at a time** (HF's own module;
+driver validated on the tiny fixture) — end-to-end `max_abs_diff` 1.866e-4 (< 0.5)
++ per-position argmax exact 4/4 — reaching **MoE-certified L3 (active-path-
+certified, whole model)** = L2 + C5 (`docs/numcert/qwen1.5-moe-a2.7b.moecert.json`,
+`tests/moe_cert4_qwen_active_path_test.rs`). The F64 reference is never the whole
+model in F64 (one layer at a time) → **L3 is not L4**; only **L4** (global F64,
+~114 GB) remains, reserved/unreachable. Mixtral and DeepSeek-MoE remain at L0;
+raising Mixtral up the ladder is later work.
 
 ### 3. Reporting discipline (how a partial level is shown honestly)
 

@@ -312,10 +312,18 @@ reusing the ADR-004 `max_abs_diff < 0.5` + argmax bar **unchanged**.
 - A family is written **`MoE-certified Ln`**, never a bare "certified". An Ln
   (`n < 4`) certificate is **not** the dense ADR-004 guarantee: it names exactly
   the subgraph exercised and lists the unreached obligations.
-- **Qwen-MoE — MoE-certified L2 (whole model)** via **MOE-CERT-2** (layer 0) +
-  **MOE-CERT-2-ext** (all 24 layers) + **MOE-CERT-3** (fold C4)
+- **Qwen-MoE — MoE-certified L3 (active-path-certified, whole model)** via
+  **MOE-CERT-2** (layer 0) + **MOE-CERT-2-ext** (all 24 layers) + **MOE-CERT-3**
+  (fold C4) + **MOE-CERT-4** (C5 active-path)
   (`tests/moe_cert2_qwen_decomposition_test.rs`, `tests/moe_scale_cert_test.rs`,
-  `docs/numcert/qwen1.5-moe-a2.7b.moecert.json`). **L2 = L1 + C4.**
+  `tests/moe_cert4_qwen_active_path_test.rs`,
+  `docs/numcert/qwen1.5-moe-a2.7b.moecert.json`). **L3 = L2 + C5.**
+  **C5** (active-path): Atenia's controlled `MoeRuntime` full forward of the
+  **real** Qwen1.5-MoE-A2.7B (disk-tier) on a canonical 4-token input vs a
+  **float64 reference computed one decoder layer at a time** (HF's own module;
+  driver validated on the tiny fixture) — end-to-end **max_abs_diff 1.866e-4**
+  (< 0.5) + **per-position argmax exact 4/4**. F64-active (one layer at a time,
+  never the whole model in F64 → **not L4**). The underlying **L2 = L1 + C4.**
   **L1** on the **real** Qwen1.5-MoE-A2.7B weights vs a float64 reference computed
   one expert at a time — **C1** all **1440** routed experts (24 layers × 60) under
   the ADR-004 gate, **global worst `max_abs_diff` 4.768e-7** (layer 6, expert 37),
@@ -325,7 +333,8 @@ reusing the ADR-004 `max_abs_diff < 0.5` + argmax bar **unchanged**.
   **C4** (assembly/topology) = the Qwen-MoE scale-topology end-to-end cert vs HF
   f64 = **1.490e-7** (16-expert / top-4 / shared-sigmoid / GQA / qkv-bias reduced-dim
   fixture; the assembly mechanism, not the real 60-expert weights). This is
-  **whole-model L2**, NOT the dense ADR-004 `CERTIFIED`, and NOT L3/L4.
+  **whole-model L3 (active-path-certified)**, NOT the dense ADR-004 `CERTIFIED`,
+  and NOT L4 (global F64, reserved/unreachable). Only L4 remains.
 - **Mixtral / DeepSeek-MoE remain at L0.** Raising them, and lifting Qwen-MoE to
   whole-model L1 → L2 → L3, is the MOE-CERT-2(ext)/3/4 work; L4 (global F64,
   dense-equivalent) is reserved and currently unreachable for large-active MoE

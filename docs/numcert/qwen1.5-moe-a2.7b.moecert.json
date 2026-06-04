@@ -5,12 +5,12 @@
   "model": "Qwen1.5-MoE-A2.7B-Chat",
   "model_family": "qwen-moe",
   "model_arch": "Qwen2MoeForCausalLM",
-  "atenia_version": "0.x-MOE-CERT-3",
-  "milestone": "MOE-CERT-3 (fold C4 -> L2; built on MOE-CERT-2 + MOE-CERT-2-ext)",
+  "atenia_version": "0.x-MOE-CERT-4",
+  "milestone": "MOE-CERT-4 (C5 active-path -> L3; built on MOE-CERT-2 + 2-ext + 3)",
 
-  "ladder_level_whole_model": "L2",
-  "headline": "MoE-certified L2 (whole model)",
-  "headline_note": "Per ADR-007 the bare word 'certified' is forbidden for MoE. This family is 'MoE-certified L2' = L1 + C4. L1: C1 (per-expert) exhaustive over ALL 24 layers x 60 routed experts = 1440 experts + C2 (router top-k set equality) on all 24 layers, both on the REAL trained weights vs a float64 reference computed one expert at a time; C3 (attention) via the existing mechanism cert. C4 (assembly/topology): the Qwen-MoE scale-topology end-to-end cert vs HF f64 = 1.490e-7. This is L2, NOT the dense ADR-004 CERTIFIED guarantee, and NOT L3/L4 — L3 (active-path C5) and L4 (global F64, unreachable) remain pending. L2 = 'the pieces (real weights, all layers) AND their composition (topology mechanism) are certified'.",
+  "ladder_level_whole_model": "L3",
+  "headline": "MoE-certified L3 (whole model, active-path-certified)",
+  "headline_note": "Per ADR-007 the bare word 'certified' is forbidden for MoE. This family is 'MoE-certified L3' (active-path-certified) = L2 + C5. L2 = L1 (C1 per-expert exhaustive over all 24x60=1440 experts + C2 router top-k set equality on all 24 layers, REAL weights vs float64) + C3 (attention mechanism) + C4 (assembly/topology scale cert 1.490e-7). C5 (active-path): Atenia's controlled MoeRuntime FULL forward of the REAL Qwen1.5-MoE-A2.7B on a canonical 4-token input vs a float64 reference computed one decoder layer at a time -> end-to-end max_abs_diff 1.866e-4 (< 0.5), per-position argmax exact 4/4. This is L3, NOT the dense ADR-004 CERTIFIED guarantee, and NOT L4 (global F64, reserved/unreachable). active-path-certified = 'the real model, as actually run, matches truth on the tested input'.",
 
   "config_summary": {
     "hidden_size": 2048,
@@ -70,21 +70,33 @@
       "re_derived_this_milestone": false
     },
     "C5_active_path": {
-      "status": "PENDING",
-      "blocker": "real-weight active-path forward vs F64-active (~22 GB) or F32 cross-framework (~11 GB) not yet run (MOE-CERT-4)."
+      "status": "PASS",
+      "folded_in": "MOE-CERT-4",
+      "scope": "Atenia controlled MoeRuntime FULL forward of the REAL Qwen1.5-MoE-A2.7B (disk-tier residency), canonical 4-token input [1,100,200,300]",
+      "oracle": "HuggingFace Qwen2MoeDecoderLayer in float64, ONE LAYER AT A TIME (trusted HF code; never the whole model in F64 -> not L4). Driver validated against the tiny Qwen-MoE HF fixture (1.348e-8) before the real run.",
+      "oracle_form": "F64-active (the stronger ADR-007 C5 form, not the F32 cross-framework fallback)",
+      "metric": "end-to-end full-forward max_abs_diff vs the f64 reference + per-position argmax",
+      "max_abs_diff": 1.866e-4,
+      "worst_position": 1,
+      "argmax_per_position": [18493, 1, 1, 1],
+      "argmax_exact": "4/4",
+      "gate": "< 0.5 (ADR-004 bar, unchanged) + exact argmax",
+      "result": "PASS (1.866e-4, ~2680x inside the 0.5 gate; argmax exact 4/4; deterministic)",
+      "harness": "tests/moe_cert4_qwen_active_path_test.rs::cert4_real_qwen_moe_active_path (real run ~950 s, disk-tier)"
     }
   },
 
   "pending_levels": [
-    { "level": "L3", "blocker": "C5 active-path — real-weight forward vs F64-active (~22 GB) or F32 cross-framework (~11 GB), not yet run (MOE-CERT-4)." },
-    { "level": "L4 (dense-equivalent)", "blocker": "global model.double() F64 ~114 GB — reserved / unreachable on the project hardware envelope; never fabricated." }
+    { "level": "L4 (dense-equivalent)", "blocker": "global model.double() F64 of the WHOLE model at once ~114 GB — reserved / unreachable on the project hardware envelope; never fabricated. (C5/L3 deliberately computes the F64 reference one layer at a time, never the whole model in F64 — that is exactly why L3 != L4.)" }
   ],
 
   "remaining_caveats": [
     "C3 attention is reused at the mechanism level (tiny fixture, 5.960e-08), not re-certified on the real per-layer attention weights.",
     "C4 assembly/topology is certified on a reduced-dim, 16-expert, random-weight topology fixture (qwen_scale, 1.490e-7) — the Qwen-MoE mechanism, NOT the real 60-expert trained-weight assembly. It is the C4 evidence ADR-007 designates; it gains real-weight force only combined with the whole-model C1/C2.",
     "C1/C2 use a single deterministic probe input applied to every layer's real weights (a representative activation, not a real inter-layer activation trace) — this certifies the per-layer expert/router math, consistent with the layer-0 approach.",
-    "L2 is NOT L3 (active-path on the real model as run) and NOT L4 (global F64, unreachable), and is NOT the dense ADR-004 CERTIFIED."
+    "C5 is certified on a single canonical 4-token input [1,100,200,300]; other inputs / longer contexts are not separately covered (a known coverage bound of a fixed-input certificate, same discipline as the dense ADR-004 4-token fixture).",
+    "C5 end-to-end drift (1.866e-4) is larger than the per-component ~1e-7 (C1) — expected f32 accumulation across the full 24-layer assembled forward (Atenia f32 runtime vs HF-layer f64); still ~2680x inside the 0.5 gate with exact argmax.",
+    "L3 is NOT L4 (global F64, unreachable): the C5 F64 reference is computed one layer at a time, never the whole model in F64. L3 is NOT the dense ADR-004 CERTIFIED."
   ],
 
   "verification": {
@@ -94,7 +106,13 @@
     "regenerate_reference": "python fixtures/moe/generate_qwen_moe_decomposition_reference.py models/Qwen1.5-MoE-A2.7B-Chat fixtures/moe --all",
     "command": "QWEN_MOE_DIR=models/Qwen1.5-MoE-A2.7B-Chat cargo test --test moe_cert2_qwen_decomposition_test --release -- --ignored cert2_real_qwen_moe_all_layers --nocapture",
     "expected": "C1 global worst max_abs_diff ~4.8e-7 (< 0.5, all 1440 experts, layer 6 / expert 37); C2 top-k set match on all 24 layers; min routing margin 0.001834 (layer 6); 0 failures.",
-    "ci_smoke": "cert2_harness_mechanics_smoke (non-ignored) exercises the harness on the committed tiny fixture without the 27 GB model."
+    "ci_smoke": "cert2_harness_mechanics_smoke (non-ignored) exercises the harness on the committed tiny fixture without the 27 GB model.",
+    "c4_command": "cargo test --release --test moe_scale_cert_test qwen_moe_scale_topology_certifies -- --nocapture  (expected end-to-end max_abs_diff 1.490e-7)",
+    "c5_harness": "tests/moe_cert4_qwen_active_path_test.rs",
+    "c5_reference": "fixtures/moe/qwen_moe_c5_ref.safetensors (+ .json) — F64 reference, one layer at a time (driver validated against the tiny HF fixture)",
+    "c5_regenerate_reference": "python fixtures/moe/generate_qwen_moe_c5_reference.py tiny   (validate driver)  THEN  python fixtures/moe/generate_qwen_moe_c5_reference.py real models/Qwen1.5-MoE-A2.7B-Chat fixtures/moe",
+    "c5_command": "QWEN_MOE_DIR=models/Qwen1.5-MoE-A2.7B-Chat cargo test --test moe_cert4_qwen_active_path_test --release -- --ignored cert4_real_qwen_moe_active_path --nocapture",
+    "c5_expected": "end-to-end max_abs_diff 1.866e-4 (< 0.5) on input [1,100,200,300]; per-position argmax exact 4/4 = [18493,1,1,1]; deterministic. (Disk-tier run ~950 s; needs ATENIA_MOE_EXPERT_TIER=disk + ATENIA_ENABLE_MOE=1, set by the test.)"
   },
 
   "generated_at": "2026-06-04",
