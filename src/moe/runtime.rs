@@ -39,7 +39,7 @@ use super::generate::generate_greedy_tiny_eos;
 use super::gqa::to_mha_kv;
 use super::layer::{MoeLayerConfig, RealMoeLayer};
 use super::mixtral_adapter::MixtralAdapter;
-use super::mla::{DeepseekConfig, DeepseekLayer, DeepseekWeights};
+use super::mla::{DeepseekConfig, DeepseekFfn, DeepseekLayer, DeepseekWeights, DenseFfn, YarnParams};
 use super::residency::{ExpertCache, ExpertTier, ResidentExpertLayer, TierContext};
 use crate::nn::llama::moe_config::MoeConfig;
 use crate::v17::loader::safetensors_reader::SafetensorsReader;
@@ -839,6 +839,15 @@ impl MoeRuntime {
             }
         };
 
+        // **MLA-0** — DeepSeek `first_k_dense_replace`: the first K layers are a
+        // dense SwiGLU MLP, not MoE. Only DeepSeek has this; Mixtral/Qwen keep 0
+        // so every layer is MoE (byte-identical to before).
+        let first_k_dense = if family == MoeFamily::DeepSeekMoe {
+            v.get("first_k_dense_replace").and_then(Value::as_u64).unwrap_or(0) as usize
+        } else {
+            0
+        };
+
         // 4. Adapter validation (Mixtral) + config cross-check (all families).
         let moe_cfg = MoeConfig::from_json_str(config_text)
             .map_err(|e| MoeRuntimeError::Config(format!("moe config: {e}")))?;
@@ -903,6 +912,11 @@ impl MoeRuntime {
         let mut moe_blocks: Vec<MoeBlock> = Vec::with_capacity(n_layers);
         let mut deepseek_moes: Vec<RealMoeLayer> = Vec::with_capacity(n_layers);
         for l in 0..n_layers {
+            // **MLA-0** — DeepSeek dense-first layers have no experts; their dense
+            // SwiGLU FFN is assembled inside `build_deepseek` from the source.
+            if family == MoeFamily::DeepSeekMoe && l < first_k_dense {
+                continue;
+            }
             let layer_cfg = MoeLayerConfig::new(n_experts, topk, has_shared, hidden, d_ff)
                 .map_err(|e| MoeRuntimeError::Load(format!("layer cfg: {e}")))?;
             let moe = RealMoeLayer::assemble(&map, l, layer_cfg, &resolve)
@@ -961,6 +975,7 @@ impl MoeRuntime {
                 hidden,
                 n_layers,
                 rms_eps,
+                first_k_dense,
                 deepseek_moes,
             )?),
             _ => {
@@ -1270,6 +1285,7 @@ fn build_deepseek(
     hidden: usize,
     n_layers: usize,
     rms_eps: f32,
+    first_k_dense: usize,
     moes: Vec<RealMoeLayer>,
 ) -> Result<DeepseekWeights, MoeRuntimeError> {
     let n_heads = cfg_u(v, "num_attention_heads")?;
@@ -1279,6 +1295,37 @@ fn build_deepseek(
     let v_head_dim = cfg_u(v, "v_head_dim")?;
     let rope_theta = v.get("rope_theta").and_then(Value::as_f64).unwrap_or(10000.0) as f32;
     let qk_head_dim = qk_nope_head_dim + qk_rope_head_dim;
+
+    // **MLA-0** — YaRN (None unless `rope_scaling.type == "yarn"`; absence keeps
+    // the pre-MLA-0 plain-RoPE behaviour exactly).
+    let yarn = v.get("rope_scaling").and_then(|rs| {
+        if rs.is_null() {
+            return None;
+        }
+        let t = rs
+            .get("type")
+            .or_else(|| rs.get("rope_type"))
+            .and_then(Value::as_str)?;
+        if t != "yarn" {
+            return None;
+        }
+        Some(YarnParams {
+            factor: rs.get("factor").and_then(Value::as_f64).unwrap_or(1.0),
+            original_max_position_embeddings: rs
+                .get("original_max_position_embeddings")
+                .and_then(Value::as_u64)
+                .unwrap_or(4096) as usize,
+            beta_fast: rs.get("beta_fast").and_then(Value::as_f64).unwrap_or(32.0),
+            beta_slow: rs.get("beta_slow").and_then(Value::as_f64).unwrap_or(1.0),
+            mscale: rs.get("mscale").and_then(Value::as_f64).unwrap_or(1.0),
+            mscale_all_dim: rs.get("mscale_all_dim").and_then(Value::as_f64).unwrap_or(0.0),
+        })
+    });
+    // **MLA-0** — `norm_topk_prob` drives the MoE combine renorm (default `true`
+    // = the pre-MLA-0 renormalising behaviour; DeepSeek-V2-Lite sets `false`).
+    let renorm_topk = v.get("norm_topk_prob").and_then(Value::as_bool).unwrap_or(true);
+    // **MLA-0** — dense FFN width for the `first_k_dense_replace` layers.
+    let dense_d_ff = cfg_u(v, "intermediate_size").unwrap_or(0);
     // Validate tensor lengths against the config so a corrupt MLA checkpoint (or
     // a mismatched config field like kv_lora_rank) fails with a clear error
     // instead of a silent out-of-range panic inside the imperative forward.
@@ -1295,9 +1342,27 @@ fn build_deepseek(
         Ok(v)
     };
 
+    // **MLA-0** — `moes` holds the MoE blocks for the **MoE** layers only
+    // (`l >= first_k_dense`); the first `first_k_dense` layers are dense SwiGLU.
+    let mut moe_iter = moes.into_iter();
     let mut layers: Vec<DeepseekLayer> = Vec::with_capacity(n_layers);
-    for (l, moe) in moes.into_iter().enumerate() {
+    for l in 0..n_layers {
         let p = format!("model.layers.{l}");
+        let ffn = if l < first_k_dense {
+            DeepseekFfn::Dense(DenseFfn {
+                d_model: hidden,
+                d_ff: dense_d_ff,
+                gate: checked(&format!("{p}.mlp.gate_proj.weight"), dense_d_ff * hidden)?,
+                up: checked(&format!("{p}.mlp.up_proj.weight"), dense_d_ff * hidden)?,
+                down: checked(&format!("{p}.mlp.down_proj.weight"), hidden * dense_d_ff)?,
+            })
+        } else {
+            DeepseekFfn::Moe(
+                moe_iter
+                    .next()
+                    .ok_or_else(|| MoeRuntimeError::Load(format!("missing MoE block for layer {l}")))?,
+            )
+        };
         layers.push(DeepseekLayer {
             input_ln: checked(&format!("{p}.input_layernorm.weight"), hidden)?,
             w_q: checked(&format!("{p}.self_attn.q_proj.weight"), n_heads * qk_head_dim * hidden)?,
@@ -1312,7 +1377,7 @@ fn build_deepseek(
             )?,
             w_o: checked(&format!("{p}.self_attn.o_proj.weight"), hidden * n_heads * v_head_dim)?,
             post_ln: checked(&format!("{p}.post_attention_layernorm.weight"), hidden)?,
-            moe,
+            ffn,
         });
     }
     let get = |name: &str| -> Result<Vec<f32>, MoeRuntimeError> {
@@ -1332,6 +1397,8 @@ fn build_deepseek(
             v_head_dim,
             rope_theta,
             rms_eps,
+            yarn,
+            renorm_topk,
         },
         embed_tokens: get("model.embed_tokens.weight")?,
         layers,

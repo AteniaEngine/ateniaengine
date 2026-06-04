@@ -21,7 +21,24 @@
 //! incremental KV-cache decode loop. Experimental, CPU-only, opt-in via the
 //! runtime. No graph / fail-loud / dense change.
 
-use super::layer::RealMoeLayer;
+use super::layer::{MoeExecutionConvention, RealMoeLayer};
+
+/// **MLA-0** — YaRN RoPE scaling parameters (DeepSeek-V2/V3). When present, the
+/// RoPE `inv_freq` is reparametrised (NTK-by-parts) **and** the attention
+/// softmax scale carries `mscale^2` — both active at *every* position, not just
+/// long context. `mscale` for the softmax scale uses `mscale_all_dim` (matching
+/// HuggingFace `DeepseekV2Attention`). For DeepSeek-V2-Lite `mscale ==
+/// mscale_all_dim`, so the cos/sin `_mscale` cancels to 1.0 and only inv_freq +
+/// the softmax scale change (the only two effects modelled here).
+#[derive(Debug, Clone)]
+pub struct YarnParams {
+    pub factor: f64,
+    pub original_max_position_embeddings: usize,
+    pub beta_fast: f64,
+    pub beta_slow: f64,
+    pub mscale: f64,
+    pub mscale_all_dim: f64,
+}
 
 /// DeepSeek-V2 MLA + MoE config (the subset the imperative forward needs).
 #[derive(Debug, Clone)]
@@ -36,6 +53,15 @@ pub struct DeepseekConfig {
     pub v_head_dim: usize,
     pub rope_theta: f32,
     pub rms_eps: f32,
+    /// **MLA-0** — `Some` when `config.rope_scaling.type == "yarn"`. `None`
+    /// reproduces the pre-MLA-0 plain-RoPE + plain-scale behaviour exactly.
+    pub yarn: Option<YarnParams>,
+    /// **MLA-0** — `norm_topk_prob`: renormalise the selected top-k weights
+    /// (DeepSeek `norm_topk_prob=true`, e.g. the existing fixtures) vs not
+    /// (DeepSeek-V2-Lite `norm_topk_prob=false`). DeepSeek's shared expert is
+    /// ungated either way; `false` ⇒ `HuggingFaceQwen` (no-renorm, ungated
+    /// shared), `true` ⇒ `Atenia` (renorm, ungated shared).
+    pub renorm_topk: bool,
 }
 
 impl DeepseekConfig {
@@ -43,9 +69,69 @@ impl DeepseekConfig {
     pub fn qk_head_dim(&self) -> usize {
         self.qk_nope_head_dim + self.qk_rope_head_dim
     }
+
+    /// MoE combine convention implied by `renorm_topk`.
+    fn moe_convention(&self) -> MoeExecutionConvention {
+        if self.renorm_topk {
+            MoeExecutionConvention::Atenia
+        } else {
+            MoeExecutionConvention::HuggingFaceQwen
+        }
+    }
+
+    /// RoPE `inv_freq` for the `qk_rope_head_dim` pairs (f64). YaRN-reparametrised
+    /// when `self.yarn` is `Some`, else the plain `base^(-2i/dim)`.
+    fn rope_inv_freqs(&self) -> Vec<f64> {
+        rope_inv_freqs(self.qk_rope_head_dim, self.rope_theta as f64, self.yarn.as_ref())
+    }
+
+    /// Attention softmax scale: `qk_head_dim^-0.5`, times `mscale^2` under YaRN
+    /// (`mscale = yarn_get_mscale(factor, mscale_all_dim)`).
+    fn attn_scale(&self) -> f64 {
+        let base = 1.0_f64 / (self.qk_head_dim() as f64).sqrt();
+        match &self.yarn {
+            None => base,
+            Some(y) => {
+                let m = yarn_get_mscale(y.factor, y.mscale_all_dim);
+                base * m * m
+            }
+        }
+    }
 }
 
-/// Per-layer DeepSeek weights (MLA attention + norms + the MoE block).
+/// **MLA-0** — a plain dense SwiGLU FFN (`first_k_dense_replace` layers).
+/// `down( silu(gate·x) ⊙ (up·x) )`. Weights row-major, same layout as an expert.
+#[derive(Debug, Clone)]
+pub struct DenseFfn {
+    pub d_model: usize,
+    pub d_ff: usize,
+    pub gate: Vec<f32>, // [d_ff, d_model]
+    pub up: Vec<f32>,   // [d_ff, d_model]
+    pub down: Vec<f32>, // [d_model, d_ff]
+}
+
+impl DenseFfn {
+    fn forward(&self, x: &[f32]) -> Vec<f32> {
+        let g = matvec(&self.gate, self.d_ff, self.d_model, x);
+        let u = matvec(&self.up, self.d_ff, self.d_model, x);
+        let mut h = vec![0.0_f32; self.d_ff];
+        for i in 0..self.d_ff {
+            let gi = g[i] as f64;
+            h[i] = ((gi / (1.0 + (-gi).exp())) as f32) * u[i]; // silu(gate)*up
+        }
+        matvec(&self.down, self.d_model, self.d_ff, &h)
+    }
+}
+
+/// **MLA-0** — a DeepSeek layer's FFN is either the MoE block (routed + shared)
+/// or, for the first `first_k_dense_replace` layers, a plain dense SwiGLU MLP.
+#[derive(Debug, Clone)]
+pub enum DeepseekFfn {
+    Moe(RealMoeLayer),
+    Dense(DenseFfn),
+}
+
+/// Per-layer DeepSeek weights (MLA attention + norms + the FFN: MoE or dense).
 #[derive(Debug, Clone)]
 pub struct DeepseekLayer {
     pub input_ln: Vec<f32>, // [hidden]
@@ -55,7 +141,8 @@ pub struct DeepseekLayer {
     pub w_kv_b: Vec<f32>,   // [n_heads * (qk_nope_head_dim + v_head_dim), kv_lora_rank]
     pub w_o: Vec<f32>,      // [hidden, n_heads * v_head_dim]
     pub post_ln: Vec<f32>,
-    pub moe: RealMoeLayer,
+    /// **MLA-0** — MoE block or dense SwiGLU (`first_k_dense_replace`).
+    pub ffn: DeepseekFfn,
 }
 
 /// All DeepSeek weights.
@@ -131,13 +218,71 @@ fn rmsnorm(x: &[f32], gamma: &[f32], eps: f32) -> Vec<f32> {
     (0..n).map(|i| ((x[i] as f64) * inv) as f32 * gamma[i]).collect()
 }
 
+/// **MLA-0** — YaRN helpers (port of HuggingFace `DeepseekV2` rotary).
+fn yarn_get_mscale(scale: f64, mscale: f64) -> f64 {
+    if scale <= 1.0 {
+        1.0
+    } else {
+        0.1 * mscale * scale.ln() + 1.0
+    }
+}
+
+fn yarn_find_correction_dim(num_rot: f64, dim: usize, base: f64, max_pos: usize) -> f64 {
+    (dim as f64 * (max_pos as f64 / (num_rot * 2.0 * std::f64::consts::PI)).ln()) / (2.0 * base.ln())
+}
+
+/// `(low, high)` correction range, clamped to `[0, dim-1]`.
+fn yarn_find_correction_range(
+    low_rot: f64,
+    high_rot: f64,
+    dim: usize,
+    base: f64,
+    max_pos: usize,
+) -> (f64, f64) {
+    let low = yarn_find_correction_dim(low_rot, dim, base, max_pos).floor().max(0.0);
+    let high = yarn_find_correction_dim(high_rot, dim, base, max_pos)
+        .ceil()
+        .min((dim - 1) as f64);
+    (low, high)
+}
+
+/// **MLA-0** — RoPE `inv_freq` over the `rope_dim/2` pairs. Plain
+/// `base^(-2i/dim)` without YaRN; the NTK-by-parts blend of interpolated /
+/// extrapolated frequencies with YaRN (exactly HF `DeepseekV2YarnRotaryEmbedding`).
+fn rope_inv_freqs(rope_dim: usize, base: f64, yarn: Option<&YarnParams>) -> Vec<f64> {
+    let half = rope_dim / 2;
+    let extra: Vec<f64> = (0..half)
+        .map(|i| base.powf(-(2.0 * i as f64) / rope_dim as f64))
+        .collect();
+    match yarn {
+        None => extra,
+        Some(y) => {
+            let (low, high) = yarn_find_correction_range(
+                y.beta_fast,
+                y.beta_slow,
+                rope_dim,
+                base,
+                y.original_max_position_embeddings,
+            );
+            let denom = if (high - low).abs() < f64::EPSILON { 0.001 } else { high - low };
+            (0..half)
+                .map(|i| {
+                    let inter = extra[i] / y.factor;
+                    let ramp = (((i as f64) - low) / denom).clamp(0.0, 1.0);
+                    let inv_freq_mask = 1.0 - ramp;
+                    inter * (1.0 - inv_freq_mask) + extra[i] * inv_freq_mask
+                })
+                .collect()
+        }
+    }
+}
+
 /// **Interleaved (GPT-J) RoPE** on a `dim`-length vector at absolute `pos`:
-/// rotates each adjacent pair `(x[2i], x[2i+1])` by `pos · base^(-2i/dim)`.
-/// This matches DeepSeek's `apply_rotary_emb` (`view_as_complex`).
-fn rope_interleaved(x: &[f32], pos: usize, dim: usize, base: f32) -> Vec<f32> {
+/// rotates each adjacent pair `(x[2i], x[2i+1])` by `pos · inv_freqs[i]`.
+/// Matches DeepSeek's `apply_rotary_emb`; `inv_freqs` is YaRN-aware (MLA-0).
+fn rope_interleaved(x: &[f32], pos: usize, inv_freqs: &[f64]) -> Vec<f32> {
     let mut out = x.to_vec();
-    for i in 0..dim / 2 {
-        let inv_freq = (base as f64).powf(-(2.0 * i as f64) / (dim as f64));
+    for (i, &inv_freq) in inv_freqs.iter().enumerate() {
         let angle = pos as f64 * inv_freq;
         let (c, s) = (angle.cos(), angle.sin());
         let a = x[2 * i] as f64;
@@ -164,7 +309,7 @@ fn project_token(
     let qkh = cfg.qk_head_dim();
     let kvl = cfg.kv_lora_rank;
     let hidden = cfg.hidden_size;
-    let base = cfg.rope_theta;
+    let inv_freqs = cfg.rope_inv_freqs(); // MLA-0: YaRN-aware
 
     let q = matvec(&lw.w_q, nh * qkh, hidden, h); // [nh*qkh]
     let ckv = matvec(&lw.w_kv_a, kvl + rope, hidden, h); // [kv_lora + qk_rope]
@@ -172,14 +317,14 @@ fn project_token(
     let k_pe = &ckv[kvl..kvl + rope];
     let compressed_n = rmsnorm(compressed, &lw.kv_a_ln, cfg.rms_eps);
     let kv = matvec(&lw.w_kv_b, nh * (nope + vd), kvl, &compressed_n); // [nh*(nope+vd)]
-    let k_pe_roped = rope_interleaved(k_pe, pos, rope, base); // shared across heads
+    let k_pe_roped = rope_interleaved(k_pe, pos, &inv_freqs); // shared across heads
 
     let mut q_heads = vec![vec![0.0_f32; qkh]; nh];
     let mut k_heads = vec![vec![0.0_f32; qkh]; nh];
     let mut v_heads = vec![vec![0.0_f32; vd]; nh];
     for hd in 0..nh {
         let qh = &q[hd * qkh..(hd + 1) * qkh];
-        let q_pe = rope_interleaved(&qh[nope..qkh], pos, rope, base);
+        let q_pe = rope_interleaved(&qh[nope..qkh], pos, &inv_freqs);
         for i in 0..nope {
             q_heads[hd][i] = qh[i];
             k_heads[hd][i] = kv[hd * (nope + vd) + i];
@@ -206,7 +351,7 @@ fn attend(
     let qkh = cfg.qk_head_dim();
     let vd = cfg.v_head_dim;
     let n = cache.len();
-    let scale = 1.0_f64 / (qkh as f64).sqrt();
+    let scale = cfg.attn_scale(); // MLA-0: qk_head_dim^-0.5 * mscale^2 under YaRN
     let mut ctx = vec![0.0_f32; nh * vd];
     for hd in 0..nh {
         let mut sc = vec![0.0_f64; n];
@@ -260,10 +405,17 @@ fn layer_step(
     let _ = vd;
     let x1: Vec<f32> = (0..hidden).map(|i| x[i] + attn_out[i]).collect();
 
-    // 2. post-attention RMSNorm → MoE block → residual.
+    // 2. post-attention RMSNorm → FFN (MoE block or dense SwiGLU) → residual.
     let h2 = rmsnorm(&x1, &lw.post_ln, cfg.rms_eps);
-    let moe_out = lw.moe.forward_auto(&h2).expect("deepseek moe forward");
-    (0..hidden).map(|i| x1[i] + moe_out[i]).collect()
+    let ffn_out = match &lw.ffn {
+        // MLA-0: drive renorm from `norm_topk_prob` (DeepSeek shared is ungated,
+        // so HuggingFaceQwen-with-no-gate == no-renorm + ungated shared).
+        DeepseekFfn::Moe(m) => m
+            .forward_with(&h2, cfg.moe_convention())
+            .expect("deepseek moe forward"),
+        DeepseekFfn::Dense(d) => d.forward(&h2),
+    };
+    (0..hidden).map(|i| x1[i] + ffn_out[i]).collect()
 }
 
 impl DeepseekWeights {
@@ -389,16 +541,38 @@ mod tests {
     #[test]
     fn interleaved_rope_pos_zero_is_identity() {
         let x = vec![1.0, 2.0, 3.0, 4.0];
-        assert_eq!(rope_interleaved(&x, 0, 4, 10000.0), x);
+        let inv = rope_inv_freqs(4, 10000.0, None);
+        assert_eq!(rope_interleaved(&x, 0, &inv), x);
     }
 
     #[test]
     fn interleaved_rope_rotates_pairs() {
         // pos=1, dim=2, base=10000: inv_freq[0]=1 → angle 1 rad on pair (x0,x1).
         let x = vec![1.0, 0.0];
-        let r = rope_interleaved(&x, 1, 2, 10000.0);
+        let inv = rope_inv_freqs(2, 10000.0, None);
+        let r = rope_interleaved(&x, 1, &inv);
         assert!((r[0] - 1.0_f32.cos()).abs() < 1e-6);
         assert!((r[1] - 1.0_f32.sin()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn yarn_inv_freqs_differ_from_plain_and_no_yarn_is_unchanged() {
+        let plain = rope_inv_freqs(8, 10000.0, None);
+        let plain2 = rope_inv_freqs(8, 10000.0, None);
+        assert_eq!(plain, plain2, "no-yarn must be deterministic + unchanged");
+        let y = YarnParams {
+            factor: 8.0,
+            original_max_position_embeddings: 16,
+            beta_fast: 32.0,
+            beta_slow: 1.0,
+            mscale: 0.707,
+            mscale_all_dim: 0.707,
+        };
+        let yarned = rope_inv_freqs(8, 10000.0, Some(&y));
+        assert_ne!(plain, yarned, "yarn must reparametrise inv_freq");
+        // mscale^2 > 1 for factor 8 (so the attention scale grows).
+        let m = yarn_get_mscale(8.0, 0.707);
+        assert!(m > 1.0 && yarn_get_mscale(1.0, 0.707) == 1.0);
     }
 
     #[test]

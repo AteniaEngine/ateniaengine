@@ -438,6 +438,25 @@ locked by regression tests.
   the existing runtime; ADR-004 gate not lowered; fail-loud preserved. **Only L4
   (global F64) remains, reserved/unreachable** — not L4, not the dense ADR-004
   `CERTIFIED`. (Real run ~950 s, disk-tier.)
+- **MLA-0 — DeepSeek MLA: YaRN + dense-first layer + routing convention
+  (experimental).** Closes the three config-confirmed prerequisites for a faithful
+  DeepSeek-V2-Lite cert (per `docs/DEEPSEEK_V2_LITE_FEASIBILITY.md`), in the
+  experimental MLA path only. **(1) YaRN** (`src/moe/mla.rs`): `inv_freq`
+  NTK-by-parts reparam + **`mscale²`** on the attention softmax scale (active at
+  *every* position), a faithful port of HF `DeepseekV2YarnRotaryEmbedding`.
+  **(2) Dense-first** (`first_k_dense_replace`): `DeepseekFfn { Moe | Dense }` +
+  `DenseFfn`; `load_core` skips MoE assembly for dense layers; `build_deepseek`
+  builds the dense SwiGLU FFN. **(3) Routing convention**: `norm_topk_prob` drives
+  renorm (`true`→Atenia, `false`→HuggingFaceQwen no-renorm+ungated-shared).
+  Validated on a tiny real `DeepseekV2ForCausalLM` (`.double()`) configured like
+  V2-Lite (YaRN + `first_k_dense_replace=1` + `q_lora_rank=null` +
+  `norm_topk_prob=false`): full forward vs HF **max_abs_diff 9.072e-5** (< 0.5,
+  argmax exact) + greedy→EOS. **Backward-compatible**: no `rope_scaling`→plain RoPE,
+  `first_k_dense_replace=0`→all-MoE, `norm_topk_prob` default `true`→renorm; Mixtral/
+  Qwen untouched. Regression: DeepSeek 4/4+2/2 unchanged, scale 3/3, qwen 6/6,
+  mixtral 4/4, **full lib 838 passed**. **No threshold lowered; no real download/
+  cert; no latent cache / Q-LoRA / V3 / productive-loader lift.** See
+  `docs/HANDOFF_MLA_0.md`. Next: **MLA-1** (provision V2-Lite → ADR-007 C1–C5).
 - **FORMAT-INTAKE-1 — PyTorch `.bin` intake.** Closes the coverage audit's #2
   gap (otherwise-supported checkpoints unloadable purely because they ship as
   `pytorch_model.bin`). A new `src/v17/loader/pytorch_bin.rs` **transcodes** a
