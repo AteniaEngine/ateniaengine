@@ -1,0 +1,261 @@
+{
+  "milestone": "MOE-CERT-2-ext",
+  "obligations": [
+    "C1 per-expert (all layers)",
+    "C2 router (all layers)"
+  ],
+  "model": "Qwen1.5-MoE-A2.7B-Chat",
+  "source_arch": "Qwen2MoeForCausalLM",
+  "num_layers": 24,
+  "d_model": 2048,
+  "d_ff": 1408,
+  "num_experts": 60,
+  "experts_per_token": 4,
+  "norm_topk_prob": false,
+  "input_seed": 20260603,
+  "oracle": "NumPy float64 (one expert at a time, one layer at a time; no full-model F64)",
+  "per_layer": [
+    {
+      "layer": 0,
+      "topk_indices": [
+        10,
+        24,
+        39,
+        42
+      ],
+      "routing_margin": 0.16033291284956297
+    },
+    {
+      "layer": 1,
+      "topk_indices": [
+        1,
+        7,
+        11,
+        52
+      ],
+      "routing_margin": 0.17297061507500655
+    },
+    {
+      "layer": 2,
+      "topk_indices": [
+        1,
+        24,
+        28,
+        33
+      ],
+      "routing_margin": 0.09268218844417753
+    },
+    {
+      "layer": 3,
+      "topk_indices": [
+        7,
+        15,
+        48,
+        49
+      ],
+      "routing_margin": 0.13176595310288897
+    },
+    {
+      "layer": 4,
+      "topk_indices": [
+        18,
+        21,
+        49,
+        51
+      ],
+      "routing_margin": 0.520685839186019
+    },
+    {
+      "layer": 5,
+      "topk_indices": [
+        0,
+        19,
+        33,
+        36
+      ],
+      "routing_margin": 0.09488520116108257
+    },
+    {
+      "layer": 6,
+      "topk_indices": [
+        10,
+        26,
+        27,
+        57
+      ],
+      "routing_margin": 0.0018338531293131677
+    },
+    {
+      "layer": 7,
+      "topk_indices": [
+        11,
+        35,
+        40,
+        57
+      ],
+      "routing_margin": 0.2431201043501633
+    },
+    {
+      "layer": 8,
+      "topk_indices": [
+        15,
+        32,
+        39,
+        50
+      ],
+      "routing_margin": 0.024670681224522095
+    },
+    {
+      "layer": 9,
+      "topk_indices": [
+        3,
+        16,
+        38,
+        59
+      ],
+      "routing_margin": 0.007203475640427781
+    },
+    {
+      "layer": 10,
+      "topk_indices": [
+        4,
+        9,
+        35,
+        59
+      ],
+      "routing_margin": 0.03848885285733039
+    },
+    {
+      "layer": 11,
+      "topk_indices": [
+        11,
+        17,
+        22,
+        44
+      ],
+      "routing_margin": 0.11192187848196244
+    },
+    {
+      "layer": 12,
+      "topk_indices": [
+        0,
+        10,
+        24,
+        40
+      ],
+      "routing_margin": 0.22281589360251208
+    },
+    {
+      "layer": 13,
+      "topk_indices": [
+        15,
+        33,
+        46,
+        47
+      ],
+      "routing_margin": 0.28057129495008726
+    },
+    {
+      "layer": 14,
+      "topk_indices": [
+        9,
+        25,
+        49,
+        58
+      ],
+      "routing_margin": 0.12700344438221667
+    },
+    {
+      "layer": 15,
+      "topk_indices": [
+        12,
+        17,
+        32,
+        57
+      ],
+      "routing_margin": 0.06183235238421925
+    },
+    {
+      "layer": 16,
+      "topk_indices": [
+        8,
+        9,
+        17,
+        56
+      ],
+      "routing_margin": 0.10707250336601337
+    },
+    {
+      "layer": 17,
+      "topk_indices": [
+        33,
+        36,
+        40,
+        46
+      ],
+      "routing_margin": 0.17648751219094772
+    },
+    {
+      "layer": 18,
+      "topk_indices": [
+        10,
+        19,
+        36,
+        37
+      ],
+      "routing_margin": 0.0421640764310145
+    },
+    {
+      "layer": 19,
+      "topk_indices": [
+        13,
+        34,
+        38,
+        41
+      ],
+      "routing_margin": 0.004941943720441211
+    },
+    {
+      "layer": 20,
+      "topk_indices": [
+        13,
+        25,
+        33,
+        52
+      ],
+      "routing_margin": 0.09508587167330962
+    },
+    {
+      "layer": 21,
+      "topk_indices": [
+        3,
+        32,
+        49,
+        57
+      ],
+      "routing_margin": 0.13684783800623856
+    },
+    {
+      "layer": 22,
+      "topk_indices": [
+        20,
+        43,
+        46,
+        49
+      ],
+      "routing_margin": 0.00893339085717626
+    },
+    {
+      "layer": 23,
+      "topk_indices": [
+        9,
+        27,
+        35,
+        53
+      ],
+      "routing_margin": 0.08057421332784831
+    }
+  ],
+  "reference_file": "qwen_moe_decomp_ref_all_layers.safetensors",
+  "note": "Real trained weights, ALL layers. ADR-007 C1/C2 exhaustive. C3 (attention) reused from the existing Qwen-MoE full-forward cert."
+}

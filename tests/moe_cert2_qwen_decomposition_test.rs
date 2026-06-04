@@ -29,7 +29,8 @@
 //!    on the real Qwen1.5-MoE-A2.7B layer-0 weights vs the committed f64
 //!    reference — the measured L1 evidence.
 
-use std::path::PathBuf;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 
 use atenia_engine::moe::{top_k_routing, MoeLayerConfig, MoeWeightMap, RealMoeLayer};
 use atenia_engine::v17::loader::safetensors_reader::SafetensorsReader;
@@ -282,5 +283,166 @@ fn cert2_real_qwen_moe_per_expert_and_router() {
          + C2 PASS (top-k set match). Scope: layer-0 representative (NOT all 24 layers). \
          C3 attention via the existing mechanism cert (MOE-FULL-13, tiny fixture), not real-weight re-certified. \
          → ADR-007 L1 on the layer-0 scope; whole-model L1 needs the all-layers extension."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// MOE-CERT-2-ext — C1 + C2 across ALL layers of the real Qwen1.5-MoE.
+// #[ignore] + env QWEN_MOE_DIR. Reads each layer's real weights from whichever
+// shard(s) hold them (7 layers span two shards), one expert at a time, and
+// gates against the committed all-layers f64 reference. Produces the
+// whole-model L1 evidence. Regenerate the reference with:
+//   python fixtures/moe/generate_qwen_moe_decomposition_reference.py <dir> fixtures/moe --all
+// Run:
+//   QWEN_MOE_DIR=models/Qwen1.5-MoE-A2.7B-Chat cargo test \
+//     --test moe_cert2_qwen_decomposition_test --release -- \
+//     --ignored cert2_real_qwen_moe_all_layers --nocapture
+// ---------------------------------------------------------------------------
+
+/// The set of shard files that hold `model.layers.<layer>.mlp.*` tensors,
+/// read from the sharded index. A layer's experts may live in two shards.
+fn mlp_shards_for_layer(model_dir: &Path, layer: usize) -> Vec<PathBuf> {
+    let index: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(model_dir.join("model.safetensors.index.json")).unwrap(),
+    )
+    .unwrap();
+    let prefix = format!("model.layers.{layer}.mlp.");
+    let mut shards: BTreeSet<String> = BTreeSet::new();
+    for (name, shard) in index["weight_map"].as_object().unwrap() {
+        if name.starts_with(&prefix) {
+            shards.insert(shard.as_str().unwrap().to_string());
+        }
+    }
+    shards.into_iter().map(|s| model_dir.join(s)).collect()
+}
+
+#[test]
+#[ignore = "needs the real ~27 GB Qwen1.5-MoE checkpoint via QWEN_MOE_DIR"]
+fn cert2_real_qwen_moe_all_layers() {
+    let model_dir = PathBuf::from(
+        std::env::var("QWEN_MOE_DIR").expect("set QWEN_MOE_DIR to the Qwen1.5-MoE checkout"),
+    );
+
+    // --- committed all-layers f64 reference ---
+    let meta: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(fixture_dir().join("qwen_moe_decomp_ref_all_layers.json")).unwrap(),
+    )
+    .unwrap();
+    let n_layers = meta["num_layers"].as_u64().unwrap() as usize;
+    let n_experts = meta["num_experts"].as_u64().unwrap() as usize;
+    let k = meta["experts_per_token"].as_u64().unwrap() as usize;
+    let d_model = meta["d_model"].as_u64().unwrap() as usize;
+    let d_ff = meta["d_ff"].as_u64().unwrap() as usize;
+    let per_layer = meta["per_layer"].as_array().unwrap();
+
+    let refr =
+        SafetensorsReader::open(&fixture_dir().join("qwen_moe_decomp_ref_all_layers.safetensors"))
+            .unwrap();
+    let input = refr.get("input").unwrap().to_vec_f32().unwrap();
+    let expert_outputs = refr.get("expert_outputs").unwrap().to_vec_f32().unwrap();
+    assert_eq!(input.len(), d_model);
+    assert_eq!(expert_outputs.len(), n_layers * n_experts * d_model);
+
+    // Global trackers (no fabricated numbers — every value is measured).
+    let mut global_worst = 0.0_f32;
+    let (mut worst_layer, mut worst_expert) = (0usize, 0usize);
+    let mut min_margin = f64::INFINITY;
+    let mut min_margin_layer = 0usize;
+    let mut c1_failures: Vec<(usize, usize, f32)> = Vec::new();
+    let mut c2_failures: Vec<(usize, Vec<usize>, Vec<usize>)> = Vec::new();
+    let mut experts_checked = 0usize;
+
+    for l in 0..n_layers {
+        // Open whichever shard(s) hold this layer's mlp, build a combined map +
+        // resolver. Fresh opens per layer (safetensors mmaps; cheap, lazy).
+        let shard_paths = mlp_shards_for_layer(&model_dir, l);
+        let readers: Vec<SafetensorsReader> = shard_paths
+            .iter()
+            .map(|p| SafetensorsReader::open(p).unwrap())
+            .collect();
+        let prefix = format!("model.layers.{l}.mlp.");
+        let names_shapes: Vec<(String, Vec<usize>)> = readers
+            .iter()
+            .flat_map(|r| r.iter())
+            .filter(|e| e.name.starts_with(&prefix))
+            .map(|e| (e.name.to_string(), e.shape.to_vec()))
+            .collect();
+        let map = MoeWeightMap::from_tensors(names_shapes.iter().map(|(n, s)| (n.as_str(), s.clone())));
+        let resolve = |name: &str| {
+            readers.iter().find_map(|r| r.get(name).and_then(|e| e.to_vec_f32().ok()))
+        };
+        let cfg = MoeLayerConfig::new(n_experts, k, true, d_model, d_ff).unwrap();
+        let layer = RealMoeLayer::assemble(&map, l, cfg, &resolve).unwrap();
+        assert_eq!(layer.num_experts(), n_experts, "layer {l}: resolved expert count");
+
+        // --- C1: per-expert parity, exhaustive ---
+        let mut layer_worst = 0.0_f32;
+        for e in 0..n_experts {
+            let out = layer.routed.experts[e].forward(&input).unwrap();
+            let base = (l * n_experts + e) * d_model;
+            let want = &expert_outputs[base..base + d_model];
+            let diff = max_abs_diff(&out, want);
+            experts_checked += 1;
+            if diff > layer_worst {
+                layer_worst = diff;
+            }
+            if diff > global_worst {
+                global_worst = diff;
+                worst_layer = l;
+                worst_expert = e;
+            }
+            if !(diff < ADR_004_GATE) {
+                c1_failures.push((l, e, diff));
+            }
+        }
+
+        // --- C2: router top-k set equality (hard gate) + margin ---
+        let ref_topk: Vec<usize> = per_layer[l]["topk_indices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_u64().unwrap() as usize)
+            .collect();
+        let weights = layer.routed.route(&input).unwrap().weights;
+        let atenia_topk = top_k_routing(&weights, k).unwrap().indices;
+        let logits = router_logits_f64(&layer.routed.w_router, n_experts, d_model, &input);
+        let margin = routing_margin(&logits, k);
+        if margin < min_margin {
+            min_margin = margin;
+            min_margin_layer = l;
+        }
+        if atenia_topk != ref_topk {
+            c2_failures.push((l, atenia_topk.clone(), ref_topk.clone()));
+        }
+
+        println!(
+            "CERT2-EXT layer {l:2}: C1 worst={layer_worst:.3e} | C2 topk={atenia_topk:?} margin={margin:.6}"
+        );
+    }
+
+    println!(
+        "CERT2-EXT SUMMARY: layers={n_layers} experts_checked={experts_checked} | \
+         C1 global worst max_abs_diff={global_worst:.3e} (layer {worst_layer}, expert {worst_expert}) | \
+         C2 min routing_margin={min_margin:.6} (layer {min_margin_layer}) | \
+         C1 failures={} C2 failures={}",
+        c1_failures.len(),
+        c2_failures.len()
+    );
+
+    // Hard gates — if ANY layer fails, do NOT certify (the assert fails loudly).
+    assert!(
+        c1_failures.is_empty(),
+        "C1 FAILED on some experts (not certifying L1): {c1_failures:?}"
+    );
+    assert!(
+        c2_failures.is_empty(),
+        "C2 FAILED — top-k set differs on some layers (not certifying L1): {c2_failures:?}"
+    );
+    assert_eq!(experts_checked, n_layers * n_experts, "must check every expert of every layer");
+
+    println!(
+        "CERT2-EXT RESULT: Qwen-MoE C1+C2 PASS across ALL {n_layers} layers ({experts_checked} experts, \
+         worst {global_worst:.3e} < {ADR_004_GATE}; all top-k sets match; min margin {min_margin:.4}). \
+         C3 attention reused (MOE-FULL-13). → ADR-007 WHOLE-MODEL L1 for Qwen-MoE."
     );
 }
