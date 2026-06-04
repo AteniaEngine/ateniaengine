@@ -312,16 +312,20 @@ reusing the ADR-004 `max_abs_diff < 0.5` + argmax bar **unchanged**.
 - A family is written **`MoE-certified Ln`**, never a bare "certified". An Ln
   (`n < 4`) certificate is **not** the dense ADR-004 guarantee: it names exactly
   the subgraph exercised and lists the unreached obligations.
-- **Qwen-MoE — MoE-certified L1 (whole model)** via **MOE-CERT-2** (layer 0) +
-  **MOE-CERT-2-ext** (all 24 layers) (`tests/moe_cert2_qwen_decomposition_test.rs`,
-  `docs/numcert/qwen1.5-moe-a2.7b.moecert.json`): on the **real** Qwen1.5-MoE-A2.7B
-  weights vs a float64 reference computed one expert at a time —
-  **C1** all **1440** routed experts (24 layers × 60) under the ADR-004 gate,
-  **global worst `max_abs_diff` 4.768e-7** (layer 6, expert 37), exhaustive, 0
-  failures; **C2** top-k expert **set equality** on all 24 layers (hard gate, 0
-  failures), **min routing margin 0.001834** (layer 6, no flip); **C3** reused
-  from the existing attention mechanism cert (5.960e-08, MOE-FULL-13). This is
-  **whole-model L1**, NOT the dense ADR-004 `CERTIFIED`, and NOT L2/L3/L4.
+- **Qwen-MoE — MoE-certified L2 (whole model)** via **MOE-CERT-2** (layer 0) +
+  **MOE-CERT-2-ext** (all 24 layers) + **MOE-CERT-3** (fold C4)
+  (`tests/moe_cert2_qwen_decomposition_test.rs`, `tests/moe_scale_cert_test.rs`,
+  `docs/numcert/qwen1.5-moe-a2.7b.moecert.json`). **L2 = L1 + C4.**
+  **L1** on the **real** Qwen1.5-MoE-A2.7B weights vs a float64 reference computed
+  one expert at a time — **C1** all **1440** routed experts (24 layers × 60) under
+  the ADR-004 gate, **global worst `max_abs_diff` 4.768e-7** (layer 6, expert 37),
+  exhaustive, 0 failures; **C2** top-k expert **set equality** on all 24 layers
+  (hard gate, 0 failures), **min routing margin 0.001834** (layer 6, no flip);
+  **C3** reused from the existing attention mechanism cert (5.960e-08, MOE-FULL-13).
+  **C4** (assembly/topology) = the Qwen-MoE scale-topology end-to-end cert vs HF
+  f64 = **1.490e-7** (16-expert / top-4 / shared-sigmoid / GQA / qkv-bias reduced-dim
+  fixture; the assembly mechanism, not the real 60-expert weights). This is
+  **whole-model L2**, NOT the dense ADR-004 `CERTIFIED`, and NOT L3/L4.
 - **Mixtral / DeepSeek-MoE remain at L0.** Raising them, and lifting Qwen-MoE to
   whole-model L1 → L2 → L3, is the MOE-CERT-2(ext)/3/4 work; L4 (global F64,
   dense-equivalent) is reserved and currently unreachable for large-active MoE

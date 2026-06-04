@@ -147,15 +147,16 @@ wall). L4 is **never fabricated**: a family that has not passed L4 lists it as
 `pending` with the **exact blocker** (e.g. "L4: requires ~373 GB F64 RAM").
 
 **L0 is already satisfied** for Mixtral, Qwen-MoE and DeepSeek-MoE (scale-topology
-certs, `HANDOFF_MOE_FULL_15.md`). **MOE-CERT-2 + MOE-CERT-2-ext** then raised
-Qwen-MoE to **MoE-certified L1 (whole model)**: C1 exhaustive over **all 24
-layers × 60 routed experts = 1440 experts** on the real trained weights (global
-worst `max_abs_diff` 4.768e-7, layer 6 / expert 37, 0 failures); C2 top-k set
-match on all 24 layers (0 failures, min routing margin 0.001834, no flip); C3 via
-the existing attention mechanism cert
-(`docs/numcert/qwen1.5-moe-a2.7b.moecert.json`). Mixtral and DeepSeek-MoE remain
-at L0. Raising Qwen-MoE further (L2 → L3) and Mixtral up the ladder is the work
-of MOE-CERT-3/4.
+certs, `HANDOFF_MOE_FULL_15.md`). **MOE-CERT-2 + MOE-CERT-2-ext** raised Qwen-MoE
+to **L1 (whole model)**: C1 exhaustive over **all 24 layers × 60 routed experts =
+1440 experts** on the real trained weights (global worst `max_abs_diff` 4.768e-7,
+layer 6 / expert 37, 0 failures); C2 top-k set match on all 24 layers (0 failures,
+min routing margin 0.001834, no flip); C3 via the existing attention mechanism
+cert. **MOE-CERT-3** then folded in **C4** (the Qwen-MoE scale-topology end-to-end
+cert vs HF f64 = 1.490e-7, `tests/moe_scale_cert_test.rs`) to reach **MoE-certified
+L2 (whole model)** = L1 + C4 (`docs/numcert/qwen1.5-moe-a2.7b.moecert.json`).
+Mixtral and DeepSeek-MoE remain at L0. Raising Qwen-MoE further (L3 active-path)
+and Mixtral up the ladder is the work of MOE-CERT-4+.
 
 ### 3. Reporting discipline (how a partial level is shown honestly)
 

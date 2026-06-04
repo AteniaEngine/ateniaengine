@@ -407,6 +407,20 @@ locked by regression tests.
   `src/` change**; ADR-004 gate not lowered; fail-loud preserved. L2/L3/L4 remain
   pending. `tests/moe_cert2_qwen_decomposition_test.rs::cert2_real_qwen_moe_all_layers`
   (real run: 1440 experts, 380 s).
+- **MOE-CERT-3 — Qwen-MoE whole-model L2 (fold C4; manifest/docs only).** Folds
+  the existing **C4** (assembly/topology) evidence into the MoE manifest to reach
+  **L2 = L1 + C4**. C4 = the Qwen-MoE **scale-topology** end-to-end certificate
+  (`tests/moe_scale_cert_test.rs::qwen_moe_scale_topology_certifies`,
+  MOE-FULL-15): full-forward vs HF f64 **max_abs_diff 1.490e-7** (< 0.5; the test
+  asserts the stricter 1e-3) + per-position argmax + generate→EOS + determinism,
+  on the Qwen-MoE topology (16-expert / top-4 / shared-sigmoid / GQA / qkv-bias,
+  reduced dim, random weights). Per ADR-007 this is the designated C4 evidence; it
+  certifies the **assembly mechanism**, gaining real-weight force combined with
+  the whole-model C1/C2 (real weights, all layers). Result: **Qwen-MoE —
+  MoE-certified L2 (whole model)**; manifest `ladder_level_whole_model: L2`.
+  **No `src/` change** — manifest + docs only; ADR-004 gate not lowered; C4 test
+  re-run green (1.490e-7). **L3 (C5 active-path) and L4 (global F64) remain
+  pending** — not L3, not L4, not the dense ADR-004 `CERTIFIED`.
 - **FORMAT-INTAKE-1 — PyTorch `.bin` intake.** Closes the coverage audit's #2
   gap (otherwise-supported checkpoints unloadable purely because they ship as
   `pytorch_model.bin`). A new `src/v17/loader/pytorch_bin.rs` **transcodes** a

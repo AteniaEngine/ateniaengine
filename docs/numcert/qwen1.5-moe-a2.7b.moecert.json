@@ -5,12 +5,12 @@
   "model": "Qwen1.5-MoE-A2.7B-Chat",
   "model_family": "qwen-moe",
   "model_arch": "Qwen2MoeForCausalLM",
-  "atenia_version": "0.x-MOE-CERT-2-ext",
-  "milestone": "MOE-CERT-2-ext (whole-model C1+C2; built on MOE-CERT-2 layer-0)",
+  "atenia_version": "0.x-MOE-CERT-3",
+  "milestone": "MOE-CERT-3 (fold C4 -> L2; built on MOE-CERT-2 + MOE-CERT-2-ext)",
 
-  "ladder_level_whole_model": "L1",
-  "headline": "MoE-certified L1 (whole model)",
-  "headline_note": "Per ADR-007 the bare word 'certified' is forbidden for MoE. This family is 'MoE-certified L1' on the WHOLE MODEL: C1 (per-expert) is exhaustive over ALL 24 layers x 60 routed experts = 1440 experts and C2 (router top-k set equality) holds on all 24 layers, both on the REAL trained weights vs a float64 reference computed one expert at a time; C3 (attention) is satisfied by the existing attention-mechanism certificate. This is L1, NOT the dense ADR-004 CERTIFIED guarantee, and NOT L2/L3/L4 — L2 (assembly with C4) / L3 (active-path C5) / L4 (global F64, unreachable) remain pending.",
+  "ladder_level_whole_model": "L2",
+  "headline": "MoE-certified L2 (whole model)",
+  "headline_note": "Per ADR-007 the bare word 'certified' is forbidden for MoE. This family is 'MoE-certified L2' = L1 + C4. L1: C1 (per-expert) exhaustive over ALL 24 layers x 60 routed experts = 1440 experts + C2 (router top-k set equality) on all 24 layers, both on the REAL trained weights vs a float64 reference computed one expert at a time; C3 (attention) via the existing mechanism cert. C4 (assembly/topology): the Qwen-MoE scale-topology end-to-end cert vs HF f64 = 1.490e-7. This is L2, NOT the dense ADR-004 CERTIFIED guarantee, and NOT L3/L4 — L3 (active-path C5) and L4 (global F64, unreachable) remain pending. L2 = 'the pieces (real weights, all layers) AND their composition (topology mechanism) are certified'.",
 
   "config_summary": {
     "hidden_size": 2048,
@@ -58,9 +58,16 @@
       "re_derived_this_milestone": false
     },
     "C4_assembly_topology": {
-      "status": "PASS (L0)",
-      "evidence": "scale-topology cert qwen_scale 1.490e-07 (16-expert/top-4/shared, MOE-FULL-15)",
-      "note": "certifies routing+combine+assembly mechanism on a reduced-dim full-F64 fixture (random weights), not the real trained weights."
+      "status": "PASS",
+      "folded_in": "MOE-CERT-3",
+      "evidence": "scale-topology certificate qwen_scale (MOE-FULL-15, tests/moe_scale_cert_test.rs::qwen_moe_scale_topology_certifies)",
+      "topology": "qwen2_moe: 16 experts, top-4, shared expert (sigmoid gate), GQA 8/2-kv, Q/K/V bias, norm_topk_prob=false, 2 layers — the Qwen-MoE routing/attention topology at reduced hidden dim",
+      "metric": "end-to-end full-forward max_abs_diff vs HuggingFace f64",
+      "max_abs_diff_vs_hf_f64": 1.490e-7,
+      "gate": "< 0.5 (ADR-004 bar, unchanged); the test asserts the stricter 1e-3 and also per-position argmax match + generate->EOS [10] + determinism",
+      "result": "PASS (1.490e-7, ~3.4e6x inside the 0.5 gate; argmax exact; generate->EOS; deterministic)",
+      "caveat": "certifies the routing+combine+assembly+attention MECHANISM end-to-end at full F64 on a REDUCED-DIM, 16-expert, RANDOM-weight topology fixture — NOT the real 60-expert trained weights. Per ADR-007 this is exactly the C4 evidence; it transfers to the real model only IN CONJUNCTION WITH C1/C2 (whole-model, real weights), which are met. Recorded, not over-claimed.",
+      "re_derived_this_milestone": false
     },
     "C5_active_path": {
       "status": "PENDING",
@@ -69,14 +76,15 @@
   },
 
   "pending_levels": [
-    { "level": "L2", "blocker": "fold C4 (topology, have it) with this whole-model L1." },
-    { "level": "L3", "blocker": "C5 active-path (F32 cross-framework feasible on 32 GB; MOE-CERT-4)." },
+    { "level": "L3", "blocker": "C5 active-path — real-weight forward vs F64-active (~22 GB) or F32 cross-framework (~11 GB), not yet run (MOE-CERT-4)." },
     { "level": "L4 (dense-equivalent)", "blocker": "global model.double() F64 ~114 GB — reserved / unreachable on the project hardware envelope; never fabricated." }
   ],
 
   "remaining_caveats": [
     "C3 attention is reused at the mechanism level (tiny fixture, 5.960e-08), not re-certified on the real per-layer attention weights.",
-    "C1/C2 use a single deterministic probe input applied to every layer's real weights (a representative activation, not a real inter-layer activation trace) — this certifies the per-layer expert/router math, consistent with the layer-0 approach."
+    "C4 assembly/topology is certified on a reduced-dim, 16-expert, random-weight topology fixture (qwen_scale, 1.490e-7) — the Qwen-MoE mechanism, NOT the real 60-expert trained-weight assembly. It is the C4 evidence ADR-007 designates; it gains real-weight force only combined with the whole-model C1/C2.",
+    "C1/C2 use a single deterministic probe input applied to every layer's real weights (a representative activation, not a real inter-layer activation trace) — this certifies the per-layer expert/router math, consistent with the layer-0 approach.",
+    "L2 is NOT L3 (active-path on the real model as run) and NOT L4 (global F64, unreachable), and is NOT the dense ADR-004 CERTIFIED."
   ],
 
   "verification": {
