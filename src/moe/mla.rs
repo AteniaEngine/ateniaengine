@@ -21,7 +21,9 @@
 //! incremental KV-cache decode loop. Experimental, CPU-only, opt-in via the
 //! runtime. No graph / fail-loud / dense change.
 
-use super::layer::{MoeExecutionConvention, RealMoeLayer};
+use std::sync::Arc;
+
+use super::residency::ResidentExpertLayer;
 
 /// **MLA-0** — YaRN RoPE scaling parameters (DeepSeek-V2/V3). When present, the
 /// RoPE `inv_freq` is reparametrised (NTK-by-parts) **and** the attention
@@ -61,6 +63,11 @@ pub struct DeepseekConfig {
     /// (DeepSeek-V2-Lite `norm_topk_prob=false`). DeepSeek's shared expert is
     /// ungated either way; `false` ⇒ `HuggingFaceQwen` (no-renorm, ungated
     /// shared), `true` ⇒ `Atenia` (renorm, ungated shared).
+    ///
+    /// **MLA-2** — informational only: the actual combine convention is baked
+    /// into each layer's [`ResidentExpertLayer::convention`] at load time (set
+    /// from this same `norm_topk_prob`), so the streamed forward reproduces the
+    /// pre-MLA-2 RAM-f32 behaviour exactly.
     pub renorm_topk: bool,
 }
 
@@ -68,15 +75,6 @@ impl DeepseekConfig {
     /// Query/key head dim used for the attention scores.
     pub fn qk_head_dim(&self) -> usize {
         self.qk_nope_head_dim + self.qk_rope_head_dim
-    }
-
-    /// MoE combine convention implied by `renorm_topk`.
-    fn moe_convention(&self) -> MoeExecutionConvention {
-        if self.renorm_topk {
-            MoeExecutionConvention::Atenia
-        } else {
-            MoeExecutionConvention::HuggingFaceQwen
-        }
     }
 
     /// RoPE `inv_freq` for the `qk_rope_head_dim` pairs (f64). YaRN-reparametrised
@@ -127,7 +125,12 @@ impl DenseFfn {
 /// or, for the first `first_k_dense_replace` layers, a plain dense SwiGLU MLP.
 #[derive(Debug, Clone)]
 pub enum DeepseekFfn {
-    Moe(RealMoeLayer),
+    /// **MLA-2** — the routed+shared MoE block as a residency-backed layer whose
+    /// experts live in the chosen tier (RAM-f32 by default, or NVMe via
+    /// `ATENIA_MOE_EXPERT_TIER=disk`). The forward streams only the top-k (+shared)
+    /// experts on demand; output is bit-identical to the certified
+    /// `RealMoeLayer::forward_with` under the same convention.
+    Moe(Arc<ResidentExpertLayer>),
     Dense(DenseFfn),
 }
 
@@ -408,11 +411,12 @@ fn layer_step(
     // 2. post-attention RMSNorm → FFN (MoE block or dense SwiGLU) → residual.
     let h2 = rmsnorm(&x1, &lw.post_ln, cfg.rms_eps);
     let ffn_out = match &lw.ffn {
-        // MLA-0: drive renorm from `norm_topk_prob` (DeepSeek shared is ungated,
-        // so HuggingFaceQwen-with-no-gate == no-renorm + ungated shared).
-        DeepseekFfn::Moe(m) => m
-            .forward_with(&h2, cfg.moe_convention())
-            .expect("deepseek moe forward"),
+        // MLA-2: stream the routed+shared experts from their residency tier
+        // (uncached `forward`). The layer's `convention` was set from
+        // `norm_topk_prob` at load (DeepSeek shared is ungated, so no-renorm +
+        // ungated shared == HuggingFaceQwen-with-no-gate). Output is bit-identical
+        // to the pre-MLA-2 `RealMoeLayer::forward_with(_, cfg.moe_convention())`.
+        DeepseekFfn::Moe(m) => m.forward(&h2).map(|(y, _info)| y).expect("deepseek moe forward"),
         DeepseekFfn::Dense(d) => d.forward(&h2),
     };
     (0..hidden).map(|i| x1[i] + ffn_out[i]).collect()

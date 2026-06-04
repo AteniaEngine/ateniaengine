@@ -483,6 +483,21 @@ locked by regression tests.
   `ladder_level_whole_model: L2`. C3+C4 mechanism caveat; C5 (active-path) → L3 and
   L4 (global F64) remain pending. **No `src/` change** — manifest/docs only (both C4
   tests re-run green); ADR-004 gate not lowered. Not dense `CERTIFIED`, not L3/L4.
+- **MLA-2 — disk/bf16 expert-tier for the experimental DeepSeek MLA forward
+  (unblocks C5).** The MLA forward previously consumed a RAM-f32 `RealMoeLayer`
+  per layer, forcing the whole real DeepSeek-V2-Lite into RAM (~58.5 GB f32 on a
+  31.7 GB host) — the C5 blocker (purely **residency**, not numerics). MLA-2 routes
+  `DeepseekFfn::Moe` through the already-certified `Arc<ResidentExpertLayer>`
+  (uncached `forward`) at the env tier: default `Ram` (bit-identical to before) or
+  `ATENIA_MOE_EXPERT_TIER=disk` (experts on NVMe, ~0 host RAM → peak **~4 GB**).
+  Convention is set from `norm_topk_prob` (ungated shared, so the gate-based
+  `resolve_convention` would mis-key V2-Lite); load-time `self_validate_residency`
+  now checks under that convention. **Bit-identical**: MLA-0 full forward on the
+  disk tier = the RAM tier exactly (both 9.072e-5 vs HF, argmax exact, greedy
+  identical, deterministic). MLA attention stays RAM; no cache, no perf work, no
+  numerics change; Qwen/Mixtral untouched (full lib suite 838/0 single-threaded).
+  **C5 not run yet — DeepSeek-V2-Lite stays MoE-certified L2**; L3 is now
+  *technically unblocked* but **not certified**. See `docs/HANDOFF_MLA_2.md`.
 - **FORMAT-INTAKE-1 — PyTorch `.bin` intake.** Closes the coverage audit's #2
   gap (otherwise-supported checkpoints unloadable purely because they ship as
   `pytorch_model.bin`). A new `src/v17/loader/pytorch_bin.rs` **transcodes** a

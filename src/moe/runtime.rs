@@ -848,6 +848,22 @@ impl MoeRuntime {
             0
         };
 
+        // **MLA-2** — DeepSeek MoE combine convention, driven by `norm_topk_prob`
+        // (default `true`). DeepSeek's shared expert is ungated, so the layer's
+        // `resolve_convention()` (which keys off a shared-expert *gate*) would
+        // mis-classify V2-Lite as `Atenia`; we set the residency layer's
+        // convention from this value explicitly to reproduce the pre-MLA-2
+        // `forward_with(_, cfg.moe_convention())` behaviour bit-for-bit.
+        let deepseek_convention = if v
+            .get("norm_topk_prob")
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
+        {
+            super::layer::MoeExecutionConvention::Atenia
+        } else {
+            super::layer::MoeExecutionConvention::HuggingFaceQwen
+        };
+
         // 4. Adapter validation (Mixtral) + config cross-check (all families).
         let moe_cfg = MoeConfig::from_json_str(config_text)
             .map_err(|e| MoeRuntimeError::Config(format!("moe config: {e}")))?;
@@ -867,15 +883,15 @@ impl MoeRuntime {
         // layer's experts onto NVMe and frees the f32 copies before the next
         // layer assembles, so peak load RAM is ~one layer (not the whole model).
         // The graph families (Mixtral / Qwen-MoE) carry the tier into the MoE
-        // graph node via `MoeBlock`; DeepSeek's MLA forward consumes the
-        // `RealMoeLayer` imperatively, so it stays RAM-f32 (tier change is a
-        // follow-up). `ResidentExpertLayer::forward` is certified bit-identical
-        // to `RealMoeLayer::forward_auto` (MOE-FULL-8), so outputs are unchanged.
-        let expert_tier = if family == MoeFamily::DeepSeekMoe {
-            ExpertTier::Ram
-        } else {
-            expert_tier_from_env()
-        };
+        // graph node via `MoeBlock`. **MLA-2** — DeepSeek's imperative MLA forward
+        // now also streams its experts through `ResidentExpertLayer` (uncached
+        // `forward`), so it honours the same env tier: default `Ram` (bit-identical
+        // to before), or `disk` (NVMe, experts cost ~0 host RAM — the whole-model
+        // RAM-f32 footprint drops from ~tens-of-GB to ~one active layer).
+        // `ResidentExpertLayer::forward` is certified bit-identical to
+        // `RealMoeLayer::forward_with` under the same convention, so outputs are
+        // unchanged in either tier.
+        let expert_tier = expert_tier_from_env();
         let map = super::data_plane::MoeWeightMap::from_tensors(
             metas.iter().map(|(n, s)| (n.as_str(), s.clone())),
         );
@@ -910,7 +926,7 @@ impl MoeRuntime {
         let mut residency: Vec<Arc<ResidentExpertLayer>> = Vec::with_capacity(n_layers);
         let mut caches: Vec<ExpertCache> = Vec::with_capacity(n_layers);
         let mut moe_blocks: Vec<MoeBlock> = Vec::with_capacity(n_layers);
-        let mut deepseek_moes: Vec<RealMoeLayer> = Vec::with_capacity(n_layers);
+        let mut deepseek_residents: Vec<Arc<ResidentExpertLayer>> = Vec::with_capacity(n_layers);
         for l in 0..n_layers {
             // **MLA-0** — DeepSeek dense-first layers have no experts; their dense
             // SwiGLU FFN is assembled inside `build_deepseek` from the source.
@@ -921,6 +937,26 @@ impl MoeRuntime {
                 .map_err(|e| MoeRuntimeError::Load(format!("layer cfg: {e}")))?;
             let moe = RealMoeLayer::assemble(&map, l, layer_cfg, &resolve)
                 .map_err(|e| MoeRuntimeError::Load(format!("assemble layer {l}: {e}")))?;
+
+            // **MLA-2** — DeepSeek streams its experts through `ResidentExpertLayer`
+            // at the env tier (default `Ram`, bit-identical to before; `disk` puts
+            // experts on NVMe at ~0 host RAM). The convention is set from
+            // `norm_topk_prob` (ungated shared ⇒ gate-based `resolve_convention`
+            // does not apply). Self-validated against the `RealMoeLayer` under that
+            // same convention; the f32 copy is freed before the next layer.
+            if family == MoeFamily::DeepSeekMoe {
+                let mut resident = ResidentExpertLayer::from_real_layer(&moe, expert_tier)
+                    .map_err(|e| MoeRuntimeError::Load(format!("residency layer {l}: {e}")))?;
+                resident.convention = deepseek_convention;
+                Self::self_validate_residency(l, &moe, &resident)?;
+                caches.push(ExpertCache::new(n_experts));
+                let resident = Arc::new(resident);
+                residency.push(Arc::clone(&resident));
+                deepseek_residents.push(resident);
+                drop(moe);
+                continue;
+            }
+
             // Always certify the resident path reproduces the block (transient
             // RAM resident, dropped after the check for the Disk tier).
             let resident_ram = ResidentExpertLayer::from_real_layer(&moe, ExpertTier::Ram)
@@ -928,10 +964,7 @@ impl MoeRuntime {
             Self::self_validate_residency(l, &moe, &resident_ram)?;
             caches.push(ExpertCache::new(n_experts));
 
-            if family == MoeFamily::DeepSeekMoe {
-                residency.push(Arc::new(resident_ram));
-                deepseek_moes.push(moe);
-            } else {
+            {
                 match expert_tier {
                     ExpertTier::Ram => {
                         residency.push(Arc::new(resident_ram));
@@ -976,7 +1009,7 @@ impl MoeRuntime {
                 n_layers,
                 rms_eps,
                 first_k_dense,
-                deepseek_moes,
+                deepseek_residents,
             )?),
             _ => {
                 let weights =
@@ -1068,8 +1101,12 @@ impl MoeRuntime {
         let (got, _) = resident
             .forward_cached(&mut cache, &probe)
             .map_err(|e| MoeRuntimeError::Load(format!("residency probe: {e}")))?;
+        // **MLA-2** — compare under the resident layer's OWN convention. For the
+        // graph families this equals `resolve_convention()` (== `forward_auto`),
+        // so Qwen/Mixtral are unchanged; for DeepSeek it honours the convention
+        // set from `norm_topk_prob` (the resident's `forward_cached` uses it too).
         let want = moe
-            .forward_auto(&probe)
+            .forward_with(&probe, resident.convention)
             .map_err(|e| MoeRuntimeError::Load(format!("block probe: {e}")))?;
         let max_abs = got
             .iter()
@@ -1286,7 +1323,7 @@ fn build_deepseek(
     n_layers: usize,
     rms_eps: f32,
     first_k_dense: usize,
-    moes: Vec<RealMoeLayer>,
+    moes: Vec<Arc<ResidentExpertLayer>>,
 ) -> Result<DeepseekWeights, MoeRuntimeError> {
     let n_heads = cfg_u(v, "num_attention_heads")?;
     let kv_lora_rank = cfg_u(v, "kv_lora_rank")?;

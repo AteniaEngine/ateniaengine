@@ -30,6 +30,31 @@ fn load() -> MoeRuntime {
     .expect("MLA-0 DeepSeek-V2-Lite-like runtime must load (dense-first + YaRN)")
 }
 
+/// **MLA-2** — load the same fixture but with the experts relocated to the NVMe
+/// disk tier (`ATENIA_MOE_EXPERT_TIER=disk`). The disk tier is bit-identical to
+/// the RAM tier by construction, so any env leakage into the parallel RAM tests
+/// is harmless (they would see the same output). Uses a unique tier dir.
+fn load_disk_tier() -> MoeRuntime {
+    // SAFETY: single-threaded test; owns these opt-in env toggles.
+    unsafe {
+        std::env::set_var("ATENIA_EXPERIMENTAL_MOE", "1");
+        std::env::set_var("ATENIA_MOE_EXPERT_TIER", "disk");
+        let dir = std::env::temp_dir().join(format!("atenia_mla2_tier_{}", std::process::id()));
+        std::env::set_var("ATENIA_DISK_TIER_DIR", dir);
+    }
+    let rt = MoeRuntime::load_from_files(
+        &fixture_dir().join("deepseek_v2lite_mla0_config.json"),
+        &fixture_dir().join("deepseek_v2lite_mla0.safetensors"),
+    )
+    .expect("MLA-2 DeepSeek-V2-Lite-like runtime must load on the disk tier");
+    // Clear the tier toggle so the default RAM path is restored for other tests.
+    // SAFETY: single-threaded test.
+    unsafe {
+        std::env::remove_var("ATENIA_MOE_EXPERT_TIER");
+    }
+    rt
+}
+
 fn sidecar() -> serde_json::Value {
     serde_json::from_str(
         &std::fs::read_to_string(fixture_dir().join("deepseek_v2lite_mla0.json")).unwrap(),
@@ -99,4 +124,56 @@ fn mla0_v2lite_greedy_generates_to_eos() {
     eprintln!("MLA-0 generate = {out:?} (greedy {greedy:?}, eos {eos})");
     assert_eq!(out, expected, "greedy/EOS mismatch");
     assert_eq!(out, rt.generate(&ids, 8), "generation must be deterministic");
+}
+
+// ============================================================================
+// **MLA-2** — disk/bf16 expert-tier parity. The DeepSeek MLA forward now streams
+// its experts through `ResidentExpertLayer` (uncached `forward`) at the env tier.
+// These tests prove the disk tier is **bit-identical** to the RAM tier (and to
+// HF), so the residency win (experts off host RAM) is free of any numeric cost.
+// ============================================================================
+
+#[test]
+fn mla2_v2lite_disk_tier_full_forward_bit_identical_to_ram() {
+    let j = sidecar();
+    let ids = u32_vec(&j, "input_ids");
+    let vocab = j["vocab_size"].as_u64().unwrap() as usize;
+    let hf = f32_vec(&j, "hf_logits");
+
+    let got_ram = load().forward_logits(&ids);
+    let got_disk = load_disk_tier().forward_logits(&ids);
+
+    // 1. Disk tier is BIT-IDENTICAL to the RAM tier (no threshold; exact equality).
+    assert_eq!(
+        got_disk, got_ram,
+        "MLA-2 disk-tier forward must be bit-identical to the RAM-tier forward"
+    );
+
+    // 2. Both match HF at the exact same drift + argmax as the RAM path.
+    let m_disk = max_abs(&got_disk, &hf);
+    let m_ram = max_abs(&got_ram, &hf);
+    eprintln!("MLA-2 disk-tier vs HF max_abs_diff={m_disk:.3e} (RAM={m_ram:.3e})");
+    assert_eq!(m_disk, m_ram, "disk vs HF drift must equal RAM vs HF drift");
+    assert!(m_disk < 0.5, "MLA-2 disk-tier over the ADR-004 gate: {m_disk:.3e}");
+    for pos in 0..ids.len() {
+        assert_eq!(
+            argmax(&got_disk[pos * vocab..(pos + 1) * vocab]),
+            argmax(&hf[pos * vocab..(pos + 1) * vocab]),
+            "MLA-2 disk-tier argmax mismatch at position {pos}"
+        );
+    }
+}
+
+#[test]
+fn mla2_v2lite_disk_tier_greedy_matches_ram_and_is_deterministic() {
+    let j = sidecar();
+    let ids = u32_vec(&j, "input_ids");
+
+    let ram = load();
+    let disk = load_disk_tier();
+    let out_ram = ram.generate(&ids, 8);
+    let out_disk = disk.generate(&ids, 8);
+    eprintln!("MLA-2 disk greedy = {out_disk:?} (ram {out_ram:?})");
+    assert_eq!(out_disk, out_ram, "disk-tier greedy must equal RAM-tier greedy");
+    assert_eq!(out_disk, disk.generate(&ids, 8), "disk-tier generation must be deterministic");
 }
