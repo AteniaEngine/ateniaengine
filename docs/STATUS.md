@@ -472,6 +472,17 @@ locked by regression tests.
   the certified MoE primitives; ADR-004 gate not lowered; MLA/YaRN/runtime/loader/
   numerics untouched. Real run ~505 s. See `docs/HANDOFF_MLA1_C1_C2.md`. Next:
   C4 fold → L2, C5 active-path → L3.
+- **MLA-1 (C4) — DeepSeek-V2-Lite whole-model L2 (fold C4; manifest/docs only).**
+  Folds **C4** (assembly/topology) into the manifest → **L2 = L1 + C4**. Primary C4
+  evidence: the **MLA-0 V2-Lite-topology full-forward cert** vs HF f64 = **9.072e-5**
+  (the EXACT V2-Lite conventions — YaRN + dense-first + no-renorm + MLA + q_lora=null,
+  end-to-end, argmax exact); corroborated by the **deepseek_scale** DeepSeek-MoE
+  topology cert = **7.806e-3**. Chosen over deepseek_scale-alone because MLA-0
+  carries V2-Lite's *correct* conventions (deepseek_scale uses renorm / no dense-first
+  / no YaRN). Result: **DeepSeek-V2-Lite — MoE-certified L2 (whole model)**; manifest
+  `ladder_level_whole_model: L2`. C3+C4 mechanism caveat; C5 (active-path) → L3 and
+  L4 (global F64) remain pending. **No `src/` change** — manifest/docs only (both C4
+  tests re-run green); ADR-004 gate not lowered. Not dense `CERTIFIED`, not L3/L4.
 - **FORMAT-INTAKE-1 — PyTorch `.bin` intake.** Closes the coverage audit's #2
   gap (otherwise-supported checkpoints unloadable purely because they ship as
   `pytorch_model.bin`). A new `src/v17/loader/pytorch_bin.rs` **transcodes** a

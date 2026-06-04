@@ -5,12 +5,12 @@
   "model": "DeepSeek-V2-Lite",
   "model_family": "deepseek-moe",
   "model_arch": "DeepseekV2ForCausalLM",
-  "atenia_version": "0.x-MLA-1-C1C2",
-  "milestone": "MLA-1 (C1+C2)",
+  "atenia_version": "0.x-MLA-1-C4",
+  "milestone": "MLA-1 (C4 fold -> L2; built on C1+C2)",
 
-  "ladder_level_whole_model": "L1 (partial — C1+C2 real-weight; C3 mechanism)",
-  "headline": "MoE-certified — C1+C2 on real weights across all 26 MoE layers; ADR-007 partial L1",
-  "headline_note": "Per ADR-007 the bare word 'certified' is forbidden for MoE. C1 (per-expert) and C2 (router top-k set equality) are PASS on the REAL DeepSeek-V2-Lite weights across ALL 26 MoE layers x 64 routed experts = 1664 experts, vs a float64 reference computed one expert at a time (dense-first layer 0 skipped). C3 (MLA attention) is satisfied at the MECHANISM level (DeepSeek MLA cert tiny 9.999e-6 + MLA-0 V2-Lite-like full forward 9.072e-5), the same standard Qwen-MoE used for its C3. This is the L1 work, with the C3-mechanism caveat; it is NOT the dense ADR-004 CERTIFIED, and L2 (C4 fold) / L3 (C5 active-path) remain pending.",
+  "ladder_level_whole_model": "L2 (C1+C2 real-weight; C3+C4 mechanism)",
+  "headline": "MoE-certified L2 (whole model) = L1 + C4",
+  "headline_note": "Per ADR-007 the bare word 'certified' is forbidden for MoE. This family is 'MoE-certified L2' = L1 + C4. L1: C1 (per-expert) exhaustive over ALL 26 MoE layers x 64 routed experts = 1664 experts + C2 (router top-6 set equality) on all 26 MoE layers, both on the REAL trained weights vs a float64 reference computed one expert at a time; C3 (MLA attention) via the mechanism cert. C4 (assembly/topology): the MLA-0 V2-Lite-topology full-forward cert vs HF f64 = 9.072e-5 (YaRN + dense-first + no-renorm + MLA -- the EXACT V2-Lite conventions), corroborated by the deepseek_scale DeepSeek-MoE topology cert = 7.806e-3. This is L2, NOT the dense ADR-004 CERTIFIED, and NOT L3 (C5 active-path) / L4 (global F64). L2 = 'the pieces (real weights, all layers) AND their composition (topology mechanism) are certified'.",
 
   "config_summary": {
     "hidden_size": 2048,
@@ -62,9 +62,17 @@
       "re_derived_this_milestone": false
     },
     "C4_assembly_topology": {
-      "status": "AVAILABLE (not folded this milestone)",
-      "evidence": "deepseek_scale topology cert 7.806e-03 (16-routed/top-6/2-shared/MLA, MOE-FULL-15; f32-vs-f64, argmax exact)",
-      "note": "folding C4 -> L2 is the next milestone; the scale fixture is random-weight topology, not the real trained weights."
+      "status": "PASS",
+      "folded_in": "MLA-1 (C4)",
+      "primary_evidence": "MLA-0 V2-Lite-topology full-forward cert (tests/moe_mla0_deepseek_v2lite_test.rs::mla0_v2lite_full_forward_matches_hf)",
+      "primary_topology": "a tiny real DeepseekV2ForCausalLM end-to-end with the EXACT V2-Lite conventions: YaRN (factor8, mscale0.707) + first_k_dense_replace=1 (dense layer 0) + norm_topk_prob=false (no-renorm, ungated shared) + MLA + q_lora_rank=null, at reduced hidden dim",
+      "primary_max_abs_diff_vs_hf_f64": 9.072e-5,
+      "primary_extras": "per-position argmax exact + greedy->EOS + deterministic",
+      "secondary_evidence": "deepseek_scale topology cert 7.806e-3 (16-routed/top-6/2-shared/MLA, MOE-FULL-15, tests/moe_scale_cert_test.rs::deepseek_scale_topology_certifies; f32-vs-f64, argmax exact) -- a different DeepSeek-MoE topology point (norm_topk_prob=true, no dense-first/YaRN)",
+      "gate": "end-to-end max_abs_diff < 0.5 (ADR-004 bar, unchanged); both clear it (MLA-0 also clears its 5e-3 test bound, deepseek_scale its 1e-2 bound)",
+      "result": "PASS -- the routing+combine+assembly+MLA+YaRN+dense-first mechanism is certified end-to-end vs HF f64 on the V2-Lite topology (9.072e-5) + a DeepSeek-MoE scale point (7.806e-3)",
+      "caveat": "C4 certifies the MECHANISM on reduced-dim, RANDOM-weight topology fixtures -- NOT the real 64-expert trained-weight assembly. Per ADR-007 it transfers to the real model only IN CONJUNCTION WITH the whole-model C1/C2 (real weights), which are met. Recorded, not over-claimed.",
+      "re_derived_this_milestone": false
     },
     "C5_active_path": {
       "status": "PENDING",
@@ -73,8 +81,7 @@
   },
 
   "pending_levels": [
-    { "level": "L2", "blocker": "fold C4 (deepseek_scale topology, available) with this C1+C2+C3." },
-    { "level": "L3", "blocker": "C5 active-path full-forward on the real weights." },
+    { "level": "L3", "blocker": "C5 active-path full-forward on the real weights (Qwen-scale, RAM-feasible on 32 GB)." },
     { "level": "L4 (dense-equivalent)", "blocker": "global model.double() F64 ~126 GB — reserved / unreachable; never fabricated." }
   ],
 
@@ -82,15 +89,17 @@
     "C3 attention reused at the mechanism level (tiny fixtures + MLA-0), not real-weight per-layer.",
     "C1/C2 use a single deterministic probe input applied to every MoE layer's real weights (representative activation, not a real inter-layer trace) — consistent with the Qwen approach.",
     "f32-vs-f64 DeepSeek block drift is looser than Qwen overall (documented ~1e-3 at full-forward), but per-expert C1 here is ~1.9e-6.",
-    "L1 here carries the C3-mechanism caveat; it is NOT the dense ADR-004 CERTIFIED, and NOT L2/L3/L4."
+    "C4 (and C3) are certified at the MECHANISM level (reduced-dim, random-weight topology fixtures), not the real-weight assembly; they transfer only in conjunction with the real-weight C1/C2.",
+    "L2 here carries the C3+C4 mechanism caveat; it is NOT the dense ADR-004 CERTIFIED, and NOT L3 (C5) / L4 (global F64)."
   ],
 
   "verification": {
-    "harness": "tests/moe_mla1_deepseek_decomposition_test.rs",
-    "reference": "fixtures/moe/deepseek_v2lite_decomp_ref.safetensors (+ .json), float64 one expert at a time (~13.6 MB)",
-    "regenerate_reference": "python fixtures/moe/generate_deepseek_v2lite_decomposition_reference.py models/DeepSeek-V2-Lite fixtures/moe",
-    "command": "DEEPSEEK_V2_LITE_DIR=models/DeepSeek-V2-Lite cargo test --test moe_mla1_deepseek_decomposition_test --release -- --ignored mla1_real_deepseek_v2lite_c1_c2 --nocapture",
-    "expected": "C1 global worst max_abs_diff ~1.9e-6 (< 0.5, all 1664 experts, layer 26 / expert 57); C2 top-6 set match on all 26 MoE layers; min routing margin 0.011981 (layer 23); 0 failures. Real run ~505 s."
+    "c1_c2_harness": "tests/moe_mla1_deepseek_decomposition_test.rs",
+    "c1_c2_reference": "fixtures/moe/deepseek_v2lite_decomp_ref.safetensors (+ .json), float64 one expert at a time (~13.6 MB)",
+    "c1_c2_command": "DEEPSEEK_V2_LITE_DIR=models/DeepSeek-V2-Lite cargo test --test moe_mla1_deepseek_decomposition_test --release -- --ignored mla1_real_deepseek_v2lite_c1_c2 --nocapture",
+    "c1_c2_expected": "C1 global worst max_abs_diff ~1.9e-6 (< 0.5, all 1664 experts, layer 26 / expert 57); C2 top-6 set match on all 26 MoE layers; min routing margin 0.011981 (layer 23); 0 failures. Real run ~505 s.",
+    "c4_primary_command": "cargo test --release --test moe_mla0_deepseek_v2lite_test mla0_v2lite_full_forward_matches_hf -- --nocapture  (expected end-to-end max_abs_diff 9.072e-5, argmax exact)",
+    "c4_secondary_command": "cargo test --release --test moe_scale_cert_test deepseek_scale_topology_certifies -- --nocapture  (expected 7.806e-3, argmax exact)"
   },
 
   "generated_at": "2026-06-04",

@@ -75,8 +75,22 @@ runtime / loader / numerics / Adapter Toolkit untouched; ADR-004 gate not lowere
 - **f32-vs-f64 DeepSeek drift** is looser than Qwen at full-forward (~1e-3), but
   per-expert C1 here is ~1.9e-6.
 
-## Next (toward full L1/L2/L3)
+## MLA-1 (C4) update — folded → L2
 
-1. **MLA-1 / C4** — fold `deepseek_scale` (available) → **L2**.
-2. **MLA-1 / C5** — real-weight active-path full forward (MLA + YaRN + dense-first +
-   MoE) vs F64 one-layer-at-a-time → **L3** (Qwen-scale, RAM-feasible on 32 GB).
+C4 (assembly/topology) was folded into the manifest (manifest/docs only, no code).
+**Primary C4 evidence = the MLA-0 V2-Lite-topology full-forward cert** vs HF f64 =
+**9.072e-5** — a tiny real `DeepseekV2ForCausalLM` end-to-end with V2-Lite's *exact*
+conventions (**YaRN + dense-first + no-renorm + MLA + q_lora=null**), argmax exact —
+**corroborated** by `deepseek_scale` (DeepSeek-MoE 16-expert MLA topology, **7.806e-3**).
+MLA-0 is preferred over deepseek_scale-alone because deepseek_scale uses *different*
+conventions (renorm, no dense-first, no YaRN); MLA-0 carries V2-Lite's correct ones.
+Both tests re-run green. Caveat: C4 is reduced-dim, **random-weight** topology — the
+mechanism, not the real 64-expert trained-weight assembly; it transfers only with the
+real-weight C1/C2 (met). Result: **DeepSeek-V2-Lite — MoE-certified L2 (whole model)
+= L1 + C4** (`ladder_level_whole_model: L2`). Not dense ADR-004 `CERTIFIED`, not L3/L4.
+
+## Next (toward L3)
+
+- **MLA-1 / C5** — real-weight active-path full forward (MLA + YaRN + dense-first +
+  MoE) vs F64 one-layer-at-a-time → **L3** (Qwen-scale, RAM-feasible on 32 GB).
+- L4 (global F64 ~126 GB) reserved/unreachable.
