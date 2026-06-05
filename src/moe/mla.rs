@@ -446,6 +446,61 @@ impl DeepseekWeights {
         out
     }
 
+    /// **C5-DIAG (diagnostic, read-only)** — token embeddings `[seq][hidden]`
+    /// (the prefill's layer-0 input). No numeric change to the real forward.
+    pub fn debug_embeddings(&self, tokens: &[u32]) -> Vec<Vec<f32>> {
+        let h = self.config.hidden_size;
+        tokens
+            .iter()
+            .map(|&t| self.embed_tokens[(t as usize) * h..(t as usize + 1) * h].to_vec())
+            .collect()
+    }
+
+    /// **C5-DIAG (diagnostic, read-only)** — run ONE full decoder layer over a
+    /// whole sequence of residual hidden states `xs` `[seq][hidden]` with a
+    /// **fresh** KV cache, returning per token `(x1, out)`:
+    ///   * `x1`  = post-attention residual (`x + o_proj(attend(...))`),
+    ///   * `out` = post-FFN layer output  (`x1 + ffn(post_norm(x1))`).
+    /// Mirrors [`layer_step`] exactly (same ops, same order); chaining it
+    /// `out -> next layer` reproduces [`Self::forward_prefill`] bit-for-bit, and
+    /// feeding a *reference* layer input isolates that layer's intrinsic drift
+    /// (no accumulation). Used only by the C5 diagnostic harness.
+    pub fn debug_layer(&self, layer: usize, xs: &[Vec<f32>]) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
+        let cfg = &self.config;
+        let lw = &self.layers[layer];
+        let hidden = cfg.hidden_size;
+        let nh = cfg.num_attention_heads;
+        let vd = cfg.v_head_dim;
+        let mut cache = MlaLayerCache::default();
+        let mut x1s = Vec::with_capacity(xs.len());
+        let mut outs = Vec::with_capacity(xs.len());
+        for (pos, x) in xs.iter().enumerate() {
+            let h = rmsnorm(x, &lw.input_ln, cfg.rms_eps);
+            let (q_heads, k_heads, v_heads) = project_token(&h, lw, cfg, pos);
+            cache.k.push(k_heads);
+            cache.v.push(v_heads);
+            let ctx = attend(&q_heads, &cache, cfg);
+            let attn_out = matvec(&lw.w_o, hidden, nh * vd, &ctx);
+            let x1: Vec<f32> = (0..hidden).map(|i| x[i] + attn_out[i]).collect();
+            let h2 = rmsnorm(&x1, &lw.post_ln, cfg.rms_eps);
+            let ffn_out = match &lw.ffn {
+                DeepseekFfn::Moe(m) => m.forward(&h2).map(|(y, _)| y).expect("diag moe forward"),
+                DeepseekFfn::Dense(d) => d.forward(&h2),
+            };
+            let out: Vec<f32> = (0..hidden).map(|i| x1[i] + ffn_out[i]).collect();
+            x1s.push(x1);
+            outs.push(out);
+        }
+        (x1s, outs)
+    }
+
+    /// **C5-DIAG (diagnostic, read-only)** — final RMSNorm + lm_head over a whole
+    /// sequence of hidden states `[seq][hidden]` → logits `[seq][vocab]`. Lets the
+    /// harness check the head in isolation on the reference's final hidden state.
+    pub fn debug_head(&self, xs: &[Vec<f32>]) -> Vec<Vec<f32>> {
+        xs.iter().map(|x| self.head(x)).collect()
+    }
+
     /// Final-norm + lm_head over one hidden state → logits `[vocab]`.
     fn head(&self, x: &[f32]) -> Vec<f32> {
         let h = rmsnorm(x, &self.final_norm, self.config.rms_eps);

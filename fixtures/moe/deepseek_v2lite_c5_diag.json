@@ -1,0 +1,15 @@
+{
+  "milestone": "MLA-1 / C5-DIAG",
+  "model": "DeepSeek-V2-Lite",
+  "input_ids": [
+    1,
+    100,
+    200,
+    300
+  ],
+  "seq": 4,
+  "hidden": 2048,
+  "num_layers": 27,
+  "vocab_size": 102400,
+  "layout": "embeddings[seq,hidden]; post_attn[L,seq,hidden] (x1, post-attention residual); post_ffn[L,seq,hidden] (layer output); logits[seq,vocab]. F64-computed, f32-stored. HF still has float32 islands (eager softmax, RMSNorm, RoPE)."
+}

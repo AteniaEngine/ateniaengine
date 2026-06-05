@@ -1,0 +1,22 @@
+{
+  "milestone": "MLA-1 / C5",
+  "obligation": "C5 active-path (F64, one layer at a time)",
+  "model": "DeepSeek-V2-Lite",
+  "oracle": "HuggingFace DeepseekV2DecoderLayer in float64, one layer at a time (trusted HF code: MLA + complex RoPE/YaRN + dense-first + MoE; never the whole model in F64 -> not L4)",
+  "input_ids": [
+    1,
+    100,
+    200,
+    300
+  ],
+  "seq": 4,
+  "vocab_size": 102400,
+  "argmax_per_position": [
+    185,
+    1,
+    200,
+    200
+  ],
+  "reference_file": "deepseek_v2lite_c5_ref.safetensors",
+  "note": "Real trained weights, full end-to-end forward. ADR-007 C5 F64 form. Driver validated against the tiny MLA-0 DeepSeek fixture before this run."
+}

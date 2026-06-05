@@ -1158,6 +1158,39 @@ impl MoeRuntime {
         }
     }
 
+    /// **C5-DIAG (diagnostic, read-only)** — token embeddings `[seq][hidden]`
+    /// (DeepSeek backend only). `None` for the graph backend.
+    pub fn debug_deepseek_embeddings(&self, tokens: &[u32]) -> Option<Vec<Vec<f32>>> {
+        match &self.backend {
+            Backend::Mla(w) => Some(w.debug_embeddings(tokens)),
+            Backend::Graph(_) => None,
+        }
+    }
+
+    /// **C5-DIAG (diagnostic, read-only)** — run ONE full DeepSeek decoder layer
+    /// over `xs` `[seq][hidden]`, returning per token `(x1 post-attention, out
+    /// post-FFN)`. DeepSeek backend only. Lets the C5 diagnostic harness isolate
+    /// each layer's intrinsic drift by feeding the reference's layer input.
+    pub fn debug_deepseek_layer(
+        &self,
+        layer: usize,
+        xs: &[Vec<f32>],
+    ) -> Option<(Vec<Vec<f32>>, Vec<Vec<f32>>)> {
+        match &self.backend {
+            Backend::Mla(w) => Some(w.debug_layer(layer, xs)),
+            Backend::Graph(_) => None,
+        }
+    }
+
+    /// **C5-DIAG (diagnostic, read-only)** — final RMSNorm + lm_head over `xs`
+    /// `[seq][hidden]` → logits `[seq][vocab]`. DeepSeek backend only.
+    pub fn debug_deepseek_head(&self, xs: &[Vec<f32>]) -> Option<Vec<Vec<f32>>> {
+        match &self.backend {
+            Backend::Mla(w) => Some(w.debug_head(xs)),
+            Backend::Graph(_) => None,
+        }
+    }
+
     /// **Generate** greedily from `prompt`, stopping at EOS or after
     /// `max_new_tokens`. Reuses the certified generation loop (graph for
     /// Mixtral/Qwen; imperative MLA for DeepSeek).
