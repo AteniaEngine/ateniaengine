@@ -162,8 +162,24 @@ driver validated on the tiny fixture) — end-to-end `max_abs_diff` 1.866e-4 (< 
 certified, whole model)** = L2 + C5 (`docs/numcert/qwen1.5-moe-a2.7b.moecert.json`,
 `tests/moe_cert4_qwen_active_path_test.rs`). The F64 reference is never the whole
 model in F64 (one layer at a time) → **L3 is not L4**; only **L4** (global F64,
-~114 GB) remains, reserved/unreachable. Mixtral and DeepSeek-MoE remain at L0;
-raising Mixtral up the ladder is later work.
+~114 GB) remains, reserved/unreachable.
+
+**DeepSeek-V2-Lite (MLA) — also MoE-certified L3.** The same ladder was applied to
+the real DeepSeek-V2-Lite (MLA-1): **C1** exhaustive over **all 26 MoE layers × 64
+routed experts = 1664 experts** (global worst `max_abs_diff` 1.907e-6, 0 failures);
+**C2** top-6 set match on all 26 layers (min routing margin 0.011981); **C4** the
+MLA-0 V2-Lite-topology cert; **C5** Atenia's full forward of the real weights —
+streamed through the **MLA-2 disk expert-tier** (~4 GB RAM instead of ~58 GB) — vs a
+float64 one-layer-at-a-time HF reference = end-to-end `max_abs_diff` **2.587e-5**
+(< 0.5) + per-position argmax exact 4/4, deterministic → **MoE-certified L3
+(active-path-certified, whole model)** (`docs/numcert/deepseek-v2-lite.moecert.json`,
+`tests/moe_mla1_deepseek_c5_active_path_test.rs`). C5 required the **MLA-3** fix
+(YaRN `attention_scaling`, not `mscale²` on the softmax scale — see
+`docs/HANDOFF_MLA1_C5_ROOT_CAUSE.md`). One layer at a time in F64 → **not L4**; L4
+(global F64, ~126 GB) remains reserved/unreachable.
+
+**Mixtral remains at L0** (topology only; real 8x7B weights not provisioned);
+raising it up the ladder is later work.
 
 ### 3. Reporting discipline (how a partial level is shown honestly)
 
@@ -228,8 +244,10 @@ binding wherever a MoE certification status is shown.
 ### Positive
 
 - A precise, auditable definition of "certified" for MoE that scales to real
-  checkpoints on a 32 GB host (L2 for Mixtral/Qwen-MoE; L3 for Qwen-MoE via the
-  F32 cross-framework fallback).
+  checkpoints on a 32 GB host: **Qwen1.5-MoE-A2.7B = L3** and **DeepSeek-V2-Lite
+  (MLA) = L3** (active-path, via the one-layer-at-a-time F64 reference + the disk
+  expert-tier), **Mixtral = L0** (topology only, real weights not provisioned). L4
+  (global F64) reserved/unreachable in this hardware envelope.
 - Exhaustive expert coverage (C1) eliminates the sparsity blind spot honestly.
 - A reporting contract that structurally prevents the L2-read-as-L4 confusion.
 - Defines the `PartialReferenceF64` strategy slot that `src/moe/fixture.rs`

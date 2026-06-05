@@ -498,6 +498,8 @@ locked by regression tests.
   numerics change; Qwen/Mixtral untouched (full lib suite 838/0 single-threaded).
   **C5 not run yet — DeepSeek-V2-Lite stays MoE-certified L2**; L3 is now
   *technically unblocked* but **not certified**. See `docs/HANDOFF_MLA_2.md`.
+  *(Superseded by the MLA-1 C5 + MLA-3 bullet below: C5 was run and **PASSED** →
+  DeepSeek-V2-Lite is now **MoE-certified L3**.)*
 - **MLA-1 (C5) + MLA-3 — DeepSeek-V2-Lite reaches MoE-certified L3
   (active-path-certified).** The first real C5 run FAILED (`max_abs_diff 2.032`,
   argmax 3/4) and the per-layer diagnosis (a HF f32-vs-f64 control proved the model

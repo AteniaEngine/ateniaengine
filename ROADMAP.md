@@ -8,6 +8,21 @@ This roadmap communicates scope and priority, not calendar commitments. Versions
 
 ## MoE Experimental Track Result (MOE-0 → MOE-18, closed MOE-19)
 
+> **Post-MLA-3 update (MoE certification track, ADR-007).** The "no MoE family is
+> production-supported / tiny only" snapshot below is **superseded** for the
+> certification ladder. Under **ADR-007** (`docs/decisions/ADR-007-moe-certification-ladder.md`):
+> **Qwen1.5-MoE-A2.7B = MoE-certified L3** (real weights, MOE-CERT-2/3/4) and
+> **DeepSeek-V2-Lite = MoE-certified L3** (real weights: per-expert C1 over 1664
+> experts + router C2 + topology C4 + **C5 active-path** end-to-end via the MLA-2
+> disk expert-tier, `2.587e-5`, after the MLA-3 YaRN mscale fix). **Mixtral-8x7B =
+> L0** (topology only; real weights not provisioned). These are **MoE-certified Ln**,
+> **not** the dense ADR-004 `CERTIFIED`; **L4** (global F64) is reserved/unreachable.
+> The MoE compute path is still opt-in/experimental (not wired into the productive
+> CLI/Adapter Toolkit). The open frontier is now Q-LoRA, modern routing
+> (sigmoid/aux-loss-free + node-limited), latent-compressed KV cache, V3/Kimi scale,
+> and multi-input certification — see `docs/MOE_COVERAGE_AUDIT.md` /
+> `docs/MLA_COVERAGE_AUDIT.md` / `docs/HANDOFF_MLA_3.md`.
+
 The Mixture-of-Experts experimental track is **complete**. See
 [docs/MOE_OVERVIEW.md](./docs/MOE_OVERVIEW.md) for the full consolidation.
 
