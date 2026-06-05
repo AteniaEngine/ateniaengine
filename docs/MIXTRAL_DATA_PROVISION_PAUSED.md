@@ -1,5 +1,13 @@
 # MIXTRAL-DATA-PROVISION — PAUSED (safe state)
 
+> **RESOLVED.** The download was **resumed and completed** with a serial,
+> per-shard, verified fetch — **19/19 shards + index, validated PASS** (86.99 GiB).
+> The earlier "stall" was a harness/measurement artifact (Run 1 died with a model-
+> classifier outage; Run 2 actually reached 4 valid shards while the byte-size
+> watcher mis-read), **not** a real network/data fault. See
+> `docs/MIXTRAL_PROVISIONED.md`. This document is kept as the incident record.
+
+
 **Status: PAUSED, local state clean and resumable.** The Mixtral-8x7B-v0.1 weights
 download (MIXTRAL-DATA-PROVISION) was **stopped** after repeated network stalls. The
 local folder was left in a clean, partially-provisioned, safe-to-resume state. **No
