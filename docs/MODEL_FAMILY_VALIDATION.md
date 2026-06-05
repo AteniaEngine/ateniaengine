@@ -335,19 +335,27 @@ reusing the ADR-004 `max_abs_diff < 0.5` + argmax bar **unchanged**.
   fixture; the assembly mechanism, not the real 60-expert weights). This is
   **whole-model L3 (active-path-certified)**, NOT the dense ADR-004 `CERTIFIED`,
   and NOT L4 (global F64, reserved/unreachable). Only L4 remains.
-- **DeepSeek-V2-Lite — MoE-certified L2 (whole model)** via **MLA-0** (YaRN +
-  dense-first + routing convention) + **MLA-1 C1+C2** + **MLA-1 C4**
+- **DeepSeek-V2-Lite — MoE-certified L3 (whole model, active-path-certified)** via
+  **MLA-0** (YaRN + dense-first + routing convention) + **MLA-1 C1+C2** + **MLA-1 C4**
+  + **MLA-1 C5** (after the **MLA-3** YaRN mscale fix)
   (`tests/moe_mla1_deepseek_decomposition_test.rs`, `tests/moe_mla0_deepseek_v2lite_test.rs`,
-  `docs/numcert/deepseek-v2-lite.moecert.json`). **L2 = L1 + C4.** On the **real**
-  DeepSeek-V2-Lite weights: **C1** all **1664** routed experts (26 MoE layers × 64;
-  dense layer 0 skipped), global worst `max_abs_diff` **1.907e-6**, 0 failures;
-  **C2** top-6 set equality on all 26 MoE layers, 0 failures, min routing margin
-  **0.011981**; **C3** MLA-attention mechanism (9.999e-6 + MLA-0 9.072e-5); **C4**
-  the MLA-0 V2-Lite-topology full-forward cert **9.072e-5** (YaRN + dense-first +
-  no-renorm + MLA — V2-Lite's exact conventions) + deepseek_scale **7.806e-3**. This
-  is **whole-model L2** (C1/C2 real; C3/C4 mechanism), NOT the dense ADR-004
-  `CERTIFIED`, and NOT L3 (C5 active-path) / L4.
-- **Mixtral / classic DeepSeek-MoE remain at L0.** Raising Mixtral, and lifting
-  DeepSeek-V2-Lite to L3 (C5 active-path), is later work; L4 (global F64,
-  dense-equivalent) is reserved and currently unreachable for large-active MoE
-  (RAM). See `docs/MOE_CERTIFICATION_AUDIT.md` for the full methodology.
+  `tests/moe_mla1_deepseek_c5_active_path_test.rs`, `docs/numcert/deepseek-v2-lite.moecert.json`).
+  **L3 = L2 + C5.** On the **real** DeepSeek-V2-Lite weights: **C1** all **1664**
+  routed experts (26 MoE layers × 64; dense layer 0 skipped), global worst
+  `max_abs_diff` **1.907e-6**, 0 failures; **C2** top-6 set equality on all 26 MoE
+  layers, min routing margin **0.011981**; **C4** the MLA-0 V2-Lite-topology
+  full-forward cert (**5.306e-5** after MLA-3) + deepseek_scale **7.806e-3**; **C5**
+  the real model end-to-end (MLA-2 disk tier, ~4 GB RAM) vs a one-layer-at-a-time HF
+  f64 reference = whole-model **2.587e-5** (< 0.5), **argmax exact 4/4**,
+  deterministic. C5 now validates the real-weight MLA attention end-to-end (the C3
+  fixture stays mechanism-level). This is **whole-model L3**, NOT the dense ADR-004
+  `CERTIFIED`, and NOT L4 (global F64, reserved/unreachable).
+  - **MLA-3 fix:** `attn_scale()` no longer multiplies the softmax scale by
+    `mscale²`; the YaRN `attention_scaling = get_mscale(factor,mscale)/get_mscale(factor,
+    mscale_all_dim)` (= 1.0 for V2-Lite) is folded into `q_pe`/`k_pe` — matching HF.
+    Before the fix C5 was 2.032 (argmax 3/4 FAIL). Isolated to `src/moe/mla.rs`;
+    non-YaRN configs + Qwen/Mixtral unchanged.
+- **Mixtral / classic DeepSeek-MoE remain at L0.** Raising Mixtral to a real-weight
+  level is later work; L4 (global F64, dense-equivalent) is reserved and currently
+  unreachable for large-active MoE (RAM). See `docs/MOE_CERTIFICATION_AUDIT.md` for
+  the full methodology.

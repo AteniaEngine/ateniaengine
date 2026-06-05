@@ -498,6 +498,23 @@ locked by regression tests.
   numerics change; Qwen/Mixtral untouched (full lib suite 838/0 single-threaded).
   **C5 not run yet — DeepSeek-V2-Lite stays MoE-certified L2**; L3 is now
   *technically unblocked* but **not certified**. See `docs/HANDOFF_MLA_2.md`.
+- **MLA-1 (C5) + MLA-3 — DeepSeek-V2-Lite reaches MoE-certified L3
+  (active-path-certified).** The first real C5 run FAILED (`max_abs_diff 2.032`,
+  argmax 3/4) and the per-layer diagnosis (a HF f32-vs-f64 control proved the model
+  is f32-stable to `3.1e-5`, so it was a bug, not drift) root-caused a **YaRN
+  `mscale`** error: `attn_scale()` multiplied the *whole* `q·k` softmax scale by
+  `mscale²`, but HF's `attention_scaling = get_mscale(factor,mscale)/get_mscale(factor,
+  mscale_all_dim)` (= **1.0** for V2-Lite, `mscale==mscale_all_dim`) attaches only to
+  the decoupled-RoPE part. **MLA-3** fixed it (`src/moe/mla.rs`: `attn_scale` = base;
+  new `attention_scaling()` folded into `q_pe`/`k_pe`); non-YaRN configs and
+  Qwen/Mixtral untouched. **Re-run C5 (real DeepSeek-V2-Lite, MLA-2 disk tier, ~4 GB
+  RAM) vs a one-layer-at-a-time HF f64 reference: `max_abs_diff 2.587e-5 < 0.5`,
+  argmax exact 4/4, deterministic → PASS.** Result: **DeepSeek-V2-Lite —
+  MoE-certified L3 (whole model)** = L1 (C1 real 1664 experts + C2 real top-6) + C4
+  (topology) + **C5 (active-path-certified, real weights)**; manifest
+  `ladder_level_whole_model: L3`. MLA-0 improved to `5.306e-5`; disk==RAM still
+  bit-identical. **Not dense ADR-004 `CERTIFIED`; L4 (global F64) reserved/unreachable.**
+  See `docs/HANDOFF_MLA_3.md` + `docs/HANDOFF_MLA1_C5_ROOT_CAUSE.md`.
 - **FORMAT-INTAKE-1 — PyTorch `.bin` intake.** Closes the coverage audit's #2
   gap (otherwise-supported checkpoints unloadable purely because they ship as
   `pytorch_model.bin`). A new `src/v17/loader/pytorch_bin.rs` **transcodes** a

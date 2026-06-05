@@ -1,5 +1,13 @@
 # HANDOFF — MLA-1 / C5 root cause: YaRN `mscale` wrongly applied to the MLA attention scale
 
+> **RESOLVED (MLA-3).** The fix below was implemented in `src/moe/mla.rs`
+> (`attention_scaling` on the RoPE part, `attn_scale` = base only). The real C5 was
+> re-run and **PASSED**: `max_abs_diff = 2.587e-5 < 0.5`, argmax exact 4/4,
+> deterministic. **DeepSeek-V2-Lite is now MoE-certified L3.** See
+> `docs/HANDOFF_MLA_3.md`. The "fix (DESIGN ONLY)" section below is retained as the
+> diagnostic record.
+
+
 **Diagnosis milestone (no fix implemented).** C5 (active-path) failed for the real
 DeepSeek-V2-Lite (`max_abs_diff = 2.032`, argmax 3/4, flip at pos 2). This document
 proves the root cause with experiments, discards the alternatives, and specifies the

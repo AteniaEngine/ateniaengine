@@ -5,12 +5,12 @@
   "model": "DeepSeek-V2-Lite",
   "model_family": "deepseek-moe",
   "model_arch": "DeepseekV2ForCausalLM",
-  "atenia_version": "0.x-MLA-1-C4",
-  "milestone": "MLA-1 (C4 fold -> L2; built on C1+C2)",
+  "atenia_version": "0.x-MLA-3",
+  "milestone": "MLA-1 (C5 active-path -> L3; after the MLA-3 YaRN mscale fix)",
 
-  "ladder_level_whole_model": "L2 (C1+C2 real-weight; C3+C4 mechanism)",
-  "headline": "MoE-certified L2 (whole model) = L1 + C4",
-  "headline_note": "Per ADR-007 the bare word 'certified' is forbidden for MoE. This family is 'MoE-certified L2' = L1 + C4. L1: C1 (per-expert) exhaustive over ALL 26 MoE layers x 64 routed experts = 1664 experts + C2 (router top-6 set equality) on all 26 MoE layers, both on the REAL trained weights vs a float64 reference computed one expert at a time; C3 (MLA attention) via the mechanism cert. C4 (assembly/topology): the MLA-0 V2-Lite-topology full-forward cert vs HF f64 = 9.072e-5 (YaRN + dense-first + no-renorm + MLA -- the EXACT V2-Lite conventions), corroborated by the deepseek_scale DeepSeek-MoE topology cert = 7.806e-3. This is L2, NOT the dense ADR-004 CERTIFIED, and NOT L3 (C5 active-path) / L4 (global F64). L2 = 'the pieces (real weights, all layers) AND their composition (topology mechanism) are certified'.",
+  "ladder_level_whole_model": "L3 (C1+C2+C5 real-weight active path; C3+C4 mechanism)",
+  "headline": "MoE-certified L3 (whole model) = L2 + C5 (active-path-certified)",
+  "headline_note": "Per ADR-007 the bare word 'certified' is forbidden for MoE. This family is 'MoE-certified L3' = L2 + C5 (active-path-certified). L1: C1 (per-expert) exhaustive over ALL 26 MoE layers x 64 routed experts = 1664 experts + C2 (router top-6 set equality) on all 26 MoE layers, both on the REAL trained weights vs a float64 reference computed one expert at a time; C3 (MLA attention) via the mechanism cert. C4 (assembly/topology): the MLA-0 V2-Lite-topology full-forward cert vs HF f64 = 9.072e-5. C5 (active-path): the REAL DeepSeek-V2-Lite, as actually run end-to-end on a canonical input via the MLA-2 disk expert-tier, vs a float64 HF reference computed ONE DECODER LAYER AT A TIME = whole-model max_abs_diff 2.587e-5 (< 0.5), per-position argmax exact 4/4, deterministic. This required the MLA-3 fix (YaRN attention_scaling, NOT mscale^2 on the softmax scale). This is L3, NOT the dense ADR-004 CERTIFIED, and NOT L4 (global model.double() F64, reserved/unreachable).",
 
   "config_summary": {
     "hidden_size": 2048,
@@ -75,22 +75,34 @@
       "re_derived_this_milestone": false
     },
     "C5_active_path": {
-      "status": "PENDING",
-      "blocker": "real-weight full forward (MLA + YaRN + dense-first + MoE) vs F64 one-layer-at-a-time, not yet run (MLA-1 C5 / a later phase)."
+      "status": "PASS",
+      "certified_in": "MLA-1 (C5), after the MLA-3 YaRN mscale fix",
+      "scope": "the REAL DeepSeek-V2-Lite, as actually run end-to-end (MLA + YaRN + dense-first + MoE), full forward through the controlled MoeRuntime on the MLA-2 disk expert-tier (~4 GB RAM)",
+      "oracle": "HuggingFace DeepseekV2DecoderLayer in float64, ONE DECODER LAYER AT A TIME (never the whole model in F64 -> NOT L4); driver validated against the tiny MLA-0 fixture (8.126e-9 vs the full-model HF f64) before the real run",
+      "input": "canonical input_ids [1, 100, 200, 300] (seq 4)",
+      "metric": "whole-model logits max_abs_diff(Atenia disk-tier forward, F64 reference) + per-position argmax",
+      "max_abs_diff_vs_hf_f64": 2.587e-5,
+      "worst_position": 0,
+      "argmax_exact": "4/4",
+      "gate": "end-to-end max_abs_diff < 0.5 (ADR-004 bar, unchanged) + exact per-position argmax",
+      "deterministic": true,
+      "timing": "load ~1299 s (writes the ephemeral f32 expert tier to NVMe) + forward ~228 s",
+      "result": "PASS -- 2.587e-5 < 0.5 (the f32-precision floor; the HF f32-vs-f64 control on this model is 3.111e-5 with identical argmax), argmax exact 4/4, deterministic. Real-weight MLA attention is now validated end-to-end (supersedes the C3 mechanism caveat for the active path).",
+      "harness": "tests/moe_mla1_deepseek_c5_active_path_test.rs::mla1_real_deepseek_v2lite_c5_active_path (#[ignore], DEEPSEEK_V2_LITE_DIR + ATENIA_MOE_EXPERT_TIER=disk)",
+      "note": "Required the MLA-3 fix: YaRN attention_scaling = get_mscale(factor,mscale)/get_mscale(factor,mscale_all_dim) (=1.0 for V2-Lite) folded into q_pe/k_pe, NOT mscale^2 on the softmax scale. Before the fix C5 was 2.032 (argmax 3/4 FAIL); see docs/HANDOFF_MLA1_C5_ROOT_CAUSE.md + docs/HANDOFF_MLA_3.md."
     }
   },
 
   "pending_levels": [
-    { "level": "L3", "blocker": "C5 active-path full-forward on the real weights (Qwen-scale, RAM-feasible on 32 GB)." },
     { "level": "L4 (dense-equivalent)", "blocker": "global model.double() F64 ~126 GB — reserved / unreachable; never fabricated." }
   ],
 
   "remaining_caveats": [
-    "C3 attention reused at the mechanism level (tiny fixtures + MLA-0), not real-weight per-layer.",
+    "C3 attention is still recorded at the mechanism level (tiny fixtures + MLA-0); however C5 now validates the real-weight MLA attention end-to-end through the full active path.",
     "C1/C2 use a single deterministic probe input applied to every MoE layer's real weights (representative activation, not a real inter-layer trace) — consistent with the Qwen approach.",
-    "f32-vs-f64 DeepSeek block drift is looser than Qwen overall (documented ~1e-3 at full-forward), but per-expert C1 here is ~1.9e-6.",
-    "C4 (and C3) are certified at the MECHANISM level (reduced-dim, random-weight topology fixtures), not the real-weight assembly; they transfer only in conjunction with the real-weight C1/C2.",
-    "L2 here carries the C3+C4 mechanism caveat; it is NOT the dense ADR-004 CERTIFIED, and NOT L3 (C5) / L4 (global F64)."
+    "C5 uses one canonical input ([1,100,200,300], seq 4); other inputs are not separately certified (same single-probe standard as Qwen-MoE C5).",
+    "C4 (and the C3 fixture) are certified at the MECHANISM level (reduced-dim, random-weight topology fixtures); the real-weight assembly is covered by C1/C2 (pieces) + C5 (active path).",
+    "L3 here is the active-path certification; it is NOT the dense ADR-004 CERTIFIED, and NOT L4 (global F64, reserved/unreachable)."
   ],
 
   "verification": {
@@ -98,10 +110,13 @@
     "c1_c2_reference": "fixtures/moe/deepseek_v2lite_decomp_ref.safetensors (+ .json), float64 one expert at a time (~13.6 MB)",
     "c1_c2_command": "DEEPSEEK_V2_LITE_DIR=models/DeepSeek-V2-Lite cargo test --test moe_mla1_deepseek_decomposition_test --release -- --ignored mla1_real_deepseek_v2lite_c1_c2 --nocapture",
     "c1_c2_expected": "C1 global worst max_abs_diff ~1.9e-6 (< 0.5, all 1664 experts, layer 26 / expert 57); C2 top-6 set match on all 26 MoE layers; min routing margin 0.011981 (layer 23); 0 failures. Real run ~505 s.",
-    "c4_primary_command": "cargo test --release --test moe_mla0_deepseek_v2lite_test mla0_v2lite_full_forward_matches_hf -- --nocapture  (expected end-to-end max_abs_diff 9.072e-5, argmax exact)",
-    "c4_secondary_command": "cargo test --release --test moe_scale_cert_test deepseek_scale_topology_certifies -- --nocapture  (expected 7.806e-3, argmax exact)"
+    "c4_primary_command": "cargo test --release --test moe_mla0_deepseek_v2lite_test mla0_v2lite_full_forward_matches_hf -- --nocapture  (expected end-to-end max_abs_diff 5.306e-5 after MLA-3, argmax exact)",
+    "c4_secondary_command": "cargo test --release --test moe_scale_cert_test deepseek_scale_topology_certifies -- --nocapture  (expected 7.806e-3, argmax exact)",
+    "c5_reference": "fixtures/moe/deepseek_v2lite_c5_ref.safetensors (+ .json), float64 one decoder layer at a time; generator fixtures/moe/generate_deepseek_v2lite_c5_reference.py (modes tiny/real/diag/precision)",
+    "c5_command": "python fixtures/moe/generate_deepseek_v2lite_c5_reference.py real models/DeepSeek-V2-Lite fixtures/moe ; then ATENIA_DISK_TIER_DIR=<nvme> DEEPSEEK_V2_LITE_DIR=models/DeepSeek-V2-Lite cargo test --release --test moe_mla1_deepseek_c5_active_path_test -- --ignored mla1_real_deepseek_v2lite_c5_active_path --nocapture",
+    "c5_expected": "whole-model max_abs_diff ~2.587e-5 (< 0.5), per-position argmax exact 4/4, deterministic. Real run ~1299 s load + ~228 s forward, ~4 GB RAM (disk tier)."
   },
 
-  "generated_at": "2026-06-04",
-  "generated_on": "F64 reference: torch (bf16->float64) + NumPy float64, Windows 11. Atenia: CPU forward, RTX 4070 Laptop host, 32 GB RAM."
+  "generated_at": "2026-06-05",
+  "generated_on": "F64 references: torch (bf16->float64) + NumPy float64, Windows 11. Atenia: CPU forward (C5 via MLA-2 disk expert-tier), RTX 4070 Laptop host, 32 GB RAM."
 }

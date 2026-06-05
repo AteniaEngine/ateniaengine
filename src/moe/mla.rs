@@ -25,13 +25,15 @@ use std::sync::Arc;
 
 use super::residency::ResidentExpertLayer;
 
-/// **MLA-0** — YaRN RoPE scaling parameters (DeepSeek-V2/V3). When present, the
-/// RoPE `inv_freq` is reparametrised (NTK-by-parts) **and** the attention
-/// softmax scale carries `mscale^2` — both active at *every* position, not just
-/// long context. `mscale` for the softmax scale uses `mscale_all_dim` (matching
-/// HuggingFace `DeepseekV2Attention`). For DeepSeek-V2-Lite `mscale ==
-/// mscale_all_dim`, so the cos/sin `_mscale` cancels to 1.0 and only inv_freq +
-/// the softmax scale change (the only two effects modelled here).
+/// **MLA-0 / MLA-3** — YaRN RoPE scaling parameters (DeepSeek-V2/V3). When
+/// present, the RoPE `inv_freq` is reparametrised (NTK-by-parts), and the YaRN
+/// `attention_scaling = get_mscale(factor, mscale) / get_mscale(factor,
+/// mscale_all_dim)` multiplies the cos/sin — i.e. it attaches to the decoupled
+/// RoPE `q_pe`/`k_pe` only ([`DeepseekConfig::attention_scaling`]), **not** the
+/// attention softmax scale. For DeepSeek-V2-Lite `mscale == mscale_all_dim`, so
+/// `attention_scaling == 1.0` (no mscale anywhere); only `inv_freq` changes.
+/// (**MLA-3** corrected the pre-MLA-3 model, which wrongly put `mscale²` on the
+/// softmax scale — see `docs/HANDOFF_MLA1_C5_ROOT_CAUSE.md`.)
 #[derive(Debug, Clone)]
 pub struct YarnParams {
     pub factor: f64,
@@ -83,15 +85,30 @@ impl DeepseekConfig {
         rope_inv_freqs(self.qk_rope_head_dim, self.rope_theta as f64, self.yarn.as_ref())
     }
 
-    /// Attention softmax scale: `qk_head_dim^-0.5`, times `mscale^2` under YaRN
-    /// (`mscale = yarn_get_mscale(factor, mscale_all_dim)`).
+    /// Attention softmax scale: `qk_head_dim^-0.5`.
+    ///
+    /// **MLA-3** — YaRN does **not** scale the attention softmax. In HuggingFace
+    /// `DeepseekV2`, `self.scaling = qk_head_dim^-0.5` carries no mscale; the YaRN
+    /// [`Self::attention_scaling`] multiplies the cos/sin, i.e. it attaches to the
+    /// decoupled-RoPE `q_pe`/`k_pe` only (applied in [`project_token`]), never to
+    /// the whole score. (The pre-MLA-3 code wrongly multiplied this by
+    /// `mscale²`, which over-scaled the `nope` part — see HANDOFF_MLA1_C5_ROOT_CAUSE.)
     fn attn_scale(&self) -> f64 {
-        let base = 1.0_f64 / (self.qk_head_dim() as f64).sqrt();
+        1.0_f64 / (self.qk_head_dim() as f64).sqrt()
+    }
+
+    /// **MLA-3** — YaRN attention scaling, exactly HuggingFace
+    /// `_compute_yarn_parameters`:
+    /// `get_mscale(factor, mscale) / get_mscale(factor, mscale_all_dim)`.
+    /// `1.0` without YaRN, and **exactly `1.0`** whenever `mscale == mscale_all_dim`
+    /// (DeepSeek-V2-Lite: both `0.707`). It is folded into the RoPE'd `q_pe`/`k_pe`
+    /// (so the rope dot carries `attention_scaling²`), mirroring HF folding it into
+    /// the cos/sin — never onto the `nope` part or the softmax scale.
+    fn attention_scaling(&self) -> f64 {
         match &self.yarn {
-            None => base,
+            None => 1.0,
             Some(y) => {
-                let m = yarn_get_mscale(y.factor, y.mscale_all_dim);
-                base * m * m
+                yarn_get_mscale(y.factor, y.mscale) / yarn_get_mscale(y.factor, y.mscale_all_dim)
             }
         }
     }
@@ -313,6 +330,10 @@ fn project_token(
     let kvl = cfg.kv_lora_rank;
     let hidden = cfg.hidden_size;
     let inv_freqs = cfg.rope_inv_freqs(); // MLA-0: YaRN-aware
+    // **MLA-3** — YaRN attention scaling, folded into the RoPE'd q_pe/k_pe (HF
+    // multiplies the cos/sin). `1.0` (exact no-op) without YaRN and for
+    // DeepSeek-V2-Lite (`mscale == mscale_all_dim`).
+    let asc = cfg.attention_scaling();
 
     let q = matvec(&lw.w_q, nh * qkh, hidden, h); // [nh*qkh]
     let ckv = matvec(&lw.w_kv_a, kvl + rope, hidden, h); // [kv_lora + qk_rope]
@@ -320,14 +341,24 @@ fn project_token(
     let k_pe = &ckv[kvl..kvl + rope];
     let compressed_n = rmsnorm(compressed, &lw.kv_a_ln, cfg.rms_eps);
     let kv = matvec(&lw.w_kv_b, nh * (nope + vd), kvl, &compressed_n); // [nh*(nope+vd)]
-    let k_pe_roped = rope_interleaved(k_pe, pos, &inv_freqs); // shared across heads
+    let mut k_pe_roped = rope_interleaved(k_pe, pos, &inv_freqs); // shared across heads
+    if asc != 1.0 {
+        for v in &mut k_pe_roped {
+            *v = (*v as f64 * asc) as f32;
+        }
+    }
 
     let mut q_heads = vec![vec![0.0_f32; qkh]; nh];
     let mut k_heads = vec![vec![0.0_f32; qkh]; nh];
     let mut v_heads = vec![vec![0.0_f32; vd]; nh];
     for hd in 0..nh {
         let qh = &q[hd * qkh..(hd + 1) * qkh];
-        let q_pe = rope_interleaved(&qh[nope..qkh], pos, &inv_freqs);
+        let mut q_pe = rope_interleaved(&qh[nope..qkh], pos, &inv_freqs);
+        if asc != 1.0 {
+            for v in &mut q_pe {
+                *v = (*v as f64 * asc) as f32;
+            }
+        }
         for i in 0..nope {
             q_heads[hd][i] = qh[i];
             k_heads[hd][i] = kv[hd * (nope + vd) + i];
