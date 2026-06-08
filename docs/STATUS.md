@@ -525,12 +525,17 @@ locked by regression tests.
   per-expert exhaustive over **all 32 layers × 8 experts = 256 experts**, global worst
   `max_abs_diff` **1.907e-6** (layer 8 / expert 1), 0 failures; **C2** top-2 router
   **set equality** on all 32 layers, 0 failures, min routing margin **0.011413**
-  (layer 13). C3 (GQA attention) at the mechanism level (`mixtral_scale` 1.639e-7);
-  C4 (topology) available, not folded; C5 pending. → **Mixtral-8x7B-v0.1: partial L1**
-  (`docs/numcert/mixtral-8x7b-v0.1.moecert.json`). **No `src/` change** — a resumable
-  reference generator + a resumable `#[ignore]` harness (the model is on an HDD;
-  per-layer atomic checkpoints survive the environment's ~60-min background reaping).
-  Not dense ADR-004 `CERTIFIED`; not L2/L3/L4. See `docs/HANDOFF_MIXTRAL_CERT_C1C2.md`.
+  (layer 13). C3 (GQA attention) at the mechanism level (`mixtral_scale` 1.639e-7).
+  **MIXTRAL-CERT-2 then folded C4** — the `mixtral_scale` Mixtral-8x7B-topology
+  full-forward cert vs HF f64 = **1.639e-7** (8 experts / top-2 / GQA 4:1 / classic
+  experts / no shared / renorm — the exact conventions; argmax exact, greedy→EOS,
+  deterministic) → **L2 = L1 + C4**. → **Mixtral-8x7B-v0.1: MoE-certified L2 (whole
+  model)** (`docs/numcert/mixtral-8x7b-v0.1.moecert.json`, `ladder_level_whole_model:
+  L2`). **No `src/` change** — a resumable reference generator + a resumable
+  `#[ignore]` harness (model on an HDD; per-layer atomic checkpoints survive the
+  environment's ~60-min background reaping); C4 via the existing scale-cert test.
+  C3+C4 mechanism caveat; C5 (active-path) → L3 and L4 pending. Not dense ADR-004
+  `CERTIFIED`; not L3/L4. See `docs/HANDOFF_MIXTRAL_CERT_C1C2.md`.
 - **FORMAT-INTAKE-1 — PyTorch `.bin` intake.** Closes the coverage audit's #2
   gap (otherwise-supported checkpoints unloadable purely because they ship as
   `pytorch_model.bin`). A new `src/v17/loader/pytorch_bin.rs` **transcodes** a

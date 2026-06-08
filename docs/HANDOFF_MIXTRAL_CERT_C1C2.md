@@ -21,6 +21,16 @@ MIXTRAL-DATA-PROVISION (87 GB, 19 shards, validated; `MIXTRAL_PROVISIONED.md`).
 → **Mixtral-8x7B-v0.1: partial L1** (C1+C2 real-weight + C3 mechanism). Not the dense
 ADR-004 `CERTIFIED`; not L2 (C4 fold) / L3 (C5) / L4.
 
+> **MIXTRAL-CERT-2 update — C4 folded → L2.** C4 was verified (re-ran
+> `mixtral_8x7b_topology_certifies` = **1.639e-7** vs HF f64, argmax exact,
+> greedy→EOS, deterministic — the `mixtral_scale` reduced-dim Mixtral-8x7B topology:
+> 8 experts / top-2 / GQA 4:1 / classic experts / no shared / renorm) and folded into
+> the manifest (manifest/docs only, no code). Result: **Mixtral-8x7B-v0.1 —
+> MoE-certified L2 (whole model) = L1 + C4** (`ladder_level_whole_model: L2`). Caveat:
+> C4 is reduced-dim, **random-weight** topology — the mechanism, not the real
+> 8-expert trained-weight assembly; it transfers only with the real-weight C1/C2
+> (met). Not dense ADR-004 `CERTIFIED`; C5 (active-path) → L3 and L4 remain pending.
+
 ## Tooling (reuse + Mixtral deltas)
 
 The Qwen/DeepSeek decomposition machinery transferred almost verbatim. Mixtral deltas:

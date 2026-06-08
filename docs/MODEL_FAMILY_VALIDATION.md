@@ -355,15 +355,16 @@ reusing the ADR-004 `max_abs_diff < 0.5` + argmax bar **unchanged**.
     mscale_all_dim)` (= 1.0 for V2-Lite) is folded into `q_pe`/`k_pe` — matching HF.
     Before the fix C5 was 2.032 (argmax 3/4 FAIL). Isolated to `src/moe/mla.rs`;
     non-YaRN configs + Qwen/Mixtral unchanged.
-- **Mixtral-8x7B-v0.1 — MoE-certified partial L1 (real weights).** Provisioned
+- **Mixtral-8x7B-v0.1 — MoE-certified L2 (whole model, real weights).** Provisioned
   (87 GB, 19 shards, validated) and certified on the **real** weights via the
   Qwen/DeepSeek decomposition tooling (`tests/moe_mixtral_decomposition_test.rs`,
-  `docs/numcert/mixtral-8x7b-v0.1.moecert.json`, MIXTRAL-CERT-1): **C1** exhaustive
+  `docs/numcert/mixtral-8x7b-v0.1.moecert.json`, MIXTRAL-CERT-1/2): **C1** exhaustive
   over **256 experts** (32 layers × 8), global worst `max_abs_diff` **1.907e-6**
   (layer 8 / expert 1), 0 failures; **C2** top-2 set equality on all 32 layers, 0
-  failures, min routing margin **0.011413** (layer 13). C3 (GQA) mechanism
-  (`mixtral_scale` 1.639e-7); C4 topology available; C5 pending. NOT dense ADR-004
-  `CERTIFIED`; not L2/L3/L4. See `docs/HANDOFF_MIXTRAL_CERT_C1C2.md`.
+  failures, min routing margin **0.011413** (layer 13); **C4** the `mixtral_scale`
+  topology full-forward cert = **1.639e-7** vs HF f64 (argmax exact) → **L2 = L1 + C4**.
+  C3 (GQA) mechanism. C5 (active-path) → L3 pending. NOT dense ADR-004 `CERTIFIED`;
+  not L3/L4. See `docs/HANDOFF_MIXTRAL_CERT_C1C2.md`.
 - **Classic DeepSeek-MoE remains at L0.** L4 (global F64, dense-equivalent) is
   reserved and currently unreachable for large-active MoE (RAM). See
   `docs/MOE_CERTIFICATION_AUDIT.md` for the full methodology.
