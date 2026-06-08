@@ -128,7 +128,14 @@ Why this over the others, now:
   (mechanism)**; the V3/R1/Kimi/GLM cluster becomes mechanically reachable. Not dense
   CERTIFIED; not L1–L4.
 
-### M2 — MOE-ATK-DECL-1: declarative Adapter Toolkit MoE onboarding
+### M2 — MOE-ATK-DECL-1: declarative Adapter Toolkit MoE onboarding ✅ DONE
+> **Status: completed.** `src/adapter_toolkit/moe_family_spec.rs` — a declarative
+> `MoeStructuralSpec` with `preset`s reproducing the four certified/mechanism families
+> (Mixtral, Qwen-MoE, DeepSeek-V2-Lite, DeepSeek-V3 routing L0), parallel to the
+> handwritten paths; describe+validate only, equivalence-tested vs the runtime; no
+> execution / no new family support. Resolver-bridge-to-runtime is MOE-INTEGRATE-2.
+> See `docs/HANDOFF_MOE_ATK_DECL_1.md`.
+
 - **Objective:** express the certified MoE families (Mixtral, Qwen-MoE, DeepSeek-V2,
   +V3-routing from M1) as a **declarative family spec** so new families are config, not Rust.
 - **Scope:** an ATK MoE schema (expert layout, router type, shared-expert, GQA, routing

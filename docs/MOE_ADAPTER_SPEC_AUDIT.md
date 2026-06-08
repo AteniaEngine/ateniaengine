@@ -1,5 +1,16 @@
 # MoE Adapter Specification — Audit (MOE-INTEGRATE-1, design-only)
 
+> **Update (MOE-INTEGRATE-1 implemented + MOE-ATK-DECL-1).** The v1 `moe` DSL section +
+> `MoeFamilyKind` resolver + typed layout enums shipped in `src/adapter_toolkit/moe_spec.rs`
+> (Mixtral/Qwen YAML, describe+validate). **MOE-ATK-DECL-1** then added a **declarative MoE
+> family structural spec** (`src/adapter_toolkit/moe_family_spec.rs`) extending it with the
+> DeepSeek/MLA + DeepSeek-V3 routing axes and `preset`s reproducing the **four**
+> certified/mechanism families (Mixtral, Qwen-MoE, DeepSeek-V2-Lite, DeepSeek-V3 routing L0),
+> with equivalence tests vs the authoritative runtime (`MoeFamily::descriptor`, `v3_router`).
+> Still **describe + validate only — not replacing certified paths; no execution; no new
+> family support claimed**. The resolver-bridge-to-`MoeRuntime` remains **MOE-INTEGRATE-2**.
+> See `docs/HANDOFF_MOE_ATK_DECL_1.md`.
+
 **Audit only — no code, no commits, no manifests, no execution.** Designs a
 minimal **MoE Adapter Specification v1** for the Adapter Toolkit, grounded in
 what already exists, so MOE-INTEGRATE-2 can wire the productive path. Sources:

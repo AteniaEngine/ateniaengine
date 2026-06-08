@@ -517,6 +517,23 @@ locked by regression tests.
   `ladder_level_whole_model: L3`. MLA-0 improved to `5.306e-5`; disk==RAM still
   bit-identical. **Not dense ADR-004 `CERTIFIED`; L4 (global F64) reserved/unreachable.**
   See `docs/HANDOFF_MLA_3.md` + `docs/HANDOFF_MLA1_C5_ROOT_CAUSE.md`.
+- **MOE-ATK-DECL-1 — declarative MoE family structural spec (Adapter Toolkit).** Added a
+  **declarative spec layer parallel to the handwritten paths** (`src/adapter_toolkit/
+  moe_family_spec.rs`): a typed `MoeStructuralSpec` over every structural axis (expert
+  layout, router naming, shared expert + gating, routing scheme incl. **V3 noaux/
+  group-limited**, renorm, attention `MHA/GQA/MLA`, qkv bias, YaRN, dense-first, disk-tier)
+  with `preset`s that **reproduce the certified families** — Mixtral, Qwen-MoE,
+  DeepSeek-V2-Lite — plus the **DeepSeek-V3-like routing mechanism** (L0). **Describe +
+  validate only — not replacing certified paths yet; no execution/loader/manifest change;
+  no new family support claimed** (DeepSeek-V3 as a *model* stays unsupported /
+  provisioning-blocked; `is_runnable_model()` = false for it). Equivalence tests assert
+  each preset matches the authoritative runtime sources (`MoeFamily::descriptor()` renorm/
+  shared, MLA-deepseek-only, and the V3 preset builds a valid `v3_router::V3RouterConfig`
+  and routes) so the spec **cannot silently diverge**; fail-loud on inconsistent specs.
+  Extends MOE-INTEGRATE-1 `moe_spec.rs` (Mixtral/Qwen YAML). 13 new tests; `cargo test
+  --lib adapter_toolkit::` + full lib suite green; INTEGRATE-1 + dense ATK untouched. Next:
+  **MOE-INTEGRATE-2** (resolver bridge → `MoeRuntime` + fail-loud lift). See
+  `docs/HANDOFF_MOE_ATK_DECL_1.md`.
 - **MOE-V3-ROUTE-1 — DeepSeek-V3-like routing mechanism → L0.** Implemented the modern
   router primitives (`src/moe/v3_router.rs`, isolated reference — no runtime/loader/CUDA/
   Adapter-Toolkit wiring): **sigmoid scoring + `e_score_correction_bias` selection +

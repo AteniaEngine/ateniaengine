@@ -9,6 +9,17 @@ corresponds to code that exists and is covered by tests.
 
 ## 1. Overview
 
+> **MoE note (MOE-INTEGRATE-1 / MOE-ATK-DECL-1).** Beyond the 7 dense families, the
+> toolkit carries a **declarative MoE spec layer** that *describes and validates* MoE
+> families **parallel to the handwritten runtime paths** — it does **not** execute or
+> route. `src/adapter_toolkit/moe_spec.rs` is the YAML `moe` section (Mixtral/Qwen);
+> `src/adapter_toolkit/moe_family_spec.rs` (`MoeStructuralSpec` / `MoeArch::preset`) adds
+> the DeepSeek/MLA + DeepSeek-V3 routing axes and reproduces the four
+> certified/mechanism families (Mixtral, Qwen-MoE, DeepSeek-V2-Lite, DeepSeek-V3 routing
+> L0), equivalence-tested against the runtime. **Not replacing the certified paths; no new
+> family support claimed.** Wiring an MoE spec to the working `MoeRuntime` is the separate
+> MOE-INTEGRATE-2. See `docs/MOE_ADAPTER_SPEC_AUDIT.md`, `docs/HANDOFF_MOE_ATK_DECL_1.md`.
+
 ### What it is
 
 Adapter Toolkit v2 is a **declarative layer on top of** the v1

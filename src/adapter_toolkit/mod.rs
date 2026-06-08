@@ -28,6 +28,10 @@ pub mod introspect;
 // **MOE-INTEGRATE-1** — declarative MoE Specification v1 (describe + validate
 // only; no execution / routing / fail-loud lift / runtime change).
 pub mod moe_spec;
+// **MOE-ATK-DECL-1** — declarative MoE family structural spec (the 4 certified
+// families + DeepSeek-V3 routing mechanism), parallel to the handwritten paths;
+// describe + validate only, no execution / runtime change.
+pub mod moe_family_spec;
 pub mod registry;
 pub mod spec;
 pub mod validate;
@@ -36,6 +40,11 @@ pub use dsl::AdapterDsl;
 pub use moe_spec::{
     resolve_moe_family, ExpertLayout, MoeFamilyKind, ResolvedMoeSpec, RouterNaming, SharedExpertNaming,
     SharedGating,
+};
+// NB: `moe_family_spec::AttentionKind` is intentionally NOT re-exported here to
+// avoid colliding with the dense `spec::AttentionKind`; reach it via the module.
+pub use moe_family_spec::{
+    DiskTierPolicy, MoeArch, MoeSpecError, MoeStructuralSpec, RoutingScheme, V3RoutingParams,
 };
 pub use generator::GeneratedAdapter;
 pub use inspect::{inspect_model_dir, InspectionReport};
