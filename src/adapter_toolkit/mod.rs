@@ -32,6 +32,10 @@ pub mod moe_spec;
 // families + DeepSeek-V3 routing mechanism), parallel to the handwritten paths;
 // describe + validate only, no execution / runtime change.
 pub mod moe_family_spec;
+// **MOE-INTEGRATE-2** — opt-in resolver bridge from a declarative MoE spec to a
+// runtime plan (and, opt-in, the unchanged certified MoeRuntime). Handwritten
+// certified paths remain default; V3 routing is mechanism-only / non-runnable.
+pub mod moe_resolver;
 pub mod registry;
 pub mod spec;
 pub mod validate;
@@ -45,6 +49,9 @@ pub use moe_spec::{
 // avoid colliding with the dense `spec::AttentionKind`; reach it via the module.
 pub use moe_family_spec::{
     DiskTierPolicy, MoeArch, MoeSpecError, MoeStructuralSpec, RoutingScheme, V3RoutingParams,
+};
+pub use moe_resolver::{
+    MoeResolveError, MoeSpecResolver, ResolvedMoeRuntimePlan, RoutingPlan,
 };
 pub use generator::GeneratedAdapter;
 pub use inspect::{inspect_model_dir, InspectionReport};

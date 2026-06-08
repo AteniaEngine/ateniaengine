@@ -517,6 +517,21 @@ locked by regression tests.
   `ladder_level_whole_model: L3`. MLA-0 improved to `5.306e-5`; disk==RAM still
   bit-identical. **Not dense ADR-004 `CERTIFIED`; L4 (global F64) reserved/unreachable.**
   See `docs/HANDOFF_MLA_3.md` + `docs/HANDOFF_MLA1_C5_ROOT_CAUSE.md`.
+- **MOE-INTEGRATE-2 — opt-in resolver bridge (declarative spec → runtime).** Added
+  `src/adapter_toolkit/moe_resolver.rs` (`MoeSpecResolver`): resolves a `MoeStructuralSpec`
+  into a typed `ResolvedMoeRuntimePlan` (family, execution convention `Atenia`/
+  `HuggingFaceQwen`, `RoutingPlan`, attention, expert layout, dense-first, YaRN, disk-tier
+  hint, representative `V3RouterConfig`, manifest cert scope, **runnable** flag) and, **behind
+  the opt-in** (`ATENIA_ENABLE_MOE=1`), delegates a runnable plan to the **unchanged**
+  certified `MoeRuntime::load_from_dir`. **Handwritten certified paths remain default** — no
+  numerics/threshold/manifest change; the productive `decide_route` is untouched. **No new
+  family support claimed.** Resolves Mixtral / Qwen-MoE / DeepSeek-V2-Lite as runnable and
+  **DeepSeek-V3 routing as mechanism-only / non-runnable** (fail-loud before disk).
+  Equivalence guard rejects any spec whose renorm/shared convention diverges from the
+  authoritative `MoeFamily::descriptor()`; the resolved convention matches
+  `RealMoeLayer::resolve_convention` exactly. 10 new tests; `adapter_toolkit::` + `moe::` +
+  full lib suite green. Next: **MOE-PRODUCT-1** (wire a resolver-selected plan into the
+  productive `generate`, opt-in + CLI). See `docs/HANDOFF_MOE_INTEGRATE_2.md`.
 - **MOE-ATK-DECL-1 — declarative MoE family structural spec (Adapter Toolkit).** Added a
   **declarative spec layer parallel to the handwritten paths** (`src/adapter_toolkit/
   moe_family_spec.rs`): a typed `MoeStructuralSpec` over every structural axis (expert

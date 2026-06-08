@@ -8,8 +8,13 @@
 > certified/mechanism families (Mixtral, Qwen-MoE, DeepSeek-V2-Lite, DeepSeek-V3 routing L0),
 > with equivalence tests vs the authoritative runtime (`MoeFamily::descriptor`, `v3_router`).
 > Still **describe + validate only — not replacing certified paths; no execution; no new
-> family support claimed**. The resolver-bridge-to-`MoeRuntime` remains **MOE-INTEGRATE-2**.
-> See `docs/HANDOFF_MOE_ATK_DECL_1.md`.
+> family support claimed**. **MOE-INTEGRATE-2** then added the **opt-in resolver bridge**
+> (`src/adapter_toolkit/moe_resolver.rs`, `MoeSpecResolver`): spec → `ResolvedMoeRuntimePlan`
+> and, behind `ATENIA_ENABLE_MOE=1`, delegation to the unchanged `MoeRuntime` — **handwritten
+> certified paths remain default**, V3 routing is **mechanism-only / non-runnable**, and an
+> equivalence guard rejects any spec diverging from `MoeFamily::descriptor()`. The productive
+> `decide_route` / CLI wiring is the next step (MOE-PRODUCT-1).
+> See `docs/HANDOFF_MOE_ATK_DECL_1.md`, `docs/HANDOFF_MOE_INTEGRATE_2.md`.
 
 **Audit only — no code, no commits, no manifests, no execution.** Designs a
 minimal **MoE Adapter Specification v1** for the Adapter Toolkit, grounded in

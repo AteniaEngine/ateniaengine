@@ -133,8 +133,13 @@ Why this over the others, now:
 > `MoeStructuralSpec` with `preset`s reproducing the four certified/mechanism families
 > (Mixtral, Qwen-MoE, DeepSeek-V2-Lite, DeepSeek-V3 routing L0), parallel to the
 > handwritten paths; describe+validate only, equivalence-tested vs the runtime; no
-> execution / no new family support. Resolver-bridge-to-runtime is MOE-INTEGRATE-2.
-> See `docs/HANDOFF_MOE_ATK_DECL_1.md`.
+> execution / no new family support. **MOE-INTEGRATE-2 also DONE** — the opt-in
+> **resolver bridge** (`src/adapter_toolkit/moe_resolver.rs`, `MoeSpecResolver`): spec →
+> `ResolvedMoeRuntimePlan` and, behind `ATENIA_ENABLE_MOE=1`, delegation to the unchanged
+> certified `MoeRuntime`; handwritten certified paths remain default, V3 routing
+> mechanism-only/non-runnable, equivalence-guarded. Next: **MOE-PRODUCT-1** (wire a
+> resolver-selected plan into the productive `generate` + CLI).
+> See `docs/HANDOFF_MOE_ATK_DECL_1.md`, `docs/HANDOFF_MOE_INTEGRATE_2.md`.
 
 - **Objective:** express the certified MoE families (Mixtral, Qwen-MoE, DeepSeek-V2,
   +V3-routing from M1) as a **declarative family spec** so new families are config, not Rust.

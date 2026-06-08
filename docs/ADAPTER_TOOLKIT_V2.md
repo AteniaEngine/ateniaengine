@@ -16,9 +16,14 @@ corresponds to code that exists and is covered by tests.
 > `src/adapter_toolkit/moe_family_spec.rs` (`MoeStructuralSpec` / `MoeArch::preset`) adds
 > the DeepSeek/MLA + DeepSeek-V3 routing axes and reproduces the four
 > certified/mechanism families (Mixtral, Qwen-MoE, DeepSeek-V2-Lite, DeepSeek-V3 routing
-> L0), equivalence-tested against the runtime. **Not replacing the certified paths; no new
-> family support claimed.** Wiring an MoE spec to the working `MoeRuntime` is the separate
-> MOE-INTEGRATE-2. See `docs/MOE_ADAPTER_SPEC_AUDIT.md`, `docs/HANDOFF_MOE_ATK_DECL_1.md`.
+> L0), equivalence-tested against the runtime. **MOE-INTEGRATE-2** adds the **opt-in resolver
+> bridge** (`moe_resolver.rs`, `MoeSpecResolver`): a spec resolves to a `ResolvedMoeRuntimePlan`
+> and, behind `ATENIA_ENABLE_MOE=1`, delegates to the unchanged certified `MoeRuntime` —
+> **handwritten certified paths remain default**, V3 routing is **mechanism-only /
+> non-runnable**, no new family support claimed. **Not replacing the certified paths.** The
+> productive CLI/`generate` wiring is the next step (MOE-PRODUCT-1).
+> See `docs/MOE_ADAPTER_SPEC_AUDIT.md`, `docs/HANDOFF_MOE_ATK_DECL_1.md`,
+> `docs/HANDOFF_MOE_INTEGRATE_2.md`.
 
 ### What it is
 
