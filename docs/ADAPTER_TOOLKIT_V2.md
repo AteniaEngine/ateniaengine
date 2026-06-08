@@ -23,8 +23,10 @@ corresponds to code that exists and is covered by tests.
 > non-runnable**, no new family support claimed. **Not replacing the certified paths.**
 > **MOE-PRODUCT-1** then wired it into the productive `atenia generate`:
 > `MoeSpecResolver::route` decides dense-vs-MoE through the resolver (opt-in
-> `ATENIA_ENABLE_MOE=1`, runnable set Mixtral/Qwen-MoE, DeepSeek deferred, V3 non-runnable,
-> dense untouched, fail-loud default). See `docs/MOE_ADAPTER_SPEC_AUDIT.md`,
+> `ATENIA_ENABLE_MOE=1`, dense untouched, fail-loud default). **MOE-PRODUCT-2** added
+> **DeepSeek-V2-Lite** to the runnable set (Mixtral / Qwen-MoE / DeepSeek-V2-Lite); DeepSeek
+> Q-LoRA (V2-236B / V3) and the DeepSeek-V3 routing mechanism stay refused / non-runnable.
+> See `docs/MOE_ADAPTER_SPEC_AUDIT.md`,
 > `docs/HANDOFF_MOE_ATK_DECL_1.md`, `docs/HANDOFF_MOE_INTEGRATE_2.md`,
 > `docs/HANDOFF_MOE_PRODUCT_1.md`, `docs/CLI.md`.
 

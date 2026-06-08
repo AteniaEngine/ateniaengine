@@ -128,6 +128,19 @@ fn unsupported_variant(names: &[String], manifest: &MoeCertManifest) -> Option<S
                 .unwrap_or_else(|| "Status: unsupported variant (Q-LoRA).".into()),
         );
     }
+    // **MOE-PRODUCT-2** — DeepSeek-V3 modern routing (sigmoid + aux-loss-free):
+    // the per-expert `e_score_correction_bias` tensor. The V3 routing mechanism is
+    // L0-certified (`src/moe/v3_router.rs`) but **mechanism-only / non-runnable** —
+    // refuse it as a real model (defence-in-depth; real V3 is also caught above by
+    // Q-LoRA). DeepSeek-V2-Lite has no such tensor, so it is unaffected.
+    let has_v3_router = names.iter().any(|n| n.contains("e_score_correction_bias"));
+    if has_v3_router {
+        return Some(
+            "Family: DeepSeek-V3 routing variant.\nStatus: unsupported (modern routing \
+             sigmoid + aux-loss-free + group-limited is L0 mechanism-only / non-runnable)."
+                .into(),
+        );
+    }
     None
 }
 
@@ -240,9 +253,11 @@ pub fn decide_route(diag: &MoeDiagnosis) -> MoeRoute {
         return MoeRoute::Refused;
     }
     match diag.family {
-        // DeepSeek-MoE (MLA) is deferred — MOE-INTEGRATE-2 routes Mixtral and
-        // Qwen-MoE only. Refuse it rather than routing the MLA runtime.
-        Some(MoeFamily::DeepSeekMoe) => MoeRoute::Refused,
+        // **MOE-PRODUCT-2** — DeepSeek-MoE (DeepSeek-V2-Lite, MLA) is now routable
+        // behind the opt-in, like Mixtral / Qwen-MoE. The unsupported-variant gate
+        // above already refuses DeepSeek-V2 (Q-LoRA) and DeepSeek-V3 (Q-LoRA + the
+        // V3 routing marker), so only the certified, runnable V2-Lite shape reaches
+        // here. The DeepSeek-V3 routing *mechanism* is never a runnable model.
         Some(family) if diag.opt_in_set => MoeRoute::RunMoe { family },
         Some(family) => MoeRoute::NeedsOptIn { family },
         None => MoeRoute::Refused,
@@ -350,15 +365,46 @@ mod tests {
             decide_route(&diag(true, Some(MoeFamily::DeepSeekMoe), false, true, None)),
             MoeRoute::Refused
         );
-        // DeepSeek-MoE is deferred — refused even when runnable + opted in.
-        assert_eq!(
-            decide_route(&diag(true, Some(MoeFamily::DeepSeekMoe), true, true, None)),
-            MoeRoute::Refused
-        );
         // MoE but unrecognised family → Refused.
         assert_eq!(
             decide_route(&diag(true, None, false, true, None)),
             MoeRoute::Refused
         );
+    }
+
+    // ---- MOE-PRODUCT-2: DeepSeek-V2-Lite routable; V3 routing refused ----
+
+    #[test]
+    fn deepseek_v2_lite_runnable_routes_with_opt_in() {
+        // DeepSeek-MoE (V2-Lite), runnable, no opt-in → NeedsOptIn.
+        assert_eq!(
+            decide_route(&diag(true, Some(MoeFamily::DeepSeekMoe), true, false, None)),
+            MoeRoute::NeedsOptIn { family: MoeFamily::DeepSeekMoe }
+        );
+        // With the opt-in → routes to the MoE runtime.
+        assert_eq!(
+            decide_route(&diag(true, Some(MoeFamily::DeepSeekMoe), true, true, None)),
+            MoeRoute::RunMoe { family: MoeFamily::DeepSeekMoe }
+        );
+    }
+
+    #[test]
+    fn v3_router_marker_is_unsupported_variant() {
+        let manifest = MoeCertManifest::builtin();
+        // DeepSeek-V3 routing tensor → unsupported (mechanism-only, non-runnable).
+        let v3 = vec![
+            "model.layers.0.mlp.gate.weight".to_string(),
+            "model.layers.0.mlp.gate.e_score_correction_bias".to_string(),
+        ];
+        let u = unsupported_variant(&v3, &manifest).expect("V3 router marker is unsupported");
+        assert!(u.contains("non-runnable") || u.contains("V3"));
+        // DeepSeek-V2-Lite (no Q-LoRA, no V3 marker) is NOT flagged.
+        let v2lite = vec![
+            "model.layers.0.self_attn.kv_a_proj_with_mqa.weight".to_string(),
+            "model.layers.0.self_attn.q_proj.weight".to_string(),
+            "model.layers.0.mlp.gate.weight".to_string(),
+            "model.layers.0.mlp.shared_experts.gate_proj.weight".to_string(),
+        ];
+        assert!(unsupported_variant(&v2lite, &manifest).is_none());
     }
 }

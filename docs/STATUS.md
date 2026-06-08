@@ -517,6 +517,22 @@ locked by regression tests.
   `ladder_level_whole_model: L3`. MLA-0 improved to `5.306e-5`; disk==RAM still
   bit-identical. **Not dense ADR-004 `CERTIFIED`; L4 (global F64) reserved/unreachable.**
   See `docs/HANDOFF_MLA_3.md` + `docs/HANDOFF_MLA1_C5_ROOT_CAUSE.md`.
+- **MOE-PRODUCT-2 — opt-in DeepSeek-V2-Lite in the productive `generate`.** Enabled the
+  opt-in productive routing of **DeepSeek-V2-Lite (MLA)** in `atenia generate` via
+  `MoeSpecResolver` + the unchanged `MoeRuntime`: `arch_for_productive_routing(DeepSeekMoe)
+  → DeepSeekV2Lite` and `decide_route` no longer defers DeepSeek, so a clean V2-Lite shape
+  (MLA, `q_lora_rank=null`, no V3 router) routes **RunMoe** behind `ATENIA_ENABLE_MOE=1`
+  (and **NeedsOptIn** without it). A new **unsupported-variant guard** flags the
+  **DeepSeek-V3 routing marker** (`e_score_correction_bias`) as non-runnable (defence in
+  depth; real V3/V2-236B already caught by the Q-LoRA `q_a_proj` guard) → **V3 stays
+  non-runnable**. **Dense path intact; fail-loud default; no numerics/threshold/cert-manifest
+  change; no Q-LoRA / latent cache / perf work.** Only the certified V2-Lite shape reaches
+  the runtime (Q-LoRA + V3-routing checkpoints refused at `diagnose_moe`). New production +
+  resolver + integration tests (DeepSeek-V2-Lite shape via the `deepseek_scale` fixture
+  routes NeedsOptIn→RunMoe); full lib suite green. The ~15.7B real generate is heavy → not
+  run in CI (EOS/tokenizer covered by the `deepseek_scale` generate→EOS cert). `MoE-certified
+  L3 = active-path-certified, NOT dense ADR-004 CERTIFIED; L4 reserved/unreachable`. Next:
+  **MOE-PERF-1** (MoE-generate throughput) + CLI UX. See `docs/HANDOFF_MOE_PRODUCT_2.md`.
 - **MOE-PRODUCT-1 — opt-in MoE in the productive `generate` (resolver-backed).** `atenia
   generate <model>` now routes a recognised MoE checkpoint through the **declarative
   resolver bridge** (`MoeSpecResolver::route`): **dense passes through unchanged**; a MoE

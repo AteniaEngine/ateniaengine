@@ -156,7 +156,7 @@ tokenizer, adapter resolution — without generating anything.
 | `load` | Parse and validate an adapter spec file | engineer |
 | `debug` | Like `load`, with a verbose adapter report | engineer |
 | `search` | **Experimental (AQS).** Render a quantization certification report + draft manifest from a results file | engineer |
-| `moe-generate` | **Experimental (MoE).** Controlled, opt-in MoE generation from token ids on a certified MoE checkpoint (Mixtral / Qwen-MoE / DeepSeek-MoE). Requires `ATENIA_ENABLE_MOE=1` or `--experimental-moe`; refuses non-certified families / unsupported variants with a clear message. The dense `generate` path is unaffected. | engineer |
+| `moe-generate` | **Experimental (MoE).** Controlled, opt-in MoE generation from token ids on a certified MoE checkpoint (Mixtral / Qwen-MoE / DeepSeek-V2-Lite). Requires `ATENIA_ENABLE_MOE=1` or `--experimental-moe`; refuses non-certified families / unsupported variants (Q-LoRA, DeepSeek-V3 routing) with a clear message. The dense `generate` path is unaffected. `generate` itself also routes these MoE families opt-in (MOE-PRODUCT-1/2). | engineer |
 
 Three further subcommands exist but are outside the scope of this
 manual: `run` (the tri-mode killer demo), `probe` (hardware
@@ -266,10 +266,10 @@ bridge**:
 - A **MoE checkpoint without the opt-in fails loud** (exit 2) with a family-aware
   message. Set **`ATENIA_ENABLE_MOE=1`** (or `--experimental-moe` on `moe-generate`)
   to run it.
-- With the opt-in, a **runnable, productively-routable family — Mixtral or Qwen-MoE —**
-  runs via the controlled MoE runtime. **DeepSeek productive routing is deferred** and
-  the **DeepSeek-V3 routing mechanism is non-runnable** — both are refused with a clear
-  message.
+- With the opt-in, a **runnable, productively-routable family — Mixtral, Qwen-MoE, or
+  DeepSeek-V2-Lite (MOE-PRODUCT-2) —** runs via the controlled MoE runtime.
+  **DeepSeek-V2-236B / V3 (Q-LoRA) and the DeepSeek-V3 routing mechanism are refused**
+  (non-runnable / unsupported) with a clear message.
 
 ```text
 # Opt-in MoE generate (Mixtral / Qwen-MoE):

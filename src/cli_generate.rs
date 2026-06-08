@@ -330,9 +330,10 @@ pub fn run(args: GenerateArgs) -> i32 {
     // checkpoints pass straight through (`route → Dense`, unchanged). MoE detection
     // reads safetensors tensor names; a GGUF checkpoint is never a routable MoE
     // here, so the probe is skipped for GGUF. Fail-loud is the default: only a
-    // runnable, certified, productively-routable family (Mixtral / Qwen-MoE) *with
-    // the opt-in* (`ATENIA_ENABLE_MOE=1`) is run. DeepSeek productive routing is
-    // deferred and the DeepSeek-V3 routing mechanism is non-runnable — both refused.
+    // runnable, certified, productively-routable family (Mixtral / Qwen-MoE /
+    // DeepSeek-V2-Lite, MOE-PRODUCT-2) *with the opt-in* (`ATENIA_ENABLE_MOE=1`) is
+    // run. DeepSeek-V2 / V3 (Q-LoRA) and the DeepSeek-V3 routing marker are refused
+    // by `diagnose_moe`; the V3 routing mechanism is non-runnable.
     if !is_gguf {
         use crate::adapter_toolkit::MoeSpecResolver;
         use crate::moe::{diagnose_moe, MoeRoute};

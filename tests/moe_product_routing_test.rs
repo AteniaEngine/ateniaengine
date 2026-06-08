@@ -65,13 +65,29 @@ fn productive_route_uses_resolver_and_gates_on_opt_in() {
         MoeRoute::NeedsOptIn { family: MoeFamily::Mixtral }
     );
 
-    // --- With the opt-in → a runnable family routes to the MoE runtime. ---
+    // --- DeepSeek-V2-Lite shape (MLA, no Q-LoRA, no V3 marker) → NeedsOptIn
+    //     without the opt-in (MOE-PRODUCT-2). ---
+    let ds = dir_with("fixtures/moe/deepseek_scale.safetensors", "deepseek");
+    let dd = diagnose_moe(&ds);
+    assert_eq!(dd.family, Some(MoeFamily::DeepSeekMoe));
+    assert!(dd.unsupported_variant.is_none(), "V2-Lite shape must not be an unsupported variant");
+    assert_eq!(
+        MoeSpecResolver::route(&dd),
+        MoeRoute::NeedsOptIn { family: MoeFamily::DeepSeekMoe }
+    );
+
+    // --- With the opt-in → runnable families route to the MoE runtime. ---
     unsafe { std::env::set_var("ATENIA_ENABLE_MOE", "1") };
     let dq2 = diagnose_moe(&qwen);
     assert!(dq2.opt_in_set);
     assert_eq!(
         MoeSpecResolver::route(&dq2),
         MoeRoute::RunMoe { family: MoeFamily::QwenMoe }
+    );
+    // DeepSeek-V2-Lite now routes to the MoE runtime with the opt-in.
+    assert_eq!(
+        MoeSpecResolver::route(&diagnose_moe(&ds)),
+        MoeRoute::RunMoe { family: MoeFamily::DeepSeekMoe }
     );
     // The resolver-backed route agrees with the primitive on the runnable set.
     assert_eq!(MoeSpecResolver::route(&dq2), decide_route(&dq2));
@@ -80,4 +96,5 @@ fn productive_route_uses_resolver_and_gates_on_opt_in() {
     let _ = std::fs::remove_dir_all(&dense);
     let _ = std::fs::remove_dir_all(&qwen);
     let _ = std::fs::remove_dir_all(&mix);
+    let _ = std::fs::remove_dir_all(&ds);
 }
