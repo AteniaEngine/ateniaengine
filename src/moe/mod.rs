@@ -54,6 +54,8 @@ pub mod smoke;
 pub mod sparse;
 pub mod stack;
 pub mod validation;
+/// **MOE-V3-ROUTE-1** — DeepSeek-V3-like modern routing primitives (mechanism only).
+pub mod v3_router;
 
 pub use numerical::{MoeNumericalReport, NumericalMetrics, MOE_NUMERICAL_TOLERANCE};
 

@@ -110,7 +110,7 @@ expert-choice, node-limited); **hybrid SSM/linear-attention + MoE** is rising.
 | Packed & classic expert layouts | **Certified** | both, vs HF |
 | **MLA + MoE** | **Validated (experimental)** | MOE-FULL-12 tiny (9.999e-6 attn); runtime refuses in `load_from_dir`; **not certified, not real-scale** |
 | Disk-tier residency (huge MoE) | **Validated** | Qwen real 14.3B end-to-end |
-| **Sigmoid / aux-loss-free / bias routing** (DeepSeek-V3) | **Not supported** | router is softmax top-k only |
+| **Sigmoid / aux-loss-free / bias routing** (DeepSeek-V3) | **Certified L0 (mechanism)** | `src/moe/v3_router.rs` (MOE-V3-ROUTE-1): sigmoid + `e_score_correction_bias` selection + group-limited top-k + `routed_scaling_factor` vs HF f64 (set-equality 6/6, block 3.891e-8). L0 only; real-weight L1+ provisioning-blocked |
 | **Expert-choice routing** | **Not supported** | no evidence; tokens-pick-experts only |
 | **Hierarchical / multi-level routing** | **Not supported** | single-level router |
 | **Encoder-decoder MoE** (Switch-T5) | **Not supported** | decoder-only engine |

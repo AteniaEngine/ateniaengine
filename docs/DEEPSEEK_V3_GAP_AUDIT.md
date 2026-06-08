@@ -1,5 +1,16 @@
 # DeepSeek-V3 Gap Audit — DEEPSEEK-V3-GAP-AUDIT (analysis only)
 
+> **Update (MOE-V3-ROUTE-1).** The **modern-router code gap is now closed at L0**: the
+> DeepSeek-V3-like routing mechanism (sigmoid scoring + `e_score_correction_bias`
+> selection + group-limited top-k + `routed_scaling_factor`) is implemented in
+> `src/moe/v3_router.rs` and **certified L0 (mechanism)** vs a HuggingFace `DeepseekV3MoE`
+> float64 reference (router set-equality 6/6, MoE-block `max_abs_diff` 3.891e-8 < 1e-3,
+> deterministic; `tests/moe_v3_route_scale_cert_test.rs`, `docs/HANDOFF_MOE_V3_ROUTE_1.md`).
+> This is **L0 mechanism only — not real-weight, not L1/L2/L3, not dense ADR-004 CERTIFIED**.
+> Still pending for a real V3 forward: **Q-LoRA q-path, FP8-in-MoE, MTP, V3.2 DSA**, and the
+> binding constraint below — **real V3 weights remain provisioning-blocked** (no small
+> V3-family checkpoint). The "router math absent" rows below are superseded for the router.
+
 **Audit + planning only — no code, no manifests, no downloads, no certification,
 no commits beyond this doc.** Evidence-grounded in the current `src/moe/` code, the
 committed docs, and the public DeepSeek-V2/V3/V3.2 + Kimi-K2 configs. Every claim

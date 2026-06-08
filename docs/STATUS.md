@@ -517,6 +517,22 @@ locked by regression tests.
   `ladder_level_whole_model: L3`. MLA-0 improved to `5.306e-5`; disk==RAM still
   bit-identical. **Not dense ADR-004 `CERTIFIED`; L4 (global F64) reserved/unreachable.**
   See `docs/HANDOFF_MLA_3.md` + `docs/HANDOFF_MLA1_C5_ROOT_CAUSE.md`.
+- **MOE-V3-ROUTE-1 — DeepSeek-V3-like routing mechanism → L0.** Implemented the modern
+  router primitives (`src/moe/v3_router.rs`, isolated reference — no runtime/loader/CUDA/
+  Adapter-Toolkit wiring): **sigmoid scoring + `e_score_correction_bias` selection +
+  group-limited top-k (`n_group`/`topk_group`) + `routed_scaling_factor`**, matching
+  `transformers` v5.6.2 `DeepseekV3MoE.route_tokens_to_experts` (bias used for **selection
+  only**; combine weight = original sigmoid score, renormalised, × scale; fail-loud on any
+  missing/invalid param or non-`sigmoid` scoring). Certified at **L0 (mechanism/topology
+  only)** on a reduced-dim DeepSeek-V3 MoE block vs a HF **float64** reference
+  (`tests/moe_v3_route_scale_cert_test.rs`): **router set-equality 6/6**, worst MoE-block
+  `max_abs_diff` **3.891e-8** (< 1e-3), worst combine-weight diff **1.192e-7**, min
+  selection margin 5.56e-2, deterministic. **No real V3 weights, no download; NOT L1/L2/L3;
+  not dense ADR-004 `CERTIFIED`; L4 reserved/unreachable.** Out of scope (still pending for
+  a real V3 forward): Q-LoRA q-path, FP8-in-MoE, MTP, V3.2 DSA. Real-weight V3 stays
+  **provisioning-blocked** (no small V3-family checkpoint). 8 new router unit tests; scale-
+  cert (Mixtral/Qwen/DeepSeek) + full lib suite green; the three L3 families untouched.
+  See `docs/HANDOFF_MOE_V3_ROUTE_1.md`.
 - **MIXTRAL-CERT-3 (C5 active-path) — Mixtral-8x7B-v0.1 → MoE-certified L3
   (active-path-certified).** Ran Atenia's **real full forward** of the real trained
   Mixtral-8x7B-v0.1 (embeddings + 32 layers of GQA attention + RoPE + top-2 MoE +
