@@ -1,0 +1,99 @@
+{
+  "$schema": "../../docs/decisions/ADR-007-moe-certification-ladder.md#schema",
+  "schema_version": "1.0.0",
+  "schema_variant": "moe-decomposition",
+  "model": "Mixtral-8x7B-v0.1",
+  "model_family": "mixtral",
+  "model_arch": "MixtralForCausalLM",
+  "atenia_version": "0.x-MIXTRAL-CERT-1",
+  "milestone": "MIXTRAL-CERT-1 (C1+C2 -> partial L1)",
+
+  "ladder_level_whole_model": "partial L1 (C1+C2 real-weight; C3 mechanism)",
+  "headline": "MoE-certified: C1+C2 real-weight across all 32 layers (toward L1); C4 topology available (L0)",
+  "headline_note": "Per ADR-007 the bare word 'certified' is forbidden for MoE. On the REAL Mixtral-8x7B-v0.1 weights this milestone certifies C1 (per-expert) exhaustively over ALL 32 layers x 8 experts = 256 experts and C2 (router top-2 SET EQUALITY) on all 32 layers, vs a float64 reference computed one expert at a time. C3 (GQA attention) is satisfied at the mechanism level (the mixtral_scale topology full-forward cert). C4 (assembly/topology) already exists as the L0 cert (mixtral_scale 1.639e-7) but is not folded here. This is the substantive L1 component work; it is NOT the dense ADR-004 CERTIFIED, and NOT L2 (C4 fold) / L3 (C5 active-path) / L4 (global F64).",
+
+  "config_summary": {
+    "hidden_size": 4096,
+    "num_hidden_layers": 32,
+    "intermediate_size": 14336,
+    "num_local_experts": 8,
+    "num_experts_per_tok": 2,
+    "num_attention_heads": 32,
+    "num_key_value_heads": 8,
+    "vocab_size": 32000,
+    "rope_theta": 1000000.0,
+    "torch_dtype": "bfloat16",
+    "expert_layout": "classic per-expert block_sparse_moe.experts.{e}.{w1,w3,w2}",
+    "shared_expert": false,
+    "norm_topk_prob": true
+  },
+
+  "obligations": {
+    "C1_per_expert": {
+      "status": "PASS",
+      "scope": "ALL 32 layers x 8 experts = 256 experts (exhaustive; all layers are MoE, no dense-first, no shared expert)",
+      "weights": "real trained Mixtral-8x7B-v0.1 weights (bf16, 19 safetensors shards)",
+      "oracle": "NumPy/torch float64, one expert at a time, one layer at a time (no full-model F64)",
+      "metric": "max_abs_diff(Atenia expert forward, F64 reference) per expert, single deterministic probe input",
+      "experts_checked": 256,
+      "global_worst_max_abs_diff": 1.907e-6,
+      "worst_layer": 8,
+      "worst_expert_index": 1,
+      "gate": "max_abs_diff < 0.5 for EVERY expert (ADR-004 bar, unchanged)",
+      "failures": 0,
+      "result": "all 256 experts < 0.5 (global worst ~1.9e-6, ~2.6e5x inside the gate)"
+    },
+    "C2_router": {
+      "status": "PASS",
+      "scope": "all 32 layer routers (block_sparse_moe.gate.weight)",
+      "hard_gate": "top-2 expert SET EQUALITY vs the F64 reference, every layer",
+      "experts_per_token": 2,
+      "layers_checked": 32,
+      "set_equal_all_layers": true,
+      "failures": 0,
+      "min_routing_margin": 0.011413,
+      "min_routing_margin_layer": 13,
+      "routing_margin_note": "gap between the 2nd and 3rd router logit per layer; the tightest layer (13, margin 0.0114) still matched exactly. norm_topk_prob renorm does not affect the top-k SET.",
+      "result": "top-2 set identical on all 32 layers"
+    },
+    "C3_attention": {
+      "status": "PASS (mechanism, reused)",
+      "evidence": "Mixtral topology full-forward cert (mixtral_scale 1.639e-7 vs HF, tests/moe_scale_cert_test.rs::mixtral_8x7b_topology_certifies) -- a reduced-dim full transformer incl. GQA attention + RoPE + the MoE block",
+      "caveat": "certifies the GQA attention MECHANISM (tiny topology fixture), NOT the real-weight per-layer attention re-certified. Same standard as Qwen-MoE / DeepSeek C3. Recorded, not over-claimed.",
+      "re_derived_this_milestone": false
+    },
+    "C4_assembly_topology": {
+      "status": "AVAILABLE (L0 cert; not folded here)",
+      "evidence": "mixtral_scale topology full-forward cert = 1.639e-7 vs HF f64 (tests/moe_scale_cert_test.rs::mixtral_8x7b_topology_certifies; argmax exact)",
+      "note": "C4 already exists as the Mixtral L0 topology cert. Folding it (L1 + C4 -> L2) is a small follow-up (MIXTRAL-CERT C4). Not claimed as L2 in this milestone."
+    },
+    "C5_active_path": {
+      "status": "PENDING",
+      "blocker": "real-weight full forward (GQA attention + MoE) vs F64 one-layer-at-a-time, not yet run. RAM-feasible via the MLA-2/MOE-PROD disk expert-tier (the graph families already support ATENIA_MOE_EXPERT_TIER=disk), as proven on Qwen-MoE / DeepSeek-V2-Lite."
+    }
+  },
+
+  "pending_levels": [
+    { "level": "L1 (component-certified)", "blocker": "this milestone supplies C1+C2 (real) + C3 (mechanism); L1 is reached. (Listed for clarity: C3 is mechanism-level, same caveat as Qwen/DeepSeek.)" },
+    { "level": "L2 (assembly-certified)", "blocker": "fold C4 (the mixtral_scale topology cert already exists) -> a small follow-up." },
+    { "level": "L3 (active-path-certified)", "blocker": "C5 real-weight full forward vs F64 one-layer-at-a-time (disk expert-tier)." },
+    { "level": "L4 (dense-equivalent)", "blocker": "global model.double() F64 (~374 GB) -- reserved / unreachable; never fabricated." }
+  ],
+
+  "remaining_caveats": [
+    "C3 attention reused at the mechanism level (tiny topology fixture), not real-weight per-layer (same standard as Qwen/DeepSeek).",
+    "C1/C2 use a single deterministic probe input applied to every layer's real weights (representative activation, not a real inter-layer trace) -- consistent with the Qwen / DeepSeek approach.",
+    "C4 (mixtral_scale topology) is certified at the MECHANISM level (reduced-dim fixture); it transfers to the real model only in conjunction with the real-weight C1/C2 (met).",
+    "This is the C1+C2 component work toward L1; it is NOT the dense ADR-004 CERTIFIED, and NOT L2/L3/L4."
+  ],
+
+  "verification": {
+    "c1_c2_harness": "tests/moe_mixtral_decomposition_test.rs (resumable, per-layer checkpoints)",
+    "c1_c2_reference": "fixtures/moe/mixtral_decomp_ref.safetensors (+ .json), float64 one expert at a time (~4.2 MB); generator fixtures/moe/generate_mixtral_decomposition_reference.py (resumable)",
+    "c1_c2_command": "python fixtures/moe/generate_mixtral_decomposition_reference.py models/Mixtral-8x7B-v0.1 fixtures/moe ; then MIXTRAL_DIR=models/Mixtral-8x7B-v0.1 cargo test --release --test moe_mixtral_decomposition_test -- --ignored mixtral_real_c1_c2 --nocapture",
+    "c1_c2_expected": "C1 global worst max_abs_diff ~1.9e-6 (< 0.5, all 256 experts, layer 8 / expert 1); C2 top-2 set match on all 32 layers; min routing margin 0.011413 (layer 13); 0 failures."
+  },
+
+  "generated_at": "2026-06-06",
+  "generated_on": "F64 reference: torch (bf16->float64) + NumPy float64, Windows 11 (model on HDD; per-layer-resumable generator + harness). Atenia: CPU forward, RTX 4070 Laptop host, 32 GB RAM."
+}

@@ -1,0 +1,278 @@
+{
+  "milestone": "MIXTRAL-CERT-1 (C1+C2)",
+  "obligations": [
+    "C1 per-expert (all layers)",
+    "C2 router (all layers)"
+  ],
+  "model": "Mixtral-8x7B-v0.1",
+  "source_arch": "MixtralForCausalLM",
+  "num_hidden_layers": 32,
+  "num_moe_layers": 32,
+  "d_model": 4096,
+  "d_ff": 14336,
+  "num_experts": 8,
+  "experts_per_token": 2,
+  "input_seed": 20260606,
+  "total_experts": 256,
+  "oracle": "NumPy/torch float64 (one expert at a time, one layer at a time; no full-model F64). Mixtral classic experts w1/w3/w2; no shared expert.",
+  "per_layer": [
+    {
+      "layer": 0,
+      "topk_indices": [
+        0,
+        4
+      ],
+      "routing_margin": 0.19859817367579913
+    },
+    {
+      "layer": 1,
+      "topk_indices": [
+        1,
+        4
+      ],
+      "routing_margin": 0.5134492199241949
+    },
+    {
+      "layer": 2,
+      "topk_indices": [
+        1,
+        2
+      ],
+      "routing_margin": 0.3066843801628776
+    },
+    {
+      "layer": 3,
+      "topk_indices": [
+        0,
+        7
+      ],
+      "routing_margin": 0.9367165126655688
+    },
+    {
+      "layer": 4,
+      "topk_indices": [
+        2,
+        7
+      ],
+      "routing_margin": 0.14756359851278045
+    },
+    {
+      "layer": 5,
+      "topk_indices": [
+        1,
+        6
+      ],
+      "routing_margin": 0.23976235963849724
+    },
+    {
+      "layer": 6,
+      "topk_indices": [
+        3,
+        6
+      ],
+      "routing_margin": 0.5574273287417819
+    },
+    {
+      "layer": 7,
+      "topk_indices": [
+        5,
+        7
+      ],
+      "routing_margin": 0.33254924698852095
+    },
+    {
+      "layer": 8,
+      "topk_indices": [
+        4,
+        6
+      ],
+      "routing_margin": 0.48209461199709047
+    },
+    {
+      "layer": 9,
+      "topk_indices": [
+        2,
+        3
+      ],
+      "routing_margin": 0.4732401019194934
+    },
+    {
+      "layer": 10,
+      "topk_indices": [
+        0,
+        4
+      ],
+      "routing_margin": 0.06649670823779505
+    },
+    {
+      "layer": 11,
+      "topk_indices": [
+        2,
+        5
+      ],
+      "routing_margin": 0.17145976031790366
+    },
+    {
+      "layer": 12,
+      "topk_indices": [
+        0,
+        1
+      ],
+      "routing_margin": 0.28858284540061274
+    },
+    {
+      "layer": 13,
+      "topk_indices": [
+        3,
+        7
+      ],
+      "routing_margin": 0.011413273984241634
+    },
+    {
+      "layer": 14,
+      "topk_indices": [
+        1,
+        5
+      ],
+      "routing_margin": 0.18543521721879064
+    },
+    {
+      "layer": 15,
+      "topk_indices": [
+        6,
+        7
+      ],
+      "routing_margin": 0.061991451110307905
+    },
+    {
+      "layer": 16,
+      "topk_indices": [
+        0,
+        5
+      ],
+      "routing_margin": 0.280749554964518
+    },
+    {
+      "layer": 17,
+      "topk_indices": [
+        5,
+        6
+      ],
+      "routing_margin": 0.01968218135822497
+    },
+    {
+      "layer": 18,
+      "topk_indices": [
+        5,
+        6
+      ],
+      "routing_margin": 0.16090014813871023
+    },
+    {
+      "layer": 19,
+      "topk_indices": [
+        1,
+        3
+      ],
+      "routing_margin": 0.22914242058538425
+    },
+    {
+      "layer": 20,
+      "topk_indices": [
+        1,
+        5
+      ],
+      "routing_margin": 0.2430696994792303
+    },
+    {
+      "layer": 21,
+      "topk_indices": [
+        0,
+        4
+      ],
+      "routing_margin": 0.021467468171773807
+    },
+    {
+      "layer": 22,
+      "topk_indices": [
+        0,
+        3
+      ],
+      "routing_margin": 0.45077722695162303
+    },
+    {
+      "layer": 23,
+      "topk_indices": [
+        1,
+        6
+      ],
+      "routing_margin": 0.28251644284696353
+    },
+    {
+      "layer": 24,
+      "topk_indices": [
+        1,
+        4
+      ],
+      "routing_margin": 0.41753802588494027
+    },
+    {
+      "layer": 25,
+      "topk_indices": [
+        2,
+        3
+      ],
+      "routing_margin": 0.05794267489101579
+    },
+    {
+      "layer": 26,
+      "topk_indices": [
+        5,
+        6
+      ],
+      "routing_margin": 0.0805381289443482
+    },
+    {
+      "layer": 27,
+      "topk_indices": [
+        6,
+        7
+      ],
+      "routing_margin": 0.03278112300863523
+    },
+    {
+      "layer": 28,
+      "topk_indices": [
+        0,
+        4
+      ],
+      "routing_margin": 0.3010462737586568
+    },
+    {
+      "layer": 29,
+      "topk_indices": [
+        5,
+        7
+      ],
+      "routing_margin": 0.08081766579635896
+    },
+    {
+      "layer": 30,
+      "topk_indices": [
+        1,
+        7
+      ],
+      "routing_margin": 0.03199413769353959
+    },
+    {
+      "layer": 31,
+      "topk_indices": [
+        2,
+        7
+      ],
+      "routing_margin": 0.07312972999631173
+    }
+  ],
+  "reference_file": "mixtral_decomp_ref.safetensors",
+  "note": "Real Mixtral-8x7B-v0.1 weights, all 32 layers. ADR-007 C1/C2. C3 (attention) and C4/C5 are not here."
+}
