@@ -1,5 +1,10 @@
 # Mixtral-8x7B Data-Readiness — MIXTRAL-DATA-READY (verify + prepare, no download)
 
+> **RESOLVED (historical).** The weights were later provisioned (87 GB, 19 shards,
+> `docs/MIXTRAL_PROVISIONED.md`) and Mixtral-8x7B-v0.1 reached **MoE-certified L3
+> (active-path-certified)** via MIXTRAL-CERT-1/2/3. The "Mixtral remains L0" wording
+> below is point-in-time and superseded. See `docs/HANDOFF_MIXTRAL_CERT_C5.md`.
+
 **Verification + preparation only — NO weights downloaded, no runtime/loader/
 numerics/test change, no model execution.** Confirms whether the real
 Mixtral-8x7B weights can be safely provisioned for a future MIXTRAL-CERT-2

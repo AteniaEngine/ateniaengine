@@ -554,8 +554,9 @@ locked by regression tests.
   L2`). **No `src/` change** — a resumable reference generator + a resumable
   `#[ignore]` harness (model on an HDD; per-layer atomic checkpoints survive the
   environment's ~60-min background reaping); C4 via the existing scale-cert test.
-  C3+C4 mechanism caveat; C5 (active-path) → L3 and L4 pending. Not dense ADR-004
-  `CERTIFIED`; not L3/L4. See `docs/HANDOFF_MIXTRAL_CERT_C1C2.md`.
+  C3+C4 mechanism caveat. **(Superseded by MIXTRAL-CERT-3 → C5 active-path PASS →
+  MoE-certified L3, above.)** Not dense ADR-004 `CERTIFIED`; not L4.
+  See `docs/HANDOFF_MIXTRAL_CERT_C1C2.md`.
 - **FORMAT-INTAKE-1 — PyTorch `.bin` intake.** Closes the coverage audit's #2
   gap (otherwise-supported checkpoints unloadable purely because they ship as
   `pytorch_model.bin`). A new `src/v17/loader/pytorch_bin.rs` **transcodes** a

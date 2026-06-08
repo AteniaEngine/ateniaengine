@@ -1,5 +1,12 @@
 # MoE Architectural Coverage Audit — MOE-COVERAGE-AUDIT (analysis only)
 
+> **Post-MIXTRAL-L3 update (current).** **Three** real MoE families are now
+> **MoE-certified L3 (active-path)**: **Qwen1.5-MoE-A2.7B**, **DeepSeek-V2-Lite (MLA)**,
+> and **Mixtral-8x7B-v0.1** (MIXTRAL-CERT-1/2/3; C5 active-path worst `3.185e-4` < 0.5,
+> argmax exact 4/4, deterministic). All three are **not** dense ADR-004 `CERTIFIED`;
+> **L4** (global F64) reserved/unreachable. The current frontier roadmap supersedes the
+> FASE 7 recommendation below — see `docs/POST_MIXTRAL_L3_ROADMAP_AUDIT.md`.
+>
 > **Post-MLA-3 update.** The "DeepSeek-MoE = experimental / tiny fixtures only"
 > conclusion below is **superseded**: **DeepSeek-V2-Lite is now MoE-certified L3**
 > (real-weight C1+C2, C4 topology, and **C5 active-path** end-to-end on the real
@@ -92,13 +99,13 @@ expert-choice, node-limited); **hybrid SSM/linear-attention + MoE** is rising.
 | Capability | State | Evidence / note |
 |---|---|---|
 | Softmax top-k routing | **Certified** | MOE-CERT-2 router parity (Qwen, real) |
-| Renormalised top-k (Mixtral conv.) | **Certified (L0)** | `mixtral_scale`; runtime |
+| Renormalised top-k (Mixtral conv.) | **Certified (L3)** | Mixtral-8x7B real, C5 active-path (MIXTRAL-CERT-3) |
 | No-renorm (`norm_topk_prob=false`) | **Certified (L3)** | Qwen real |
 | Shared expert — ungated | **Certified** | Mixtral none / Atenia conv. |
 | Shared expert — **sigmoid-gated** | **Certified (L3)** | Qwen real |
 | Sparse top-k activation (only routed run) | **Certified** | sparse.rs + residency |
 | Router parity (top-k set equality) | **Certified** | MOE-CERT-2 (all 24 layers) |
-| GQA + MoE | **Certified (L0/L3)** | mixtral_scale GQA; Qwen MHA |
+| GQA + MoE | **Certified (L3)** | Mixtral-8x7B real GQA 4:1 (C5 active-path); Qwen MHA |
 | Q/K/V bias + MoE | **Certified (L3)** | Qwen real |
 | Packed & classic expert layouts | **Certified** | both, vs HF |
 | **MLA + MoE** | **Validated (experimental)** | MOE-FULL-12 tiny (9.999e-6 attn); runtime refuses in `load_from_dir`; **not certified, not real-scale** |
@@ -120,7 +127,8 @@ expert-choice, node-limited); **hybrid SSM/linear-attention + MoE** is rising.
 | Family | Classification | Justification (evidence) |
 |---|---|---|
 | **Qwen-MoE** | **Fully supported + Certified L3** | real 14.3B, C1–C5, MOE-CERT-4 |
-| **Mixtral** | **Supported + Certified L0** | runtime runs it; topology cert; **real weights absent** → L1–L3 pending |
+| **Mixtral** | **Supported + Certified L3 (active-path)** | real 8x7B provisioned (87 GB); C1 256 experts + C2 top-2 + C4 topology + **C5 active-path** (worst 3.185e-4 < 0.5, argmax exact 4/4, deterministic), MIXTRAL-CERT-1/2/3 |
+| **DeepSeek-V2-Lite (MLA)** | **Supported + Certified L3 (active-path)** | real 16B-A2.4B; C1+C2+C4+**C5 active-path** 2.587e-5 via MLA-1/2/3 disk-tier |
 | **DeepSeek-MoE (classic)** | **Partially supported (experimental)** | MLA forward + scale-topology only; refused by productive loader; tiny fixtures |
 | **DeepSeek-V2** | **Probably supported (unverified)** | = MLA + DeepSeekMoE (softmax) ≈ what's experimental; **never run** on real V2 weights |
 | **DeepSeek-V3 / V3.x** | **Not supported** | needs **sigmoid + aux-loss-free + node-limited routing** + MTP — none implemented |
@@ -149,9 +157,11 @@ support claim.
 - **By architectural-diversity count (~12 distinct families above):** **~3
   supported, ~1 experimental → ~25–30%.**
 
-**2. % certified:** **very small.** **One** family at full real-weight L3
-(Qwen-MoE); Mixtral at L0 (topology). Everything else is supported/experimental/
-hypothetical. **Certified ≈ 1 of ~12 families (~8%).**
+**2. % certified:** still small but tripled. **Three** real MoE families at
+real-weight **MoE-certified L3 (active-path)** — **Qwen1.5-MoE-A2.7B**,
+**DeepSeek-V2-Lite (MLA)**, and **Mixtral-8x7B-v0.1** (MIXTRAL-CERT-3). Everything
+else is supported/experimental/hypothetical. **Certified ≈ 3 of ~12 families (~25%);
+not dense ADR-004 CERTIFIED; L4 reserved/unreachable.**
 
 **3. % depending on hypotheses:** the "probably supported (unverified)" set (DBRX,
 Grok, OLMoE/JetMoE, DeepSeek-V2, fine-grained-at-scale, Switch-top-1) is **~30–40%
@@ -186,7 +196,7 @@ ecosystem); (d) **hybrid stacks** (SSM/Mamba + MoE, linear-attention + MoE);
   hold at DeepSeek expert counts.
 
 **LOW impact**
-- **Mixtral L1–L3** — 2023 legacy; 94 GB download for marginal strategic value.
+- ~~**Mixtral L1–L3**~~ — **DONE** (MIXTRAL-CERT-1/2/3 → MoE-certified L3, active-path). 2023 legacy but now fully certified; no further work.
 - **Encoder-decoder MoE (Switch-T5)** — legacy/training-era.
 - **MoE + SSM/Mamba (Jamba), hierarchical MoE** — niche/emerging; large new-engine cost.
 - **GGUF MoE** — ergonomics, not architecture.
@@ -221,9 +231,11 @@ declarative rather than per-family Rust. **A (Mixtral) is explicitly deprioritis
 ## Executive summary
 
 Atenia has a **deep but narrow** MoE stack: a proven ADR-007 certification ladder,
-disk-tier residency for huge models, and **one family certified to real-weight L3
-(Qwen-MoE)** plus Mixtral at L0 — but it recognises **only 3 families**, its router
-is **softmax top-k only**, and **MLA is experimental**. Against the real 2024–2026
+disk-tier residency for huge models, and **three families certified to real-weight L3
+(active-path): Qwen-MoE, DeepSeek-V2-Lite (MLA), and Mixtral-8x7B-v0.1** (post-MIXTRAL-CERT-3;
+MLA is now real-weight-certified, no longer experimental) — but it recognises **only 3
+families**, and its router is **softmax/sigmoid top-k only** (modern aux-loss-free /
+group-limited routing absent). Against the real 2024–2026
 ecosystem (~12 distinct MoE families, frontier dominated by **MLA + fine-grained +
 modern routing + hybrid stacks**), honest coverage is **~25–30% by architectural
 diversity**, **~50–60% "mechanically loadable" classic-softmax MoE** (mostly

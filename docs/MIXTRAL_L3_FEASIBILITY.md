@@ -1,5 +1,12 @@
 # Mixtral-8x7B L3 Feasibility — MIXTRAL-L3-FEASIBILITY (audit + estimation only)
 
+> **RESOLVED (MIXTRAL-CERT-3).** This feasibility estimate is now history: Mixtral-8x7B-v0.1
+> **reached MoE-certified L3 (active-path-certified)** exactly as estimated — C5 active-path
+> worst `max_abs_diff` `3.185e-4` < 0.5, argmax exact 4/4, deterministic, via a
+> one-layer-at-a-time F64 reference + Atenia's real forward on a persistent disk
+> expert-tier (bounded expert cache to fit 32 GB). See `docs/HANDOFF_MIXTRAL_CERT_C5.md`.
+> The "still L0" wording below is superseded.
+>
 > **Post-MLA-3 note (de-risking evidence).** Since this audit, **DeepSeek-V2-Lite
 > reached MoE-certified L3** via the exact path this doc estimates for Mixtral — a
 > one-layer-at-a-time F64 reference + Atenia's real full forward on a **disk

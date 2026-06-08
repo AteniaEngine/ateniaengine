@@ -178,8 +178,15 @@ float64 one-layer-at-a-time HF reference = end-to-end `max_abs_diff` **2.587e-5*
 `docs/HANDOFF_MLA1_C5_ROOT_CAUSE.md`). One layer at a time in F64 → **not L4**; L4
 (global F64, ~126 GB) remains reserved/unreachable.
 
-**Mixtral remains at L0** (topology only; real 8x7B weights not provisioned);
-raising it up the ladder is later work.
+**Mixtral-8x7B-v0.1 is now MoE-certified L3 (active-path-certified)** — MIXTRAL-CERT-1/2/3
+provisioned the real 87 GB weights and certified C1 (256 experts, worst `1.907e-6`),
+C2 (top-2 set equality, all 32 layers), C4 (topology `1.639e-7`), and **C5 active-path**
+(Atenia's real full forward vs a float64 one-layer-at-a-time reference over the active
+subgraph = end-to-end `max_abs_diff` **3.185e-4** < 0.5, argmax exact 4/4, deterministic;
+`docs/numcert/mixtral-8x7b-v0.1.moecert.json`, `tests/moe_mixtral_c5_active_path_test.rs`).
+One layer at a time in F64 → **not L4**; L4 (global F64, ~374 GB) remains
+reserved/unreachable. **All three real MoE families (Qwen-MoE, DeepSeek-V2-Lite, Mixtral)
+are now L3.**
 
 ### 3. Reporting discipline (how a partial level is shown honestly)
 
@@ -244,10 +251,11 @@ binding wherever a MoE certification status is shown.
 ### Positive
 
 - A precise, auditable definition of "certified" for MoE that scales to real
-  checkpoints on a 32 GB host: **Qwen1.5-MoE-A2.7B = L3** and **DeepSeek-V2-Lite
-  (MLA) = L3** (active-path, via the one-layer-at-a-time F64 reference + the disk
-  expert-tier), **Mixtral = L0** (topology only, real weights not provisioned). L4
-  (global F64) reserved/unreachable in this hardware envelope.
+  checkpoints on a 32 GB host: **Qwen1.5-MoE-A2.7B = L3**, **DeepSeek-V2-Lite
+  (MLA) = L3**, and **Mixtral-8x7B-v0.1 = L3** — all **active-path-certified**, via the
+  one-layer-at-a-time F64 reference over the active subgraph + the disk expert-tier
+  (MIXTRAL-CERT-3 added the third). L4 (global F64) reserved/unreachable in this
+  hardware envelope.
 - Exhaustive expert coverage (C1) eliminates the sparsity blind spot honestly.
 - A reporting contract that structurally prevents the L2-read-as-L4 confusion.
 - Defines the `PartialReferenceF64` strategy slot that `src/moe/fixture.rs`

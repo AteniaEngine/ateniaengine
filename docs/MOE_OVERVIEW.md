@@ -1,16 +1,19 @@
 # MoE Overview — Experimental Track (MOE-0 → MOE-18)
 
-> **Post-MLA-3 update (ADR-007 certification, supersedes the "tiny fixtures only /
+> **Post-MIXTRAL-L3 update (ADR-007 certification, supersedes the "tiny fixtures only /
 > no DeepSeek end-to-end" wording below).** Since this consolidation, the MoE
 > **certification** track (ADR-007 L0–L4 ladder, `docs/decisions/ADR-007-moe-certification-ladder.md`)
-> lifted two families to real-weight certification:
-> **Qwen1.5-MoE-A2.7B = MoE-certified L3** (MOE-CERT-2/3/4) and **DeepSeek-V2-Lite
+> lifted **three real MoE families** to real-weight active-path certification:
+> **Qwen1.5-MoE-A2.7B = MoE-certified L3** (MOE-CERT-2/3/4), **DeepSeek-V2-Lite
 > (MLA) = MoE-certified L3** (MLA-1 C1+C2+C4+**C5 active-path** end-to-end on the
 > real weights via the MLA-2 disk expert-tier, `2.587e-5`; YaRN mscale fixed in
-> MLA-3). **Mixtral-8x7B = L0** (topology only; real weights not provisioned).
-> These are `MoE-certified Ln`, **not** the dense ADR-004 `CERTIFIED`; **L4** (global
-> F64) is reserved/unreachable. The MoE path remains opt-in/experimental (not wired
-> into the productive CLI/Adapter Toolkit). See `docs/HANDOFF_MLA_3.md`,
+> MLA-3), and **Mixtral-8x7B-v0.1 = MoE-certified L3** (MIXTRAL-CERT-1/2/3:
+> real-weight C1 256 experts + C2 top-2 + C4 topology + **C5 active-path** real full
+> forward vs f64 one-layer-at-a-time, worst `3.185e-4` < 0.5, argmax exact 4/4,
+> deterministic). All three are **active-path-certified**, `MoE-certified Ln`, **not**
+> the dense ADR-004 `CERTIFIED`; **L4** (global F64) is reserved/unreachable. The MoE
+> path remains opt-in/experimental (not wired into the productive CLI/Adapter Toolkit).
+> See `docs/HANDOFF_MIXTRAL_CERT_C5.md`, `docs/HANDOFF_MLA_3.md`,
 > `docs/MOE_COVERAGE_AUDIT.md`, `docs/MLA_COVERAGE_AUDIT.md`.
 
 This document consolidates Atenia's Mixture-of-Experts (MoE) work and **closes
