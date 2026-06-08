@@ -517,6 +517,22 @@ locked by regression tests.
   `ladder_level_whole_model: L3`. MLA-0 improved to `5.306e-5`; disk==RAM still
   bit-identical. **Not dense ADR-004 `CERTIFIED`; L4 (global F64) reserved/unreachable.**
   See `docs/HANDOFF_MLA_3.md` + `docs/HANDOFF_MLA1_C5_ROOT_CAUSE.md`.
+- **MOE-PRODUCT-1 — opt-in MoE in the productive `generate` (resolver-backed).** `atenia
+  generate <model>` now routes a recognised MoE checkpoint through the **declarative
+  resolver bridge** (`MoeSpecResolver::route`): **dense passes through unchanged**; a MoE
+  checkpoint **without** `ATENIA_ENABLE_MOE=1` **fails loud** (exit 2, family-aware message);
+  a **runnable, productively-routable family (Mixtral / Qwen-MoE) with the opt-in** runs via
+  the controlled `controlled_moe_generate`. **DeepSeek productive routing deferred** (refused)
+  and **DeepSeek-V3 routing is non-runnable mechanism-only** — both refused. New
+  `route`/`arch_for_productive_routing` map a diagnosed family → `MoeArch` → resolver
+  (`resolve` equivalence guard + `runnable`), then apply the opt-in; behaviour-equivalent to
+  the lower-level `decide_route` for the runnable set (asserted by test) but now flowing
+  through the spec resolver. **No numerics/threshold/manifest/ADR-007 change; dense generate
+  untouched; no new family support claimed.** `MoE-certified L3 is active-path-certified, NOT
+  dense ADR-004 CERTIFIED; L4 reserved/unreachable.** 4 new resolver tests + integration test
+  `moe_product_routing_test`; `moe_integrate_routing`/`moe_production` regressions + full lib
+  suite green. Next: **MOE-PRODUCT-2** (DeepSeek-V2-Lite productive routing) + performance.
+  See `docs/HANDOFF_MOE_PRODUCT_1.md`.
 - **MOE-INTEGRATE-2 — opt-in resolver bridge (declarative spec → runtime).** Added
   `src/adapter_toolkit/moe_resolver.rs` (`MoeSpecResolver`): resolves a `MoeStructuralSpec`
   into a typed `ResolvedMoeRuntimePlan` (family, execution convention `Atenia`/

@@ -324,16 +324,20 @@ pub fn run(args: GenerateArgs) -> i32 {
     }
     let _ = args.cache_dir;
 
-    // **MOE-INTEGRATE-2** — route a recognised MoE checkpoint to the controlled
-    // MoE runtime instead of the dense pipeline (which fails loud on MoE).
-    // Dense checkpoints pass straight through (`decide_route → Dense`). MoE
-    // detection reads safetensors tensor names; a GGUF checkpoint is never a
-    // routable MoE here, so the probe is skipped for GGUF. Fail-loud is the
-    // default: only a runnable, certified family *with the opt-in* is run.
+    // **MOE-PRODUCT-1** — route a recognised MoE checkpoint to the controlled
+    // MoE runtime instead of the dense pipeline (which fails loud on MoE), routed
+    // **through the declarative resolver bridge** (`MoeSpecResolver::route`). Dense
+    // checkpoints pass straight through (`route → Dense`, unchanged). MoE detection
+    // reads safetensors tensor names; a GGUF checkpoint is never a routable MoE
+    // here, so the probe is skipped for GGUF. Fail-loud is the default: only a
+    // runnable, certified, productively-routable family (Mixtral / Qwen-MoE) *with
+    // the opt-in* (`ATENIA_ENABLE_MOE=1`) is run. DeepSeek productive routing is
+    // deferred and the DeepSeek-V3 routing mechanism is non-runnable — both refused.
     if !is_gguf {
-        use crate::moe::{decide_route, diagnose_moe, MoeRoute};
+        use crate::adapter_toolkit::MoeSpecResolver;
+        use crate::moe::{diagnose_moe, MoeRoute};
         let diag = diagnose_moe(&args.model);
-        match decide_route(&diag) {
+        match MoeSpecResolver::route(&diag) {
             MoeRoute::Dense => {} // fall through to the dense path, unchanged
             MoeRoute::RunMoe { .. } => return run_moe_text(&args),
             MoeRoute::NeedsOptIn { .. } | MoeRoute::Refused => {

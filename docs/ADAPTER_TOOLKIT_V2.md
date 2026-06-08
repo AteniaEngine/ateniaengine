@@ -20,10 +20,13 @@ corresponds to code that exists and is covered by tests.
 > bridge** (`moe_resolver.rs`, `MoeSpecResolver`): a spec resolves to a `ResolvedMoeRuntimePlan`
 > and, behind `ATENIA_ENABLE_MOE=1`, delegates to the unchanged certified `MoeRuntime` —
 > **handwritten certified paths remain default**, V3 routing is **mechanism-only /
-> non-runnable**, no new family support claimed. **Not replacing the certified paths.** The
-> productive CLI/`generate` wiring is the next step (MOE-PRODUCT-1).
-> See `docs/MOE_ADAPTER_SPEC_AUDIT.md`, `docs/HANDOFF_MOE_ATK_DECL_1.md`,
-> `docs/HANDOFF_MOE_INTEGRATE_2.md`.
+> non-runnable**, no new family support claimed. **Not replacing the certified paths.**
+> **MOE-PRODUCT-1** then wired it into the productive `atenia generate`:
+> `MoeSpecResolver::route` decides dense-vs-MoE through the resolver (opt-in
+> `ATENIA_ENABLE_MOE=1`, runnable set Mixtral/Qwen-MoE, DeepSeek deferred, V3 non-runnable,
+> dense untouched, fail-loud default). See `docs/MOE_ADAPTER_SPEC_AUDIT.md`,
+> `docs/HANDOFF_MOE_ATK_DECL_1.md`, `docs/HANDOFF_MOE_INTEGRATE_2.md`,
+> `docs/HANDOFF_MOE_PRODUCT_1.md`, `docs/CLI.md`.
 
 ### What it is
 

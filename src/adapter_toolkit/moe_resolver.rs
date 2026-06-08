@@ -27,6 +27,7 @@
 
 use crate::moe::family::{experimental_moe_enabled, MoeFamily};
 use crate::moe::manifest::{MoeCertManifest, MoeCertScope};
+use crate::moe::production::{MoeDiagnosis, MoeRoute};
 use crate::moe::runtime::{MoeRuntime, MoeRuntimeError};
 use crate::moe::MoeExecutionConvention;
 use crate::moe::v3_router::V3RouterConfig;
@@ -217,6 +218,62 @@ impl MoeSpecResolver {
         Ok(())
     }
 
+    /// **MOE-PRODUCT-1** — the `MoeArch` a **productively routable** checkpoint
+    /// family maps to, or `None` when the family is not productively routed here.
+    ///
+    /// Mixtral and Qwen-MoE map to their archs (the families the productive
+    /// `generate` path runs behind the opt-in). DeepSeek-MoE returns `None`:
+    /// although DeepSeek-V2-Lite is MoE-certified L3 and runs via `MoeRuntime`,
+    /// its **productive** generate routing (MLA) is deferred to a later step — so
+    /// it is refused here (no new family support claimed). An unrecognised family
+    /// is `None` (refused).
+    pub fn arch_for_productive_routing(family: MoeFamily) -> Option<MoeArch> {
+        match family {
+            MoeFamily::Mixtral => Some(MoeArch::Mixtral),
+            MoeFamily::QwenMoe => Some(MoeArch::QwenMoe),
+            MoeFamily::DeepSeekMoe => None,
+        }
+    }
+
+    /// **MOE-PRODUCT-1** — the productive routing decision for `generate`, routed
+    /// **through the declarative resolver**. Pure (no I/O); the CLI maps the
+    /// result to an action. Behaviour-equivalent to
+    /// [`crate::moe::production::decide_route`] for the productively-routable
+    /// families, but the runnable decision flows through
+    /// [`MoeSpecResolver::resolve`] (its equivalence guard + `runnable` flag), so
+    /// a spec that diverges from the handwritten convention or a mechanism-only
+    /// arch can never be routed. Fail-loud by default: only a runnable, certified,
+    /// productively-routable family **with the opt-in** runs; dense passes
+    /// through; everything else is refused.
+    pub fn route(diag: &MoeDiagnosis) -> MoeRoute {
+        if !diag.is_moe {
+            return MoeRoute::Dense;
+        }
+        if diag.unsupported_variant.is_some() || !diag.certified_runnable {
+            return MoeRoute::Refused;
+        }
+        let arch = match diag.family.and_then(Self::arch_for_productive_routing) {
+            Some(a) => a,
+            // Unrecognised family, or DeepSeek (productive routing deferred).
+            None => return MoeRoute::Refused,
+        };
+        // Route through the declarative resolver: a divergent/invalid spec or a
+        // non-runnable (mechanism-only) arch is refused, never run.
+        let plan = match Self::resolve(&arch.preset()) {
+            Ok(p) => p,
+            Err(_) => return MoeRoute::Refused,
+        };
+        if !plan.runnable {
+            return MoeRoute::Refused;
+        }
+        let family = arch.to_moe_family();
+        if diag.opt_in_set {
+            MoeRoute::RunMoe { family }
+        } else {
+            MoeRoute::NeedsOptIn { family }
+        }
+    }
+
     /// **Opt-in runtime bridge.** Resolve the spec, enforce the runtime gate
     /// (runnable + `ATENIA_ENABLE_MOE=1`), then delegate to the **unchanged**
     /// certified [`MoeRuntime::load_from_dir`]. Fail-loud for a non-runnable arch
@@ -354,5 +411,85 @@ mod tests {
         let mut s = MoeArch::Mixtral.preset();
         s.attention = AttentionKind::Mla;
         assert!(matches!(MoeSpecResolver::resolve(&s), Err(MoeResolveError::Spec(_))));
+    }
+
+    // ---- MOE-PRODUCT-1: resolver-backed productive routing ----
+
+    fn diag(
+        is_moe: bool,
+        family: Option<MoeFamily>,
+        runnable: bool,
+        opt_in: bool,
+        unsupported: Option<&str>,
+    ) -> MoeDiagnosis {
+        MoeDiagnosis {
+            is_moe,
+            family,
+            scope: None,
+            unsupported_variant: unsupported.map(str::to_string),
+            certified_runnable: runnable,
+            opt_in_set: opt_in,
+            message: String::new(),
+        }
+    }
+
+    #[test]
+    fn productive_arch_mapping() {
+        assert_eq!(
+            MoeSpecResolver::arch_for_productive_routing(MoeFamily::Mixtral),
+            Some(MoeArch::Mixtral)
+        );
+        assert_eq!(
+            MoeSpecResolver::arch_for_productive_routing(MoeFamily::QwenMoe),
+            Some(MoeArch::QwenMoe)
+        );
+        // DeepSeek: certified but productive routing deferred → not routed here.
+        assert_eq!(MoeSpecResolver::arch_for_productive_routing(MoeFamily::DeepSeekMoe), None);
+    }
+
+    #[test]
+    fn route_dense_passes_through() {
+        assert_eq!(MoeSpecResolver::route(&diag(false, None, false, false, None)), MoeRoute::Dense);
+        // Dense + opt-in is still dense.
+        assert_eq!(MoeSpecResolver::route(&diag(false, None, false, true, None)), MoeRoute::Dense);
+    }
+
+    #[test]
+    fn route_runnable_family_requires_opt_in() {
+        // Mixtral runnable, no opt-in → NeedsOptIn (fail-loud default).
+        assert_eq!(
+            MoeSpecResolver::route(&diag(true, Some(MoeFamily::Mixtral), true, false, None)),
+            MoeRoute::NeedsOptIn { family: MoeFamily::Mixtral }
+        );
+        // Qwen-MoE runnable, opt-in set → RunMoe.
+        assert_eq!(
+            MoeSpecResolver::route(&diag(true, Some(MoeFamily::QwenMoe), true, true, None)),
+            MoeRoute::RunMoe { family: MoeFamily::QwenMoe }
+        );
+    }
+
+    #[test]
+    fn route_refuses_unsupported_uncertified_deepseek_and_unknown() {
+        // Unsupported variant → Refused regardless of opt-in.
+        assert_eq!(
+            MoeSpecResolver::route(&diag(true, Some(MoeFamily::QwenMoe), false, true, Some("QK-norm"))),
+            MoeRoute::Refused
+        );
+        // Not a runnable cert scope → Refused.
+        assert_eq!(
+            MoeSpecResolver::route(&diag(true, Some(MoeFamily::Mixtral), false, true, None)),
+            MoeRoute::Refused
+        );
+        // DeepSeek (certified, runnable) → Refused: productive routing deferred,
+        // and the V3 routing mechanism is never reachable as a runnable model.
+        assert_eq!(
+            MoeSpecResolver::route(&diag(true, Some(MoeFamily::DeepSeekMoe), true, true, None)),
+            MoeRoute::Refused
+        );
+        // MoE but unrecognised family → Refused.
+        assert_eq!(
+            MoeSpecResolver::route(&diag(true, None, false, true, None)),
+            MoeRoute::Refused
+        );
     }
 }

@@ -258,6 +258,29 @@ single JSON object is printed on stdout instead (see [§11](#11-json-output)).
 `tokenizer.json` missing (`E-TOKENIZER-MISSING`), load or
 generation failure (`E-GENERATION-FAILED`).
 
+**MoE checkpoints (experimental, opt-in — MOE-PRODUCT-1).** `generate` detects a
+Mixture-of-Experts checkpoint and routes it **through the declarative resolver
+bridge**:
+
+- **Dense checkpoints** are unaffected — the dense path is unchanged.
+- A **MoE checkpoint without the opt-in fails loud** (exit 2) with a family-aware
+  message. Set **`ATENIA_ENABLE_MOE=1`** (or `--experimental-moe` on `moe-generate`)
+  to run it.
+- With the opt-in, a **runnable, productively-routable family — Mixtral or Qwen-MoE —**
+  runs via the controlled MoE runtime. **DeepSeek productive routing is deferred** and
+  the **DeepSeek-V3 routing mechanism is non-runnable** — both are refused with a clear
+  message.
+
+```text
+# Opt-in MoE generate (Mixtral / Qwen-MoE):
+ATENIA_ENABLE_MOE=1 atenia generate --model models/mixtral-8x7b \
+  --prompt "..." --max-tokens 32
+```
+
+Caveats: MoE generate is **experimental, CPU-only, slow** (bounded-cache disk-tier
+forward). The certified MoE families are **MoE-certified L3 (active-path-certified)** —
+**not** the dense ADR-004 `CERTIFIED`; **L4** (global F64) reserved/unreachable.
+
 ### 6.2 `chat`
 
 Interactive multi-turn REPL. Keeps the conversation in memory and
