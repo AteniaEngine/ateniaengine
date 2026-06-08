@@ -517,6 +517,21 @@ locked by regression tests.
   `ladder_level_whole_model: L3`. MLA-0 improved to `5.306e-5`; disk==RAM still
   bit-identical. **Not dense ADR-004 `CERTIFIED`; L4 (global F64) reserved/unreachable.**
   See `docs/HANDOFF_MLA_3.md` + `docs/HANDOFF_MLA1_C5_ROOT_CAUSE.md`.
+- **MOE-PERF-1 — MoE performance audit + optimization roadmap (measurement only).** Measured
+  where MoE time goes; **no runtime/numerics/cert/manifest/ADR change** (only a test-only
+  `#[ignore]` timing bench, `tests/moe_perf_scale_bench.rs`, that *calls* the runtime).
+  **Fresh** scale-fixture compute (reduced dim, RAM backend): load 8–19 ms, prefill 0.4–3 ms,
+  219–3397 tok/s → the routing/attention/expert/MLA **compute is trivial; the bottleneck is
+  weight I/O at real scale**. **Captured** real-weight numbers (from the L3 cert runs): Mixtral
+  cold tier build ≈88 GB, warm reconstruct load **4.5 s**, forward (seq=4, bounded cache)
+  **402.7 s**, default cache ≈90 GB→OOM; DeepSeek-V2-Lite disk tier ≈4 GB RAM. Bottleneck rank:
+  (1) cold tier build I/O, (2) **expert re-materialization / cache thrash** (the recurring
+  cost), (3) F32 expert decode (2× bytes), (4) warm backend reads, (5) AV scan, (6) compute
+  (NOT a bottleneck). Roadmap (ROI-ordered): **PERF-2** auto-sized + bf16-resident expert cache
+  (highest ROI: kills cache=4 OOM *and* cache=1 thrash), **PERF-3** expert prefetch/async tier
+  reads, **PERF-4** qint8 default tier (gated on a numeric cert), **PERF-5** MoE-generate
+  instrumentation parity. MLA latent cache + GPU expert offload deferred (high risk). Full lib
+  suite green. **Do not start PERF-2.** See `docs/MOE_PERF_AUDIT.md`.
 - **MOE-PRODUCT-2 — opt-in DeepSeek-V2-Lite in the productive `generate`.** Enabled the
   opt-in productive routing of **DeepSeek-V2-Lite (MLA)** in `atenia generate` via
   `MoeSpecResolver` + the unchanged `MoeRuntime`: `arch_for_productive_routing(DeepSeekMoe)
