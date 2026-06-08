@@ -355,16 +355,21 @@ reusing the ADR-004 `max_abs_diff < 0.5` + argmax bar **unchanged**.
     mscale_all_dim)` (= 1.0 for V2-Lite) is folded into `q_pe`/`k_pe` — matching HF.
     Before the fix C5 was 2.032 (argmax 3/4 FAIL). Isolated to `src/moe/mla.rs`;
     non-YaRN configs + Qwen/Mixtral unchanged.
-- **Mixtral-8x7B-v0.1 — MoE-certified L2 (whole model, real weights).** Provisioned
-  (87 GB, 19 shards, validated) and certified on the **real** weights via the
-  Qwen/DeepSeek decomposition tooling (`tests/moe_mixtral_decomposition_test.rs`,
-  `docs/numcert/mixtral-8x7b-v0.1.moecert.json`, MIXTRAL-CERT-1/2): **C1** exhaustive
+- **Mixtral-8x7B-v0.1 — MoE-certified L3 (active-path-certified, real weights).**
+  Provisioned (87 GB, 19 shards, validated) and certified on the **real** weights via
+  the Qwen/DeepSeek decomposition tooling + a C5 active-path harness
+  (`tests/moe_mixtral_decomposition_test.rs`, `tests/moe_mixtral_c5_active_path_test.rs`,
+  `docs/numcert/mixtral-8x7b-v0.1.moecert.json`, MIXTRAL-CERT-1/2/3): **C1** exhaustive
   over **256 experts** (32 layers × 8), global worst `max_abs_diff` **1.907e-6**
   (layer 8 / expert 1), 0 failures; **C2** top-2 set equality on all 32 layers, 0
   failures, min routing margin **0.011413** (layer 13); **C4** the `mixtral_scale`
-  topology full-forward cert = **1.639e-7** vs HF f64 (argmax exact) → **L2 = L1 + C4**.
-  C3 (GQA) mechanism. C5 (active-path) → L3 pending. NOT dense ADR-004 `CERTIFIED`;
-  not L3/L4. See `docs/HANDOFF_MIXTRAL_CERT_C1C2.md`.
+  topology full-forward cert = **1.639e-7** vs HF f64 (argmax exact); **C5** Atenia's
+  **real full forward** (GQA + top-2 MoE, disk expert-tier) vs an external **float64**
+  reference computed **one decoder layer at a time** (active subgraph, **not** the whole
+  model in F64) — worst `max_abs_diff` **3.185e-4** (pos 0) `< 0.5`, **argmax exact 4/4**
+  `[422,327,160,327]`, **deterministic** → **L3 = L2 + C5 = active-path-certified**.
+  C3 (GQA) mechanism. **NOT dense ADR-004 `CERTIFIED`; not L4** (global F64 ~374 GB,
+  reserved/unreachable). See `docs/HANDOFF_MIXTRAL_CERT_C5.md`.
 - **Classic DeepSeek-MoE remains at L0.** L4 (global F64, dense-equivalent) is
   reserved and currently unreachable for large-active MoE (RAM). See
   `docs/MOE_CERTIFICATION_AUDIT.md` for the full methodology.

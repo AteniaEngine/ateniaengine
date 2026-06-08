@@ -1,0 +1,22 @@
+{
+  "milestone": "MIXTRAL-CERT-3 / C5",
+  "obligation": "C5 active-path (F64, one layer at a time)",
+  "model": "Mixtral-8x7B-v0.1",
+  "oracle": "HuggingFace MixtralDecoderLayer in float64, ONE layer at a time (trusted HF code: GQA + RoPE + sparse MoE; never the whole model in F64 -> not L4)",
+  "input_ids": [
+    1,
+    100,
+    200,
+    300
+  ],
+  "seq": 4,
+  "vocab_size": 32000,
+  "argmax_per_position": [
+    422,
+    327,
+    160,
+    327
+  ],
+  "reference_file": "mixtral_c5_ref.safetensors",
+  "note": "Real Mixtral-8x7B-v0.1 weights, full end-to-end forward. ADR-007 C5 F64 form. Driver validated against the tiny mixtral_scale fixture before this run."
+}

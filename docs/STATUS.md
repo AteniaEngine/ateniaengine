@@ -517,6 +517,26 @@ locked by regression tests.
   `ladder_level_whole_model: L3`. MLA-0 improved to `5.306e-5`; disk==RAM still
   bit-identical. **Not dense ADR-004 `CERTIFIED`; L4 (global F64) reserved/unreachable.**
   See `docs/HANDOFF_MLA_3.md` + `docs/HANDOFF_MLA1_C5_ROOT_CAUSE.md`.
+- **MIXTRAL-CERT-3 (C5 active-path) — Mixtral-8x7B-v0.1 → MoE-certified L3
+  (active-path-certified).** Ran Atenia's **real full forward** of the real trained
+  Mixtral-8x7B-v0.1 (embeddings + 32 layers of GQA attention + RoPE + top-2 MoE +
+  lm_head, experts streamed from a persistent bf16 **disk expert-tier**) on the
+  canonical input `[1,100,200,300]` and compared it **end-to-end** against an external
+  **float64** reference computed **one decoder layer at a time** (HF attention in f64 +
+  manual MoE one **active expert** at a time — the F64 form of C5 over the **active
+  subgraph**, never the whole model in F64 → **not L4**). **C5 PASS:** worst
+  `max_abs_diff` **3.185e-4** (position 0) `< 0.5` (ADR-004 bar, unchanged; ~1570×
+  inside), **per-position argmax exact 4/4** `[422,327,160,327]`, **deterministic**
+  (two forwards bit-identical). Load (warm tier reconstruct) 4.5 s; forward 402.7 s;
+  test wall 955.74 s. → **Mixtral-8x7B-v0.1: MoE-certified L3 (active-path-certified)**
+  (`docs/numcert/mixtral-8x7b-v0.1.moecert.json`, `ladder_level_whole_model: L3`).
+  **No `src/` change** — a resumable F64 reference generator (per-layer atomic
+  hidden-state checkpoints) + a `#[ignore]` harness that *calls* the runtime; ADR-004
+  gate not lowered. Operational note: on a 32 GB host the forward must run with a
+  **bounded expert cache** (`ATENIA_MOE_EXPERT_CACHE=1`, numerically identical) — the
+  default per-layer cache of 4 reconstructed-F32 experts × 32 layers commits ~90 GB and
+  OOMs; cache=1 peaks ~29 GB. **Not dense ADR-004 `CERTIFIED`; L4 (global F64 ~374 GB)
+  reserved/unreachable.** See `docs/HANDOFF_MIXTRAL_CERT_C5.md`.
 - **MIXTRAL-DATA-PROVISION + MIXTRAL-CERT-1 (C1+C2) — Mixtral-8x7B-v0.1 real weights
   + partial L1.** Provisioned the real Mixtral-8x7B-v0.1 (19 safetensors shards,
   **87 GB / 86.99 GiB**, BF16, index validated; serial per-shard verified fetch after

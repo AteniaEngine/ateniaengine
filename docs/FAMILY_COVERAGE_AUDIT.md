@@ -36,9 +36,10 @@ into** the dense `CERTIFIED`, and the two are **never summed** into one
 "N families certified" count without splitting dense-certified from
 MoE-certified-Ln. **Current ladder state (post-MLA-3):** **Qwen1.5-MoE-A2.7B = L3**
 and **DeepSeek-V2-Lite = L3** (real-weight C1+C2+C4+C5 active-path, MOE-CERT + MLA-1/2/3);
-**Mixtral-8x7B-v0.1 = L2** (real weights; real-weight C1 256 experts + C2 top-2
-set-equality on all 32 layers + C4 topology fold (mixtral_scale 1.639e-7),
-MIXTRAL-CERT-1/2; C3 mechanism; C5 → L3 pending). All are
+**Mixtral-8x7B-v0.1 = L3** (real weights; real-weight C1 256 experts + C2 top-2
+set-equality on all 32 layers + C4 topology fold (mixtral_scale 1.639e-7) + C5
+active-path (real full forward vs f64 one-layer-at-a-time, worst 3.185e-4 < 0.5,
+argmax exact 4/4, deterministic), MIXTRAL-CERT-1/2/3; C3 mechanism). All are
 `MoE-certified Ln`, never the dense `CERTIFIED`; **L4 reserved/unreachable**. (The
 older "all three at L0" wording referred to the pre-MOE-CERT state.) Raising Mixtral
 up the ladder is the remaining MOE-CERT work.
@@ -76,7 +77,7 @@ up the ladder is the remaining MOE-CERT work.
 |---|---|---|---|
 | **Qwen-MoE** (`Qwen2MoeForCausalLM`) | shared_expert + per-expert gate/up/down | ✅ real Qwen1.5-MoE-A2.7B e2e (disk-tier, slow) | **EXPERIMENTAL · MoE-certified L3** (MOE-CERT-2/3/4) |
 | **DeepSeek-MoE (+ MLA)** (`DeepseekV2ForCausalLM`) | `kv_a_proj_with_mqa` + shared | ✅ real DeepSeek-V2-Lite e2e (MLA-2 disk-tier, ~4 GB RAM) | **EXPERIMENTAL · MoE-certified L3** (real-weight C1+C2+C4+**C5 active-path 2.587e-5**; MLA-1/2/3) |
-| **Mixtral** (`MixtralForCausalLM`) | `block_sparse_moe` | ✅ real Mixtral-8x7B-v0.1 provisioned (87 GB) | **EXPERIMENTAL · MoE-certified L2** (real-weight C1 256 experts + C2 top-2 + C4 topology 1.639e-7; C3 mechanism; C5→L3 pending; MIXTRAL-CERT-1/2) |
+| **Mixtral** (`MixtralForCausalLM`) | `block_sparse_moe` | ✅ real Mixtral-8x7B-v0.1 provisioned (87 GB) | **EXPERIMENTAL · MoE-certified L3 (active-path-certified)** (real-weight C1 256 experts + C2 top-2 + C4 topology 1.639e-7 + C5 active-path 3.185e-4 < 0.5, argmax exact 4/4, deterministic; C3 mechanism; MIXTRAL-CERT-1/2/3; not dense ADR-004 CERTIFIED; not L4) |
 
 ---
 

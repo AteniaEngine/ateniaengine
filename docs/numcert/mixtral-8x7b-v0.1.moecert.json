@@ -5,12 +5,12 @@
   "model": "Mixtral-8x7B-v0.1",
   "model_family": "mixtral",
   "model_arch": "MixtralForCausalLM",
-  "atenia_version": "0.x-MIXTRAL-CERT-2",
-  "milestone": "MIXTRAL-CERT-2 (C4 fold -> L2; built on C1+C2)",
+  "atenia_version": "0.x-MIXTRAL-CERT-3",
+  "milestone": "MIXTRAL-CERT-3 (C5 active-path -> L3; built on C1+C2+C4)",
 
-  "ladder_level_whole_model": "L2 (C1+C2 real-weight; C3+C4 mechanism)",
-  "headline": "MoE-certified L2 (whole model) = L1 + C4",
-  "headline_note": "Per ADR-007 the bare word 'certified' is forbidden for MoE. This family is 'MoE-certified L2' = L1 + C4. L1: C1 (per-expert) exhaustive over ALL 32 layers x 8 experts = 256 experts + C2 (router top-2 SET EQUALITY) on all 32 layers, both on the REAL trained weights vs a float64 reference computed one expert at a time; C3 (GQA attention) via the mechanism cert. C4 (assembly/topology): the mixtral_scale topology full-forward cert vs HF f64 = 1.639e-7 (8 experts / top-2 / GQA 4:1 / classic experts / no shared / renorm -- the EXACT Mixtral-8x7B conventions), argmax exact + greedy->EOS + deterministic. This is L2, NOT the dense ADR-004 CERTIFIED, and NOT L3 (C5 active-path) / L4 (global F64). L2 = 'the pieces (real weights, all layers) AND their composition (topology mechanism) are certified'.",
+  "ladder_level_whole_model": "L3 (C1+C2+C5 real-weight active-path; C3+C4 mechanism)",
+  "headline": "MoE-certified L3 (whole model) = active-path-certified",
+  "headline_note": "Per ADR-007 the bare word 'certified' is forbidden for MoE. This family is 'MoE-certified L3' = active-path-certified = L2 + C5. C5 (active-path): Atenia's REAL full forward of the REAL trained Mixtral-8x7B-v0.1 (GQA attention + top-2 MoE, all 32 layers, via the disk expert-tier) on a canonical input, compared end-to-end against an external float64 reference computed ONE DECODER LAYER AT A TIME (HF attention in f64 + manual MoE one active expert at a time in f64) -- the F64 form of C5 over the ACTIVE SUBGRAPH, never the whole model in F64. Result: worst end-to-end max_abs_diff 3.185e-4 < 0.5 (ADR-004 bar, unchanged; ~1570x inside), per-position argmax EXACT 4/4, deterministic (two forwards bit-identical). Underlying L2: C1 (per-expert) exhaustive over ALL 32 layers x 8 experts = 256 experts + C2 (router top-2 SET EQUALITY) on all 32 layers, both on the REAL weights vs f64; C3 (GQA attention) + C4 (assembly/topology) via the mixtral_scale mechanism cert (1.639e-7). This is L3 (active-path-certified), NOT the dense ADR-004 CERTIFIED, and NOT L4 (global F64). L3 = 'the real model, as actually run on the active path, matches an external f64 oracle'.",
 
   "config_summary": {
     "hidden_size": 4096,
@@ -75,13 +75,27 @@
       "re_derived_this_milestone": true
     },
     "C5_active_path": {
-      "status": "PENDING",
-      "blocker": "real-weight full forward (GQA attention + MoE) vs F64 one-layer-at-a-time, not yet run. RAM-feasible via the MLA-2/MOE-PROD disk expert-tier (the graph families already support ATENIA_MOE_EXPERT_TIER=disk), as proven on Qwen-MoE / DeepSeek-V2-Lite."
+      "status": "PASS",
+      "scope": "Atenia's real full forward of the real trained Mixtral-8x7B-v0.1 (embeddings + 32 decoder layers of GQA attention + RoPE + top-2 MoE + final norm + lm_head) on a canonical input, end-to-end vs an external f64 reference",
+      "weights": "real trained Mixtral-8x7B-v0.1 weights (bf16, 19 safetensors shards), experts streamed from the disk expert-tier (ATENIA_MOE_EXPERT_TIER=disk; persistent bf16 tier)",
+      "oracle": "float64 reference computed ONE DECODER LAYER AT A TIME: HF MixtralAttention in float64 (q/k/v/o only) + manual MoE computing ONE ACTIVE EXPERT AT A TIME in float64 (router softmax in f32 -> top-2 -> renorm -> f64; expert = w2(silu(w1.x)*(w3.x))). The F64 form of C5 over the ACTIVE SUBGRAPH -- never the whole model in F64 (that would be L4). Driver validated against the mixtral_scale tiny fixture (2.021e-8 vs HF f64) before use.",
+      "canonical_input_ids": [1, 100, 200, 300],
+      "seq": 4,
+      "metric": "end-to-end max_abs_diff(Atenia logits, F64 reference logits), worst over all positions x vocab (32000)",
+      "worst_max_abs_diff": 3.185e-4,
+      "worst_position": 0,
+      "gate": "end-to-end max_abs_diff < 0.5 (ADR-004 bar, unchanged); clears it by ~1570x",
+      "argmax_per_position_reference": [422, 327, 160, 327],
+      "argmax_exact": "4/4 (zero mismatches vs the f64 reference)",
+      "deterministic": "yes -- two consecutive Atenia forwards are bit-identical (assert_eq)",
+      "timing": "load (warm tier reconstruct) 4.5s; forward 402.7s (CPU, bounded expert cache, disk-tier re-reads); test wall 955.74s",
+      "failures": 0,
+      "result": "PASS -- the real model, exactly as Atenia runs it on the active path, matches the f64 oracle (worst 3.185e-4 < 0.5, argmax exact 4/4, deterministic) -> ADR-007 L3",
+      "re_derived_this_milestone": true
     }
   },
 
   "pending_levels": [
-    { "level": "L3 (active-path-certified)", "blocker": "C5 real-weight full forward (GQA attention + MoE) vs F64 one-layer-at-a-time, via the disk expert-tier (RAM-feasible, as on Qwen/DeepSeek); not yet run." },
     { "level": "L4 (dense-equivalent)", "blocker": "global model.double() F64 (~374 GB) -- reserved / unreachable; never fabricated." }
   ],
 
@@ -89,7 +103,9 @@
     "C3 attention reused at the mechanism level (tiny topology fixture), not real-weight per-layer (same standard as Qwen/DeepSeek).",
     "C1/C2 use a single deterministic probe input applied to every layer's real weights (representative activation, not a real inter-layer trace) -- consistent with the Qwen / DeepSeek approach.",
     "C4 (mixtral_scale topology) is certified at the MECHANISM level (reduced-dim, random-weight fixture); it transfers to the real model only in conjunction with the real-weight C1/C2 (met).",
-    "L2 here carries the C3+C4 mechanism caveat; it is NOT the dense ADR-004 CERTIFIED, and NOT L3 (C5 active-path) / L4 (global F64)."
+    "C5 is certified over the ACTIVE SUBGRAPH in f64 (the experts/positions actually exercised by the canonical input), not a global f64 forward; this is ADR-007's primary C5 method and is L3, not L4.",
+    "C5 uses one canonical input (input_ids [1,100,200,300], seq 4); it certifies the active path for that probe, the same single-probe standard as Qwen/DeepSeek C5.",
+    "L3 here still carries the C3+C4 mechanism caveat (attention/topology re-derived at the mechanism level, not real-weight per-layer); it is NOT the dense ADR-004 CERTIFIED, and NOT L4 (global F64)."
   ],
 
   "verification": {
@@ -97,9 +113,14 @@
     "c1_c2_reference": "fixtures/moe/mixtral_decomp_ref.safetensors (+ .json), float64 one expert at a time (~4.2 MB); generator fixtures/moe/generate_mixtral_decomposition_reference.py (resumable)",
     "c1_c2_command": "python fixtures/moe/generate_mixtral_decomposition_reference.py models/Mixtral-8x7B-v0.1 fixtures/moe ; then MIXTRAL_DIR=models/Mixtral-8x7B-v0.1 cargo test --release --test moe_mixtral_decomposition_test -- --ignored mixtral_real_c1_c2 --nocapture",
     "c1_c2_expected": "C1 global worst max_abs_diff ~1.9e-6 (< 0.5, all 256 experts, layer 8 / expert 1); C2 top-2 set match on all 32 layers; min routing margin 0.011413 (layer 13); 0 failures.",
-    "c4_command": "cargo test --release --test moe_scale_cert_test mixtral_8x7b_topology_certifies -- --nocapture  (expected end-to-end max_abs_diff 1.639e-7, argmax exact, greedy->EOS, deterministic)"
+    "c4_command": "cargo test --release --test moe_scale_cert_test mixtral_8x7b_topology_certifies -- --nocapture  (expected end-to-end max_abs_diff 1.639e-7, argmax exact, greedy->EOS, deterministic)",
+    "c5_harness": "tests/moe_mixtral_c5_active_path_test.rs (mixtral_real_c5_active_path, #[ignore] + env MIXTRAL_DIR); gates worst max_abs_diff < 0.5 + per-position argmax exact + determinism, else does NOT certify L3 (asserts fail loudly).",
+    "c5_reference": "fixtures/moe/mixtral_c5_ref.safetensors (+ .json); generator fixtures/moe/generate_mixtral_c5_reference.py (modes: 'tiny' validates the driver vs mixtral_scale HF f64 = 2.021e-8; 'real <dir> <out>' emits the reference, resumable per-layer atomic hidden-state checkpoints, one decoder layer at a time in f64, active expert at a time).",
+    "c5_command": "python fixtures/moe/generate_mixtral_c5_reference.py real models/Mixtral-8x7B-v0.1 fixtures/moe ; then $env:MIXTRAL_DIR='models/Mixtral-8x7B-v0.1'; $env:ATENIA_MOE_EXPERT_TIER='disk'; $env:ATENIA_MOE_TIER_PERSIST='1'; cargo test --release --test moe_mixtral_c5_active_path_test -- --ignored mixtral_real_c5_active_path --nocapture",
+    "c5_expected": "MIXTRAL-C5 RESULT ... C5 PASS, worst max_abs_diff 3.185e-4 (pos 0) < 0.5, argmax exact 4/4 [422,327,160,327], deterministic.",
+    "c5_operational_note": "On a 32 GB host the forward MUST run with a BOUNDED expert cache (ATENIA_MOE_EXPERT_CACHE=1) -- numerically identical (caching is a perf optimisation only), but the default per-layer cache of (2*top_k)=4 reconstructed-F32 experts x 32 layers commits ~90 GB and exceeds the system commit limit -> OOM. With cache=1 the peak is ~29 GB (22 GB experts + ~6.5 GB backend) and fits. A persistent disk tier (ATENIA_MOE_TIER_PERSIST=1, ATENIA_DISK_TIER_DIR=<nvme>) makes the load a ~4.5s warm reconstruct (no shard re-read)."
   },
 
-  "generated_at": "2026-06-06",
-  "generated_on": "F64 reference: torch (bf16->float64) + NumPy float64, Windows 11 (model on HDD; per-layer-resumable generator + harness). Atenia: CPU forward, RTX 4070 Laptop host, 32 GB RAM."
+  "generated_at": "2026-06-08",
+  "generated_on": "F64 reference: torch (bf16->float64) + NumPy float64, Windows 11 (per-layer-resumable generator). Atenia C5 forward: CPU, 32 GB RAM host, model + persistent bf16 disk expert-tier on NVMe (SSD), bounded expert cache (ATENIA_MOE_EXPERT_CACHE=1); warm tier reconstruct 4.5s, forward 402.7s."
 }
