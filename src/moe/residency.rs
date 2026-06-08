@@ -168,6 +168,122 @@ fn bf16_truncate_lossless(data: &[f32]) -> Option<Vec<u16>> {
     Some(out)
 }
 
+// ============================================================================
+// **MOE-PERF-2** — bf16-resident expert cache + auto-sized capacity.
+// ============================================================================
+
+/// **MOE-PERF-2B** — whether cached experts are stored **bf16-resident** (default
+/// **on**). bf16 storage is **lossless by construction** (a projection is kept
+/// bf16 only when its f32 values are bf16-representable — low 16 bits zero — which
+/// is exactly the bf16-tier case; otherwise it stays f32), so it **never changes
+/// numerics**. The opt-out (`ATENIA_MOE_CACHE_BF16=0`) forces f32 storage (A/B /
+/// debugging).
+pub fn cache_bf16_enabled() -> bool {
+    std::env::var("ATENIA_MOE_CACHE_BF16").as_deref() != Ok("0")
+}
+
+/// **MOE-PERF-2A** — the largest per-layer expert-cache capacity whose total
+/// resident footprint (`n_layers × capacity × per_expert_bytes`) fits
+/// `ram_budget_bytes`, clamped to `[1, num_experts]`. Pure + deterministic given
+/// its inputs. The capacity affects only RAM / tier I-O, **never** the forward
+/// numerics (`cached_forward_matches_uncached`), so model output is identical at
+/// any capacity. Returns at least 1 (so the most-recent expert is always cached)
+/// even under a tiny budget.
+pub fn auto_expert_cache_capacity(
+    ram_budget_bytes: u64,
+    n_layers: usize,
+    per_expert_bytes: usize,
+    num_experts: usize,
+) -> usize {
+    let per_layer = (per_expert_bytes as u64).max(1);
+    let denom = (n_layers as u64).max(1).saturating_mul(per_layer);
+    let cap = (ram_budget_bytes / denom.max(1)) as usize;
+    cap.clamp(1, num_experts.max(1))
+}
+
+/// **MOE-PERF-2B** — one cached projection weight: stored **bf16** when the f32
+/// values are bf16-representable (the bf16-tier case), else verbatim **f32**.
+/// Decoding back to f32 is **bit-exact** in both cases.
+#[derive(Debug, Clone)]
+enum CachedWeight {
+    F32(Vec<f32>),
+    Bf16(Vec<u16>),
+}
+
+impl CachedWeight {
+    fn store(w: Vec<f32>, allow_bf16: bool) -> Self {
+        if allow_bf16 {
+            if let Some(bits) = bf16_truncate_lossless(&w) {
+                return CachedWeight::Bf16(bits);
+            }
+        }
+        CachedWeight::F32(w)
+    }
+    /// Decode to f32 — bit-exact (bf16 → `from_bits((b as u32) << 16)`, the inverse
+    /// of [`bf16_truncate_lossless`]; f32 → clone).
+    fn to_f32(&self) -> Vec<f32> {
+        match self {
+            CachedWeight::F32(v) => v.clone(),
+            CachedWeight::Bf16(b) => {
+                let mut out = vec![0.0_f32; b.len()];
+                crate::simd_kernels::avx2::bf16_decode_bulk(b, &mut out);
+                out
+            }
+        }
+    }
+    fn elems(&self) -> usize {
+        match self {
+            CachedWeight::F32(v) => v.len(),
+            CachedWeight::Bf16(b) => b.len(),
+        }
+    }
+    fn bytes(&self) -> usize {
+        match self {
+            CachedWeight::F32(v) => v.len() * 4,
+            CachedWeight::Bf16(b) => b.len() * 2,
+        }
+    }
+    fn is_bf16(&self) -> bool {
+        matches!(self, CachedWeight::Bf16(_))
+    }
+}
+
+/// **MOE-PERF-2B** — a cached expert (three projections), each bf16 or f32.
+#[derive(Debug, Clone)]
+struct CachedExpert {
+    d_model: usize,
+    d_ff: usize,
+    gate: CachedWeight,
+    up: CachedWeight,
+    down: CachedWeight,
+}
+
+impl CachedExpert {
+    fn store(e: &MoeDenseExpert, allow_bf16: bool) -> Self {
+        Self {
+            d_model: e.d_model,
+            d_ff: e.d_ff,
+            gate: CachedWeight::store(e.w_gate.clone(), allow_bf16),
+            up: CachedWeight::store(e.w_up.clone(), allow_bf16),
+            down: CachedWeight::store(e.w_down.clone(), allow_bf16),
+        }
+    }
+    /// Materialise back to an f32 `MoeDenseExpert` (bit-exact to what was stored).
+    fn to_dense(&self) -> MoeDenseExpert {
+        MoeDenseExpert::new(self.d_model, self.d_ff, self.gate.to_f32(), self.up.to_f32(), self.down.to_f32())
+            .expect("cached expert dims are valid by construction")
+    }
+    fn bytes(&self) -> usize {
+        self.gate.bytes() + self.up.bytes() + self.down.bytes()
+    }
+    fn f32_bytes(&self) -> usize {
+        (self.gate.elems() + self.up.elems() + self.down.elems()) * 4
+    }
+    fn is_bf16(&self) -> bool {
+        self.gate.is_bf16()
+    }
+}
+
 /// **MOE-PROD-4** — accumulates the **persistent** expert tier for one model
 /// load: the on-disk directory, the per-tensor entries, and how many tensors
 /// were **reused** from an existing tier vs **written** fresh.
@@ -717,7 +833,11 @@ pub struct CacheStats {
 pub struct ExpertCache {
     capacity: usize,
     clock: u64,
-    entries: HashMap<usize, (MoeDenseExpert, u64)>,
+    /// **MOE-PERF-2B** — routed entries stored bf16-resident (lossless) or f32.
+    entries: HashMap<usize, (CachedExpert, u64)>,
+    /// **MOE-PERF-2B** — whether new entries are stored bf16 (lossless). Captured
+    /// at construction from `cache_bf16_enabled()`.
+    allow_bf16: bool,
     stats: CacheStats,
     /// **MOE-PROD-6** — pinned cache slot for the **shared** expert (read every
     /// token in HF-Qwen/Atenia conventions). The shared expert's weights never
@@ -739,10 +859,36 @@ impl ExpertCache {
             capacity,
             clock: 0,
             entries: HashMap::new(),
+            allow_bf16: cache_bf16_enabled(),
             stats: CacheStats::default(),
             shared: None,
             shared_enabled: true,
         }
+    }
+
+    /// **MOE-PERF-2B** — force the cache's bf16-resident storage on/off (defaults
+    /// to `cache_bf16_enabled()`). Test/A-B hook; never changes numerics.
+    pub fn set_bf16_resident(&mut self, on: bool) {
+        self.allow_bf16 = on;
+    }
+    /// Whether new routed entries are stored bf16-resident.
+    pub fn bf16_resident(&self) -> bool {
+        self.allow_bf16
+    }
+    /// **MOE-PERF-2B** — number of routed entries currently stored as bf16.
+    pub fn bf16_entries(&self) -> usize {
+        self.entries.values().filter(|(e, _)| e.is_bf16()).count()
+    }
+    /// **MOE-PERF-2B** — what the resident routed entries WOULD cost as f32.
+    pub fn resident_bytes_f32_equiv(&self) -> usize {
+        self.entries.values().map(|(e, _)| e.f32_bytes()).sum()
+    }
+    /// **MOE-PERF-2B** — host-RAM bytes saved vs storing the same entries as f32.
+    pub fn resident_bytes_saved(&self) -> usize {
+        self.resident_bytes_f32_equiv().saturating_sub(self.routed_resident_bytes())
+    }
+    fn routed_resident_bytes(&self) -> usize {
+        self.entries.values().map(|(e, _)| e.bytes()).sum()
     }
 
     /// **MOE-PROD-6** — toggle the pinned shared-expert slot. Disabling reverts
@@ -774,12 +920,15 @@ impl ExpertCache {
     pub fn contains(&self, idx: usize) -> bool {
         self.entries.contains_key(&idx)
     }
-    /// Host-RAM bytes the cached experts occupy.
+    /// Host-RAM bytes the cached experts occupy (routed entries bf16/f32 per
+    /// **MOE-PERF-2B**, plus the pinned shared slot which stays f32).
     pub fn resident_bytes(&self) -> usize {
-        self.entries
-            .values()
-            .map(|(e, _)| (e.w_gate.len() + e.w_up.len() + e.w_down.len()) * 4)
-            .sum()
+        self.routed_resident_bytes()
+            + self
+                .shared
+                .as_ref()
+                .map(|e| (e.w_gate.len() + e.w_up.len() + e.w_down.len()) * 4)
+                .unwrap_or(0)
     }
 
     fn bump(&mut self) -> u64 {
@@ -801,11 +950,13 @@ impl ExpertCache {
         }
     }
 
-    /// Insert (or refresh) a materialised expert. Used by `prefetch` and the
-    /// miss path. Counts neither hit nor miss by itself.
-    fn put(&mut self, idx: usize, expert: MoeDenseExpert) {
+    /// Insert (or refresh) a materialised expert (stored bf16-resident when
+    /// lossless, per **MOE-PERF-2B**). Used by `prefetch` and the miss path.
+    /// Counts neither hit nor miss by itself.
+    fn put(&mut self, idx: usize, expert: &MoeDenseExpert) {
+        let cached = CachedExpert::store(expert, self.allow_bf16);
         let t = self.bump();
-        self.entries.insert(idx, (expert, t));
+        self.entries.insert(idx, (cached, t));
         // Capacity 0 means "do not retain": drop immediately after use.
         self.evict_if_needed();
     }
@@ -821,11 +972,14 @@ impl ResidentExpertLayer {
         cache: &mut ExpertCache,
         idx: usize,
     ) -> Result<MoeDenseExpert, MoeLayerError> {
-        if let Some((expert, used)) = cache.entries.get_mut(&idx) {
+        if let Some((cached, used)) = cache.entries.get_mut(&idx) {
             cache.clock += 1;
             *used = cache.clock;
+            // **MOE-PERF-2B** — decode the cached (bf16/f32) expert back to f32;
+            // bit-exact to the original resolve.
+            let dense = cached.to_dense();
             cache.stats.hits += 1;
-            return Ok(expert.clone());
+            return Ok(dense);
         }
         let t_res = std::time::Instant::now();
         let (expert, bytes) = self.experts[idx]
@@ -835,7 +989,7 @@ impl ResidentExpertLayer {
         cache.stats.misses += 1;
         cache.stats.tier_bytes_read += bytes;
         if cache.capacity > 0 {
-            cache.put(idx, expert.clone());
+            cache.put(idx, &expert);
         }
         Ok(expert)
     }
@@ -857,7 +1011,7 @@ impl ResidentExpertLayer {
                 .map_err(|e| MoeLayerError::Binding(super::binding::MoeBindingError::Dense(e)))?;
             cache.stats.prefetched += 1;
             cache.stats.tier_bytes_read += bytes;
-            cache.put(idx, expert);
+            cache.put(idx, &expert);
         }
         Ok(())
     }
@@ -1282,5 +1436,102 @@ mod tests {
         assert_eq!(cache.len(), 0);
         assert_eq!(cache.stats().hits, 0);
         assert_eq!(cache.stats().misses, 4);
+    }
+
+    // ---- MOE-PERF-2: auto-sized capacity + bf16-resident cache ----
+
+    /// bf16-representable weights (low 16 mantissa bits zero) — what the bf16 tier
+    /// produces. The cache stores these bf16-resident, losslessly.
+    fn bf16_vec(seed: u64, n: usize) -> Vec<f32> {
+        seeded(seed, n).into_iter().map(|v| f32::from_bits(v.to_bits() & 0xFFFF_0000)).collect()
+    }
+
+    /// Mixtral-style layer whose expert weights are bf16-representable.
+    fn build_real_bf16(n: usize, d_model: usize, d_ff: usize) -> RealMoeLayer {
+        let mut ns: Vec<(String, Vec<usize>)> = Vec::new();
+        let mut store: HashMap<String, Vec<f32>> = HashMap::new();
+        let router = "model.layers.0.block_sparse_moe.gate.weight".to_string();
+        ns.push((router.clone(), vec![n, d_model]));
+        store.insert(router, bf16_vec(1, n * d_model));
+        for e in 0..n {
+            let base = 100 + e as u64;
+            let g = format!("model.layers.0.block_sparse_moe.experts.{e}.w1.weight");
+            let u = format!("model.layers.0.block_sparse_moe.experts.{e}.w3.weight");
+            let d = format!("model.layers.0.block_sparse_moe.experts.{e}.w2.weight");
+            ns.push((g.clone(), vec![d_ff, d_model]));
+            ns.push((u.clone(), vec![d_ff, d_model]));
+            ns.push((d.clone(), vec![d_model, d_ff]));
+            store.insert(g, bf16_vec(base * 10 + 1, d_ff * d_model));
+            store.insert(u, bf16_vec(base * 10 + 2, d_ff * d_model));
+            store.insert(d, bf16_vec(base * 10 + 3, d_model * d_ff));
+        }
+        let map = MoeWeightMap::from_tensors(ns.iter().map(|(n, s)| (n.as_str(), s.clone())));
+        let resolve = move |name: &str| store.get(name).cloned();
+        let cfg = MoeLayerConfig::new(n, 2, false, d_model, d_ff).unwrap();
+        RealMoeLayer::assemble(&map, 0, cfg, &resolve).unwrap()
+    }
+
+    #[test]
+    fn perf2_auto_capacity_fits_budget() {
+        let pe = 1usize << 20; // 1 MiB per expert
+        // Plenty of budget → clamp to num_experts.
+        assert_eq!(auto_expert_cache_capacity(u64::MAX, 1, pe, 4), 4);
+        // 100 MiB / (10 layers × 1 MiB) = 10 → clamp to 8 experts.
+        assert_eq!(auto_expert_cache_capacity(100 << 20, 10, pe, 8), 8);
+        // 20 MiB / (10 layers × 1 MiB) = 2 per layer.
+        assert_eq!(auto_expert_cache_capacity(20 << 20, 10, pe, 8), 2);
+        // Tiny budget → at least 1 (never 0).
+        assert_eq!(auto_expert_cache_capacity(1, 10, pe, 8), 1);
+    }
+
+    #[test]
+    fn perf2_cached_weight_bf16_is_lossless() {
+        let bf = bf16_vec(123, 64);
+        let w = CachedWeight::store(bf.clone(), true);
+        assert!(matches!(w, CachedWeight::Bf16(_)), "bf16-representable → bf16");
+        assert_eq!(w.to_f32(), bf, "bf16 round-trip is bit-exact");
+        assert_eq!(w.bytes(), bf.len() * 2, "bf16 is half the f32 bytes");
+        // Non-representable values stay f32 (still exact).
+        let arb = seeded(7, 64);
+        let w2 = CachedWeight::store(arb.clone(), true);
+        assert!(matches!(w2, CachedWeight::F32(_)), "non-bf16 → f32 fallback");
+        assert_eq!(w2.to_f32(), arb);
+        // Opt-out forces f32.
+        assert!(matches!(CachedWeight::store(bf, false), CachedWeight::F32(_)));
+    }
+
+    #[test]
+    fn perf2_bf16_cache_is_bit_exact_and_smaller() {
+        let real = build_real_bf16(8, 8, 16);
+        let res = ResidentExpertLayer::from_real_layer(&real, ExpertTier::Ram).unwrap();
+        let mut cache = ExpertCache::new(8);
+        assert!(cache.bf16_resident(), "bf16-resident on by default");
+        for s in 0..6u64 {
+            let x = seeded(500 + s, 8);
+            let (cached, _) = res.forward_cached(&mut cache, &x).unwrap();
+            let (plain, _) = res.forward(&x).unwrap();
+            assert_eq!(cached, plain, "bf16-resident cache must be bit-exact (seed {s})");
+        }
+        assert!(cache.len() > 0);
+        assert_eq!(cache.bf16_entries(), cache.len(), "all entries bf16 (weights bf16-representable)");
+        // No shared expert here → resident == routed; bf16 is half the f32-equiv.
+        assert_eq!(cache.resident_bytes_f32_equiv(), 2 * cache.resident_bytes());
+        assert!(cache.resident_bytes_saved() > 0, "bf16 residency must save bytes");
+    }
+
+    #[test]
+    fn perf2_bf16_disabled_is_f32_and_still_bit_exact() {
+        let real = build_real_bf16(6, 8, 16);
+        let res = ResidentExpertLayer::from_real_layer(&real, ExpertTier::Ram).unwrap();
+        let mut cache = ExpertCache::new(6);
+        cache.set_bf16_resident(false);
+        for s in 0..4u64 {
+            let x = seeded(600 + s, 8);
+            let (cached, _) = res.forward_cached(&mut cache, &x).unwrap();
+            let (plain, _) = res.forward(&x).unwrap();
+            assert_eq!(cached, plain, "f32 cache must be bit-exact");
+        }
+        assert_eq!(cache.bf16_entries(), 0, "bf16 disabled → all f32");
+        assert_eq!(cache.resident_bytes_saved(), 0);
     }
 }

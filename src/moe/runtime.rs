@@ -531,12 +531,56 @@ fn apply_certification_guard(model_id: &str) -> Result<(), MoeRuntimeError> {
     Ok(())
 }
 
-fn expert_cache_capacity_from_env(num_experts: usize, experts_per_token: usize) -> usize {
+/// **MOE-PERF-2A** — the RAM budget (bytes) the auto-sized expert cache may use:
+/// a fraction (`ATENIA_MOE_CACHE_RAM_FRACTION`, default 0.5) of currently
+/// **available** system RAM. Read once at load. Affects only how many experts are
+/// kept resident — never the numerics.
+fn cache_ram_budget_bytes() -> u64 {
+    let frac = std::env::var("ATENIA_MOE_CACHE_RAM_FRACTION")
+        .ok()
+        .and_then(|s| s.trim().parse::<f64>().ok())
+        .filter(|f| *f > 0.0 && *f <= 1.0)
+        .unwrap_or(0.5);
+    let mut sys = sysinfo::System::new();
+    sys.refresh_memory();
+    (sys.available_memory() as f64 * frac) as u64
+}
+
+/// **MOE-PERF-2A** — per-layer expert-cache capacity.
+///
+/// The explicit `ATENIA_MOE_EXPERT_CACHE` override always wins (an integer, or
+/// `all`) — backward compatible and fully reproducible. Otherwise the capacity is
+/// **auto-sized** so the total resident footprint
+/// (`n_layers × capacity × per_expert_bytes`) fits a RAM budget — avoiding the
+/// fixed `2·top_k` default that OOMs at real scale (Mixtral). `per_expert_bytes`
+/// reflects the bf16-resident cache (`MOE-PERF-2B`) when enabled (half the f32
+/// footprint). The capacity affects only RAM / tier I-O; the forward is bit-exact
+/// at any capacity, so model output is unchanged and deterministic.
+fn expert_cache_capacity(
+    num_experts: usize,
+    experts_per_token: usize,
+    n_layers: usize,
+    hidden: usize,
+    d_ff: usize,
+) -> usize {
     match std::env::var("ATENIA_MOE_EXPERT_CACHE").as_deref() {
-        Ok("all") => num_experts,
-        Ok(s) => s.trim().parse::<usize>().unwrap_or(2 * experts_per_token).min(num_experts),
-        Err(_) => (2 * experts_per_token).min(num_experts),
+        Ok("all") => return num_experts,
+        Ok(s) if s.trim().parse::<usize>().is_ok() => {
+            return s.trim().parse::<usize>().unwrap().min(num_experts);
+        }
+        // Unset, "auto", or unparsable → auto-size.
+        _ => {}
     }
+    let _ = experts_per_token;
+    let per_expert_elems = 3usize.saturating_mul(d_ff).saturating_mul(hidden);
+    let bytes_per_elem = if super::residency::cache_bf16_enabled() { 2 } else { 4 };
+    let per_expert_bytes = per_expert_elems.saturating_mul(bytes_per_elem).max(1);
+    super::residency::auto_expert_cache_capacity(
+        cache_ram_budget_bytes(),
+        n_layers,
+        per_expert_bytes,
+        num_experts,
+    )
 }
 
 /// **MOE-PROD-1** — weight source for the MoE loader: a **single**
@@ -804,7 +848,12 @@ impl MoeRuntime {
         apply_certification_guard(&model_id)?;
 
         if tier_persist_enabled() && expert_tier_from_env() == ExpertTier::Disk {
-            let cache_capacity = expert_cache_capacity_from_env(n_experts, topk);
+            // d_ff (expert FFN width) for auto-sizing: moe_intermediate_size (Qwen/
+            // DeepSeek) or intermediate_size (Mixtral); fall back to hidden.
+            let d_ff_hint =
+                cfg_u_any(&v, &["moe_intermediate_size", "intermediate_size"]).unwrap_or(hidden);
+            let cache_capacity =
+                expert_cache_capacity(n_experts, topk, n_layers, hidden, d_ff_hint);
             let dir = tier_base_dir().join("moe_tier").join(&model_id);
             if let Some(rt) = try_warm_reconstruct(
                 &v,
@@ -895,7 +944,7 @@ impl MoeRuntime {
         let map = super::data_plane::MoeWeightMap::from_tensors(
             metas.iter().map(|(n, s)| (n.as_str(), s.clone())),
         );
-        let cache_capacity = expert_cache_capacity_from_env(n_experts, topk);
+        let cache_capacity = expert_cache_capacity(n_experts, topk, n_layers, hidden, d_ff);
 
         // **MOE-PROD-4/5** — opt-in persistent tier (disk graph families). The
         // warm fast path above already returned if a valid tier existed; here we

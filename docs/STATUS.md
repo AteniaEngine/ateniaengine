@@ -517,6 +517,20 @@ locked by regression tests.
   `ladder_level_whole_model: L3`. MLA-0 improved to `5.306e-5`; disk==RAM still
   bit-identical. **Not dense ADR-004 `CERTIFIED`; L4 (global F64) reserved/unreachable.**
   See `docs/HANDOFF_MLA_3.md` + `docs/HANDOFF_MLA1_C5_ROOT_CAUSE.md`.
+- **MOE-PERF-2 (expert cache) — auto-sized cache + bf16-resident experts.** Implemented the
+  highest-ROI item from the PERF-1 audit, **numerics/cert/manifest/ADR/routing/MLA/attention/
+  generation all unchanged**. **PERF-2A:** per-layer expert-cache capacity is **auto-sized** to
+  a RAM budget (default 50% available; `ATENIA_MOE_CACHE_RAM_FRACTION`) instead of the fixed
+  `2·top_k` that OOM'd Mixtral (~90 GB); explicit `ATENIA_MOE_EXPERT_CACHE` override still wins.
+  **PERF-2B:** cached experts stored **bf16 when lossless** (low-16-bits-zero, the bf16-tier
+  case), else f32 — decode-on-hit is **bit-exact** (`bf16_truncate_lossless` round-trip
+  identity), opt-out `ATENIA_MOE_CACHE_BF16=0`. Measured: **2× cache-RAM reduction** (exact:
+  `resident_bytes_f32_equiv == 2×resident_bytes`); Mixtral per-expert 704 MB→**352 MB**, so
+  cap=4 = 90 GB→**45 GB** and auto-size picks **cap=1 on a 32 GB host with no OOM / no manual
+  tuning**. Output bit-exact + deterministic at any capacity. 4 new residency tests (18 pass);
+  scale-cert (Mixtral/Qwen/DeepSeek) **3/3 unchanged**; full lib suite green. (Note: a stale
+  `HANDOFF_MOE_PERF_2.md` documents an unrelated earlier GPU-FFN attempt — this milestone's
+  handoff is `HANDOFF_MOE_PERF_2_EXPERT_CACHE.md`.) **Do not start PERF-3.**
 - **MOE-PERF-1 — MoE performance audit + optimization roadmap (measurement only).** Measured
   where MoE time goes; **no runtime/numerics/cert/manifest/ADR change** (only a test-only
   `#[ignore]` timing bench, `tests/moe_perf_scale_bench.rs`, that *calls* the runtime).
