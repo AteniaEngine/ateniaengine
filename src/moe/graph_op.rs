@@ -257,6 +257,7 @@ pub fn aggregate_resident_cache_stats() -> super::residency::CacheStats {
             let s = cache.lock().expect("expert cache poisoned").stats();
             agg.hits += s.hits;
             agg.misses += s.misses;
+            agg.evictions += s.evictions;
             agg.prefetched += s.prefetched;
             agg.tier_bytes_read += s.tier_bytes_read;
             agg.shared_hits += s.shared_hits;
@@ -264,9 +265,28 @@ pub fn aggregate_resident_cache_stats() -> super::residency::CacheStats {
             agg.shared_fwd_nanos += s.shared_fwd_nanos;
             agg.routed_fwd_nanos += s.routed_fwd_nanos;
             agg.resolve_nanos += s.resolve_nanos;
+            // **MOE-PERF-5 (instrumentation)** — surface the PERF-3 prefetch
+            // counters so MoE-generate telemetry can report overlap.
+            agg.parallel_prefetches += s.parallel_prefetches;
+            agg.prefetch_wall_nanos += s.prefetch_wall_nanos;
         }
     }
     agg
+}
+
+/// **MOE-PERF-5 (instrumentation)** — total host-RAM bytes the resident expert
+/// caches currently occupy, summed across all registered resident MoE layers.
+/// Read-only; used by MoE-generate telemetry to report `resident_bytes`.
+pub fn aggregate_resident_cache_resident_bytes() -> usize {
+    let reg = real_registry().lock().expect("real moe registry poisoned");
+    reg.iter()
+        .filter_map(|e| match e {
+            RegisteredMoe::Resident { cache, .. } => {
+                Some(cache.lock().expect("expert cache poisoned").resident_bytes())
+            }
+            RegisteredMoe::Real(_) => None,
+        })
+        .sum()
 }
 
 /// Fetch a registered **real** (RAM-f32) MoE layer by id (clones the `Arc`).

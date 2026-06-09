@@ -336,6 +336,19 @@ pub fn generate_greedy_tiny_eos(
     max_new_tokens: usize,
     eos_token_ids: &[u32],
 ) -> GreedyGeneration {
+    generate_greedy_tiny_eos_timed(w, prompt, max_new_tokens, eos_token_ids).0
+}
+
+/// **MOE-PERF-5 (instrumentation)** — identical to [`generate_greedy_tiny_eos`]
+/// but also returns the per-stage [`StageTimings`] (prefill / decode /
+/// first-token). The generation itself is **bit-identical**; only the wall-clock
+/// timers are surfaced. `generate_greedy_tiny_eos` is a thin wrapper over this.
+pub fn generate_greedy_tiny_eos_timed(
+    w: &TinyMixtralWeights,
+    prompt: &[u32],
+    max_new_tokens: usize,
+    eos_token_ids: &[u32],
+) -> (GreedyGeneration, super::telemetry::StageTimings) {
     assert!(!prompt.is_empty(), "generate_greedy_tiny: empty prompt");
     assert!(max_new_tokens >= 1, "generate_greedy_tiny: max_new_tokens must be >= 1");
     let is_eos = |t: u32| eos_token_ids.contains(&t);
@@ -371,7 +384,12 @@ pub fn generate_greedy_tiny_eos(
 
     // EOS on the very first generated token → stop immediately.
     if is_eos(first) {
-        return GreedyGeneration { tokens, step_logits };
+        let timings = super::telemetry::StageTimings {
+            prefill: prefill_build + prefill_exec,
+            decode: decode_build + decode_exec,
+            first_token: prefill_build + prefill_exec,
+        };
+        return (GreedyGeneration { tokens, step_logits }, timings);
     }
 
     // ---- Decode loop ----
@@ -421,7 +439,12 @@ pub fn generate_greedy_tiny_eos(
             max_new_tokens.saturating_sub(1),
         );
     }
-    GreedyGeneration { tokens, step_logits }
+    let timings = super::telemetry::StageTimings {
+        prefill: prefill_build + prefill_exec,
+        decode: decode_build + decode_exec,
+        first_token: prefill_build + prefill_exec,
+    };
+    (GreedyGeneration { tokens, step_logits }, timings)
 }
 
 // ============================================================================

@@ -621,7 +621,25 @@ fn run_moe_text(args: &GenerateArgs) -> i32 {
         "[ATENIA] MoE checkpoint routed to the controlled MoE runtime \
          (experimental, opt-in). The dense path is untouched."
     );
-    match crate::moe::controlled_moe_generate(&args.model, &prompt_ids, args.max_tokens) {
+
+    // **MOE-PERF-5** — opt-in observability parity with the dense path. With
+    // `ATENIA_MOE_TELEMETRY=1` the instrumented entry point is used, which is
+    // bit-identical in output but also reports load / prefill / decode /
+    // first-token / tok-s (+ disk-tier expert-cache / prefetch / tier I/O for the
+    // graph families). Default behaviour (no env) is byte-for-byte unchanged.
+    let telemetry = std::env::var("ATENIA_MOE_TELEMETRY").as_deref() == Ok("1");
+
+    let gen_result = if telemetry {
+        crate::moe::controlled_moe_generate_instrumented(&args.model, &prompt_ids, args.max_tokens)
+            .map(|(out_ids, tele)| {
+                eprint!("{}", tele.render());
+                out_ids
+            })
+    } else {
+        crate::moe::controlled_moe_generate(&args.model, &prompt_ids, args.max_tokens)
+    };
+
+    match gen_result {
         Ok(out_ids) => match tok.decode(&out_ids, true) {
             Ok(text) => {
                 println!("{text}");

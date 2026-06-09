@@ -53,6 +53,8 @@ pub mod runtime;
 pub mod smoke;
 pub mod sparse;
 pub mod stack;
+/// **MOE-PERF-5** — MoE-generation telemetry (observability parity with dense).
+pub mod telemetry;
 pub mod validation;
 /// **MOE-V3-ROUTE-1** — DeepSeek-V3-like modern routing primitives (mechanism only).
 pub mod v3_router;
@@ -114,9 +116,10 @@ pub use family::{
 pub use runtime::{MixtralRuntime, MixtralRuntimeError, MoeRuntime, MoeRuntimeError};
 pub use manifest::{MoeCertEntry, MoeCertManifest, MoeCertScope};
 pub use production::{
-    controlled_moe_generate, decide_route, diagnose_moe, ControlledMoeError, MoeDiagnosis,
-    MoeRoute,
+    controlled_moe_generate, controlled_moe_generate_instrumented, decide_route, diagnose_moe,
+    ControlledMoeError, MoeDiagnosis, MoeRoute,
 };
+pub use telemetry::{MoeGenTelemetry, StageTimings};
 pub use fixture::{
     f64_reference_weight_bytes, recommend_strategy, FixtureMoESpec, FixtureSpecError,
     MoECertificationStrategy,

@@ -296,6 +296,45 @@ pub fn controlled_moe_generate(
     Ok(rt.generate(prompt_ids, max_new_tokens))
 }
 
+/// **MOE-PERF-5** — like [`controlled_moe_generate`] but also returns
+/// [`MoeGenTelemetry`](crate::moe::telemetry::MoeGenTelemetry): the same gated,
+/// certified, opt-in path (identical guards, identical generation), wrapped in
+/// read-only instrumentation. Times the model load (filling `load_ms`) and the
+/// generation (prefill / decode / first-token / tok-s + disk-tier expert-cache /
+/// prefetch / tier I/O for the graph families). The token output is
+/// **bit-identical** to [`controlled_moe_generate`].
+pub fn controlled_moe_generate_instrumented(
+    dir: &Path,
+    prompt_ids: &[u32],
+    max_new_tokens: usize,
+) -> Result<(Vec<u32>, crate::moe::telemetry::MoeGenTelemetry), ControlledMoeError> {
+    let manifest = MoeCertManifest::builtin();
+    let names = read_names(dir)?;
+
+    if !detect_moe(names.iter().map(|s| s.as_str())).is_moe {
+        return Err(ControlledMoeError::NotMoe);
+    }
+    if let Some(u) = unsupported_variant(&names, &manifest) {
+        return Err(ControlledMoeError::UnsupportedVariant(u));
+    }
+    let family = classify_family(names.iter().map(|s| s.as_str()))
+        .ok_or(ControlledMoeError::NotMoe)?;
+    let scope = manifest.scope_for(family);
+    if !scope.is_runnable() {
+        return Err(ControlledMoeError::NotCertified { family, scope });
+    }
+    if !experimental_moe_enabled() {
+        return Err(ControlledMoeError::NotEnabled { family, scope });
+    }
+
+    let t_load = std::time::Instant::now();
+    let rt = MoeRuntime::load_from_dir(dir).map_err(ControlledMoeError::Runtime)?;
+    let load = t_load.elapsed();
+    let (tokens, mut tele) = rt.generate_instrumented(prompt_ids, max_new_tokens);
+    tele.load_ms = load.as_secs_f64() * 1e3;
+    Ok((tokens, tele))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

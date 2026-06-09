@@ -35,7 +35,7 @@ use super::family::{classify_family, experimental_moe_enabled, validate_family_c
 use super::full_forward::{
     MoeBlock, QkvBias, TinyDecoderWeights, TinyMixtralConfig, TinyMixtralWeights,
 };
-use super::generate::generate_greedy_tiny_eos;
+use super::generate::{generate_greedy_tiny_eos, generate_greedy_tiny_eos_timed};
 use super::gqa::to_mha_kv;
 use super::layer::{MoeLayerConfig, RealMoeLayer};
 use super::mixtral_adapter::MixtralAdapter;
@@ -1250,6 +1250,55 @@ impl MoeRuntime {
             }
             Backend::Mla(w) => w.generate_greedy_eos(prompt, max_new_tokens, &self.eos_token_ids),
         }
+    }
+
+    /// **MOE-PERF-5** — like [`Self::generate`] but also returns
+    /// [`MoeGenTelemetry`](super::telemetry::MoeGenTelemetry): per-stage timing
+    /// (prefill / decode / first-token / tok-s) for **all** families plus the
+    /// expert-cache / prefetch / tier I/O for the disk-tier graph families
+    /// (Mixtral/Qwen). The generation is **bit-identical** to [`Self::generate`]
+    /// (same backend call, just wrapped in read-only timers + a before/after
+    /// cache-stats snapshot diff). `load_ms` is left at zero here — the caller
+    /// that owns the load (e.g. [`controlled_moe_generate_instrumented`]) fills
+    /// it. DeepSeek (MLA) streams experts uncached → `cache_telemetry_available`
+    /// is `false` and only timing is populated.
+    pub fn generate_instrumented(
+        &self,
+        prompt: &[u32],
+        max_new_tokens: usize,
+    ) -> (Vec<u32>, super::telemetry::MoeGenTelemetry) {
+        use super::graph_op::{
+            aggregate_resident_cache_resident_bytes, aggregate_resident_cache_stats,
+        };
+        use super::telemetry::{cache_stats_delta, MoeGenTelemetry};
+
+        let before = aggregate_resident_cache_stats();
+        let t = std::time::Instant::now();
+        let (tokens, timings, cache_available) = match &self.backend {
+            Backend::Graph(w) => {
+                let (g, ti) =
+                    generate_greedy_tiny_eos_timed(w, prompt, max_new_tokens, &self.eos_token_ids);
+                (g.tokens, ti, true)
+            }
+            Backend::Mla(w) => {
+                let (toks, ti) =
+                    w.generate_greedy_eos_timed(prompt, max_new_tokens, &self.eos_token_ids);
+                (toks, ti, false)
+            }
+        };
+        let total = t.elapsed();
+        let delta = cache_stats_delta(aggregate_resident_cache_stats(), before);
+        let resident = aggregate_resident_cache_resident_bytes();
+        let tele = MoeGenTelemetry::assemble(
+            std::time::Duration::ZERO,
+            timings,
+            total,
+            tokens.len(),
+            delta,
+            resident,
+            cache_available,
+        );
+        (tokens, tele)
     }
 
     /// **NUMERIC-POLICY-3** — like [`Self::generate`] but returns the full

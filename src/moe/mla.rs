@@ -595,24 +595,45 @@ impl DeepseekWeights {
         max_new_tokens: usize,
         eos_token_ids: &[u32],
     ) -> Vec<u32> {
+        self.generate_greedy_eos_timed(prompt, max_new_tokens, eos_token_ids).0
+    }
+
+    /// **MOE-PERF-5 (instrumentation)** — identical to [`Self::generate_greedy_eos`]
+    /// but also returns per-stage [`StageTimings`](super::telemetry::StageTimings)
+    /// (prefill / decode / first-token). The generation is **bit-identical**; only
+    /// wall-clock timers are surfaced. `generate_greedy_eos` wraps this.
+    pub fn generate_greedy_eos_timed(
+        &self,
+        prompt: &[u32],
+        max_new_tokens: usize,
+        eos_token_ids: &[u32],
+    ) -> (Vec<u32>, super::telemetry::StageTimings) {
+        use std::time::Instant;
         assert!(!prompt.is_empty());
         let vocab = self.config.vocab_size;
+        let t_pre = Instant::now();
         let (logits, mut caches) = self.forward_prefill(prompt);
         let mut next = argmax(&logits[(prompt.len() - 1) * vocab..prompt.len() * vocab]);
+        let prefill = t_pre.elapsed();
         let mut out = vec![next];
+        let mut decode = std::time::Duration::ZERO;
         if eos_token_ids.contains(&next) {
-            return out;
+            let timings = super::telemetry::StageTimings { prefill, decode, first_token: prefill };
+            return (out, timings);
         }
         for step in 0..(max_new_tokens - 1) {
             let pos = prompt.len() + step;
+            let t_d = Instant::now();
             let row = self.forward_decode(next, pos, &mut caches);
             next = argmax(&row);
+            decode += t_d.elapsed();
             out.push(next);
             if eos_token_ids.contains(&next) {
                 break;
             }
         }
-        out
+        let timings = super::telemetry::StageTimings { prefill, decode, first_token: prefill };
+        (out, timings)
     }
 }
 

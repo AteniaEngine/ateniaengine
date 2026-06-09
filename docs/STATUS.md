@@ -517,6 +517,24 @@ locked by regression tests.
   `ladder_level_whole_model: L3`. MLA-0 improved to `5.306e-5`; disk==RAM still
   bit-identical. **Not dense ADR-004 `CERTIFIED`; L4 (global F64) reserved/unreachable.**
   See `docs/HANDOFF_MLA_3.md` + `docs/HANDOFF_MLA1_C5_ROOT_CAUSE.md`.
+- **MOE-PERF-5 — MoE-generation telemetry (observability parity with dense; instrumentation
+  only).** The dense path reported load/total/tok-s; MoE-generate returned only token ids. PERF-5
+  adds `MoeGenTelemetry` (load / prefill / decode / first-token / total / **tok-s**; expert-cache
+  **hits/misses/evictions/resident_bytes**; prefetch **parallel/overlap_saved/resolve**; tier
+  **materialized_bytes/reads**) via `MoeRuntime::generate_instrumented` +
+  `controlled_moe_generate_instrumented`, surfaced behind **opt-in `ATENIA_MOE_TELEMETRY=1`**
+  (default output byte-for-byte unchanged). **No optimization/numerics/routing/MLA/cache/loader/
+  cert/manifest/ADR change.** New `src/moe/telemetry.rs`; `aggregate_resident_cache_stats` extended
+  (+evictions/parallel_prefetches/prefetch_wall) + `aggregate_resident_cache_resident_bytes`;
+  `*_timed` generate variants (existing fns are thin wrappers ⇒ **bit-identical** generation);
+  snapshot-diff isolates one generation from the cumulative registry. Coverage: **timing = all
+  families**; **cache/prefetch/tier = graph families (Mixtral/Qwen) on the disk tier** (RAM tier =
+  true zero); **DeepSeek/MLA streams experts uncached ⇒ timing only**, flagged by
+  `cache_telemetry_available`. Validation: `moe::telemetry` 4/4 + `moe_perf5_telemetry_test` 3/3
+  (instrumented == `generate`, deterministic) + disk-tier demo shows cache/prefetch/tier metrics;
+  **scale-cert 3/3** (no regression); **`cargo test --lib` 886/0**. Unblocks measuring PERF-3/PERF-4
+  on real certified runs (the PERF-3-VALIDATION blocker). See `docs/HANDOFF_MOE_PERF_5.md`. **Do
+  not start PERF-4.**
 - **MOE-PERF-3-VALIDATION — how much of the prefetch win survives on certified workloads
   (measure only).** Measured prefetch at each certified family's **real top-k** on the certified
   disk-tier `forward_cached` path (Mixtral top-2 / Qwen-MoE top-4 / DeepSeek-V2-Lite top-6,
