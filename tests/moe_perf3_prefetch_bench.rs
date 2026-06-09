@@ -90,3 +90,65 @@ fn perf3_prefetch_measurement() {
          pool. The gain scales with read latency (large real experts) and top-k."
     );
 }
+
+/// **MOE-PERF-3-VALIDATION** — per-family prefetch impact at the REAL routing config of
+/// each certified family (Mixtral top-2, Qwen-MoE top-4, DeepSeek-V2-Lite top-6), on the
+/// certified disk-tier `forward_cached` path. Measures the prefetch ON/OFF decode delta so
+/// we can rank the win per family WITHOUT re-running the 87 GB Mixtral forward (the
+/// documented OOM/hang hazard). Expert width is held representative-and-equal across families
+/// to isolate the top-k effect; cap=1 is the RAM-constrained case PERF-3 targets.
+#[test]
+#[ignore = "PERF-3-VALIDATION per-family measurement (timing), not a gate — run with --ignored --nocapture"]
+fn perf3_prefetch_per_family() {
+    // (label, top_k) at each family's REAL routing fan-out. d_model/d_ff held equal so the
+    // ONLY independent variable is top-k (how many disk reads a forward can overlap).
+    let families = [("Mixtral       top-2", 2usize), ("Qwen-MoE      top-4", 4usize), ("DeepSeek-V2L  top-6", 6usize)];
+    let (n, d_model, d_ff, tokens) = (16usize, 256usize, 512usize, 16usize);
+    eprintln!(
+        "=== MOE-PERF-3-VALIDATION: per-family prefetch (cap=1, {n} experts, {tokens}-token decode, \
+         per-expert {} KiB, disk tier) ===",
+        (d_ff * d_model * 3 * 4) / 1024
+    );
+    eprintln!(
+        "{:<20} | {:>5} | {:>12} {:>12} {:>8} | {:>8} {:>10} {:>13}",
+        "family", "top_k", "decode OFF", "decode ON", "speedup", "misses", "Σ read ms", "overlap ms"
+    );
+    for (label, top_k) in families {
+        let real = build(n, top_k, d_model, d_ff);
+        let res = ResidentExpertLayer::from_real_layer(&real, ExpertTier::Disk).unwrap();
+        let mut off_ms = 0.0f64;
+        let mut on_ms = 0.0f64;
+        let mut on_misses = 0usize;
+        let mut on_sum_ms = 0.0f64;
+        let mut on_overlap_ms = 0.0f64;
+        for prefetch in [false, true] {
+            let mut cache = ExpertCache::new(1);
+            cache.set_prefetch(prefetch);
+            let t = Instant::now();
+            for tk in 0..tokens as u64 {
+                let x = seeded(9000 + tk, d_model);
+                let _ = res.forward_cached(&mut cache, &x).unwrap();
+            }
+            let wall_ms = t.elapsed().as_secs_f64() * 1e3;
+            let s = cache.stats();
+            if prefetch {
+                on_ms = wall_ms;
+                on_misses = s.misses;
+                on_sum_ms = s.resolve_nanos as f64 / 1e6;
+                on_overlap_ms = (s.resolve_nanos.saturating_sub(s.prefetch_wall_nanos)) as f64 / 1e6;
+            } else {
+                off_ms = wall_ms;
+            }
+        }
+        let speedup = if on_ms > 0.0 { off_ms / on_ms } else { 0.0 };
+        eprintln!(
+            "{label:<20} | {top_k:>5} | {off_ms:>9.2} ms {on_ms:>9.2} ms {speedup:>7.2}x | \
+             {on_misses:>8} {on_sum_ms:>10.2} {on_overlap_ms:>13.2}"
+        );
+    }
+    eprintln!(
+        "NOTE: identical expert geometry across rows -> the only variable is top-k (overlap width). \
+         More experts per token => more reads to overlap => larger prefetch win. Real expert width \
+         (Mixtral inter=14336) amplifies the per-read latency further than this reduced fixture."
+    );
+}

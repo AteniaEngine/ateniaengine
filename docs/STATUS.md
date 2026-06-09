@@ -517,6 +517,23 @@ locked by regression tests.
   `ladder_level_whole_model: L3`. MLA-0 improved to `5.306e-5`; disk==RAM still
   bit-identical. **Not dense ADR-004 `CERTIFIED`; L4 (global F64) reserved/unreachable.**
   See `docs/HANDOFF_MLA_3.md` + `docs/HANDOFF_MLA1_C5_ROOT_CAUSE.md`.
+- **MOE-PERF-3-VALIDATION — how much of the prefetch win survives on certified workloads
+  (measure only).** Measured prefetch at each certified family's **real top-k** on the certified
+  disk-tier `forward_cached` path (Mixtral top-2 / Qwen-MoE top-4 / DeepSeek-V2-Lite top-6,
+  cap=1); the 87 GB Mixtral re-run was excluded as the documented OOM hazard, so the surrogate
+  is the **exact certified runtime** at real fan-out (rationale documented). **No
+  runtime/numerics/routing/MLA/cache/cert/manifest/ADR change; test-only harness extension.**
+  Robust metrics: **misses identical OFF/ON** (29/58/89 — order, not count); **overlap_saved
+  rose monotonically** ~9.5 → 36.7 → 69.5 ms (**40 % → 69 % → 78 %** of read latency hidden,
+  ∝ top-k); decode always >1.6× (noisy). Verdict: **Mixtral = MAJOR win** (only RAM-starved,
+  read-bound, widest-expert family; cap=1 *forced*), **DeepSeek-V2-Lite = MODERATE** (highest
+  overlap fraction but ~4 GB tier mostly RAM-resident ⇒ few real misses; MLA orthogonal),
+  **Qwen-MoE = UNMEASURED** (block-level cert, no disk-tier whole-model forward). **Roadmap
+  reorder:** the validation **could not measure a real certified run** (MoE-generate lacks the
+  dense path's telemetry) ⇒ **promote PERF-5 (instrumentation parity) ahead of PERF-4**; PERF-4
+  (qint8 default tier) stays high ROI but second (attacks bytes/root vs PERF-3's latency/symptom;
+  complementary). 2 bench tests pass (`#[ignore]`, 4 reps); `src/` untouched ⇒ lib unaffected.
+  See `docs/HANDOFF_MOE_PERF_3_VALIDATION.md`. **Do not start PERF-4.**
 - **MOE-PERF-3 (prefetch) — async (parallel) expert prefetch for the disk tier.** Overlaps a
   token's selected-expert NVMe reads under the existing rayon pool (no async runtime, no
   uncontrolled threads), the lever PERF-2-VALIDATION identified for the `cap=1` re-read

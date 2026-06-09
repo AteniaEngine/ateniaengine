@@ -169,6 +169,24 @@ For each: expected gain · complexity · risk · families affected.
 Deferred (not scheduled): **G** (MLA latent cache) and **H** (GPU expert offload) — high risk,
 separate tracks.
 
+### PERF-3-VALIDATION reorder (evidence-driven, 2026-06-09)
+
+`MOE-PERF-3-VALIDATION` measured the prefetch win at each certified family's **real top-k** on
+the certified disk-tier `forward_cached` path (Mixtral top-2 / Qwen top-4 / DeepSeek top-6,
+cap=1; the 87 GB Mixtral re-run was excluded as the documented OOM hazard). Findings:
+**Mixtral = major win** (only RAM-starved, read-bound, widest-expert family; cap=1 *forced*),
+**DeepSeek-V2-Lite = moderate** (top-6 ⇒ highest overlap fraction ~78 %, but ~4 GB tier mostly
+RAM-resident ⇒ few real misses; MLA orthogonal), **Qwen-MoE = unmeasured** (block-level cert,
+no disk-tier whole-model forward). Robust metric `overlap_saved` rose monotonically with top-k
+(~9.5 → 36.7 → 69.5 ms; 40 % → 69 % → 78 % of read latency hidden); misses identical OFF/ON.
+
+The validation **could not measure prefetch on a real certified run** because the MoE-generate
+path lacks the dense path's prefill/decode/cache-hit telemetry (PERF-1 gap (b)). That promotes
+**PERF-5 (instrumentation parity) AHEAD of PERF-4**: PERF-5 is the prerequisite to ever
+validating PERF-3/PERF-4 on real models without a full-reload gamble. **PERF-4 (qint8 default
+tier) remains high user ROI** (attacks expert *bytes* — the root — where PERF-3 attacks read
+*latency* — the symptom; complementary), now **second**. See `HANDOFF_MOE_PERF_3_VALIDATION.md`.
+
 ---
 
 ## Validation
