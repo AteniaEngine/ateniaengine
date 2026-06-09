@@ -187,6 +187,20 @@ validating PERF-3/PERF-4 on real models without a full-reload gamble. **PERF-4 (
 tier) remains high user ROI** (attacks expert *bytes* — the root — where PERF-3 attacks read
 *latency* — the symptom; complementary), now **second**. See `HANDOFF_MOE_PERF_3_VALIDATION.md`.
 
+### PERF-5-REAL-MEASURE: telemetry baseline + PERF-4 confirmed next (2026-06-09)
+
+With PERF-5 landed, `MOE-PERF-5-REAL-MEASURE` captured the first real cache/prefetch/tier
+telemetry on the certified `forward_cached` path (disk-tier scale fixtures at real top-k; the
+87 GB Mixtral and 29 GB DeepSeek real runs were classified **too-heavy/skip** on a 12-GB-free
+host — measure-only, no behavior change). The telemetry **confirms cache capacity is the dominant
+cost**: `auto→cache=1` collapses the hit rate (Mixtral 6→20 misses +18 evictions; Qwen 19→40 +38)
+— the PERF-1 cache↔OOM tension made concrete. Prefetch is observable and scales with top-k
+(`parallel_prefetches`=misses; overlap Mixtral≈0.4 < Qwen≈1.9 ms). DeepSeek/MLA streams experts
+uncached (timing-only — a coverage limitation). **Decision: PERF-4 (qint8 tier) remains next** —
+it cuts read bytes ¼ **and** ~4×s the cache capacity at fixed RAM (relieves the measured thrash;
+Mixtral cache=4 → ~22 GB vs ~90 GB OOM), compounding with prefetch. Highest risk: the qint8
+numeric certificate. See `HANDOFF_MOE_PERF_5_REAL_MEASURE.md`. **Do not start PERF-4.**
+
 ---
 
 ## Validation

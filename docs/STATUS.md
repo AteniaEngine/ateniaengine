@@ -517,6 +517,25 @@ locked by regression tests.
   `ladder_level_whole_model: L3`. MLA-0 improved to `5.306e-5`; disk==RAM still
   bit-identical. **Not dense ADR-004 `CERTIFIED`; L4 (global F64) reserved/unreachable.**
   See `docs/HANDOFF_MLA_3.md` + `docs/HANDOFF_MLA1_C5_ROOT_CAUSE.md`.
+- **MOE-PERF-5-REAL-MEASURE — real telemetry baseline before PERF-4 (measure only).** Used the
+  PERF-5 instrumentation to capture real cache/prefetch/tier telemetry on the certified runtime
+  path. **No code in `src/`** (test-only `#[ignore]` sweep). **Workloads:** Mixtral-87GB real =
+  **too heavy/skip** (host ~12 GB free of 32; cache=1 forward peaks ~29 GB, default ~90 GB→OOM),
+  DeepSeek-V2-Lite real = skip (load spikes; MLA uncached → no cache telemetry anyway), Qwen real =
+  N/A (no whole-model path); **scale fixtures on the disk tier = safe** (exact `forward_cached` path
+  at real top-k). **Findings:** cache size is the **dominant lever** — `auto→cache=1` forces
+  re-reads (Mixtral 6→**20 misses/18 evict**, Qwen 19→**40/38**, hit-rate→0): the PERF-1
+  cache↔OOM tension, telemetry-confirmed. Prefetch is observable and scales with top-k
+  (`parallel_prefetches`=misses, `overlap_saved_ms` Mixtral≈0.4 < Qwen≈1.9 ms). Graph families are
+  **I/O-bound** on disk; MoE compute trivial (DeepSeek 4354 tok/s RAM). **DeepSeek/MLA streams
+  experts uncached** (`cache?=NO`; tier I/O only via timing gap 0.38→14.7 ms) — coverage limitation,
+  not a zero. (Absolute resolve_ms confounded by OS page-cache warming; analysis rests on the
+  deterministic structural counters.) **PERF-4 readiness: YES, remains next** — qint8 cuts expert
+  bytes ¼ → ~4× smaller reads **and** ~4× more experts fit the RAM budget (relieves the cache
+  thrash; turns Mixtral's forced cache=1 into a viable cache≥4, ~22 GB vs 90 GB); compounds with
+  prefetch. **Highest risk: the qint8 numeric certificate** (per-expert int8 must clear the ADR-004
+  gate). Nothing precedes PERF-4. See `docs/HANDOFF_MOE_PERF_5_REAL_MEASURE.md`. **Do not start
+  PERF-4.**
 - **MOE-PERF-5 — MoE-generation telemetry (observability parity with dense; instrumentation
   only).** The dense path reported load/total/tok-s; MoE-generate returned only token ids. PERF-5
   adds `MoeGenTelemetry` (load / prefill / decode / first-token / total / **tok-s**; expert-cache
