@@ -517,6 +517,20 @@ locked by regression tests.
   `ladder_level_whole_model: L3`. MLA-0 improved to `5.306e-5`; disk==RAM still
   bit-identical. **Not dense ADR-004 `CERTIFIED`; L4 (global F64) reserved/unreachable.**
   See `docs/HANDOFF_MLA_3.md` + `docs/HANDOFF_MLA1_C5_ROOT_CAUSE.md`.
+- **MOE-PERF-3 (prefetch) — async (parallel) expert prefetch for the disk tier.** Overlaps a
+  token's selected-expert NVMe reads under the existing rayon pool (no async runtime, no
+  uncontrolled threads), the lever PERF-2-VALIDATION identified for the `cap=1` re-read
+  latency. **Opt-in `ATENIA_MOE_PREFETCH=1` (default off); no numerics/routing/MLA/attention/
+  generation/cert/manifest/ADR change.** `forward_cached` batch-resolves the selected experts
+  in parallel before the FFN loop (`resolve_selected`); bit-exact + deterministic (same
+  experts, same combine order), bounded (≤top_k), works at cap=1, safe fallback. **Measured
+  ~2× faster decode at cap=1, top-6** (191.74→95.32 ms; 76 ms of read latency overlapped:
+  `wall read` 22.4 ms vs `Σ read` 98.8 ms); misses unchanged (order, not count). Gain scales
+  with read latency + top-k. 2 new residency tests (20 pass); **scale-cert 3/3 both default
+  AND with `ATENIA_MOE_PREFETCH=1`** (no cert regression); full lib green. Runtime auto-picks
+  it up (`ExpertCache::new` reads the env; productive path already uses `forward_cached`).
+  (Note: stale `HANDOFF_MOE_PERF_3.md` is an unrelated VRAM attempt — this handoff is
+  `HANDOFF_MOE_PERF_3_PREFETCH.md`.) **Do not start PERF-4.**
 - **MOE-PERF-2-VALIDATION — real impact measurement (measure only).** Quantified PERF-2 with
   existing instrumentation (`CacheStats`), **no runtime/numerics/cert change**. Measured cache
   mechanism (32-expert disk-tier layer, 24-token decode): **bf16 halves resident at every

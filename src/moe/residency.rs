@@ -182,6 +182,15 @@ pub fn cache_bf16_enabled() -> bool {
     std::env::var("ATENIA_MOE_CACHE_BF16").as_deref() != Ok("0")
 }
 
+/// **MOE-PERF-3** — whether the forward batch-resolves a token's selected routed
+/// experts **in parallel** (overlapping their NVMe reads) before the FFN loop,
+/// instead of reading them one at a time. Opt-in (`ATENIA_MOE_PREFETCH=1`, default
+/// **off** — safe). It only changes the *order/concurrency* of the tier reads, not
+/// the experts read or the math — output is bit-exact and deterministic.
+pub fn prefetch_enabled() -> bool {
+    std::env::var("ATENIA_MOE_PREFETCH").as_deref() == Ok("1")
+}
+
 /// **MOE-PERF-2A** — the largest per-layer expert-cache capacity whose total
 /// resident footprint (`n_layers × capacity × per_expert_bytes`) fits
 /// `ram_budget_bytes`, clamped to `[1, num_experts]`. Pure + deterministic given
@@ -824,6 +833,14 @@ pub struct CacheStats {
     /// **`resolve()`** (NVMe read + bf16→f32 decode of expert weights, routed +
     /// shared). Isolates the disk-I/O cost from the matmul and the GraphBuilder.
     pub resolve_nanos: u128,
+    /// **MOE-PERF-3 (instrumentation)** — routed experts read via a **parallel
+    /// batch** (overlapped NVMe reads) by the prefetch path. Each is still counted
+    /// in `misses`/`tier_bytes_read`; this isolates how many reads were overlapped.
+    pub parallel_prefetches: usize,
+    /// **MOE-PERF-3 (instrumentation)** — cumulative **wall-clock** nanoseconds of
+    /// the parallel batch resolves (vs `resolve_nanos`, which sums per-expert read
+    /// time). The gap `Σ(read) − wall` is the latency hidden by overlapping.
+    pub prefetch_wall_nanos: u128,
 }
 
 /// Bounded LRU cache of materialised experts, keyed by routed-expert index.
@@ -838,6 +855,10 @@ pub struct ExpertCache {
     /// **MOE-PERF-2B** — whether new entries are stored bf16 (lossless). Captured
     /// at construction from `cache_bf16_enabled()`.
     allow_bf16: bool,
+    /// **MOE-PERF-3** — whether the forward batch-resolves a token's selected
+    /// routed experts in parallel before the FFN loop. Captured at construction
+    /// from `prefetch_enabled()`; opt-in. Never affects output.
+    prefetch: bool,
     stats: CacheStats,
     /// **MOE-PROD-6** — pinned cache slot for the **shared** expert (read every
     /// token in HF-Qwen/Atenia conventions). The shared expert's weights never
@@ -860,6 +881,7 @@ impl ExpertCache {
             clock: 0,
             entries: HashMap::new(),
             allow_bf16: cache_bf16_enabled(),
+            prefetch: prefetch_enabled(),
             stats: CacheStats::default(),
             shared: None,
             shared_enabled: true,
@@ -870,6 +892,16 @@ impl ExpertCache {
     /// to `cache_bf16_enabled()`). Test/A-B hook; never changes numerics.
     pub fn set_bf16_resident(&mut self, on: bool) {
         self.allow_bf16 = on;
+    }
+
+    /// **MOE-PERF-3** — force parallel expert prefetch on/off (defaults to
+    /// `prefetch_enabled()`). Test/A-B hook; never changes output.
+    pub fn set_prefetch(&mut self, on: bool) {
+        self.prefetch = on;
+    }
+    /// Whether parallel expert prefetch is active for this cache.
+    pub fn prefetch_on(&self) -> bool {
+        self.prefetch
     }
     /// Whether new routed entries are stored bf16-resident.
     pub fn bf16_resident(&self) -> bool {
@@ -994,6 +1026,68 @@ impl ResidentExpertLayer {
         Ok(expert)
     }
 
+    /// **MOE-PERF-3** — resolve the token's selected routed `indices` through the
+    /// cache, **batch-resolving the misses in parallel** (rayon, the existing
+    /// bounded pool) so their NVMe reads overlap instead of running one at a time.
+    /// Returns the experts in `indices` order. Bit-exact and deterministic: the
+    /// resolved weights are pure functions of the tier (order-independent), and the
+    /// returned order matches `indices`. Works at any cache capacity (the parallel
+    /// read does not depend on the LRU). Cache hits are served from RAM; misses are
+    /// read in parallel, recorded (`misses`/`tier_bytes_read`/`parallel_prefetches`),
+    /// and inserted into the LRU (subject to capacity).
+    fn resolve_selected(
+        &self,
+        cache: &mut ExpertCache,
+        indices: &[usize],
+    ) -> Result<Vec<MoeDenseExpert>, MoeLayerError> {
+        let mut out: Vec<Option<MoeDenseExpert>> = (0..indices.len()).map(|_| None).collect();
+        let mut misses: Vec<(usize, usize)> = Vec::new(); // (slot, expert idx)
+        for (slot, &e) in indices.iter().enumerate() {
+            if let Some((cached, used)) = cache.entries.get_mut(&e) {
+                cache.clock += 1;
+                *used = cache.clock;
+                out[slot] = Some(cached.to_dense());
+                cache.stats.hits += 1;
+            } else {
+                misses.push((slot, e));
+            }
+        }
+        if !misses.is_empty() {
+            use rayon::prelude::*;
+            let t = std::time::Instant::now();
+            // Pure parallel reads (`&self`, no shared mutation) — overlap the NVMe
+            // reads. Order-independent; we re-place by slot below. Each closure also
+            // times its own read so the SUM of read time (comparable to the
+            // non-prefetch path) can be reported alongside the overlapped wall time.
+            let resolved: Result<Vec<(usize, usize, MoeDenseExpert, usize, u128)>, MoeDenseError> =
+                misses
+                    .par_iter()
+                    .map(|&(slot, e)| {
+                        let t_e = std::time::Instant::now();
+                        let (expert, bytes) = self.experts[e].resolve()?;
+                        Ok((slot, e, expert, bytes, t_e.elapsed().as_nanos()))
+                    })
+                    .collect();
+            let resolved = resolved
+                .map_err(|e| MoeLayerError::Binding(super::binding::MoeBindingError::Dense(e)))?;
+            cache.stats.prefetch_wall_nanos += t.elapsed().as_nanos();
+            for (slot, e, expert, bytes, read_nanos) in resolved {
+                cache.stats.misses += 1;
+                cache.stats.tier_bytes_read += bytes;
+                cache.stats.parallel_prefetches += 1;
+                // `resolve_nanos` keeps its meaning: the SUM of per-expert read time
+                // (here, run in parallel). The overlap saved is `resolve_nanos −
+                // prefetch_wall_nanos`.
+                cache.stats.resolve_nanos += read_nanos;
+                if cache.capacity > 0 {
+                    cache.put(e, &expert);
+                }
+                out[slot] = Some(expert);
+            }
+        }
+        Ok(out.into_iter().map(|o| o.expect("every slot resolved")).collect())
+    }
+
     /// Warm `cache` with the given routed experts (e.g. the hot set identified
     /// by profiling). Each prefetched expert is read once from its tier and
     /// retained under the LRU budget. Idempotent for already-resident experts.
@@ -1034,10 +1128,29 @@ impl ResidentExpertLayer {
 
         let mut out = vec![0.0_f32; self.config.d_model];
         let mut materialized_bytes = 0usize;
-        for (slot, &e) in selection.indices.iter().enumerate() {
+
+        // **MOE-PERF-3** — opt-in: batch-resolve the selected experts in parallel
+        // (overlap their NVMe reads) before the FFN loop. Bit-exact; the FFN loop
+        // combines in the SAME order either way.
+        let prefetched: Option<Vec<MoeDenseExpert>> = if cache.prefetch {
             let before = cache.stats.tier_bytes_read;
-            let expert = self.resolve_cached(cache, e)?;
+            let exps = self.resolve_selected(cache, &selection.indices)?;
             materialized_bytes += cache.stats.tier_bytes_read - before;
+            Some(exps)
+        } else {
+            None
+        };
+
+        for (slot, &e) in selection.indices.iter().enumerate() {
+            let expert = match &prefetched {
+                Some(v) => v[slot].clone(),
+                None => {
+                    let before = cache.stats.tier_bytes_read;
+                    let ex = self.resolve_cached(cache, e)?;
+                    materialized_bytes += cache.stats.tier_bytes_read - before;
+                    ex
+                }
+            };
             let t_fwd = std::time::Instant::now();
             let y = expert
                 .forward(x)
@@ -1517,6 +1630,49 @@ mod tests {
         // No shared expert here → resident == routed; bf16 is half the f32-equiv.
         assert_eq!(cache.resident_bytes_f32_equiv(), 2 * cache.resident_bytes());
         assert!(cache.resident_bytes_saved() > 0, "bf16 residency must save bytes");
+    }
+
+    // ---- MOE-PERF-3: parallel expert prefetch ----
+
+    #[test]
+    fn perf3_prefetch_is_bit_exact_deterministic_and_bounded() {
+        let real = build_real(8, 8, 16);
+        let res = ResidentExpertLayer::from_real_layer(&real, ExpertTier::Disk).unwrap();
+        for cap in [1usize, 4, 8] {
+            let mut on = ExpertCache::new(cap);
+            on.set_prefetch(true);
+            let mut off = ExpertCache::new(cap);
+            off.set_prefetch(false);
+            for s in 0..6u64 {
+                let x = seeded(2000 + s, 8);
+                let (a, _) = res.forward_cached(&mut on, &x).unwrap();
+                let (b, _) = res.forward_cached(&mut off, &x).unwrap();
+                let (plain, _) = res.forward(&x).unwrap();
+                assert_eq!(a, b, "prefetch == non-prefetch (cap {cap}, seed {s})");
+                assert_eq!(a, plain, "prefetch == uncached forward (cap {cap}, seed {s})");
+                let (a2, _) = res.forward_cached(&mut on, &x).unwrap();
+                assert_eq!(a, a2, "prefetch deterministic (cap {cap}, seed {s})");
+            }
+            assert!(on.stats().parallel_prefetches > 0, "prefetch path did parallel reads");
+            assert!(on.stats().misses > 0);
+            assert_eq!(off.stats().parallel_prefetches, 0, "disabled path: no parallel reads");
+            assert!(on.len() <= cap, "capacity bound respected under prefetch (cap {cap})");
+        }
+    }
+
+    #[test]
+    fn perf3_prefetch_with_shared_expert_is_bit_exact() {
+        let real = build_real_with_shared(4, 8, 16, 12);
+        let res = ResidentExpertLayer::from_real_layer(&real, ExpertTier::Disk).unwrap();
+        let mut cache = ExpertCache::new(1); // cap=1: the hard case
+        cache.set_prefetch(true);
+        for s in 0..4u64 {
+            let x = seeded(2100 + s, 8);
+            let (got, _) = res.forward_cached(&mut cache, &x).unwrap();
+            let (plain, _) = res.forward(&x).unwrap();
+            assert_eq!(got, plain, "prefetch + shared expert must be bit-exact (seed {s})");
+        }
+        assert!(cache.prefetch_on());
     }
 
     #[test]
