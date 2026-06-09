@@ -517,6 +517,19 @@ locked by regression tests.
   `ladder_level_whole_model: L3`. MLA-0 improved to `5.306e-5`; disk==RAM still
   bit-identical. **Not dense ADR-004 `CERTIFIED`; L4 (global F64) reserved/unreachable.**
   See `docs/HANDOFF_MLA_3.md` + `docs/HANDOFF_MLA1_C5_ROOT_CAUSE.md`.
+- **MOE-PERF-2-VALIDATION — real impact measurement (measure only).** Quantified PERF-2 with
+  existing instrumentation (`CacheStats`), **no runtime/numerics/cert change**. Measured cache
+  mechanism (32-expert disk-tier layer, 24-token decode): **bf16 halves resident at every
+  capacity, miss count identical for a given capacity** (cap=1: 48 vs 48); a **larger cache
+  cuts misses** 48→23 (**−52%** at cap=all). Conclusion = **case B: PERF-2 reduced RAM (2×) +
+  removed the ~90 GB OOM, but on a 32 GB host the auto-size picks cap=1 so rematerializations
+  (and thus the 402.7 s Mixtral forward) are unchanged here**; the runtime win needs cap>1,
+  which bf16 makes affordable (Mixtral cap=4: 90 GB→45 GB) on ≥~50 GB-free hosts. The 87 GB
+  real forward was not re-run (heavy; conclusion determinable without it). Roadmap: **keep
+  PERF-3 (prefetch/async)** — the only lever that helps the forward at cap=1 (hides NVMe read
+  latency under compute), now better justified. New `#[ignore]` measurement harness
+  `tests/moe_perf2_cache_validation.rs`; `cargo test --lib` unchanged. **Do not start PERF-3.**
+  See `docs/HANDOFF_MOE_PERF_2_VALIDATION.md`.
 - **MOE-PERF-2 (expert cache) — auto-sized cache + bf16-resident experts.** Implemented the
   highest-ROI item from the PERF-1 audit, **numerics/cert/manifest/ADR/routing/MLA/attention/
   generation all unchanged**. **PERF-2A:** per-layer expert-cache capacity is **auto-sized** to
